@@ -1,7 +1,10 @@
 """BCS Portfolio workspace router — gets portfolio from BCS via Trade API."""
+import logging
 import httpx
 from fastapi import APIRouter, HTTPException
-from workspace_helpers import get_secret
+from workspace_helpers import get_secret, core_api
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -26,7 +29,20 @@ async def _refresh_token(http, refresh_token):
         "client_id": CLIENT_ID,
     })
     resp.raise_for_status()
-    _access_token = resp.json()["access_token"]
+    data = resp.json()
+    _access_token = data["access_token"]
+
+    # Keycloak rotates refresh tokens — persist the new one back to vault
+    new_rt = data.get("refresh_token")
+    if new_rt and new_rt != refresh_token:
+        try:
+            await core_api("POST", "/api/secrets", json={
+                "name": "BCS_REFRESH_TOKEN",
+                "value": new_rt,
+            })
+        except Exception as e:
+            log.warning("failed to persist rotated BCS refresh token: %s", e)
+
     return _access_token
 
 
