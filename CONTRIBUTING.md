@@ -100,16 +100,20 @@ Please do **not** open public issues for security vulnerabilities. Instead, crea
 ## Building a Release
 
 ```bash
-# Edit VERSION file to set the new version
-echo "0.2.0" > VERSION
-
 # Build release archive (all platforms)
-./release.sh --all
+./release.sh 0.2.0 --all
 
 # Result: release/hydeclaw-v0.2.0.tar.gz
 ```
 
-The release script reads the version from `VERSION`, syncs it to `Cargo.toml` and `package.json` files, builds all binaries, packages UI, and creates a single archive.
+The release script syncs the version to `Cargo.toml` and `package.json` files, builds all binaries, packages the UI, and creates a single archive.
+
+To publish a release on GitHub, create and push a tag — CI builds and publishes automatically:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
 
 ## Questions
 

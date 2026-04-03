@@ -2,11 +2,13 @@
 # Build versioned release artifacts for HydeClaw.
 #
 # Usage:
-#   ./release.sh              # uses version from VERSION file
-#   ./release.sh 1.0.0        # explicit version
-#   ./release.sh --all        # build all platforms (default: host only)
+#   ./release.sh 1.0.0        # build for host architecture
+#   ./release.sh 1.0.0 --all  # build for aarch64 + x86_64
 #
-# Output: release/v{VERSION}/
+# Version is the single required argument. It is synced to Cargo.toml,
+# ui/package.json, and channels/package.json before building.
+#
+# Output: release/hydeclaw-v{VERSION}.tar.gz
 #   hydeclaw-core-{arch}      — Rust binary per platform
 #   hydeclaw-ui.tar.gz        — pre-built Next.js static UI
 #   config/                   — default config files
@@ -16,7 +18,7 @@
 #   toolgate/                 — Python media hub (source)
 #   setup.sh                  — interactive installer
 #   .env.example              — environment template
-#   VERSION                   — version file
+#   VERSION                   — version written into archive for setup/update scripts
 
 set -euo pipefail
 
@@ -39,13 +41,7 @@ for arg in "$@"; do
 done
 
 # ── Version ──
-if [ -z "$VERSION" ]; then
-  [ -f VERSION ] || err "VERSION file not found"
-  VERSION=$(tr -d '[:space:]' < VERSION)
-else
-  # Explicit version — update VERSION file to stay in sync
-  echo "$VERSION" > VERSION
-fi
+[ -n "$VERSION" ] || err "Usage: ./release.sh <version> [--all]  (e.g. ./release.sh 0.2.0 --all)"
 RELEASE_DIR="$ROOT/release/hydeclaw"
 
 # ── Sync version across all manifests ──
