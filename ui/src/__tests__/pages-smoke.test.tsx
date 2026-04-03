@@ -243,7 +243,6 @@ vi.mock("@/lib/queries", () => ({
   useProviders: () => ({ ...emptyQuery, data: [] }),
   useProviderTypes: () => ({ ...emptyQuery, data: [] }),
   useProviderActive: () => ({ ...emptyQuery, data: [] }),
-  useProviderModels: () => ({ ...emptyQuery, data: [] }),
   useMediaDrivers: () => ({ ...emptyObjQuery, data: {} }),
   useOAuthAccounts: () => ({ ...emptyQuery, data: [] }),
   useOAuthBindings: () => ({ ...emptyQuery, data: [] }),
