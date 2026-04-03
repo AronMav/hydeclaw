@@ -20,31 +20,39 @@ A self-hosted AI gateway for running personal AI agents. Single native Rust bina
 ## Architecture
 
 ```text
+  Browser · Telegram · Discord · ...
+          │  HTTP · SSE · WebSocket
+          ▼
 ┌─────────────────────────────────────────────────────┐
-│                  hydeclaw-core (Rust)                │
+│                hydeclaw-core (Rust)                 │
 │                                                     │
-│  HTTP API (Axum)  ←→  Agent Engine  ←→  LLM         │
-│       ↕                    ↕              ↕         │
-│  Web UI (Next.js)     Tool Execution   Providers    │
-│  SSE Streaming        Memory (pgvector)  Registry   │
-│  WebSocket            Secrets Vault                 │
-│  Auth Middleware       Cron Scheduler               │
-└──────────────┬──────────────────┬───────────────────┘
-               │                  │
-        ┌──────┴──────┐    ┌──────┴──────┐
-        │  channels/  │    │  toolgate/  │
-        │ (TypeScript)│    │  (Python)   │
-        │  Telegram   │    │  STT/Vision │
-        │  Discord    │    │  TTS/ImgGen │
-        │  Matrix     │    │  Embeddings │
-        │  IRC/Slack  │    │             │
-        │  WhatsApp   │    │             │
-        └─────────────┘    └─────────────┘
-               │
-        ┌──────┴──────┐
-        │ PostgreSQL  │
-        │ 17+pgvector │
-        └─────────────┘
+│  HTTP API (Axum) · SSE · WebSocket · Auth           │
+│  Agent Engine · Tool Execution · Secrets Vault      │
+│  Memory (pgvector) · Cron Scheduler · Static UI     │
+└──┬──────────┬────────────┬───────────────┬──────────┘
+   │ child    │ child      │ sqlx          │ HTTPS
+   ▼          ▼            ▼               ▼
+┌─────────┐ ┌──────────┐ ┌────────────┐ ┌────────────────────┐
+│channels/│ │toolgate/ │ │ PostgreSQL │ │   LLM Providers    │
+│  (Bun)  │ │ (Python) │ │ 17+pgvect  │ │ OpenAI · Anthropic │
+│Telegram │ │STT · TTS │ └────────────┘ │ Google · Ollama    │
+│Discord  │ │Vision    │                │ Custom HTTP · ...  │
+│Matrix   │ │ImgGen    │  Bollard ───────────────────────────┐
+│IRC/Slack│ │Embeddings│  (Docker API)                       │
+│WhatsApp │ └──────────┘               ▼                     │
+└─────────┘                 ┌─────────────────────┐          │
+                            │  Docker containers  │          │
+                            │  MCP (on-demand)    │          │
+                            │  code_exec sandbox  │          │
+                            └─────────────────────┘          │
+                                                             │
+docker-compose (infrastructure, not managed by core):        │
+  postgres · searxng · browser-renderer ◄────────────────────┘
+  + MCP images (started on-demand by core via Bollard)
+
+systemd units (separate binaries, auto-installed by core):
+  hydeclaw-watchdog      — health monitoring, alerts via core API
+  hydeclaw-memory-worker — embedding tasks direct to PostgreSQL
 ```
 
 - **hydeclaw-core** — Rust binary: HTTP API, agent lifecycle, LLM calls, tool dispatch, memory, secrets, scheduler
