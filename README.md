@@ -1,117 +1,43 @@
+<div align="center">
+
 # HydeClaw
 
-A self-hosted AI gateway for running personal AI agents. Single native Rust binary handles HTTP API, multi-agent orchestration, LLM calls, tool execution, channel bridging, memory, and encrypted secrets. Runs on any Linux server, VPS, or Raspberry Pi.
+**Self-hosted AI gateway. Multi-agent orchestration. Single binary.**
 
-## Features
+[![CI](https://img.shields.io/github/actions/workflow/status/AronMav/hydeclaw/ci.yml?branch=master&label=CI)](https://github.com/AronMav/hydeclaw/actions)
+[![Release](https://img.shields.io/github/v/release/AronMav/hydeclaw)](https://github.com/AronMav/hydeclaw/releases)
+[![License: MIT](https://img.shields.io/github/license/AronMav/hydeclaw)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-2024_edition-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Platform](https://img.shields.io/badge/platform-Linux%20ARM64%20%7C%20x86__64-blue?logo=linux&logoColor=white)](https://github.com/AronMav/hydeclaw/releases)
 
-- **Multi-agent orchestration** — agents collaborate in shared sessions with @-mention routing, structured handoff, configurable turn limits, and cycle detection
-- **Multi-channel** — Telegram, Discord, Matrix, IRC, Slack, WhatsApp adapters; agents opt in per channel
-- **Tool execution** — YAML-defined HTTP tools (hot-reload, no restart), sandboxed code execution (Docker), MCP protocol support
-- **Long-term memory** — PostgreSQL + pgvector hybrid search (semantic + FTS) with MMR reranking; two-tier: raw (time-decay) + pinned (permanent)
-- **Skills system** — Markdown-based behavioral instructions loaded at runtime; per-agent and shared skills
-- **Secrets vault** — ChaCha20Poly1305 encryption with per-agent scoping and env var fallback
-- **PII protection** — automatic redaction of tokens, keys, passwords, and credentials in code execution output
-- **Media processing** — STT (7 providers), TTS (6 providers), Vision (7 providers), Image Generation (5 providers) via pluggable registry
-- **Cron scheduler** — agent-scoped scheduled tasks with timezone support and jitter
-- **Web UI** — Next.js control panel: multi-agent chat with keyboard-navigable autocomplete, agent/provider/tool management, workspace canvas, memory explorer, audit log
-- **Watchdog** — external health monitor with channel-based alerting
-- **~26 MB binary, ~40 MB RAM idle** — lightweight enough for a Raspberry Pi, fast enough for any server
+</div>
 
-## Architecture
+HydeClaw is a self-hosted AI gateway for running personal AI agents. A single native Rust binary handles HTTP API, multi-agent orchestration, LLM calls, tool execution, channel bridging, long-term memory, and encrypted secrets.
 
-```mermaid
-graph TB
-    clients["Browser / Telegram / Discord / Matrix / IRC / Slack"]
-    clients -->|"HTTP · SSE · WebSocket"| core
+<div align="center">
 
-    subgraph core["hydeclaw-core (Rust)"]
-        api["HTTP API (Axum) · Auth · SSE · WebSocket"]
-        engine["Agent Engine · Tool Execution"]
-        vault["Secrets Vault · Cron Scheduler"]
-        mem["Memory (pgvector) · Static UI"]
-    end
+**15 LLM Providers** &nbsp;&bull;&nbsp; **6 Chat Channels** &nbsp;&bull;&nbsp; **~26 MB Binary** &nbsp;&bull;&nbsp; **~40 MB RAM Idle**
 
-    core -->|"child process"| channels
-    core -->|"child process"| toolgate
-    core -->|"sqlx"| pg
-    core -->|"HTTPS"| llm
-    core -->|"Bollard (Docker API)"| containers
+</div>
 
-    subgraph channels["channels/ (Bun)"]
-        ch_list["Telegram · Discord · Matrix\nIRC · Slack · WhatsApp"]
-    end
-
-    subgraph toolgate["toolgate/ (Python)"]
-        tg_list["STT · TTS · Vision\nImageGen · Embeddings"]
-    end
-
-    subgraph pg["PostgreSQL 17 + pgvector"]
-        pg_data["sessions · messages · memory\ngraph · secrets · cron"]
-    end
-
-    subgraph llm["LLM Providers"]
-        llm_list["OpenAI · Anthropic · Google\nOllama · DeepSeek · 10 more"]
-    end
-
-    subgraph containers["Docker containers"]
-        mcp["MCP servers (on-demand)"]
-        sandbox["code_exec sandbox"]
-    end
-
-    subgraph infra["docker-compose (infrastructure)"]
-        searxng["searxng"]
-        browser["browser-renderer"]
-    end
-
-    watchdog["hydeclaw-watchdog"]
-    worker["hydeclaw-memory-worker"]
-
-    watchdog -.->|"core API"| core
-    worker -.->|"sqlx + toolgate"| pg
-    worker -.-> toolgate
-```
-
-- **hydeclaw-core** — Rust binary: HTTP API, agent lifecycle, LLM calls, tool dispatch, memory, secrets, scheduler
-- **hydeclaw-watchdog** — health monitor with channel-based alerting (separate binary)
-- **hydeclaw-memory-worker** — background embedding and reindex tasks (separate binary)
-- **channels** — TypeScript/Bun process managed by core: Telegram, Discord, Matrix, IRC, Slack, WhatsApp
-- **toolgate** — Python/FastAPI process managed by core: STT, TTS, Vision, Image Generation, Embeddings
-- **PostgreSQL 17 + pgvector** — sessions, messages, memory, graph, cron jobs, secrets
-
-## Requirements
-
-**From release** (installed automatically by `setup.sh`):
-
-- Linux (Debian/Ubuntu/Fedora, ARM64 and x86_64) or macOS
-- Docker (for PostgreSQL + optional services)
-- Bun 1.x (for channel adapters)
-- Python 3.11+ (for toolgate media hub)
-
-**From source** (additionally):
-
-- Rust 1.85+ (edition 2024)
-- Node.js 22+ (for UI build)
-- [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) (only for cross-compilation to ARM64)
+---
 
 ## Quick Start
 
 ### From Release (recommended)
 
+Download the [latest release](https://github.com/AronMav/hydeclaw/releases), extract, and run the installer:
+
 ```bash
-# Download and extract
 tar xzf hydeclaw-v0.1.0.tar.gz
 cd hydeclaw
 ./setup.sh
 ```
 
-The setup script will:
+The setup script will install dependencies (Docker, Bun, Python3), start PostgreSQL, generate `.env` with secure tokens, and create systemd services.
 
-- Install Docker, Bun, Python3 (if needed)
-- Start PostgreSQL in Docker
-- Generate `.env` with secure tokens
-- Create and start systemd services
-
-### From Source
+<details>
+<summary><strong>From Source</strong></summary>
 
 ```bash
 git clone https://github.com/AronMav/hydeclaw.git
@@ -119,7 +45,9 @@ cd hydeclaw
 ./setup.sh
 ```
 
-When no pre-built binaries are detected, `setup.sh` installs Rust and Node.js, then compiles from source.
+When no pre-built binaries are found, `setup.sh` installs Rust and Node.js, then compiles from source.
+
+</details>
 
 ### After Installation
 
@@ -134,6 +62,95 @@ curl -X POST http://localhost:18789/api/agents \
   -d '{"name": "assistant", "provider": "openai", "model": "gpt-4o-mini"}'
 ```
 
+## Why HydeClaw?
+
+- **Single binary** -- no microservices, no Kubernetes, no complex orchestration. One `cargo build`, one `scp`, one `systemctl restart`.
+- **Privacy-first** -- runs entirely on your hardware. No data leaves your network unless you configure an external LLM provider.
+- **No vendor lock-in** -- 15 built-in LLM providers + any OpenAI-compatible API. Switch providers by changing one line in a TOML file.
+- **Production-ready** -- encrypted secrets vault, SSRF protection, PII redaction, sandboxed code execution, tool approval workflows.
+
+## Features
+
+- **Multi-agent orchestration** -- agents collaborate in shared sessions with @-mention routing, structured handoff, configurable turn limits, and cycle detection
+- **Multi-channel** -- Telegram, Discord, Matrix, IRC, Slack, WhatsApp adapters; agents opt in per channel
+- **Tool execution** -- YAML-defined HTTP tools (hot-reload, no restart), sandboxed code execution (Docker), MCP protocol support
+- **Long-term memory** -- PostgreSQL + pgvector hybrid search (semantic + FTS) with MMR reranking; two-tier: raw (time-decay) + pinned (permanent)
+- **Knowledge graph** -- automatic entity and relationship extraction from conversations
+- **Skills system** -- Markdown-based behavioral instructions loaded at runtime; per-agent and shared skills
+- **Secrets vault** -- ChaCha20Poly1305 encryption with per-agent scoping and env var fallback
+- **PII protection** -- automatic redaction of tokens, keys, passwords, and credentials in code execution output
+- **Media processing** -- STT (7 providers), TTS (6 providers), Vision (7 providers), Image Generation (5 providers) via pluggable registry
+- **Cron scheduler** -- agent-scoped scheduled tasks with timezone support and jitter
+- **Web UI** -- Next.js dashboard: multi-agent chat, agent/provider/tool management, workspace canvas, memory explorer, audit log
+- **Watchdog** -- external health monitor with channel-based alerting
+
+## Supported LLM Providers
+
+Any OpenAI-compatible API works out of the box. 15 built-in providers:
+
+| Provider | Models |
+|----------|--------|
+| **OpenAI** | GPT-4o, GPT-4o-mini, o1, o3 |
+| **Anthropic** | Claude (native API) |
+| **Google** | Gemini (native API) |
+| **DeepSeek** | DeepSeek-V3, DeepSeek-R1 |
+| **Ollama** | Any local model |
+| **Groq** | Fast inference |
+| **Together** | Open-source models |
+| **OpenRouter** | Multi-provider gateway |
+| **Mistral** | Mistral, Codestral |
+| **xAI** | Grok |
+| **MiniMax** | M2.5, M2.7 |
+| **Perplexity** | Search-augmented models |
+| **Claude CLI** | Claude Code as subprocess |
+| **Gemini CLI** | Gemini CLI as subprocess |
+| **Custom HTTP** | Any OpenAI-compatible endpoint |
+
+Provider registry with active capability mapping (LLM, STT, TTS, Vision, ImageGen, Embedding).
+
+## Architecture
+
+```mermaid
+graph TD
+    clients["Browser / Telegram / Discord / ..."]
+    clients -->|"HTTP / SSE / WebSocket"| core
+
+    subgraph core["hydeclaw-core (Rust)"]
+        direction TB
+        api["HTTP API (Axum) / Auth"]
+        engine["Agent Engine / Tool Execution"]
+        memory["Memory (pgvector) / Secrets Vault"]
+        scheduler["Cron Scheduler / Static UI"]
+    end
+
+    core -->|"child process"| channels["channels/ (Bun)\nTelegram / Discord / Matrix\nIRC / Slack / WhatsApp"]
+    core -->|"child process"| toolgate["toolgate/ (Python)\nSTT / TTS / Vision\nImageGen / Embeddings"]
+    core -->|"sqlx"| pg[("PostgreSQL 17\n+ pgvector")]
+    core -->|"HTTPS"| llm["LLM Providers\nOpenAI / Anthropic / Google\nOllama / DeepSeek / ..."]
+    core -->|"Docker API"| containers["Docker Containers\nMCP servers / code_exec sandbox"]
+
+    watchdog["hydeclaw-watchdog"] -.->|"health checks"| core
+    worker["hydeclaw-memory-worker"] -.-> pg
+    worker -.-> toolgate
+```
+
+<details>
+<summary><strong>Component details</strong></summary>
+
+| Component | Technology | Role |
+|-----------|-----------|------|
+| **hydeclaw-core** | Rust + Axum + Tokio | HTTP API, agent lifecycle, LLM calls, tool dispatch, memory, secrets, scheduler |
+| **hydeclaw-watchdog** | Rust (separate binary) | Health monitoring with channel-based alerting |
+| **hydeclaw-memory-worker** | Rust (separate binary) | Background embedding and reindex tasks |
+| **channels/** | TypeScript / Bun | Telegram, Discord, Matrix, IRC, Slack, WhatsApp adapters |
+| **toolgate/** | Python / FastAPI | STT, TTS, Vision, Image Generation, Embeddings |
+| **ui/** | Next.js 16 + React 19 | Web dashboard (static build, served by nginx) |
+| **PostgreSQL** | 17 + pgvector | Sessions, messages, memory, graph, cron, secrets |
+
+Infrastructure services (PostgreSQL, SearXNG, browser-renderer) run via `docker-compose`. MCP servers are started on-demand by core via the Docker API (Bollard).
+
+</details>
+
 ## Configuration
 
 ### Environment Variables (`.env`)
@@ -141,7 +158,7 @@ curl -X POST http://localhost:18789/api/agents \
 Only 3 variables belong in `.env`. Everything else goes into the secrets vault.
 
 | Variable | Description |
-| ---------- | ----------- |
+|----------|-------------|
 | `HYDECLAW_AUTH_TOKEN` | HTTP API authentication token |
 | `HYDECLAW_MASTER_KEY` | Vault encryption key (ChaCha20Poly1305) |
 | `DATABASE_URL` | PostgreSQL connection string |
@@ -155,20 +172,14 @@ language = "en"
 provider = "openai"
 model = "gpt-4o-mini"
 temperature = 0.7
-base = false
-
-[agent.access]
-mode = "restricted"
-owner_id = "YOUR_TELEGRAM_USER_ID"
-
-[agent.compaction]
-enabled = true
-threshold = 0.8
 
 [agent.tool_loop]
 max_iterations = 50
 detect_loops = true
 ```
+
+> [!TIP]
+> Each agent is a separate TOML file. Changes are hot-reloaded -- no restart needed.
 
 ### Telegram Setup
 
@@ -178,7 +189,7 @@ detect_loops = true
 
 ## Tools
 
-YAML files in `workspace/tools/`. Drop a file and it's available immediately — no restart.
+YAML files in `workspace/tools/`. Drop a file and it's available immediately -- no restart.
 
 ```yaml
 name: get_weather
@@ -197,7 +208,7 @@ parameters:
 response_transform: "$.current"
 ```
 
-Features: auth injection (Bearer, API key, header), response transforms (JSONPath), binary responses (photos, voice), SSRF protection.
+Supports: auth injection (Bearer, API key, header), response transforms (JSONPath), binary responses (photos, voice), SSRF protection, channel actions (send_photo, send_voice).
 
 ## Skills
 
@@ -217,29 +228,7 @@ triggers:
 2. Use search_web_fresh for news and recent events
 ```
 
-Per-agent skills go in `workspace/skills/{agent-name}/` — only that agent sees them.
-
-## Supported LLM Providers
-
-Any OpenAI-compatible API. 15 built-in providers:
-
-- **OpenAI** — GPT-4o, GPT-4o-mini, o1, o3
-- **Anthropic** — Claude (native API)
-- **Google / Gemini** — Gemini (native API)
-- **MiniMax** — M2.5, M2.7
-- **DeepSeek** — DeepSeek-V3, DeepSeek-R1
-- **Groq** — fast inference
-- **Together** — open-source models
-- **OpenRouter** — multi-provider gateway
-- **Mistral** — Mistral, Codestral
-- **xAI** — Grok
-- **Perplexity** — search-augmented models
-- **Ollama** — any local model
-- **Claude CLI** — Claude Code as subprocess (Docker sandbox)
-- **Gemini CLI** — Gemini CLI as subprocess (Docker sandbox)
-- **Custom HTTP** — any OpenAI-compatible endpoint
-
-Provider registry with active capability mapping (LLM, STT, TTS, Vision, ImageGen, Embedding). 138 API endpoints.
+Per-agent skills go in `workspace/skills/{agent-name}/` -- only that agent sees them.
 
 ## Updating
 
@@ -248,12 +237,6 @@ Provider registry with active capability mapping (LLM, STT, TTS, Vision, ImageGe
 ```
 
 Preserves `.env`, `config/`, `workspace/`, and database.
-
-## Uninstalling
-
-```bash
-~/hydeclaw/uninstall.sh
-```
 
 ## Development
 
@@ -267,7 +250,8 @@ make doctor         # health check on remote server
 make logs           # live logs from remote server
 ```
 
-## Project Structure
+<details>
+<summary><strong>Project structure</strong></summary>
 
 ```text
 hydeclaw/
@@ -289,23 +273,40 @@ hydeclaw/
 └── release.sh                  # Build release archive
 ```
 
+</details>
+
+<details>
+<summary><strong>Requirements (from source)</strong></summary>
+
+- Rust 1.85+ (edition 2024)
+- Node.js 22+ (for UI build)
+- Docker (for PostgreSQL + optional services)
+- Bun 1.x (for channel adapters)
+- Python 3.11+ (for toolgate media hub)
+- [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) (only for ARM64 cross-compilation)
+
+</details>
+
 ## Security
 
-- **Authentication** — Bearer token on all API endpoints
-- **Secrets vault** — ChaCha20Poly1305 encryption, per-agent scoping, env var fallback
-- **PII redaction** — automatic filtering of tokens, keys, passwords in code_exec output
-- **SSRF protection** — DNS-level private IP blocking for external YAML tools and web_fetch
-- **Sandbox** — non-base agents execute code in Docker containers
-- **Workspace isolation** — agents cannot write to other agents' directories
-- **Tool approval** — configurable approval workflow for sensitive operations
+- **Authentication** -- Bearer token on all API endpoints
+- **Secrets vault** -- ChaCha20Poly1305 encryption, per-agent scoping, env var fallback
+- **PII redaction** -- automatic filtering of tokens, keys, passwords in code_exec output
+- **SSRF protection** -- DNS-level private IP blocking for YAML tools and web_fetch
+- **Sandbox** -- non-base agents execute code in Docker containers
+- **Workspace isolation** -- agents cannot write to other agents' directories
+- **Tool approval** -- configurable approval workflow for sensitive operations
+
+> [!IMPORTANT]
+> The master key in `.env` is required for vault decryption. Back it up securely.
 
 ## Documentation
 
-- [API Reference](docs/API.md) — HTTP API, SSE events, WebSocket protocol
-- [Architecture](docs/ARCHITECTURE.md) — internal design and data flow
-- [Configuration Guide](docs/CONFIGURATION.md) — all config files and options
-- [Security](SECURITY.md) — threat model and protections
+- [API Reference](docs/API.md) -- HTTP API, SSE events, WebSocket protocol
+- [Architecture](docs/ARCHITECTURE.md) -- internal design and data flow
+- [Configuration Guide](docs/CONFIGURATION.md) -- all config files and options
+- [Security](SECURITY.md) -- threat model and protections
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT -- see [LICENSE](LICENSE).
