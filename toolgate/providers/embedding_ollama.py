@@ -1,4 +1,4 @@
-"""Ollama-compatible embedding provider (OpenAI /v1/embeddings API)."""
+"""Ollama-compatible embedding provider."""
 import httpx
 import logging
 
@@ -25,14 +25,27 @@ class OllamaEmbedding:
         texts: list[str],
         model: str | None = None,
     ) -> list[list[float]]:
-        url = f"{self.base_url}/embeddings"
+        url = f"{self.base_url}/api/embeddings"
         headers = {}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        body = {"model": model or self.model, "input": texts}
-        resp = await http.post(url, json=body, headers=headers, timeout=60.0)
-        resp.raise_for_status()
-        data = resp.json()
-
-        return [d["embedding"] for d in data["data"]]
+        # Ollama returns {"embedding": [...]} for a single prompt,
+        # or an array if multiple prompts sent one by one.
+        # Wrap single text or pass array.
+        if len(texts) == 1:
+            body = {"model": model or self.model, "prompt": texts[0]}
+            resp = await http.post(url, json=body, headers=headers, timeout=60.0)
+            resp.raise_for_status()
+            data = resp.json()
+            return [data["embedding"]]
+        else:
+            # Batch: send each separately and collect
+            results = []
+            for text in texts:
+                body = {"model": model or self.model, "prompt": text}
+                resp = await http.post(url, json=body, headers=headers, timeout=60.0)
+                resp.raise_for_status()
+                data = resp.json()
+                results.append(data["embedding"])
+            return results
