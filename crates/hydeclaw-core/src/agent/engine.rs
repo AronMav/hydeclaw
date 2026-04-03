@@ -201,6 +201,7 @@ pub struct AgentEngine {
     /// TTL: 5 minutes. Prevents duplicate HTTP calls for identical queries.
     pub(crate) search_cache: tokio::sync::RwLock<std::collections::HashMap<u64, (String, std::time::Instant)>>,
     /// Global app config for reading [agent.defaults] and other system-level settings.
+    #[allow(dead_code)]
     pub app_config: std::sync::Arc<crate::config::AppConfig>,
     /// Dedicated LLM provider for context compaction (cheap model). None = use primary provider.
     pub compaction_provider: Option<Arc<dyn LlmProvider>>,
@@ -1168,7 +1169,7 @@ impl AgentEngine {
             anyhow::bail!("blocked by hook: {}", reason);
         }
 
-        let (session_id, mut messages, mut available_tools) =
+        let (session_id, mut messages, available_tools) =
             self.build_context(msg, true, None, false).await?;
 
         // Store session_id for tool handlers that need session context (e.g., handoff)
