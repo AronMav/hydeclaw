@@ -1,0 +1,24 @@
+name: github_issue_list
+extends: github
+description: "List issues in a GitHub repository. Returns open issues by default."
+endpoint: "https://api.github.com/repos/{owner}/{repo}/issues"
+method: GET
+parameters:
+  state:
+    type: string
+    required: false
+    location: query
+    default: "open"
+    description: "Filter: open/closed/all"
+  labels:
+    type: string
+    required: false
+    location: query
+    description: "Comma-separated labels"
+  per_page:
+    type: integer
+    required: false
+    location: query
+    default: 30
+response_transform: "$"
+status: verified

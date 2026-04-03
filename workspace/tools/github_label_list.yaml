@@ -1,0 +1,13 @@
+name: github_label_list
+extends: github
+description: "List labels in a GitHub repository."
+endpoint: "https://api.github.com/repos/{owner}/{repo}/labels"
+method: GET
+parameters:
+  per_page:
+    type: integer
+    required: false
+    location: query
+    description: "Results per page"
+    default: 100
+status: verified

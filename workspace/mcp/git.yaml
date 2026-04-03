@@ -1,0 +1,7 @@
+name: mcp-git
+container: mcp-git
+port: 9046
+mode: on-demand
+idle_timeout: 5m
+protocol: http
+enabled: true

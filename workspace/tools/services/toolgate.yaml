@@ -1,0 +1,10 @@
+name: toolgate
+type: internal
+url: http://localhost:9011
+max_concurrent: 2
+healthcheck: /health
+ui_path: /ui/
+depends_on:
+  - vision-service
+  - stt-service
+  - tts-service

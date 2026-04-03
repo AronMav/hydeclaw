@@ -1,0 +1,5 @@
+name: tts-service
+type: external
+url: http://your-tts-host:8880/v1
+max_concurrent: 1
+ui_path: http://your-tts-host:8880/docs

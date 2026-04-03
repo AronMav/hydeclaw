@@ -1,0 +1,7 @@
+name: browser-cdp
+container: mcp-browser-cdp
+port: 9030
+mode: on-demand
+idle_timeout: 10m
+protocol: http
+enabled: true

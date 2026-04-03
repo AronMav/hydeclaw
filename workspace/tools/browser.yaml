@@ -1,0 +1,57 @@
+name: browser
+description: "Full browser automation with stateful sessions. Allows navigating, clicking, typing, filling forms, executing JS, taking screenshots. First call create_session, then use the returned session_id for subsequent actions. Session auto-closes after 5 minutes of inactivity."
+endpoint: "http://browser-renderer:9020/automation"
+method: POST
+
+parameters:
+  action:
+    type: string
+    required: true
+    location: body
+    description: "Action: create_session, navigate, click, type, fill, screenshot, wait, text, evaluate, content, close"
+    enum: [create_session, navigate, click, type, fill, screenshot, wait, text, evaluate, content, close]
+  session_id:
+    type: string
+    required: false
+    location: body
+    description: "Session ID (required for all actions except create_session)"
+  url:
+    type: string
+    required: false
+    location: body
+    description: "URL for navigation (action=navigate)"
+  selector:
+    type: string
+    required: false
+    location: body
+    description: "CSS selector of element (action=click/type/wait/text)"
+  text:
+    type: string
+    required: false
+    location: body
+    description: "Text to type (action=type)"
+  js:
+    type: string
+    required: false
+    location: body
+    description: "JavaScript code to execute (action=evaluate)"
+  timeout:
+    type: integer
+    required: false
+    location: body
+    description: "Timeout in seconds (1-60)"
+    default: 10
+  fields:
+    type: object
+    required: false
+    location: body
+    description: "Dictionary {selector: value} for form filling (action=fill)"
+  full_page:
+    type: boolean
+    required: false
+    location: body
+    description: "Full page screenshot (action=screenshot)"
+    default: false
+
+status: verified
+tags: [browser, automation, web]

@@ -1,0 +1,30 @@
+"""OpenAI TTS provider."""
+
+import httpx
+
+
+class OpenAITTS:
+    name = "OpenAI TTS"
+
+    def __init__(self, base_url: str = "", api_key: str | None = None,
+                 model: str | None = None, options: dict | None = None):
+        self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
+        self.api_key = api_key or ""
+        self.model = model or "gpt-4o-mini-tts"
+        self.default_voice = (options or {}).get("voice", "alloy")
+
+    async def synthesize(self, http: httpx.AsyncClient, text: str,
+                         voice: str, model: str | None = None,
+                         response_format: str = "mp3") -> bytes:
+        resp = await http.post(
+            f"{self.base_url}/audio/speech",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json={
+                "model": model or self.model,
+                "input": text,
+                "voice": voice or self.default_voice,
+                "response_format": response_format,
+            },
+        )
+        resp.raise_for_status()
+        return resp.content

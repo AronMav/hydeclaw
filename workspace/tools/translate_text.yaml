@@ -1,0 +1,32 @@
+name: translate_text
+description: "Translate text between languages using Google Translate."
+endpoint: "https://translate.googleapis.com/translate_a/single"
+method: GET
+status: verified
+parameters:
+  q:
+    type: string
+    required: true
+    location: query
+    description: "Text to translate"
+  sl:
+    type: string
+    location: query
+    default: "auto"
+    description: "Source language (auto = detect automatically)"
+  tl:
+    type: string
+    required: true
+    location: query
+    description: "Target language (e.g. ru, en, es, de)"
+  client:
+    type: string
+    location: query
+    default: "gtx"
+  dt:
+    type: string
+    location: query
+    default: "t"
+auth:
+  type: none
+response_transform: "$[0][0][0]"

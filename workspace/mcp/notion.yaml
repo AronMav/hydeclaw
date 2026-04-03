@@ -1,0 +1,7 @@
+name: mcp-notion
+container: mcp-notion
+port: 9048
+mode: on-demand
+idle_timeout: 5m
+protocol: http
+enabled: true

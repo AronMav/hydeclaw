@@ -1,0 +1,1472 @@
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Json},
+};
+use serde::{Deserialize, Deserializer};
+use serde_json::{json, Value};
+
+/// Deserialize a field that distinguishes absent (preserve) from explicit null (clear).
+/// absent → None (outer), explicit null → Some(None) (inner), value → Some(Some(T)).
+fn nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Some(Option::deserialize(deserializer)?))
+}
+use std::fs::canonicalize;
+use std::str::FromStr;
+use std::sync::Arc;
+use uuid::Uuid;
+
+use super::super::AppState;
+use crate::agent::handle::AgentHandle;
+use crate::channels::access::AccessGuard;
+use crate::config::AgentConfig;
+
+pub(crate) async fn api_agents(State(state): State<AppState>) -> Json<Value> {
+    // Read configs from disk (source of truth)
+    let mut disk_configs = crate::config::load_agent_configs("config/agents").unwrap_or_default();
+    // Base (base infrastructure) agents first, then alphabetical
+    disk_configs.sort_by(|a, b| {
+        b.agent.base.cmp(&a.agent.base)
+            .then_with(|| a.agent.name.to_lowercase().cmp(&b.agent.name.to_lowercase()))
+    });
+    let agents_map = state.agents.read().await;
+
+    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut agents: Vec<Value> = Vec::new();
+
+    // Disk configs (may or may not be running)
+    for cfg in &disk_configs {
+        let name = &cfg.agent.name;
+        seen_names.insert(name.clone());
+
+        let is_running = agents_map.contains_key(name);
+        let config_dirty = if let Some(handle) = agents_map.get(name) {
+            let running = AgentConfig { agent: handle.engine.agent.clone() };
+            &running != cfg
+        } else {
+            false
+        };
+
+        let agent = &cfg.agent;
+        agents.push(json!({
+            "name": name,
+            "language": agent.language,
+            "model": agent.model,
+            "provider": agent.provider,
+            "provider_connection": agent.provider_connection,
+            "icon": agent.icon,
+            "temperature": agent.temperature,
+            "has_access": agent.access.is_some(),
+            "access_mode": agent.access.as_ref().map(|a| &a.mode),
+            "has_heartbeat": agent.heartbeat.is_some(),
+            "heartbeat_cron": agent.heartbeat.as_ref().map(|h| &h.cron),
+            "heartbeat_timezone": agent.heartbeat.as_ref().and_then(|h| h.timezone.as_deref()),
+            "tool_policy": agent.tools.as_ref().map(|t| json!({
+                "allow": t.allow,
+                "deny": t.deny,
+                "allow_all": t.allow_all,
+            })),
+            "routing_count": agent.routing.len(),
+            "is_running": is_running,
+            "config_dirty": config_dirty,
+            "base": agent.base,
+        }));
+    }
+
+    // Running engines with no disk config (deleted while running — shouldn't happen with hot delete)
+    for (name, handle) in agents_map.iter() {
+        if seen_names.contains(name) {
+            continue;
+        }
+        let agent = &handle.engine.agent;
+        agents.push(json!({
+            "name": name,
+            "language": agent.language,
+            "model": agent.model,
+            "provider": agent.provider,
+            "provider_connection": agent.provider_connection,
+            "icon": agent.icon,
+            "temperature": agent.temperature,
+            "has_access": agent.access.is_some(),
+            "access_mode": agent.access.as_ref().map(|a| &a.mode),
+            "has_heartbeat": agent.heartbeat.is_some(),
+            "heartbeat_cron": agent.heartbeat.as_ref().map(|h| &h.cron),
+            "heartbeat_timezone": agent.heartbeat.as_ref().and_then(|h| h.timezone.as_deref()),
+            "tool_policy": agent.tools.as_ref().map(|t| json!({
+                "allow": t.allow,
+                "deny": t.deny,
+                "allow_all": t.allow_all,
+            })),
+            "routing_count": agent.routing.len(),
+            "is_running": true,
+            "config_dirty": false,
+            "pending_delete": true,
+        }));
+    }
+
+    Json(json!({ "agents": agents }))
+}
+
+// ── Agent CRUD ──
+
+pub(crate) fn agent_config_path(name: &str) -> std::path::PathBuf {
+    std::path::Path::new("config/agents").join(format!("{}.toml", name))
+}
+
+pub(crate) fn validate_agent_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.len() > 32 {
+        return Err("name must be 1-32 characters".into());
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err("name must contain only alphanumeric, dash, or underscore".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn agent_to_detail(cfg: &AgentConfig, is_running: bool, config_dirty: bool) -> Value {
+    let a = &cfg.agent;
+    json!({
+        "name": a.name,
+        "language": a.language,
+        "provider": a.provider,
+        "model": a.model,
+        "provider_connection": a.provider_connection,
+        "temperature": a.temperature,
+        "max_tokens": a.max_tokens,
+        "access": a.access.as_ref().map(|ac| json!({
+            "mode": ac.mode,
+            "owner_id": ac.owner_id,
+        })),
+        "heartbeat": a.heartbeat.as_ref().map(|h| json!({
+            "cron": h.cron,
+            "timezone": h.timezone,
+            "announce_to": h.announce_to,
+        })),
+        "tools": a.tools.as_ref().map(|t| json!({
+            "allow": t.allow,
+            "deny": t.deny,
+            "allow_all": t.allow_all,
+            "deny_all_others": t.deny_all_others,
+            "groups": {
+                "git": t.groups.git,
+                "tool_management": t.groups.tool_management,
+                "skill_editing": t.groups.skill_editing,
+                "session_tools": t.groups.session_tools,
+            },
+        })),
+        "compaction": a.compaction.as_ref().map(|c| json!({
+            "enabled": c.enabled,
+            "threshold": c.threshold,
+            "preserve_tool_calls": c.preserve_tool_calls,
+            "preserve_last_n": c.preserve_last_n,
+            "max_context_tokens": c.max_context_tokens,
+        })),
+        "session": a.session.as_ref().map(|s| json!({
+            "dm_scope": s.dm_scope,
+            "ttl_days": s.ttl_days,
+            "max_messages": s.max_messages,
+            "prune_tool_output_after_turns": s.prune_tool_output_after_turns,
+        })),
+        "icon": a.icon,
+        "max_tools_in_context": a.max_tools_in_context,
+        "tool_loop": a.tool_loop.as_ref().map(|tl| json!({
+            "max_iterations": tl.max_iterations,
+            "compact_on_overflow": tl.compact_on_overflow,
+            "detect_loops": tl.detect_loops,
+            "warn_threshold": tl.warn_threshold,
+            "break_threshold": tl.break_threshold,
+        })),
+        "approval": a.approval.as_ref().map(|ap| json!({
+            "enabled": ap.enabled,
+            "require_for": ap.require_for,
+            "require_for_categories": ap.require_for_categories,
+            "timeout_seconds": ap.timeout_seconds,
+        })),
+        "routing": a.routing.iter().map(|r| json!({
+            "provider": r.provider,
+            "model": r.model,
+            "condition": r.condition,
+            "base_url": r.base_url,
+            "api_key_env": r.api_key_env,
+            "api_key_envs": if r.api_key_envs.is_empty() { None::<&Vec<String>> } else { Some(&r.api_key_envs) },
+            "temperature": r.temperature,
+            "max_tokens": r.max_tokens,
+            "prompt_cache": r.prompt_cache,
+            "cooldown_secs": r.cooldown_secs,
+        })).collect::<Vec<_>>(),
+        "watchdog": a.watchdog.as_ref().map(|w| json!({
+            "inactivity_secs": w.inactivity_secs,
+        })),
+        "hooks": a.hooks.as_ref().map(|h| json!({
+            "log_all_tool_calls": h.log_all_tool_calls,
+            "block_tools": h.block_tools,
+        })),
+        "max_history_messages": a.max_history_messages,
+        "daily_budget_tokens": a.daily_budget_tokens,
+        "max_agent_turns": a.max_agent_turns,
+        "is_running": is_running,
+        "config_dirty": config_dirty,
+    })
+}
+
+pub(crate) async fn api_get_agent(
+    State(state): State<AppState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let path = agent_config_path(&name);
+    let cfg = match AgentConfig::load(&path) {
+        Ok(c) => c,
+        Err(_) => return (StatusCode::NOT_FOUND, Json(json!({"error": "agent not found"}))).into_response(),
+    };
+
+    let agents_map = state.agents.read().await;
+    let is_running = agents_map.contains_key(&name);
+    let config_dirty = if let Some(handle) = agents_map.get(&name) {
+        let running = AgentConfig { agent: handle.engine.agent.clone() };
+        running != cfg
+    } else {
+        false
+    };
+
+    let mut detail = agent_to_detail(&cfg, is_running, config_dirty);
+    // Attach per-agent TTS voice from scoped secrets
+    if let Some(voice) = state.secrets.get_scoped("TTS_VOICE", &name).await {
+        detail["voice"] = json!(voice);
+    }
+    Json(detail).into_response()
+}
+
+#[derive(Deserialize)]
+pub(crate) struct AgentCreatePayload {
+    pub name: String,
+    pub language: Option<String>,
+    pub provider: String,
+    pub model: String,
+    /// Named LLM provider connection (overrides provider/model when set).
+    pub provider_connection: Option<String>,
+    pub temperature: Option<f64>,
+    pub max_tokens: Option<u32>,
+    /// Nullable fields: absent = preserve existing, explicit null = clear, value = update.
+    #[serde(default, deserialize_with = "nullable")]
+    pub access: Option<Option<AccessPayload>>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub heartbeat: Option<Option<HeartbeatPayload>>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub tools: Option<Option<ToolPolicyPayload>>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub compaction: Option<Option<CompactionPayload>>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub session: Option<Option<SessionPayload>>,
+    pub max_tools_in_context: Option<usize>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub routing: Option<Option<Vec<RoutingRulePayload>>>,
+    pub voice: Option<String>,
+    pub icon: Option<String>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub approval: Option<Option<ApprovalPayload>>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub tool_loop: Option<Option<ToolLoopPayload>>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub watchdog: Option<Option<WatchdogPayload>>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub hooks: Option<Option<HooksPayload>>,
+    pub max_history_messages: Option<usize>,
+    pub daily_budget_tokens: Option<u64>,
+    pub max_agent_turns: Option<usize>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct HooksPayload {
+    pub log_all_tool_calls: Option<bool>,
+    pub block_tools: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ApprovalPayload {
+    pub enabled: Option<bool>,
+    pub require_for: Option<Vec<String>>,
+    pub require_for_categories: Option<Vec<String>>,
+    pub timeout_seconds: Option<u64>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RoutingRulePayload {
+    pub provider: String,
+    pub model: String,
+    pub condition: Option<String>,
+    pub base_url: Option<String>,
+    pub api_key_env: Option<String>,
+    pub api_key_envs: Option<Vec<String>>,
+    pub temperature: Option<f64>,
+    pub prompt_cache: Option<bool>,
+    pub max_tokens: Option<u32>,
+    pub cooldown_secs: Option<u64>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct AccessPayload {
+    pub mode: Option<String>,
+    pub owner_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct HeartbeatPayload {
+    pub cron: String,
+    pub timezone: Option<String>,
+    pub announce_to: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ToolPolicyPayload {
+    pub allow: Option<Vec<String>>,
+    pub deny: Option<Vec<String>>,
+    pub allow_all: Option<bool>,
+    pub deny_all_others: Option<bool>,
+    pub groups: Option<crate::config::ToolGroups>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct CompactionPayload {
+    pub enabled: Option<bool>,
+    pub threshold: Option<f64>,
+    pub preserve_tool_calls: Option<bool>,
+    pub preserve_last_n: Option<u32>,
+    pub max_context_tokens: Option<u32>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct SessionPayload {
+    pub dm_scope: Option<String>,
+    pub ttl_days: Option<u32>,
+    pub max_messages: Option<u32>,
+    pub prune_tool_output_after_turns: Option<usize>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ToolLoopPayload {
+    pub max_iterations: Option<usize>,
+    pub compact_on_overflow: Option<bool>,
+    pub detect_loops: Option<bool>,
+    pub warn_threshold: Option<usize>,
+    pub break_threshold: Option<usize>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct WatchdogPayload {
+    pub inactivity_secs: Option<u64>,
+}
+
+pub(crate) fn build_agent_config(name: String, p: AgentCreatePayload) -> AgentConfig {
+    use crate::config::*;
+
+    AgentConfig {
+        agent: AgentSettings {
+            name,
+            language: p.language.unwrap_or_else(|| "ru".to_string()),
+            provider: p.provider,
+            model: p.model,
+            provider_connection: p.provider_connection,
+            temperature: p.temperature.unwrap_or(1.0),
+            max_tokens: p.max_tokens,
+            access: p.access.flatten().map(|a| AgentAccessConfig {
+                mode: a.mode.unwrap_or_else(|| "open".to_string()),
+                owner_id: a.owner_id,
+            }),
+            heartbeat: p.heartbeat.flatten().map(|h| HeartbeatConfig {
+                cron: h.cron,
+                timezone: h.timezone,
+                announce_to: h.announce_to,
+            }),
+            tools: p.tools.flatten().map(|t| AgentToolPolicy {
+                allow: t.allow.unwrap_or_default(),
+                deny: t.deny.unwrap_or_default(),
+                allow_all: t.allow_all.unwrap_or(false),
+                deny_all_others: t.deny_all_others.unwrap_or(false),
+                groups: t.groups.unwrap_or_default(),
+            }),
+            compaction: p.compaction.flatten().map(|c| CompactionConfig {
+                enabled: c.enabled.unwrap_or(true),
+                threshold: c.threshold.unwrap_or(0.8),
+                preserve_tool_calls: c.preserve_tool_calls.unwrap_or(false),
+                preserve_last_n: c.preserve_last_n.unwrap_or(10),
+                max_context_tokens: c.max_context_tokens,
+            }),
+            icon: p.icon,
+            max_tools_in_context: p.max_tools_in_context,
+            routing: p.routing.flatten().unwrap_or_default().into_iter().map(|r| {
+                crate::config::ProviderRouteConfig {
+                    provider: r.provider,
+                    model: r.model,
+                    condition: r.condition.unwrap_or_else(|| "default".to_string()),
+                    base_url: r.base_url,
+                    api_key_env: r.api_key_env,
+                    api_key_envs: r.api_key_envs.unwrap_or_default(),
+                    temperature: r.temperature,
+                    prompt_cache: r.prompt_cache.unwrap_or(false),
+                    max_tokens: r.max_tokens,
+                    cooldown_secs: r.cooldown_secs.unwrap_or(60),
+                }
+            }).collect(),
+            session: p.session.flatten().map(|s| crate::config::SessionConfig {
+                dm_scope: s.dm_scope.unwrap_or_else(|| "per-channel-peer".to_string()),
+                ttl_days: s.ttl_days.unwrap_or(30),
+                max_messages: s.max_messages.unwrap_or(0),
+                prune_tool_output_after_turns: s.prune_tool_output_after_turns,
+            }),
+            approval: p.approval.flatten().map(|a| crate::config::ApprovalConfig {
+                enabled: a.enabled.unwrap_or(false),
+                require_for: a.require_for.unwrap_or_default(),
+                require_for_categories: a.require_for_categories.unwrap_or_default(),
+                timeout_seconds: a.timeout_seconds.unwrap_or(300),
+            }),
+            tool_loop: p.tool_loop.flatten().map(|tl| crate::config::ToolLoopSettings {
+                max_iterations: tl.max_iterations.unwrap_or(50),
+                compact_on_overflow: tl.compact_on_overflow.unwrap_or(true),
+                detect_loops: tl.detect_loops.unwrap_or(true),
+                warn_threshold: tl.warn_threshold.unwrap_or(5),
+                break_threshold: tl.break_threshold.unwrap_or(10),
+            }),
+            watchdog: p.watchdog.flatten().map(|w| crate::config::WatchdogConfig {
+                inactivity_secs: w.inactivity_secs.unwrap_or(600),
+            }),
+            max_history_messages: p.max_history_messages,
+            hooks: p.hooks.flatten().map(|h| crate::config::HooksConfig {
+                log_all_tool_calls: h.log_all_tool_calls.unwrap_or(false),
+                block_tools: h.block_tools.unwrap_or_default(),
+            }),
+            daily_budget_tokens: p.daily_budget_tokens.unwrap_or(0),
+            max_agent_turns: p.max_agent_turns,
+            base: false,
+        },
+    }
+}
+
+/// Start an agent from config: create engine, channel adapter, scheduler jobs.
+/// Returns the AgentHandle and optional AccessGuard.
+pub async fn start_agent_from_config(
+    agent_cfg: &AgentConfig,
+    state: &AppState,
+) -> anyhow::Result<(AgentHandle, Option<Arc<AccessGuard>>)> {
+    use crate::agent::{engine::AgentEngine, providers};
+    use crate::channels;
+
+    let deps = state.agent_deps.read().await;
+    let name = &agent_cfg.agent.name;
+
+    // Apply [agent.defaults] fallback: use global temperature/max_tokens when agent doesn't override.
+    let global_defaults = &state.config.agent.defaults;
+    let effective_temperature = global_defaults.temperature.unwrap_or(agent_cfg.agent.temperature);
+    let effective_max_tokens = agent_cfg.agent.max_tokens.or(global_defaults.max_tokens);
+
+    // Use routing provider if routing rules are configured, otherwise resolve provider
+    // (named connection → legacy provider_type fallback).
+    let provider = if !agent_cfg.agent.routing.is_empty() {
+        tracing::info!(
+            agent = %name,
+            routes = agent_cfg.agent.routing.len(),
+            "using multi-provider routing"
+        );
+        providers::create_routing_provider(
+            &agent_cfg.agent.routing,
+            effective_temperature,
+            state.secrets.clone(),
+        )
+    } else {
+        providers::resolve_provider_for_agent(
+            &state.db,
+            &agent_cfg.agent,
+            effective_temperature,
+            effective_max_tokens,
+            state.secrets.clone(),
+            deps.sandbox.clone(),
+            name,
+            &deps.workspace_dir,
+            agent_cfg.agent.base,
+        ).await
+    };
+
+    let channel_router = crate::agent::channel_actions::ChannelActionRouter::new();
+
+    let default_timezone = crate::agent::workspace::parse_user_timezone(&deps.workspace_dir).await;
+
+    // Load dedicated compaction provider from provider_active (optional — falls back to primary).
+    let compaction_provider: Option<Arc<dyn crate::agent::providers::LlmProvider>> = {
+        match crate::db::providers::get_provider_active(&state.db, crate::db::providers::CAPABILITY_COMPACTION).await {
+            Ok(Some(provider_name)) => {
+                match crate::db::providers::get_provider_by_name(&state.db, &provider_name).await {
+                    Ok(Some(provider_row)) => {
+                        let p = providers::create_provider_from_connection(
+                            &provider_row,
+                            None,
+                            0.3,
+                            None,
+                            state.secrets.clone(),
+                            deps.sandbox.clone(),
+                            name,
+                            &deps.workspace_dir,
+                            agent_cfg.agent.base,
+                        );
+                        tracing::info!(agent = %name, provider = %provider_name, "using dedicated compaction provider");
+                        Some(p)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    };
+
+    let engine = Arc::new(AgentEngine {
+        provider,
+        agent: agent_cfg.agent.clone(),
+        db: state.db.clone(),
+        tools: state.tools.clone(),
+        mcp: deps.mcp.clone(),
+        workspace_dir: deps.workspace_dir.clone(),
+        http_client: reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .unwrap_or_default(),
+        ssrf_http_client: crate::tools::ssrf::ssrf_safe_client(
+            std::time::Duration::from_secs(30),
+        ),
+        memory_store: state.memory_store.clone(),
+        subagent_semaphore: Arc::new(tokio::sync::Semaphore::new(deps.subagent_max)),
+        subagent_registry: crate::agent::subagent_state::SubagentRegistry::new(),
+        channel_router: Some(channel_router.clone()),
+        scheduler: Some(state.scheduler.clone()),
+        // Privileged agents run code directly on host (no Docker sandbox)
+        sandbox: if agent_cfg.agent.base { None } else { deps.sandbox.clone() },
+        tool_embed_cache: deps.tool_embed_cache.clone(),
+        secrets: state.secrets.clone(),
+        agent_map: Some(state.agents.clone()),
+        self_ref: std::sync::OnceLock::new(),
+        approval_waiters: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        ui_event_tx: Some(state.ui_event_tx.clone()),
+        processing_session_id: Arc::new(tokio::sync::Mutex::new(None)),
+        handoff_target: Arc::new(tokio::sync::Mutex::new(None)),
+        processing_tracker: Some(state.processing_tracker.clone()),
+        default_timezone,
+        memory_md_lock: tokio::sync::Mutex::new(()),
+        channel_formatting_prompt: tokio::sync::RwLock::new(None),
+        channel_info_cache: tokio::sync::RwLock::new(None),
+        thinking_level: std::sync::atomic::AtomicU8::new(0),
+        canvas_state: tokio::sync::RwLock::new(None),
+        yaml_tools_cache: tokio::sync::RwLock::new((std::time::Instant::now(), std::collections::HashMap::new())),
+        bg_processes: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        oauth: Some(state.oauth.clone()),
+        hooks: {
+            let mut registry = crate::agent::hooks::HookRegistry::new();
+            if let Some(ref hc) = agent_cfg.agent.hooks {
+                if hc.log_all_tool_calls {
+                    registry.register("log_tool_calls".into(), crate::agent::hooks::logging_hook());
+                }
+                if !hc.block_tools.is_empty() {
+                    registry.register("block_tools".into(), crate::agent::hooks::block_tools_hook(hc.block_tools.clone()));
+                }
+            }
+            Arc::new(registry)
+        },
+        penalty_cache: deps.penalty_cache.clone(),
+        search_cache: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+        app_config: std::sync::Arc::new(state.config.clone()),
+        compaction_provider,
+    });
+    engine.set_self_ref(&engine);
+    let workspace_dir = deps.workspace_dir.clone();
+    drop(deps); // Release read lock before async operations
+
+    // Ensure workspace directory + scaffold files exist
+    if let Err(e) = crate::agent::workspace::ensure_workspace_scaffold(
+        &workspace_dir,
+        name,
+    ).await {
+        tracing::warn!(agent = %name, error = %e, "failed to scaffold workspace");
+    }
+
+    // Schedule heartbeat
+    let mut scheduler_job_ids = Vec::new();
+    if let Ok(Some(uuid)) = state.scheduler.add_heartbeat(agent_cfg, engine.clone()).await {
+        scheduler_job_ids.push(uuid);
+    }
+
+    // Set up access guard if access config is present.
+    // Channel adapter connects externally via /ws/channel/{agent}.
+    let mut access_guard = None;
+
+    if let Some(ref ac) = agent_cfg.agent.access {
+        let restricted = ac.mode == "restricted";
+        let guard = Arc::new(channels::access::AccessGuard::new(
+            name.clone(),
+            ac.owner_id.clone(),
+            restricted,
+            state.db.clone(),
+        ));
+        access_guard = Some(guard.clone());
+        tracing::info!(agent = %name, mode = %ac.mode, "access guard configured (adapter via /ws/channel)");
+    }
+
+    let agent_handle = AgentHandle {
+        engine,
+        scheduler_job_ids,
+        channel_router: Some(channel_router),
+    };
+
+    Ok((agent_handle, access_guard))
+}
+
+pub(crate) async fn api_create_agent(
+    State(state): State<AppState>,
+    Json(mut payload): Json<AgentCreatePayload>,
+) -> impl IntoResponse {
+    let name = payload.name.clone();
+    let voice = payload.voice.take();
+
+    if let Err(msg) = validate_agent_name(&name) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": msg}))).into_response();
+    }
+
+    // Validate cron if heartbeat provided
+    if let Some(Some(ref hb)) = payload.heartbeat
+        && ::cron::Schedule::from_str(&format!("0 {} *", hb.cron)).is_err()
+            && ::cron::Schedule::from_str(&format!("{} *", hb.cron)).is_err()
+        {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid cron expression"}))).into_response();
+        }
+
+    let path = agent_config_path(&name);
+    if path.exists() {
+        return (StatusCode::CONFLICT, Json(json!({"error": "agent already exists"}))).into_response();
+    }
+
+    // Check if already running
+    if state.agents.read().await.contains_key(&name) {
+        return (StatusCode::CONFLICT, Json(json!({"error": "agent already running"}))).into_response();
+    }
+
+    // Save per-agent TTS voice as scoped secret
+    if let Some(ref v) = voice {
+        if !v.is_empty() {
+            if let Err(e) = state.secrets.set_scoped("TTS_VOICE", &name, v, None).await {
+                tracing::warn!(error = %e, "failed to save TTS_VOICE secret");
+            }
+        } else {
+            let _ = state.secrets.delete_scoped("TTS_VOICE", &name).await;
+        }
+    }
+
+    let cfg = build_agent_config(name.clone(), payload);
+    let toml_str = match cfg.to_toml() {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    };
+
+    // Ensure config/agents/ directory exists
+    if let Err(e) = std::fs::create_dir_all("config/agents") {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
+    }
+
+    if let Err(e) = std::fs::write(&path, &toml_str) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
+    }
+
+    // Workspace directory + scaffold is created by start_agent_from_config
+
+    // Hot-start the agent
+    match start_agent_from_config(&cfg, &state).await {
+        Ok((handle, guard)) => {
+            state.agents.write().await.insert(name.clone(), handle);
+            if let Some(guard) = guard {
+                state.access_guards.write().await.insert(name.clone(), guard);
+            }
+
+            // Ensure Docker sandbox for non-base agents (base run on host)
+            if !cfg.agent.base
+                && let Some(ref sandbox) = state.sandbox {
+                    match canonicalize(crate::config::WORKSPACE_DIR) {
+                        Ok(host_path) => {
+                            if let Err(e) = sandbox.ensure_container(&name, &host_path.to_string_lossy(), false, Some(&state.oauth)).await {
+                                tracing::warn!(agent = %name, error = %e, "failed to ensure agent container");
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to canonicalize workspace path for sandbox");
+                        }
+                    }
+                }
+
+            tracing::info!(agent = %name, "agent created and started via API");
+            crate::db::audit::audit_spawn(state.db.clone(), name.clone(), crate::db::audit::event_types::AGENT_CREATED, None, json!({"agent": name}));
+
+            Json(json!({ "ok": true, "name": name })).into_response()
+        }
+        Err(e) => {
+            tracing::error!(agent = %name, error = %e, "failed to start agent");
+
+            Json(json!({ "ok": true, "name": name, "start_error": e.to_string() })).into_response()
+        }
+    }
+}
+
+pub(crate) async fn api_update_agent(
+    State(state): State<AppState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(mut payload): Json<AgentCreatePayload>,
+) -> impl IntoResponse {
+    let path = agent_config_path(&name);
+    if !path.exists() {
+        return (StatusCode::NOT_FOUND, Json(json!({"error": "agent not found"}))).into_response();
+    }
+
+    // Validate cron if heartbeat provided
+    if let Some(Some(ref hb)) = payload.heartbeat
+        && ::cron::Schedule::from_str(&format!("0 {} *", hb.cron)).is_err()
+            && ::cron::Schedule::from_str(&format!("{} *", hb.cron)).is_err()
+        {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid cron expression"}))).into_response();
+        }
+
+    let new_name = payload.name.clone();
+    let is_rename = new_name != name;
+
+    // Load existing config — required for field merge and flag preservation.
+    // Fail explicitly if the file cannot be read or parsed (guards against silently
+    // resetting base/base to false on a corrupted or temporarily unreadable config).
+    let existing_cfg = match std::fs::read_to_string(&path) {
+        Ok(s) => match toml::from_str::<crate::config::AgentConfig>(&s) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                tracing::error!(agent = %name, error = %e, "agent config is malformed; update blocked");
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                    "error": "agent config is malformed and cannot be safely updated"
+                }))).into_response();
+            }
+        },
+        Err(e) => {
+            tracing::error!(agent = %name, error = %e, "cannot read agent config for update");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": format!("cannot read agent config: {}", e)
+            }))).into_response();
+        }
+    };
+
+    // Base agents cannot be renamed via API
+    if is_rename {
+        if existing_cfg.agent.base {
+            return (StatusCode::FORBIDDEN, Json(json!({
+                "error": format!("Agent '{}' is a base agent and cannot be renamed", name)
+            }))).into_response();
+        }
+        if let Err(msg) = validate_agent_name(&new_name) {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": msg}))).into_response();
+        }
+        let new_path = agent_config_path(&new_name);
+        if new_path.exists() {
+            return (StatusCode::CONFLICT, Json(json!({"error": "agent with this name already exists"}))).into_response();
+        }
+    }
+
+    // Merge with existing config: payload fields override, missing fields keep current values
+    {
+        let a = &existing_cfg.agent;
+        if payload.language.is_none() { payload.language = Some(a.language.clone()); }
+        if payload.temperature.is_none() { payload.temperature = Some(a.temperature); }
+        if payload.max_tokens.is_none() { payload.max_tokens = a.max_tokens; }
+        // Nullable fields: None = absent (preserve existing), Some(None) = explicit null (clear),
+        // Some(Some(val)) = update. Only preserve when absent (None).
+        if payload.access.is_none() {
+            payload.access = Some(a.access.as_ref().map(|ac| AccessPayload {
+                mode: Some(ac.mode.clone()),
+                owner_id: ac.owner_id.clone(),
+            }));
+        }
+        if payload.heartbeat.is_none() {
+            payload.heartbeat = Some(a.heartbeat.as_ref().map(|h| HeartbeatPayload {
+                cron: h.cron.clone(),
+                timezone: h.timezone.clone(),
+                announce_to: h.announce_to.clone(),
+            }));
+        }
+        if payload.tools.is_none() {
+            payload.tools = Some(a.tools.as_ref().map(|t| ToolPolicyPayload {
+                allow: Some(t.allow.clone()),
+                deny: Some(t.deny.clone()),
+                allow_all: Some(t.allow_all),
+                deny_all_others: Some(t.deny_all_others),
+                groups: Some(t.groups.clone()),
+            }));
+        }
+        if payload.compaction.is_none() {
+            payload.compaction = Some(a.compaction.as_ref().map(|c| CompactionPayload {
+                enabled: Some(c.enabled),
+                threshold: Some(c.threshold),
+                preserve_tool_calls: Some(c.preserve_tool_calls),
+                preserve_last_n: Some(c.preserve_last_n),
+                max_context_tokens: c.max_context_tokens,
+            }));
+        }
+        if payload.session.is_none() {
+            payload.session = Some(a.session.as_ref().map(|s| SessionPayload {
+                dm_scope: Some(s.dm_scope.clone()),
+                ttl_days: Some(s.ttl_days),
+                max_messages: Some(s.max_messages),
+                prune_tool_output_after_turns: s.prune_tool_output_after_turns,
+            }));
+        }
+        if payload.max_tools_in_context.is_none() { payload.max_tools_in_context = a.max_tools_in_context; }
+        if payload.routing.is_none() && !a.routing.is_empty() {
+            payload.routing = Some(Some(a.routing.iter().map(|r| RoutingRulePayload {
+                provider: r.provider.clone(),
+                model: r.model.clone(),
+                condition: Some(r.condition.clone()),
+                base_url: r.base_url.clone(),
+                api_key_env: r.api_key_env.clone(),
+                api_key_envs: if r.api_key_envs.is_empty() { None } else { Some(r.api_key_envs.clone()) },
+                temperature: r.temperature,
+                prompt_cache: Some(r.prompt_cache),
+                max_tokens: r.max_tokens,
+                cooldown_secs: Some(r.cooldown_secs),
+            }).collect()));
+        }
+        if payload.tool_loop.is_none() {
+            payload.tool_loop = Some(a.tool_loop.as_ref().map(|tl| ToolLoopPayload {
+                max_iterations: Some(tl.max_iterations),
+                compact_on_overflow: Some(tl.compact_on_overflow),
+                detect_loops: Some(tl.detect_loops),
+                warn_threshold: Some(tl.warn_threshold),
+                break_threshold: Some(tl.break_threshold),
+            }));
+        }
+        if payload.icon.is_none() { payload.icon = a.icon.clone(); }
+        if payload.provider_connection.is_none() { payload.provider_connection = a.provider_connection.clone(); }
+        if payload.approval.is_none() {
+            payload.approval = Some(a.approval.as_ref().map(|ap| ApprovalPayload {
+                enabled: Some(ap.enabled),
+                require_for: Some(ap.require_for.clone()),
+                require_for_categories: Some(ap.require_for_categories.clone()),
+                timeout_seconds: Some(ap.timeout_seconds),
+            }));
+        }
+        if payload.watchdog.is_none() {
+            payload.watchdog = Some(a.watchdog.as_ref().map(|w| WatchdogPayload {
+                inactivity_secs: Some(w.inactivity_secs),
+            }));
+        }
+    }
+
+    let voice = payload.voice.take();
+    let mut cfg = build_agent_config(new_name.clone(), payload);
+    // Preserve base from existing config — never changed via API
+    cfg.agent.base = existing_cfg.agent.base;
+    // Preserve fields not in payload
+    if cfg.agent.hooks.is_none() {
+        cfg.agent.hooks = existing_cfg.agent.hooks.clone();
+    }
+    if cfg.agent.max_history_messages.is_none() {
+        cfg.agent.max_history_messages = existing_cfg.agent.max_history_messages;
+    }
+    // daily_budget_tokens: 0 means "no budget" — always honor explicit value from payload
+    let toml_str = match cfg.to_toml() {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    };
+
+    // Write new TOML (to new path if renaming)
+    let target_path = agent_config_path(&new_name);
+    if let Err(e) = std::fs::write(&target_path, &toml_str) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
+    }
+
+    // If renaming, update DB references first, then remove old TOML
+    if is_rename {
+        // Update agent_id in all DB tables (within a transaction for consistency)
+        // SAFETY: table names are hardcoded literals — never user input. Do NOT add dynamic values.
+        // SAFETY: Rename transaction covers 21 tables total:
+        //   - 18 via tables_agent_id loop (agent_id column)
+        //   - 1 messages (agent_id, nullable)
+        //   - 1 agent_channels (agent_name column)
+        //   - 1 graph_entities (group_id column)
+        // All updates share a single sqlx::Transaction — failure at any point triggers
+        // automatic rollback (via explicit rollback or Transaction::Drop).
+        let tables_agent_id = [
+            "sessions", "tasks", "scheduled_jobs", "channel_allowed_users",
+            "usage_log", "cron_runs", "audit_events", "pending_approvals",
+            "pending_messages", "webhooks", "stream_jobs", "outbound_queue",
+            "audit_log", "agent_github_repos", "gmail_triggers",
+            "agent_oauth_bindings", "approval_allowlist",
+            "memory_chunks",
+        ];
+        let mut tx = match state.db.begin().await {
+            Ok(tx) => tx,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("transaction start failed: {}", e)}))).into_response(),
+        };
+        for table in tables_agent_id {
+            let query = format!("UPDATE {} SET agent_id = $1 WHERE agent_id = $2", table);
+            if let Err(e) = sqlx::query(&query)
+                .bind(&new_name)
+                .bind(&name)
+                .execute(&mut *tx)
+                .await
+            {
+                tracing::warn!(table = %table, error = %e, "failed to update agent_id on rename");
+                tx.rollback().await.ok();
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("rename failed at table {}: {}", table, e)}))).into_response();
+            }
+        }
+        // messages.agent_id is nullable (used in discuss mode)
+        if let Err(e) = sqlx::query("UPDATE messages SET agent_id = $1 WHERE agent_id = $2")
+            .bind(&new_name)
+            .bind(&name)
+            .execute(&mut *tx)
+            .await
+        {
+            tracing::warn!(error = %e, "failed to update messages.agent_id on rename");
+            tx.rollback().await.ok();
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("rename failed at table messages: {}", e)}))).into_response();
+        }
+        // agent_channels uses agent_name instead of agent_id
+        if let Err(e) = sqlx::query("UPDATE agent_channels SET agent_name = $1 WHERE agent_name = $2")
+            .bind(&new_name)
+            .bind(&name)
+            .execute(&mut *tx)
+            .await
+        {
+            tracing::warn!(error = %e, "failed to update agent_channels.agent_name on rename");
+            tx.rollback().await.ok();
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("rename failed at table agent_channels: {}", e)}))).into_response();
+        }
+        // graph_entities uses group_id to associate entities with an agent
+        if let Err(e) = sqlx::query("UPDATE graph_entities SET group_id = $1 WHERE group_id = $2")
+            .bind(&new_name)
+            .bind(&name)
+            .execute(&mut *tx)
+            .await
+        {
+            tracing::warn!(error = %e, "failed to update graph_entities.group_id on rename");
+            tx.rollback().await.ok();
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("rename failed at table graph_entities: {}", e)}))).into_response();
+        }
+        if let Err(e) = tx.commit().await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("transaction commit failed: {}", e)}))).into_response();
+        }
+
+        // Only delete old TOML after DB commit succeeds
+        let _ = std::fs::remove_file(&path);
+
+        // Rename workspace directory
+        let old_ws = format!("{}/agents/{}", crate::config::WORKSPACE_DIR, name);
+        let new_ws = format!("{}/agents/{}", crate::config::WORKSPACE_DIR, new_name);
+        if std::path::Path::new(&old_ws).exists()
+            && let Err(e) = std::fs::rename(&old_ws, &new_ws) {
+                tracing::warn!(from = %old_ws, to = %new_ws, error = %e, "failed to rename workspace directory");
+            }
+
+        // Migrate per-agent scoped secrets: scope='OldName' → scope='NewName'
+        if let Err(e) = state.secrets.rename_scope(&name, &new_name).await {
+            tracing::warn!(
+                from = %name, to = %new_name, error = %e,
+                "failed to migrate scoped secrets on agent rename"
+            );
+        }
+    }
+
+    // Save per-agent TTS voice as scoped secret
+    if let Some(ref v) = voice {
+        if !v.is_empty() {
+            if let Err(e) = state.secrets.set_scoped("TTS_VOICE", &new_name, v, None).await {
+                tracing::warn!(error = %e, "failed to save TTS_VOICE secret");
+            }
+        } else {
+            let _ = state.secrets.delete_scoped("TTS_VOICE", &new_name).await;
+        }
+    }
+
+    // Hot-restart: stop old agent, start new one.
+    let old_handle = state.agents.write().await.remove(&name);
+    state.access_guards.write().await.remove(&name);
+    if let Some(handle) = old_handle {
+        handle.shutdown(&state.scheduler).await;
+    }
+
+    // If renaming, remove old container
+    if is_rename
+        && let Some(ref sandbox) = state.sandbox {
+            let _ = sandbox.remove_container(&name).await;
+        }
+
+    match start_agent_from_config(&cfg, &state).await {
+        Ok((handle, guard)) => {
+            state.agents.write().await.insert(new_name.clone(), handle);
+            if let Some(guard) = guard {
+                state.access_guards.write().await.insert(new_name.clone(), guard);
+            }
+
+            // Ensure Docker sandbox for non-base agents (base run on host)
+            if !cfg.agent.base
+                && let Some(ref sandbox) = state.sandbox {
+                    match canonicalize(crate::config::WORKSPACE_DIR) {
+                        Ok(host_path) => {
+                            if let Err(e) = sandbox.ensure_container(&new_name, &host_path.to_string_lossy(), false, Some(&state.oauth)).await {
+                                tracing::warn!(agent = %new_name, error = %e, "failed to ensure agent container after update");
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to canonicalize workspace path for sandbox");
+                        }
+                }
+            }
+
+            tracing::info!(agent = %new_name, renamed_from = %name, "agent updated and restarted via API");
+            crate::db::audit::audit_spawn(state.db.clone(), new_name.clone(), crate::db::audit::event_types::AGENT_UPDATED, None, json!({"agent": new_name, "renamed_from": name}));
+
+        }
+        Err(e) => {
+            tracing::error!(agent = %new_name, error = %e, "failed to restart agent after update");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("config saved but failed to start: {}", e)}))).into_response();
+        }
+    }
+
+    Json(json!({ "ok": true, "name": new_name, "restarted": true })).into_response()
+}
+
+async fn cleanup_agent_data(db: &sqlx::PgPool, agent_name: &str) -> Result<(), sqlx::Error> {
+    let mut tx = db.begin().await?;
+    // agent_channels uses agent_name
+    sqlx::query("DELETE FROM agent_channels WHERE agent_name = $1")
+        .bind(agent_name).execute(&mut *tx).await?;
+    // Everything else uses agent_id
+    // SAFETY: table names are hardcoded string literals in the array below -- no user input.
+    for table in &[
+        "scheduled_jobs", "webhooks", "agent_oauth_bindings",
+        "gmail_triggers", "agent_github_repos", "approval_allowlist",
+        "channel_allowed_users",
+    ] {
+        sqlx::query(&format!("DELETE FROM {} WHERE agent_id = $1", table))
+            .bind(agent_name).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+pub(crate) async fn api_delete_agent(
+    State(state): State<AppState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let path = agent_config_path(&name);
+
+    // Block deletion of base agents — fail closed: any inability to verify blocks deletion
+    match std::fs::read_to_string(&path) {
+        Ok(toml_str) => match toml::from_str::<crate::config::AgentConfig>(&toml_str) {
+            Ok(existing) if existing.agent.base => {
+                return (StatusCode::FORBIDDEN, Json(json!({
+                    "error": format!("Agent '{}' is a base agent and cannot be deleted", name)
+                }))).into_response();
+            }
+            Err(e) => {
+                tracing::error!(agent = %name, error = %e, "agent config is malformed; deletion blocked");
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                    "error": "agent config is malformed; fix it before deleting"
+                }))).into_response();
+            }
+            Ok(_) => {} // not a base agent, proceed
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // file gone, proceed to cleanup
+        Err(e) => {
+            tracing::error!(agent = %name, error = %e, "cannot read agent config for deletion safety check");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": format!("cannot verify agent config before deletion: {}", e)
+            }))).into_response();
+        }
+    }
+
+    // Clean up all agent-related data from DB first (preserve sessions/messages as history)
+    // Fetch channel IDs before transaction deletes them
+    let channels: Vec<(uuid::Uuid,)> = sqlx::query_as(
+        "SELECT id FROM agent_channels WHERE agent_name = $1"
+    ).bind(&name).fetch_all(&state.db).await.unwrap_or_default();
+
+    if let Err(e) = cleanup_agent_data(&state.db, &name).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+            "error": format!("failed to clean up agent data: {}", e)
+        }))).into_response();
+    }
+
+    // Vault cleanup AFTER DB transaction committed (vault is not transactional —
+    // if we deleted credentials before and the transaction failed, channels would
+    // lose their tokens irrecoverably)
+    for (ch_id,) in &channels {
+        state.secrets.delete_scoped("CHANNEL_CREDENTIALS", &ch_id.to_string()).await.ok();
+    }
+    state.secrets.delete_scope(&name).await.ok();
+
+    // Remove TOML from disk
+    if path.exists()
+        && let Err(e) = std::fs::remove_file(&path) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
+        }
+
+    // Hot-stop: remove from running engines
+    let handle = state.agents.write().await.remove(&name);
+    state.access_guards.write().await.remove(&name);
+
+    // Remove agent container
+    if let Some(ref sandbox) = state.sandbox {
+        let _ = sandbox.remove_container(&name).await;
+    }
+
+    if let Some(handle) = handle {
+        handle.shutdown(&state.scheduler).await;
+        tracing::info!(agent = %name, "agent deleted and stopped via API");
+    } else {
+        tracing::info!(agent = %name, "agent config deleted via API (was not running)");
+    }
+
+    crate::db::audit::audit_spawn(state.db.clone(), name.clone(), crate::db::audit::event_types::AGENT_DELETED, None, json!({"agent": name}));
+
+    Json(json!({ "ok": true })).into_response()
+}
+
+// ── Approvals API ──
+
+/// GET /api/approvals?agent=xxx&status=pending
+/// If agent is omitted, returns pending approvals for all agents.
+pub(crate) async fn api_list_approvals(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let agent_name = params.get("agent").cloned().unwrap_or_default();
+
+    let result = if agent_name.is_empty() {
+        crate::db::approvals::list_all_pending(&state.db).await
+    } else {
+        crate::db::approvals::list_pending(&state.db, &agent_name).await
+    };
+
+    match result {
+        Ok(approvals) => {
+            let items: Vec<serde_json::Value> = approvals.iter().map(|a| {
+                json!({
+                    "id": a.id,
+                    "agent_id": a.agent_id,
+                    "tool": a.tool_name,
+                    "arguments": a.tool_args,
+                    "status": a.status,
+                    "created_at": a.requested_at,
+                    "resolved_at": a.resolved_at,
+                    "resolved_by": a.resolved_by,
+                })
+            }).collect();
+            Json(json!({"approvals": items})).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        ).into_response(),
+    }
+}
+
+/// POST /api/approvals/{id}/resolve
+/// Body: {"status": "approved"|"rejected"}
+pub(crate) async fn api_resolve_approval(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let status = body.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    let resolved_by = body.get("resolved_by").and_then(|v| v.as_str()).unwrap_or("api");
+
+    if status != "approved" && status != "rejected" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "status must be 'approved' or 'rejected'"})),
+        ).into_response();
+    }
+
+    // Find the agent this approval belongs to
+    let approval = match crate::db::approvals::get_approval(&state.db, id).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "approval not found"})),
+        ).into_response(),
+        Err(e) => return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        ).into_response(),
+    };
+
+    // Resolve in the engine (updates DB + wakes waiter)
+    let agents = state.agents.read().await;
+    if let Some(handle) = agents.get(&approval.agent_id) {
+        let approved = status == "approved";
+        match handle.engine.resolve_approval(id, approved, resolved_by).await {
+            Ok(()) => {
+                // audit is already recorded inside engine.resolve_approval()
+                Json(json!({"ok": true, "status": status})).into_response()
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            ).into_response(),
+        }
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("agent '{}' not found", approval.agent_id)})),
+        ).into_response()
+    }
+}
+
+// ── Approval Allowlist ──
+
+pub(crate) async fn api_list_allowlist(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let agent = params.get("agent").cloned().unwrap_or_default();
+    if agent.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "agent parameter required"}))).into_response();
+    }
+    match crate::db::approvals::list_allowlist(&state.db, &agent).await {
+        Ok(entries) => Json(json!({"allowlist": entries})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+pub(crate) async fn api_add_to_allowlist(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let agent = body["agent_id"].as_str().unwrap_or("");
+    let pattern = body["tool_pattern"].as_str().unwrap_or("");
+    if agent.is_empty() || pattern.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "agent_id and tool_pattern required"}))).into_response();
+    }
+    match crate::db::approvals::add_to_allowlist(&state.db, agent, pattern).await {
+        Ok(id) => (StatusCode::CREATED, Json(json!({"id": id}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+pub(crate) async fn api_delete_from_allowlist(
+    State(state): State<AppState>,
+    Path(id): Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    match crate::db::approvals::remove_from_allowlist(&state.db, id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+// ── Hooks API ──
+
+pub(crate) async fn api_agent_hooks(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    if let Some(engine) = state.get_engine(&name).await {
+        let names = engine.hooks.names();
+        Json(json!({"agent": name, "hooks": names})).into_response()
+    } else {
+        (StatusCode::NOT_FOUND, Json(json!({"error": "agent not found"}))).into_response()
+    }
+}
+
+// ── Inter-Agent API ──
+
+/// GET /api/inter-agent/messages?limit=100
+/// Returns messages from inter-agent communication sessions (read-only).
+#[allow(dead_code)]
+pub(crate) async fn api_inter_agent_messages(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let limit: i64 = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .min(500);
+
+    let rows = sqlx::query_as::<_, (String, String, String, String, String, chrono::DateTime<chrono::Utc>)>(
+        "SELECT s.agent_id, s.user_id, s.channel, m.role, m.content, m.created_at \
+         FROM sessions s JOIN messages m ON m.session_id = s.id \
+         WHERE s.channel IN ('inter-agent', 'group') \
+         ORDER BY m.created_at DESC LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await;
+
+    match rows {
+        Ok(rows) => Json(json!({
+            "messages": rows.into_iter().rev().map(|(agent, user, channel, role, content, ts)| {
+                // user_id is "agent:Arty" or "human:ui" → normalize to display name
+                let initiator = if user.starts_with("human:") {
+                    "You"
+                } else {
+                    user.strip_prefix("agent:").unwrap_or(&user)
+                };
+                // role=user means initiator→agent; role=assistant means agent→initiator
+                let (source, target) = if role == "user" {
+                    (initiator, agent.as_str())
+                } else {
+                    (agent.as_str(), initiator)
+                };
+                json!({
+                    "source_agent": source,
+                    "target_agent": target,
+                    "role": role,
+                    "content": content,
+                    "channel": channel,
+                    "created_at": ts.to_rfc3339()
+                })
+            }).collect::<Vec<_>>()
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// DELETE /api/inter-agent/messages — clear all inter-agent/group chat messages.
+#[allow(dead_code)]
+pub(crate) async fn api_clear_inter_agent_messages(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let result = async {
+        let mut tx = state.db.begin().await?;
+        sqlx::query(
+            "DELETE FROM messages WHERE session_id IN \
+             (SELECT id FROM sessions WHERE channel IN ('inter-agent', 'group'))",
+        )
+        .execute(&mut *tx)
+        .await?;
+        let r = sqlx::query(
+            "DELETE FROM sessions WHERE channel IN ('inter-agent', 'group')",
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok::<_, sqlx::Error>(r.rows_affected())
+    }
+    .await;
+
+    match result {
+        Ok(deleted) => {
+            tracing::info!(deleted, "inter-agent/group messages cleared via API");
+            Json(json!({"ok": true, "deleted": deleted})).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    /// Per D-09: Simulated failure mid-rename should leave DB in pre-rename state.
+    /// In production, sqlx Transaction provides this guarantee via DROP (implicit rollback).
+    /// This test documents the expected behavior by simulating the rename loop in-memory.
+    #[test]
+    fn test_rename_mid_failure_leaves_pre_rename_state() {
+        // Mirror the exact table list from the rename handler (21 tables total)
+        let tables_agent_id: Vec<&str> = vec![
+            "sessions", "tasks", "scheduled_jobs", "channel_allowed_users",
+            "usage_log", "cron_runs", "audit_events", "pending_approvals",
+            "pending_messages", "webhooks", "stream_jobs", "outbound_queue",
+            "audit_log", "agent_github_repos", "gmail_triggers",
+            "agent_oauth_bindings", "approval_allowlist", "memory_chunks",
+        ];
+        // Additional tables updated outside the loop
+        let extra_tables: Vec<&str> = vec!["messages", "agent_channels", "graph_entities"];
+
+        let all_tables: Vec<&str> = tables_agent_id.iter()
+            .chain(extra_tables.iter())
+            .copied()
+            .collect();
+
+        assert_eq!(all_tables.len(), 21, "rename should cover exactly 21 tables");
+
+        let old_name = "OldAgent";
+        let new_name = "NewAgent";
+
+        // Initialize: each table has one row with old_name
+        let mut db_state: HashMap<&str, Vec<String>> = HashMap::new();
+        for table in &all_tables {
+            db_state.insert(table, vec![old_name.to_string()]);
+        }
+
+        // -- Test 1: Failure at table 10 should leave ALL tables in pre-rename state --
+        let snapshot: HashMap<&str, Vec<String>> = db_state.clone();
+        let fail_at = 10;
+
+        for (i, table) in all_tables.iter().enumerate() {
+            if i == fail_at {
+                // Simulate failure -> rollback by restoring snapshot
+                db_state = snapshot;
+                break;
+            }
+            // Simulate UPDATE: replace old_name with new_name
+            if let Some(rows) = db_state.get_mut(table) {
+                for row in rows.iter_mut() {
+                    if row == old_name {
+                        *row = new_name.to_string();
+                    }
+                }
+            }
+        }
+
+        // After rollback: NO table should have the new name
+        for table in &all_tables {
+            let rows = &db_state[table];
+            assert!(
+                !rows.contains(&new_name.to_string()),
+                "table '{}' should not contain new name after rollback",
+                table
+            );
+            assert!(
+                rows.contains(&old_name.to_string()),
+                "table '{}' should still contain old name after rollback",
+                table
+            );
+        }
+
+        // -- Test 2: Successful rename (no failure) should update ALL tables --
+        for table in &all_tables {
+            if let Some(rows) = db_state.get_mut(table) {
+                for row in rows.iter_mut() {
+                    if row == old_name {
+                        *row = new_name.to_string();
+                    }
+                }
+            }
+        }
+
+        for table in &all_tables {
+            let rows = &db_state[table];
+            assert!(
+                rows.contains(&new_name.to_string()),
+                "table '{}' should contain new name after successful rename",
+                table
+            );
+            assert!(
+                !rows.contains(&old_name.to_string()),
+                "table '{}' should not contain old name after successful rename",
+                table
+            );
+        }
+    }
+}
+

@@ -1,0 +1,18 @@
+name: github_pr_merge
+extends: github
+description: "Merge a pull request."
+endpoint: "https://api.github.com/repos/{owner}/{repo}/pulls/{pull_number}/merge"
+method: PUT
+parameters:
+  pull_number:
+    type: integer
+    required: true
+    location: path
+    description: "Pull request number"
+  merge_method:
+    type: string
+    required: false
+    location: body
+    description: "merge/squash/rebase, default merge"
+response_transform: "$"
+status: verified

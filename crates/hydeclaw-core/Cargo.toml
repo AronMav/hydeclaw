@@ -1,0 +1,84 @@
+[package]
+name = "hydeclaw-core"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "hydeclaw-core"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace deps
+tokio = { workspace = true }
+axum = { workspace = true }
+tower-http = { workspace = true }
+sqlx = { workspace = true }
+reqwest = { workspace = true }
+bollard = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+toml_edit = { workspace = true }
+notify = { workspace = true }
+tokio-cron-scheduler = { workspace = true }
+cron = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+dotenv = { workspace = true }
+
+# Streaming
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
+futures-util = "0.3"
+async-stream = "0.3"
+
+# URL parsing
+url = { workspace = true }
+urlencoding = "2"
+
+# Encoding
+base64 = { workspace = true }
+
+# Secrets vault
+chacha20poly1305 = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+
+# YAML parsing (for YAML tool definitions)
+serde_yaml = "0.9"
+
+# HTML parsing (Link Understanding)
+scraper = { workspace = true }
+
+# Error classification
+regex = "1"
+
+# Security
+subtle = "2"
+hmac = "0.12"
+sha2 = "0.10"
+dashmap = "6"
+
+# Internal
+hydeclaw-types = { workspace = true }
+
+# OpenTelemetry (optional, behind `otel` feature)
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+
+[features]
+default = []
+otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
+
+# Systemd watchdog (Linux-only)
+[target.'cfg(target_os = "linux")'.dependencies]
+sd-notify = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.27.0"

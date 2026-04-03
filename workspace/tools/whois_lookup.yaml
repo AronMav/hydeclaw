@@ -1,0 +1,11 @@
+name: whois_lookup
+description: "Domain registration info — dates, registrar, nameservers, status. Use when user asks 'who owns this domain', 'when was this domain registered', or similar."
+endpoint: "https://who-dat.as93.net/{domain}"
+method: GET
+parameters:
+  domain:
+    type: string
+    required: true
+    location: path
+    description: "Domain name, e.g. example.com"
+status: verified

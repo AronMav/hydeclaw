@@ -1,0 +1,32 @@
+name: github_release_create
+extends: github
+description: "Create a new release in a GitHub repository."
+endpoint: "https://api.github.com/repos/{owner}/{repo}/releases"
+method: POST
+parameters:
+  tag_name:
+    type: string
+    required: true
+    location: body
+    description: "Tag name for the release"
+  name:
+    type: string
+    required: false
+    location: body
+    description: "Release title"
+  body:
+    type: string
+    required: false
+    location: body
+    description: "Release notes in Markdown"
+  draft:
+    type: boolean
+    required: false
+    location: body
+    description: "Create as draft release"
+  prerelease:
+    type: boolean
+    required: false
+    location: body
+    description: "Mark as pre-release"
+status: verified

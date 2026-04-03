@@ -1,0 +1,239 @@
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Json, Redirect},
+};
+use serde::Deserialize;
+use std::collections::HashMap;
+use crate::gateway::AppState;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn parse_uuid(id: &str) -> Result<sqlx::types::Uuid, impl IntoResponse> {
+    id.parse::<sqlx::types::Uuid>()
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid UUID".to_string()))
+}
+
+/// Restart sandbox containers for agents affected by an OAuth change.
+async fn restart_agent_sandboxes(state: &AppState, agent_ids: &[String]) {
+    let Some(ref sandbox) = state.sandbox else { return };
+    let workspace_dir = match tokio::fs::canonicalize(crate::config::WORKSPACE_DIR).await {
+        Ok(p) => p.to_string_lossy().to_string(),
+        Err(_) => return,
+    };
+    for agent_id in agent_ids {
+        if let Err(e) = sandbox.restart_container(agent_id, &workspace_dir, false, Some(&state.oauth)).await {
+            tracing::warn!(agent = %agent_id, error = %e, "failed to restart sandbox after OAuth change");
+        }
+    }
+}
+
+/// Spawn sandbox restart in background for given agents.
+fn spawn_sandbox_restart(state: AppState, agents: Vec<String>) {
+    tokio::spawn(async move { restart_agent_sandboxes(&state, &agents).await; });
+}
+
+/// Find all agents bound to a specific OAuth account.
+async fn agents_bound_to_account(state: &AppState, account_id: sqlx::types::Uuid) -> Vec<String> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT agent_id FROM agent_oauth_bindings WHERE account_id = $1"
+    )
+    .bind(account_id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// Account CRUD
+// ---------------------------------------------------------------------------
+
+/// GET /api/oauth/accounts?provider=github
+pub(crate) async fn api_oauth_accounts_list(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let provider = params.get("provider").map(String::as_str);
+    match state.oauth.list_accounts(provider).await {
+        Ok(accounts) => Json(serde_json::json!({ "accounts": accounts })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct CreateAccountBody {
+    pub provider: String,
+    pub display_name: String,
+    pub client_id: String,
+    pub client_secret: String,
+}
+
+/// POST /api/oauth/accounts
+pub(crate) async fn api_oauth_account_create(
+    State(state): State<AppState>,
+    Json(body): Json<CreateAccountBody>,
+) -> impl IntoResponse {
+    match state
+        .oauth
+        .create_account(&body.provider, &body.display_name, &body.client_id, &body.client_secret)
+        .await
+    {
+        Ok(id) => Json(serde_json::json!({ "ok": true, "id": id })).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+/// DELETE /api/oauth/accounts/{id}
+pub(crate) async fn api_oauth_account_delete(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let account_id = match parse_uuid(&id) {
+        Ok(u) => u,
+        Err(e) => return e.into_response(),
+    };
+    match state.oauth.delete_account(account_id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// POST /api/oauth/accounts/{id}/connect?agent=main
+pub(crate) async fn api_oauth_account_connect(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let account_id = match parse_uuid(&id) {
+        Ok(u) => u,
+        Err(e) => return e.into_response(),
+    };
+    let agent_id = params.get("agent").cloned().unwrap_or_else(|| "main".into());
+    match state.oauth.init_flow(account_id, &agent_id).await {
+        Ok(url) => Json(serde_json::json!({ "auth_url": url })).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+/// POST /api/oauth/accounts/{id}/revoke
+pub(crate) async fn api_oauth_account_revoke(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let account_id = match parse_uuid(&id) {
+        Ok(u) => u,
+        Err(e) => return e.into_response(),
+    };
+    match state.oauth.revoke(account_id).await {
+        Ok(()) => {
+            let agents = agents_bound_to_account(&state, account_id).await;
+            spawn_sandbox_restart(state.clone(), agents);
+            Json(serde_json::json!({ "ok": true })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Agent binding CRUD
+// ---------------------------------------------------------------------------
+
+/// GET /api/agents/{name}/oauth/bindings
+pub(crate) async fn api_oauth_bindings_list(
+    State(state): State<AppState>,
+    Path(agent_name): Path<String>,
+) -> impl IntoResponse {
+    match state.oauth.list_bindings(&agent_name).await {
+        Ok(bindings) => Json(serde_json::json!({ "bindings": bindings })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct CreateBindingBody {
+    pub provider: String,
+    pub account_id: sqlx::types::Uuid,
+}
+
+/// POST /api/agents/{name}/oauth/bindings
+pub(crate) async fn api_oauth_binding_create(
+    State(state): State<AppState>,
+    Path(agent_name): Path<String>,
+    Json(body): Json<CreateBindingBody>,
+) -> impl IntoResponse {
+    match state
+        .oauth
+        .bind_account(&agent_name, &body.provider, body.account_id)
+        .await
+    {
+        Ok(()) => {
+            spawn_sandbox_restart(state.clone(), vec![agent_name.clone()]);
+            Json(serde_json::json!({ "ok": true })).into_response()
+        }
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+/// DELETE /api/agents/{name}/oauth/bindings/{provider}
+pub(crate) async fn api_oauth_binding_delete(
+    State(state): State<AppState>,
+    Path((agent_name, provider)): Path<(String, String)>,
+) -> impl IntoResponse {
+    match state.oauth.unbind_account(&agent_name, &provider).await {
+        Ok(()) => {
+            spawn_sandbox_restart(state.clone(), vec![agent_name.clone()]);
+            Json(serde_json::json!({ "ok": true })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Backward-compatible / kept handlers
+// ---------------------------------------------------------------------------
+
+/// GET /api/oauth/providers — backward compat
+pub(crate) async fn api_oauth_providers(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let agent_id = params.get("agent").map(String::as_str);
+    match state.oauth.list_connections(agent_id).await {
+        Ok(connections) => {
+            let supported: Vec<_> = crate::oauth::PROVIDERS.iter().map(|p| p.name).collect();
+            Json(serde_json::json!({
+                "supported": supported,
+                "connected": connections,
+            }))
+            .into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// GET /api/oauth/callback — browser redirect from Google/GitHub, no Bearer token.
+/// This endpoint is exempted from auth middleware.
+pub(crate) async fn api_oauth_callback(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let code = params.get("code").cloned().unwrap_or_default();
+    let state_token = params.get("state").cloned().unwrap_or_default();
+    match state.oauth.handle_callback(code, state_token).await {
+        Ok((agent_id, provider)) => {
+            spawn_sandbox_restart(state.clone(), vec![agent_id.clone()]);
+            Redirect::to(&format!(
+                "/integrations?connected={}&agent={}",
+                provider, agent_id
+            ))
+            .into_response()
+        }
+        Err(e) => {
+            let encoded: String =
+                url::form_urlencoded::byte_serialize(e.to_string().as_bytes()).collect();
+            Redirect::to(&format!("/integrations?error={}", encoded)).into_response()
+        }
+    }
+}

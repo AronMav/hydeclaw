@@ -1,0 +1,23 @@
+name: github_pr_review
+extends: github
+description: "Create a review on a pull request."
+endpoint: "https://api.github.com/repos/{owner}/{repo}/pulls/{pull_number}/reviews"
+method: POST
+parameters:
+  pull_number:
+    type: integer
+    required: true
+    location: path
+    description: "Pull request number"
+  body:
+    type: string
+    required: true
+    location: body
+    description: "Review comment"
+  event:
+    type: string
+    required: true
+    location: body
+    description: "APPROVE, REQUEST_CHANGES, or COMMENT"
+response_transform: "$"
+status: verified

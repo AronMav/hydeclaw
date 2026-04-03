@@ -1,0 +1,18 @@
+name: astronomy_picture
+description: "Astronomy Picture of the Day from NASA. Returns the daily astronomical image with title, description, and media URL."
+endpoint: "https://api.nasa.gov/planetary/apod"
+method: GET
+parameters:
+  api_key:
+    type: string
+    location: query
+    default: "DEMO_KEY"
+    description: "NASA API key (defaults to DEMO_KEY with rate limits)"
+  date:
+    type: string
+    location: query
+    description: "Date in YYYY-MM-DD format (optional, defaults to today)"
+auth:
+  type: none
+status: verified
+tags: ["astronomy", "nasa", "image", "space"]

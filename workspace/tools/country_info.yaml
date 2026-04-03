@@ -1,0 +1,14 @@
+name: country_info
+description: Get country information (capital, population, flag, region, language, etc.) via REST Countries API.
+endpoint: https://restcountries.com/v3.1/name/{country}
+method: GET
+parameters:
+  country:
+    type: string
+    required: true
+    location: path
+    description: Country name in English (e.g. Russia, Germany, Japan)
+response_transform: "0"
+auth:
+  type: none
+status: verified

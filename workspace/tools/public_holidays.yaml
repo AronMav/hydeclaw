@@ -1,0 +1,16 @@
+name: public_holidays
+description: "Check public holidays for a given year and country via Nager.Date API."
+endpoint: "https://date.nager.at/api/v3/publicholidays/{year}/{countryCode}"
+method: GET
+parameters:
+  year:
+    type: integer
+    required: true
+    location: path
+    description: "Year, e.g. 2026"
+  countryCode:
+    type: string
+    required: true
+    location: path
+    description: "ISO country code: RU, US, CN, etc."
+status: verified

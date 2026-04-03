@@ -1,0 +1,32 @@
+name: wikipedia_search
+description: "Search Wikipedia articles. Returns titles, snippets, and article sizes."
+endpoint: https://ru.wikipedia.org/w/api.php
+method: GET
+status: verified
+parameters:
+  action:
+    type: string
+    location: query
+    default: "query"
+  list:
+    type: string
+    location: query
+    default: "search"
+  srsearch:
+    type: string
+    location: query
+    required: true
+    description: "Search query"
+  utf8:
+    type: string
+    location: query
+    default: "1"
+  format:
+    type: string
+    location: query
+    default: "json"
+  srlimit:
+    type: integer
+    location: query
+    default: 5
+response_transform: "$.query.search"

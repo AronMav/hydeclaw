@@ -1,0 +1,32 @@
+name: github_issue_update
+extends: github
+description: "Update an existing issue in a GitHub repository (title, body, state, labels)."
+endpoint: "https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}"
+method: PATCH
+parameters:
+  issue_number:
+    type: integer
+    required: true
+    location: path
+    description: "Issue number"
+  title:
+    type: string
+    required: false
+    location: body
+    description: "New issue title"
+  body:
+    type: string
+    required: false
+    location: body
+    description: "New issue body in Markdown"
+  state:
+    type: string
+    required: false
+    location: body
+    description: "open or closed"
+  labels:
+    type: array
+    required: false
+    location: body
+    description: "Array of label names, e.g. [\"bug\", \"enhancement\"]"
+status: verified

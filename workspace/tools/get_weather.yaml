@@ -1,0 +1,24 @@
+name: get_weather
+description: "Get current weather for a city (temperature, wind, humidity, feels like). Uses Open-Meteo API."
+endpoint: "https://api.open-meteo.com/v1/forecast"
+method: GET
+parallel: true
+parameters:
+  latitude:
+    type: number
+    required: true
+    location: query
+    description: "Latitude (e.g. 56.85 for Izhevsk, 55.75 for Moscow)"
+  longitude:
+    type: number
+    required: true
+    location: query
+    description: "Longitude (e.g. 53.2 for Izhevsk, 37.62 for Moscow)"
+  current:
+    type: string
+    required: false
+    location: query
+    default: "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m"
+response_transform: "$.current"
+
+status: verified

@@ -1,0 +1,12 @@
+name: exchange_rates
+description: Live exchange rates for any currency base. Returns a dictionary of currency codes to rate values relative to the base currency.
+endpoint: https://open.er-api.com/v6/latest/{base}
+method: GET
+parameters:
+  base:
+    type: string
+    default: USD
+    location: path
+    description: Base currency code (e.g. USD, EUR, RUB)
+response_transform: '$.rates'
+status: verified

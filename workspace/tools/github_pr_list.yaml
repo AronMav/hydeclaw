@@ -1,0 +1,19 @@
+name: github_pr_list
+extends: github
+description: "List pull requests in a GitHub repository."
+endpoint: "https://api.github.com/repos/{owner}/{repo}/pulls"
+method: GET
+parameters:
+  state:
+    type: string
+    required: false
+    location: query
+    default: "open"
+    description: "Filter: open/closed/all"
+  per_page:
+    type: integer
+    required: false
+    location: query
+    default: 30
+response_transform: "$"
+status: verified

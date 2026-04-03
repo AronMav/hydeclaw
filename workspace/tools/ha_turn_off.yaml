@@ -1,0 +1,14 @@
+name: ha_turn_off
+description: "Turn off a smart home device. Specify entity_id."
+endpoint: "http://homeassistant.local:8123/api/services/homeassistant/turn_off"
+method: POST
+parameters:
+  entity_id:
+    type: string
+    required: true
+    location: body
+    description: "Device ID (e.g. light.living_room, switch.kitchen)"
+auth:
+  type: bearer_env
+  key: HA_TOKEN
+status: draft

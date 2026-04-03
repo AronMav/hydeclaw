@@ -1,0 +1,32 @@
+name: github_commit_status
+extends: github
+description: "Set a commit status (CI result) on a specific commit SHA."
+endpoint: "https://api.github.com/repos/{owner}/{repo}/statuses/{sha}"
+method: POST
+parameters:
+  sha:
+    type: string
+    required: true
+    location: path
+    description: "Commit SHA"
+  state:
+    type: string
+    required: true
+    location: body
+    description: "error/failure/pending/success"
+  description:
+    type: string
+    required: false
+    location: body
+    description: "Status description"
+  context:
+    type: string
+    required: false
+    location: body
+    description: "Status check name"
+  target_url:
+    type: string
+    required: false
+    location: body
+    description: "URL for details"
+status: verified

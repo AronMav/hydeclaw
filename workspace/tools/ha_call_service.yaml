@@ -1,0 +1,39 @@
+name: ha_call_service
+description: "Call an arbitrary Home Assistant service (e.g. light.turn_on with brightness, climate.set_temperature). Specify domain, service, and data."
+endpoint: "http://homeassistant.local:8123/api/services/{domain}/{service}"
+method: POST
+parameters:
+  domain:
+    type: string
+    required: true
+    location: path
+    description: "Service domain (light, climate, switch, media_player)"
+  service:
+    type: string
+    required: true
+    location: path
+    description: "Service name (turn_on, turn_off, set_temperature, toggle)"
+  entity_id:
+    type: string
+    required: false
+    location: body
+    description: "Device ID"
+  brightness:
+    type: integer
+    required: false
+    location: body
+    description: "Brightness 0-255 (for light)"
+  temperature:
+    type: number
+    required: false
+    location: body
+    description: "Temperature (for climate)"
+  color_temp:
+    type: integer
+    required: false
+    location: body
+    description: "Color temperature in mireds (for light)"
+auth:
+  type: bearer_env
+  key: HA_TOKEN
+status: draft

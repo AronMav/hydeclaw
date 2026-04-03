@@ -1,0 +1,19 @@
+name: analyze_image
+description: "Analyze an image from a URL. Accepts image_url and an optional question. Returns a text description. Use when receiving a photo from the user or when an image at a URL needs analysis."
+endpoint: "http://localhost:9011/describe-url"
+method: POST
+parameters:
+  image_url:
+    type: string
+    required: true
+    location: body
+    description: "Image URL to analyze"
+  question:
+    type: string
+    required: false
+    location: body
+    description: "Question about the image (optional)"
+    default: "Describe what is in the image"
+response_transform: "$.description"
+
+status: verified

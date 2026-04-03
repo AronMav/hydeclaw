@@ -1,0 +1,19 @@
+# Custom PostgreSQL 17 with pgvector + Apache AGE
+# Base: Apache AGE (includes Cypher graph engine)
+FROM apache/age:release_PG17_1.6.0
+
+# Install pgvector from source
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+     build-essential \
+     postgresql-server-dev-17 \
+     git \
+     ca-certificates \
+  && git clone --branch v0.8.0 --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector \
+  && cd /tmp/pgvector \
+  && make OPTFLAGS="" \
+  && make install \
+  && rm -rf /tmp/pgvector \
+  && apt-get purge -y build-essential postgresql-server-dev-17 git \
+  && apt-get autoremove -y \
+  && rm -rf /var/lib/apt/lists/*

@@ -1,0 +1,17 @@
+name: commodity_price
+description: "Precious metals prices (gold, silver, platinum) via metals.dev API."
+endpoint: "https://api.metals.dev/v1/latest"
+method: GET
+parameters:
+  api_key:
+    type: string
+    location: query
+    default: "free"
+    description: "metals.dev API key"
+  currency:
+    type: string
+    location: query
+    default: "USD"
+    description: "Price currency (USD, EUR, RUB, etc.)"
+response_transform: "$.metals"
+status: verified

@@ -1,0 +1,304 @@
+/**
+ * Discord channel driver using discord.js.
+ * Port of crates/hydeclaw-channel/src/channels/discord.rs
+ */
+
+import {
+  Client,
+  GatewayIntentBits,
+  type Message as DMessage,
+} from "discord.js";
+import type { BridgeHandle, OutboundAction } from "../bridge";
+import type { IncomingMessageDto, MediaAttachment } from "../types";
+import { getStrings, type Strings } from "../localization";
+import { splitText, toolEmoji, parseDirectives, parseUserCommand, classifyMediaType, reUploadAttachments, commonMarkToDiscord } from "./common";
+
+const STREAM_EDIT_INTERVAL_MS = 1000;
+const MAX_MESSAGE_LEN = 1900; // Discord limit ~2000, leave margin
+
+export function createDiscordDriver(
+  bridge: BridgeHandle,
+  credential: string,
+  _channelConfig: Record<string, unknown> | undefined,
+  language: string,
+  _typingMode: string,
+): { start: () => Promise<void>; stop: () => Promise<void> } {
+  const strings = getStrings(language);
+
+  const client = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,
+      GatewayIntentBits.DirectMessages,
+      GatewayIntentBits.GuildMessageReactions,
+    ],
+  });
+
+  const activeRequests = new Map<string, string>();
+  const thinkState = new Set<string>();
+
+  client.on("messageCreate", async (msg: DMessage) => {
+    if (msg.author.bot) return;
+
+    const userId = msg.author.id;
+    const channelId = msg.channelId;
+    const key = `${userId}:${channelId}`;
+    const displayName = msg.author.globalName ?? msg.author.username;
+
+    // Access control
+    const { allowed, isOwner } = await bridge.checkAccess(userId);
+
+    if (!allowed && !isOwner) {
+      const code = await bridge.createPairingCode(userId, displayName);
+      await msg.reply(strings.accessRestricted(code)).catch(() => {});
+      return;
+    }
+
+    // Owner commands
+    if (isOwner) {
+      const text = msg.content;
+      if (text.startsWith("/approve ") || text.startsWith("/reject ") ||
+          text === "/users" || text.startsWith("/revoke ")) {
+        await handleOwnerCommand(text, bridge, strings, msg);
+        return;
+      }
+    }
+
+    // User commands
+    const cmd = parseUserCommand(msg.content);
+    if (cmd === "stop") {
+      const reqId = activeRequests.get(key);
+      if (reqId) {
+        bridge.cancelRequest(reqId);
+        activeRequests.delete(key);
+        await msg.react("🛑").catch(() => {});
+      } else {
+        await msg.reply(strings.noActiveRequest).catch(() => {});
+      }
+      return;
+    }
+    if (cmd === "think") {
+      if (thinkState.has(key)) {
+        thinkState.delete(key);
+        await msg.reply(strings.thinkModeOff).catch(() => {});
+      } else {
+        thinkState.add(key);
+        await msg.reply(strings.thinkModeOn).catch(() => {});
+      }
+      return;
+    }
+
+    // Media attachments
+    const attachments: MediaAttachment[] = [];
+    for (const att of msg.attachments.values()) {
+      attachments.push({
+        url: att.url,
+        media_type: classifyMediaType(att.contentType ?? undefined),
+        file_name: att.name ?? undefined,
+        mime_type: att.contentType ?? undefined,
+        file_size: att.size,
+      });
+    }
+
+    const text = msg.content;
+    if (!text && attachments.length === 0) return;
+
+    // Parse directives
+    const { text: cleanText, directives } = parseDirectives(text);
+    const finalText = cleanText || text;
+
+    if (thinkState.has(key)) {
+      thinkState.delete(key);
+      directives.think = true;
+    }
+
+    // Re-upload media
+    const stableAttachments = await reUploadAttachments(bridge, attachments);
+
+    const dto: IncomingMessageDto = {
+      user_id: userId,
+      display_name: displayName,
+      text: finalText,
+      attachments: stableAttachments,
+      context: {
+        guild_id: msg.guildId,
+        channel_id: channelId,
+        message_id: msg.id,
+        thread_id: msg.thread?.id,
+        directives,
+      },
+      timestamp: new Date().toISOString(),
+    };
+
+    const { requestId, onChunk, onPhase, result } = bridge.sendMessage(dto);
+    activeRequests.set(key, requestId);
+
+    // Phase reactions
+    onPhase(async (phase, toolName) => {
+      try {
+        if (phase === "thinking") await msg.react("🤔").catch(() => {});
+        else if (phase === "calling_tool") {
+          const emoji = toolEmoji(toolName);
+          await msg.react(emoji).catch(() => {});
+        }
+        else if (phase === "composing") await msg.react("⚡").catch(() => {});
+      } catch {
+        // cosmetic, ok to fail silently
+      }
+    });
+
+    // Streaming display
+    let streamMsg: DMessage | null = null;
+    let fullText = "";
+    let dirty = false;
+
+    onChunk((chunkText) => {
+      fullText += chunkText;
+      dirty = true;
+    });
+
+    const streamTimer = setInterval(async () => {
+      if (!dirty || fullText.length > MAX_MESSAGE_LEN) return;
+      dirty = false;
+      const display = `${fullText}\u258C`;
+      try {
+        if (!streamMsg) {
+          streamMsg = await msg.reply(display);
+        } else {
+          await streamMsg.edit(display).catch(() => {});
+        }
+      } catch (e) {
+        console.warn("[discord] streaming edit failed:", (e as Error).message?.slice(0, 100));
+      }
+    }, STREAM_EDIT_INTERVAL_MS);
+
+    try {
+      const response = await result;
+      clearInterval(streamTimer);
+
+      if (response) {
+        if (streamMsg) {
+          if (response.length <= MAX_MESSAGE_LEN) {
+            await streamMsg.edit(response).catch(() => {});
+          } else {
+            const parts = splitText(response, MAX_MESSAGE_LEN, true);
+            await streamMsg.edit(parts[0]).catch(() => {});
+            for (let i = 1; i < parts.length; i++) {
+              await msg.channel.send(parts[i]).catch(() => {});
+            }
+          }
+        } else {
+          const parts = splitText(response, MAX_MESSAGE_LEN, true);
+          for (const part of parts) {
+            await msg.reply(part).catch(() => {});
+          }
+        }
+        await msg.react("👍").catch(() => {});
+        setTimeout(async () => {
+          await msg.reactions.removeAll().catch(() => {});
+        }, 3000);
+      }
+    } catch (err: any) {
+      clearInterval(streamTimer);
+      if (err.message === "cancelled") {
+        await msg.react("🛑").catch(() => {});
+      } else {
+        await msg.react("❌").catch(() => {});
+        await msg.reply(strings.errorMessage(err.message)).catch(() => {});
+      }
+    }
+
+    activeRequests.delete(key);
+  });
+
+  return {
+    start: async () => {
+      await client.login(credential);
+      console.log(`[discord] logged in as ${client.user?.tag}`);
+    },
+    stop: async () => {
+      await client.destroy();
+    },
+    onAction: async (action: OutboundAction) => {
+      const channelId = action.action.context.channel_id as string;
+      const messageId = action.action.context.message_id as string | undefined;
+      const channel = await client.channels.fetch(channelId);
+      if (!channel?.isTextBased()) return;
+      const textChannel = channel as import("discord.js").TextChannel;
+
+      switch (action.action.action) {
+        case "react":
+          if (messageId) {
+            const m = await textChannel.messages.fetch(messageId);
+            await m.react(action.action.params.emoji as string);
+          }
+          break;
+        case "send_message":
+          await textChannel.send(commonMarkToDiscord(action.action.params.text as string));
+          break;
+        case "reply":
+          if (messageId) {
+            const m = await textChannel.messages.fetch(messageId);
+            await m.reply(commonMarkToDiscord(action.action.params.text as string));
+          }
+          break;
+        case "edit":
+          if (messageId) {
+            const m = await textChannel.messages.fetch(messageId);
+            await m.edit(commonMarkToDiscord(action.action.params.text as string));
+          }
+          break;
+        case "delete":
+          if (messageId) {
+            const m = await textChannel.messages.fetch(messageId);
+            await m.delete();
+          }
+          break;
+      }
+    },
+  };
+}
+
+async function handleOwnerCommand(
+  text: string,
+  bridge: BridgeHandle,
+  strings: Strings,
+  msg: DMessage,
+): Promise<void> {
+  const trimmed = text.trim();
+
+  if (trimmed.startsWith("/approve ")) {
+    const code = trimmed.slice("/approve ".length).trim();
+    const result = await bridge.approvePairing(code);
+    await msg.reply(result.success ? strings.userApproved(code) : strings.codeNotFound).catch(() => {});
+    return;
+  }
+  if (trimmed.startsWith("/reject ")) {
+    const code = trimmed.slice("/reject ".length).trim();
+    bridge.rejectPairing(code);
+    await msg.reply(strings.requestRejected).catch(() => {});
+    return;
+  }
+  if (trimmed === "/users") {
+    const users = await bridge.listUsers();
+    if (users.length === 0) {
+      await msg.reply(strings.noApprovedUsers).catch(() => {});
+      return;
+    }
+    let out = strings.approvedUsersHeader;
+    for (const u of users) {
+      const uid = u.channel_user_id ?? "?";
+      const label = u.display_name ?? uid;
+      out += strings.userListItem(label, uid, u.approved_at ?? "?");
+    }
+    out += strings.revokeHint;
+    await msg.reply(out).catch(() => {});
+    return;
+  }
+  if (trimmed.startsWith("/revoke ")) {
+    const targetId = trimmed.slice("/revoke ".length).trim();
+    const success = await bridge.revokeUser(targetId);
+    await msg.reply(success ? strings.userRevoked(targetId) : strings.userNotFound).catch(() => {});
+  }
+}

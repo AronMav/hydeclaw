@@ -1,0 +1,37 @@
+# HydeClaw agent sandbox — Python + Node.js + AI CLI tools
+# Used as the base image for per-agent Docker containers (hc-agent-{name}).
+#
+# Build:
+#   docker build -f docker/Dockerfile.sandbox -t hydeclaw-sandbox:latest .
+#
+# On Pi (ARM64):
+#   docker build -f docker/Dockerfile.sandbox -t hydeclaw-sandbox:latest .
+
+FROM node:20-slim
+
+# System deps: Python, git, common CLI tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv \
+    git curl jq ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Symlink python → python3
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
+# AI CLI tools (installed globally)
+RUN npm install -g @anthropic-ai/claude-code @google/gemini-cli 2>/dev/null || true
+
+# Ensure UID 1000 user has proper home and config dirs
+# node:20-slim already has user "node" (1000:1000)
+RUN mkdir -p /home/node/.gemini /home/node/.claude \
+    && chown -R 1000:1000 /home/node
+
+# Git credentials init script — configures git from env vars injected by engine
+COPY --chmod=755 docker/setup-git.sh /usr/local/bin/setup-git.sh
+
+USER 1000:1000
+ENV HOME=/home/node
+WORKDIR /workspace
+
+# Init script configures git credentials then keeps container alive
+ENTRYPOINT ["/usr/local/bin/setup-git.sh"]

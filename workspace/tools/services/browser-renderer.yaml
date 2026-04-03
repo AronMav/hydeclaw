@@ -1,0 +1,5 @@
+name: browser-renderer
+type: internal
+url: http://localhost:9020
+max_concurrent: 2
+healthcheck: /health

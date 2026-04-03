@@ -1,0 +1,14 @@
+name: shorten_url
+description: "Shorten a long URL via CleanURI API."
+endpoint: "https://cleanuri.com/api/v1/shorten"
+method: POST
+parameters:
+  url:
+    type: string
+    required: true
+    location: body
+    description: "Long URL to shorten"
+auth:
+  type: none
+response_transform: "$.result_url"
+status: verified

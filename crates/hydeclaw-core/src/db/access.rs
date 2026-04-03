@@ -1,0 +1,86 @@
+use anyhow::Result;
+use chrono::{DateTime, Utc};
+use sqlx::PgPool;
+
+/// Check if a channel user is in the allowed list for an agent.
+pub async fn is_user_allowed(
+    db: &PgPool,
+    agent_id: &str,
+    channel_user_id: &str,
+) -> Result<bool> {
+    let row = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(
+            SELECT 1 FROM channel_allowed_users
+            WHERE agent_id = $1 AND channel_user_id = $2
+        )",
+    )
+    .bind(agent_id)
+    .bind(channel_user_id)
+    .fetch_one(db)
+    .await?;
+    Ok(row)
+}
+
+/// Add a user to the allowed list.
+pub async fn add_allowed_user(
+    db: &PgPool,
+    agent_id: &str,
+    channel_user_id: &str,
+    display_name: Option<&str>,
+    approved_by: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO channel_allowed_users
+            (agent_id, channel_user_id, display_name, approved_by)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (agent_id, channel_user_id) DO NOTHING",
+    )
+    .bind(agent_id)
+    .bind(channel_user_id)
+    .bind(display_name)
+    .bind(approved_by)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Remove a user from the allowed list. Returns true if a row was deleted.
+pub async fn remove_allowed_user(
+    db: &PgPool,
+    agent_id: &str,
+    channel_user_id: &str,
+) -> Result<bool> {
+    let result = sqlx::query(
+        "DELETE FROM channel_allowed_users
+         WHERE agent_id = $1 AND channel_user_id = $2",
+    )
+    .bind(agent_id)
+    .bind(channel_user_id)
+    .execute(db)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// List all allowed users for an agent.
+pub async fn list_allowed_users(
+    db: &PgPool,
+    agent_id: &str,
+) -> Result<Vec<AllowedUser>> {
+    let rows = sqlx::query_as::<_, AllowedUser>(
+        "SELECT channel_user_id, display_name, approved_at
+         FROM channel_allowed_users
+         WHERE agent_id = $1
+         ORDER BY approved_at",
+    )
+    .bind(agent_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct AllowedUser {
+    pub channel_user_id: String,
+    pub display_name: Option<String>,
+    pub approved_at: DateTime<Utc>,
+}

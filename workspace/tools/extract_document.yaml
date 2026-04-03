@@ -1,0 +1,20 @@
+name: extract_document
+description: "Extract text from a document at a URL (PDF, DOCX, TXT, CSV, MD). Use when the user has attached a document and its contents need to be read."
+endpoint: "http://localhost:9011/extract-text-url"
+method: POST
+parallel: true
+parameters:
+  document_url:
+    type: string
+    required: true
+    location: body
+    description: "Document URL to extract text from"
+  max_chars:
+    type: integer
+    required: false
+    location: body
+    description: "Maximum number of characters in the response (default: 8000)"
+    default: 8000
+response_transform: "$.text"
+
+status: verified

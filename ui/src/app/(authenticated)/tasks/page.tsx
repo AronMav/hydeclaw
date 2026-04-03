@@ -1,0 +1,531 @@
+"use client";
+
+import { useState, useCallback, useRef, useEffect } from "react";
+import { apiGet } from "@/lib/api";
+import {
+  useCronJobs,
+  useCronRuns,
+  useCreateCronJob,
+  useUpdateCronJob,
+  useDeleteCronJob,
+  useRunCronJob,
+} from "@/lib/queries";
+import { useTranslation } from "@/hooks/use-translation";
+import { ErrorBanner } from "@/components/ui/error-banner";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { CronSchedulePicker } from "@/components/ui/cron-schedule-picker";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { useAuthStore } from "@/stores/auth-store";
+import { useWsSubscription } from "@/hooks/use-ws-subscription";
+import { useQueryClient } from "@tanstack/react-query";
+import { EmptyState } from "@/components/ui/empty-state";
+import { Clock, Play, Power, PowerOff, Trash2, Edit3, Plus, ChevronDown, ChevronUp, History } from "lucide-react";
+import type { CronJob, CronRun, ChannelRow } from "@/types/api";
+
+const emptyJob = { name: "", agent: "", cron: "", timezone: "UTC", task: "", silent: false, announce_to: null as { channel: string; chat_id: number } | null, jitter_secs: 0, run_once: false, run_at: null as string | null, run_at_local: "" };
+
+import { isValidCron } from "@/lib/cron";
+
+export default function CronPage() {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const { data: jobs = [], isLoading: loading, error } = useCronJobs();
+  const [actionError, setActionError] = useState("");
+  const [formOpen, setFormOpen] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [form, setForm] = useState(emptyJob);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const agents = useAuthStore((s) => s.agents);
+  const [expandedJob, setExpandedJob] = useState<string | null>(null);
+  const [agentChannels, setAgentChannels] = useState<ChannelRow[]>([]);
+  const [toolPolicyAllow, setToolPolicyAllow] = useState("");
+  const [toolPolicyDeny, setToolPolicyDeny] = useState("");
+
+  const createJob = useCreateCronJob();
+  const updateJob = useUpdateCronJob();
+  const deleteJob = useDeleteCronJob();
+  const runJob = useRunCronJob();
+
+  const mutating = createJob.isPending || updateJob.isPending || deleteJob.isPending || runJob.isPending;
+
+  const { data: runs = [], isLoading: runsLoading } = useCronRuns(expandedJob);
+
+  const expandedJobRef = useRef(expandedJob);
+  expandedJobRef.current = expandedJob;
+
+  const toggleHistory = useCallback((jobId: string) => {
+    if (expandedJobRef.current === jobId) {
+      setExpandedJob(null);
+    } else {
+      setExpandedJob(jobId);
+    }
+  }, []);
+
+  // Auto-refresh when a cron job completes
+  useWsSubscription("session_updated", useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ["cron"] });
+  }, [queryClient]));
+
+  // Load channels for the selected agent (for announce_to selector)
+  useEffect(() => {
+    if (!form.agent || !formOpen) return;
+    apiGet<ChannelRow[]>(`/api/agents/${form.agent}/channels`)
+      .then((channels) => setAgentChannels(Array.isArray(channels) ? channels : []))
+      .catch((e) => { console.warn("[tasks] channels load failed:", e); setAgentChannels([]); });
+  }, [form.agent, formOpen]);
+
+  const openCreate = () => {
+    setEditId(null);
+    setForm({ ...emptyJob, agent: agents[0] || "" });
+    setToolPolicyAllow("");
+    setToolPolicyDeny("");
+    setFormOpen(true);
+  };
+
+  const openEdit = (j: CronJob) => {
+    setEditId(j.id);
+    setForm({ name: j.name, agent: j.agent, cron: j.cron, timezone: j.timezone, task: j.task, silent: j.silent, announce_to: j.announce_to ?? null, jitter_secs: j.jitter_secs ?? 0, run_once: j.run_once, run_at: j.run_at ?? null, run_at_local: j.run_at ? new Date(j.run_at).toISOString().slice(0, 16) : "" });
+    setToolPolicyAllow((j.tool_policy?.allow ?? []).join("\n"));
+    setToolPolicyDeny((j.tool_policy?.deny ?? []).join("\n"));
+    setFormOpen(true);
+  };
+
+  const saveJob = useCallback(async () => {
+    if (!form.run_once && form.cron.trim() && !isValidCron(form.cron)) {
+      setActionError(t("cron.cron_invalid"));
+      return;
+    }
+    setActionError("");
+    const allow = toolPolicyAllow.split("\n").map((s) => s.trim()).filter(Boolean);
+    const deny = toolPolicyDeny.split("\n").map((s) => s.trim()).filter(Boolean);
+    const tool_policy = allow.length > 0 || deny.length > 0 ? { allow, deny } : undefined;
+    try {
+      if (editId) {
+        const { run_at_local, ...payload } = form;
+        await updateJob.mutateAsync({ id: editId, ...payload, tool_policy });
+      } else {
+        const { run_at_local, ...payload } = form;
+        await createJob.mutateAsync({ ...payload, tool_policy });
+      }
+      setFormOpen(false);
+    } catch (e) {
+      setActionError(`${e}`);
+    }
+  }, [form, editId, updateJob, createJob, t, toolPolicyAllow, toolPolicyDeny]);
+
+  const toggleEnabled = useCallback(async (j: CronJob) => {
+    setActionError("");
+    try {
+      await updateJob.mutateAsync({ id: j.id, enabled: !j.enabled });
+    } catch (e) {
+      setActionError(`${e}`);
+    }
+  }, [updateJob]);
+
+  const runNow = useCallback(async (id: string) => {
+    setActionError("");
+    try {
+      await runJob.mutateAsync(id);
+    } catch (e) {
+      setActionError(`${e}`);
+    }
+  }, [runJob]);
+
+  const doDelete = useCallback(async () => {
+    if (!deleteTarget) return;
+    setActionError("");
+    try {
+      await deleteJob.mutateAsync(deleteTarget);
+      setDeleteTarget(null);
+    } catch (e) {
+      setActionError(`${e}`);
+    }
+  }, [deleteTarget, deleteJob]);
+
+  const errorMessage = error ? `${error}` : actionError;
+
+  return (
+    <div className="flex-1 overflow-y-auto p-4 md:p-6 lg:p-8 selection:bg-primary/20">
+        <div className="mb-8 md:mb-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex flex-col gap-1">
+            <h2 className="font-display text-lg font-bold tracking-tight text-foreground">{t("cron.title")}</h2>
+            <span className="text-sm text-muted-foreground">
+              {t("cron.subtitle")}
+            </span>
+          </div>
+          <Button
+            onClick={openCreate}
+            className="w-full md:w-auto h-11 px-6 text-sm font-semibold transition-all duration-200 active:scale-95"
+          >
+            <Plus className="mr-2 h-4 w-4" /> {t("cron.new_task")}
+          </Button>
+        </div>
+
+        {errorMessage && <ErrorBanner error={errorMessage} />}
+
+        {jobs.length === 0 ? (
+          <EmptyState icon={Clock} text={t("cron.no_tasks")} />
+        ) : (
+          <div className="grid gap-4 md:gap-6">
+            {jobs.map((j) => (
+              <div key={j.id} className={`group relative flex flex-col md:flex-row md:items-stretch gap-4 neu-card p-5 transition-all duration-300 ${
+                j.enabled
+                  ? "hover:shadow-lg"
+                  : "opacity-70 hover:opacity-100"
+              }`}>
+                <div className="flex-1 flex flex-col justify-between min-w-0">
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <h3 className="font-mono text-base font-bold text-foreground truncate">{j.name}</h3>
+                      <Badge variant="outline" className="text-xs border-primary/40 text-primary bg-primary/5">
+                        {j.agent}
+                      </Badge>
+                      <Badge variant={j.enabled ? "default" : "secondary"} className={`text-xs ${j.enabled ? 'bg-success/20 text-success border-success/30' : 'bg-muted text-muted-foreground'}`}>
+                        {j.enabled ? t("cron.active") : t("cron.paused")}
+                      </Badge>
+                      {j.silent && (
+                        <Badge variant="outline" className="text-[9px] bg-muted/50 text-muted-foreground border-border">
+                          {t("cron.silent")}
+                        </Badge>
+                      )}
+                      {j.run_once && (
+                        <Badge variant="outline" className="text-[9px] bg-primary/5 text-primary border-primary/30">
+                          {t("tasks.once")}
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 mt-1">
+                      <Clock className="h-3.5 w-3.5 text-muted-foreground/60" />
+                      <span className="font-mono text-xs text-muted-foreground font-bold tracking-wider">{j.cron}</span>
+                      <span className="font-mono text-xs text-muted-foreground/70 uppercase tracking-wide bg-muted/50 px-2 py-0.5 rounded border border-border/50 max-w-[140px] truncate">
+                        {j.timezone}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="mt-4 rounded-lg neu-inset p-3">
+                    <p className="font-mono text-sm leading-relaxed text-foreground/80 line-clamp-2 break-words">
+                      {j.task}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2 border-t border-border/50 pt-4 md:border-t-0 md:pt-0 md:border-l md:pl-4 shrink-0 md:w-36">
+                  <div className="grid grid-cols-2 md:grid-cols-1 gap-2">
+                    <Button
+                      variant={j.enabled ? "outline" : "default"}
+                      size="sm"
+                      onClick={() => toggleEnabled(j)}
+                      disabled={mutating}
+                      className={`text-xs font-medium ${
+                        j.enabled ? "border-warning/50 text-warning hover:bg-warning/10" : "bg-primary text-primary-foreground"
+                      }`}
+                    >
+                      {j.enabled ? <><PowerOff className="h-3 w-3 mr-1.5" /> {t("cron.pause")}</> : <><Power className="h-3 w-3 mr-1.5" /> {t("cron.enable")}</>}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => runNow(j.id)}
+                      disabled={mutating || !j.enabled}
+                      className="text-xs font-medium border-success/30 text-success hover:bg-success/10"
+                    >
+                      <Play className="h-3 w-3 mr-1.5" /> {t("cron.run_now")}
+                    </Button>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => openEdit(j)}
+                      disabled={mutating}
+                      className="text-muted-foreground hover:text-primary hover:bg-primary/10"
+                    >
+                      <Edit3 className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setDeleteTarget(j.id)}
+                      disabled={mutating}
+                      className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => toggleHistory(j.id)}
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                    >
+                      <History className="h-3.5 w-3.5" />
+                      {expandedJob === j.id ? <ChevronUp className="h-3 w-3 ml-0.5" /> : <ChevronDown className="h-3 w-3 ml-0.5" />}
+                    </Button>
+                  </div>
+                </div>
+
+                {expandedJob === j.id && (
+                  <div className="w-full border-t border-border/50 pt-4 mt-2">
+                    <h4 className="text-xs font-semibold text-muted-foreground mb-3 uppercase tracking-wider">{t("cron.recent_runs")}</h4>
+                    {runsLoading ? (
+                      <div className="h-16 flex items-center justify-center">
+                        <div className="h-4 w-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+                      </div>
+                    ) : runs.length === 0 ? (
+                      <p className="text-xs text-muted-foreground/60 text-center py-4">{t("cron.no_runs")}</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {runs.map((r) => {
+                          const duration = r.finished_at
+                            ? Math.round((new Date(r.finished_at).getTime() - new Date(r.started_at).getTime()) / 1000)
+                            : null;
+                          return (
+                            <div key={r.id} className="flex items-start gap-3 p-3 rounded-lg bg-muted/30 border border-border/30">
+                              <Badge
+                                variant="outline"
+                                className={`text-[10px] shrink-0 mt-0.5 ${
+                                  r.status === "success" ? "border-success/50 text-success bg-success/10" :
+                                  r.status === "error" ? "border-destructive/50 text-destructive bg-destructive/10" :
+                                  "border-warning/50 text-warning bg-warning/10"
+                                }`}
+                              >
+                                {r.status}
+                              </Badge>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                  <span>{new Date(r.started_at).toLocaleString()}</span>
+                                  {duration !== null && <span className="font-mono">{duration}s</span>}
+                                </div>
+                                {r.error && (
+                                  <p className="text-xs text-destructive mt-1 font-mono line-clamp-2">{r.error}</p>
+                                )}
+                                {r.response_preview && (
+                                  <p className="text-xs text-foreground/70 mt-1 line-clamp-2">{r.response_preview}</p>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+      <Dialog open={formOpen} onOpenChange={(open) => { setFormOpen(open); if (!open) { setToolPolicyAllow(""); setToolPolicyDeny(""); } }}>
+        <DialogContent className="border-border rounded-xl max-w-[95vw] sm:max-w-xl max-h-[90vh] overflow-hidden p-0">
+          <DialogHeader className="p-6 border-b border-border/50">
+            <DialogTitle className="text-base font-bold text-foreground">
+              {editId ? t("cron.editing_task") : t("cron.new_task_dialog")}
+            </DialogTitle>
+          </DialogHeader>
+          <ScrollArea className="max-h-[60vh] sm:max-h-[70vh]">
+          <div className="p-6 space-y-5">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-muted-foreground ml-1">{t("cron.field_name")}</label>
+                <Input placeholder="daily_report" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="font-mono text-sm h-11" />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-muted-foreground ml-1">{t("cron.field_agent")}</label>
+                <Select value={form.agent} onValueChange={(v) => setForm({ ...form, agent: v })} disabled={!!editId}>
+                  <SelectTrigger className="font-mono text-sm h-11 w-full">
+                    <SelectValue placeholder={t("cron.select_agent")} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {agents.map((a) => (
+                      <SelectItem key={a} value={a} className="font-mono">{a}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            {/* Run once toggle */}
+            <div className="flex items-center justify-between pt-2">
+              <div className="space-y-0.5">
+                <label className="text-sm font-medium text-muted-foreground">{t("tasks.run_once")}</label>
+                <p className="text-[11px] text-muted-foreground/50">{t("tasks.run_once_description")}</p>
+              </div>
+              <Switch
+                checked={form.run_once ?? false}
+                onCheckedChange={(v) => setForm({ ...form, run_once: v })}
+              />
+            </div>
+            {form.run_once ? (
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-muted-foreground ml-1">{t("tasks.run_datetime")}</label>
+                <Input
+                  type="datetime-local"
+                  value={form.run_at_local ?? ""}
+                  onChange={(e) => setForm({
+                    ...form,
+                    run_at_local: e.target.value,
+                    run_at: e.target.value ? new Date(e.target.value).toISOString() : null,
+                  })}
+                  className="font-mono text-sm h-11"
+                />
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-muted-foreground ml-1">{t("cron.field_schedule")}</label>
+                <CronSchedulePicker
+                  value={form.cron}
+                  onChange={(v) => setForm({ ...form, cron: v })}
+                  timezone={form.timezone}
+                  onTimezoneChange={(v) => setForm({ ...form, timezone: v })}
+                  showDescription={false}
+                />
+              </div>
+            )}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-muted-foreground ml-1">{t("tasks.start_jitter")}</label>
+              <Input
+                type="number"
+                min={0}
+                max={3600}
+                placeholder="0 — no jitter"
+                value={form.jitter_secs ?? 0}
+                onChange={(e) => setForm({ ...form, jitter_secs: parseInt(e.target.value) || 0 })}
+                className="font-mono text-sm h-11"
+              />
+              <p className="text-xs text-muted-foreground/60 ml-1">
+                {t("tasks.jitter_hint")}
+              </p>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-muted-foreground ml-1">{t("cron.field_task")}</label>
+              <Textarea
+                placeholder={t("cron.task_placeholder")}
+                value={form.task}
+                onChange={(e) => setForm({ ...form, task: e.target.value })}
+                className="font-mono text-sm min-h-[120px] resize-y"
+              />
+            </div>
+
+            {/* Silent mode toggle */}
+            <div className="flex items-center justify-between pt-2">
+              <div className="space-y-0.5">
+                <label className="text-sm font-medium text-muted-foreground">{t("cron.field_silent")}</label>
+                <p className="text-[11px] text-muted-foreground/50">{t("cron.silent_hint")}</p>
+              </div>
+              <Switch
+                checked={form.silent}
+                onCheckedChange={(v) => setForm({ ...form, silent: v })}
+              />
+            </div>
+
+            {/* Announce channel selector (only when not silent) */}
+            {!form.silent && agentChannels.length > 0 && (
+              <div className="space-y-2 pt-2 border-t border-border/30">
+                <label className="text-sm font-medium text-muted-foreground">{t("cron.field_announce_channel")}</label>
+                <Select
+                  value={form.announce_to?.channel || ""}
+                  onValueChange={(chType) => {
+                    const ch = agentChannels.find((c) => c.channel_type === chType);
+                    if (ch) {
+                      setForm({ ...form, announce_to: { channel: ch.channel_type, chat_id: form.announce_to?.chat_id || 0 } });
+                    }
+                  }}
+                >
+                  <SelectTrigger className="h-9 text-sm">
+                    <SelectValue placeholder={t("cron.select_channel")} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {agentChannels.map((ch) => (
+                      <SelectItem key={ch.id} value={ch.channel_type}>
+                        <span className="flex items-center gap-2">
+                          <span className={`h-1.5 w-1.5 rounded-full ${ch.status === "running" ? "bg-success" : "bg-muted-foreground/40"}`} />
+                          {ch.display_name}
+                          <span className="text-[10px] text-muted-foreground/50 font-mono">{ch.channel_type}</span>
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {form.announce_to?.channel && (
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-muted-foreground">{t("tasks.chat_id")}</label>
+                    <Input
+                      type="number"
+                      value={form.announce_to?.chat_id || ""}
+                      onChange={(e) => setForm({ ...form, announce_to: { ...form.announce_to!, chat_id: Number(e.target.value) } })}
+                      placeholder="123456789"
+                      className="font-mono text-sm h-9"
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Tool Policy - collapsible */}
+            <details className="group border-t border-border/30 pt-3">
+              <summary className="cursor-pointer text-sm font-medium text-muted-foreground py-1 select-none list-none flex items-center gap-1">
+                <span>{t("cron.tool_policy")}</span>
+                <span className="text-xs opacity-60 ml-1">({t("common.optional")})</span>
+              </summary>
+              <div className="mt-2 space-y-3">
+                <div>
+                  <label className="text-xs text-muted-foreground">{t("cron.tool_allow")}</label>
+                  <Textarea
+                    placeholder={"memory_search\nsearxng_search"}
+                    value={toolPolicyAllow}
+                    onChange={(e) => setToolPolicyAllow(e.target.value)}
+                    rows={3}
+                    className="mt-1 font-mono text-xs"
+                  />
+                  <p className="text-xs text-muted-foreground/60 mt-1">{t("cron.tool_policy_hint")}</p>
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground">{t("cron.tool_deny")}</label>
+                  <Textarea
+                    placeholder={"workspace_write\ncode_exec"}
+                    value={toolPolicyDeny}
+                    onChange={(e) => setToolPolicyDeny(e.target.value)}
+                    rows={3}
+                    className="mt-1 font-mono text-xs"
+                  />
+                </div>
+              </div>
+            </details>
+          </div>
+          </ScrollArea>
+          <DialogFooter className="p-6 border-t border-border/50 gap-3">
+            <Button variant="ghost" onClick={() => setFormOpen(false)}>{t("common.cancel")}</Button>
+            <Button onClick={saveJob} disabled={mutating || !form.name.trim() || (!form.run_once && (!form.cron.trim() || !isValidCron(form.cron))) || (form.run_once && !form.run_at)}>
+              {editId ? t("common.save") : t("common.create")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={doDelete}
+        title={t("cron.delete_task_title")}
+        description={t("cron.delete_task_description")}
+      />
+    </div>
+  );
+}

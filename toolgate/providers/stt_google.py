@@ -1,0 +1,41 @@
+"""Google Gemini STT provider."""
+
+import base64
+
+import httpx
+
+
+class GoogleSTT:
+    name = "Google Gemini"
+
+    def __init__(self, base_url: str = "", api_key: str | None = None,
+                 model: str | None = None, options: dict | None = None):
+        self.base_url = (base_url or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+        self.api_key = api_key or ""
+        self.model = model or "gemini-2.0-flash"
+
+    async def transcribe(self, http: httpx.AsyncClient, audio_bytes: bytes,
+                         filename: str, language: str,
+                         model: str | None = None) -> str:
+        b64 = base64.b64encode(audio_bytes).decode()
+        mdl = model or self.model
+        resp = await http.post(
+            f"{self.base_url}/models/{mdl}:generateContent",
+            params={"key": self.api_key},
+            json={
+                "contents": [{
+                    "parts": [
+                        {"text": f"Transcribe this audio. Language: {language}. Return only the transcription text."},
+                        {"inline_data": {"mime_type": "audio/ogg", "data": b64}},
+                    ]
+                }],
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        candidates = data.get("candidates", [])
+        if candidates:
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if parts:
+                return parts[0].get("text", "")
+        return ""

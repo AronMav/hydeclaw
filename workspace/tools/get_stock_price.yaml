@@ -1,0 +1,14 @@
+name: get_stock_price
+description: "Current stock price on Moscow Exchange (MOEX) by ticker (e.g. SBER, GAZP, LKOH)."
+endpoint: "https://iss.moex.com/iss/engines/stock/markets/shares/securities/{ticker}.json"
+method: GET
+parallel: true
+parameters:
+  ticker:
+    type: string
+    required: true
+    location: path
+    description: "Stock ticker (SBER, GAZP, LKOH, YNDX, etc.)"
+response_transform: "$.marketdata.data"
+
+status: verified

@@ -1,0 +1,27 @@
+name: screenshot_web
+description: "Take a screenshot of a web page and send it as a photo. Use when the user asks to see what a site looks like or requests a screenshot."
+endpoint: "http://localhost:9011/web"
+method: POST
+parallel: true
+
+parameters:
+  url:
+    type: string
+    required: true
+    location: body
+    description: "Page URL to screenshot"
+  full_page:
+    type: boolean
+    required: false
+    location: body
+    description: "Screenshot the full page (not just viewport)"
+    default: false
+
+body_template: |
+  {"url": "{{url}}", "mode": "screenshot", "full_page": {{full_page}}, "timeout": 15}
+
+channel_action:
+  action: send_photo
+  data_field: "_binary"
+
+status: verified

@@ -1,0 +1,351 @@
+"use client";
+
+import React, { useRef, useState, useEffect, useCallback, useMemo, type ReactNode } from "react";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+import { useChatStore } from "@/stores/chat-store";
+import type { ChatMessage } from "@/stores/chat-store";
+import { Button } from "@/components/ui/button";
+import { BarsLoader } from "@/components/ui/loader";
+import { Skeleton } from "@/components/ui/skeleton";
+import { RoleAvatar, AgentTurnSeparator } from "./ChatThread";
+import { MessageItem } from "./MessageItem";
+import { useAuthStore } from "@/stores/auth-store";
+import { useSessions } from "@/lib/queries";
+import { ChevronDown } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { useTranslation } from "@/hooks/use-translation";
+
+// ── Animation suppression ──────────────────────────────────────────────────
+
+/**
+ * Stream-aware animation gating:
+ * - During active streaming (isStreaming=true): NO entrance animations on any message
+ * - On history load: NO animations (messages are not "new")
+ * - After stream completes: only very recent messages get a brief entrance animation
+ *   (detected by: message was created within 2s AND streaming just stopped)
+ */
+function isNewMessage(msg: ChatMessage): boolean {
+  if (!msg.createdAt) return false;
+  return Date.now() - new Date(msg.createdAt).getTime() < 2000;
+}
+
+// ── Loading skeletons ──────────────────────────────────────────────────────
+
+function MessageSkeleton() {
+  return (
+    <div className="flex gap-3 py-5 md:py-6">
+      <Skeleton className="h-8 w-8 rounded-full shrink-0" />
+      <div className="flex flex-1 flex-col gap-2">
+        <Skeleton className="h-3 w-20" />
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-3/4" />
+      </div>
+    </div>
+  );
+}
+
+function MessageListSkeleton() {
+  return (
+    <div className="mx-auto w-full max-w-4xl px-3 md:px-6 space-y-2">
+      {[1, 2, 3, 4].map((i) => (
+        <MessageSkeleton key={i} />
+      ))}
+    </div>
+  );
+}
+
+// ── Thinking indicator ──────────────────────────────────────────────────────
+
+function ThinkingMessage() {
+  const currentAgent = useChatStore((s) => s.currentAgent);
+  const pendingTarget = useChatStore((s) => s.agents[s.currentAgent]?.pendingTargetAgent);
+  const displayAgent = pendingTarget || currentAgent;
+  const agentIcons = useAuthStore((s) => s.agentIcons);
+  const agentIconUrl = displayAgent && agentIcons[displayAgent] ? `/uploads/${agentIcons[displayAgent]}` : null;
+
+  return (
+    <div className="flex gap-3 py-5 md:py-6 border-t border-border/30 dark:border-border/20 animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out">
+      <span className="message-avatar">
+        <RoleAvatar role="assistant" iconUrl={agentIconUrl} agentName={displayAgent} />
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <div className="message-header min-h-[18px] flex items-center">
+          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">
+            {displayAgent}
+          </span>
+        </div>
+        <BarsLoader size="sm" className="text-muted-foreground/40 pt-0.5" />
+      </div>
+    </div>
+  );
+}
+
+// ── Scroll-to-bottom button ─────────────────────────────────────────────────
+
+function ScrollToBottomButton({
+  isAtBottom,
+  isStreaming,
+  onClick,
+  ariaLabel,
+}: {
+  isAtBottom: boolean;
+  isStreaming: boolean;
+  onClick: () => void;
+  ariaLabel: string;
+}) {
+  if (isAtBottom) return null;
+
+  return (
+    <Button
+      variant="outline"
+      size="icon-lg"
+      onClick={onClick}
+      aria-label={ariaLabel}
+      className="absolute bottom-4 right-6 z-10 rounded-full shadow-lg transition-all duration-150 ease-out"
+    >
+      <ChevronDown className="h-5 w-5" />
+      {isStreaming && (
+        <span className="absolute -top-1 -right-1 h-3 w-3 rounded-full bg-primary animate-pulse" />
+      )}
+    </Button>
+  );
+}
+
+// ── Virtuoso Header / Footer ───────────────────────────────────────────────
+
+function VirtuosoHeader({ hiddenCount, onLoadEarlier }: { hiddenCount: number; onLoadEarlier: () => void }) {
+  const { t } = useTranslation();
+  if (hiddenCount <= 0) return null;
+  return (
+    <div className="flex items-center justify-center py-4">
+      <button
+        onClick={onLoadEarlier}
+        className="text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors border border-border/40 rounded-full px-4 py-1.5 hover:bg-muted/30"
+      >
+        {t("chat.show_earlier", { count: hiddenCount })}
+      </button>
+    </div>
+  );
+}
+
+function VirtuosoFooter({ turnLimitMessage }: { turnLimitMessage: string | null }) {
+  return (
+    <div className="mx-auto w-full max-w-4xl px-3 md:px-6 pb-4">
+      {turnLimitMessage && (
+        <div
+          data-testid="turn-limit-message"
+          className="flex items-center gap-3 rounded-lg border border-amber-500/30 bg-amber-500/5 dark:bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400 my-3 animate-in fade-in slide-in-from-bottom-2 duration-200"
+        >
+          <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
+          </svg>
+          <span>{turnLimitMessage}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Turn count selector ────────────────────────────────────────────────────
+
+function useTurnCount() {
+  return useChatStore((s) => s.agents[s.currentAgent]?.turnCount ?? 0);
+}
+
+function useTurnLimitMessage() {
+  return useChatStore((s) => s.agents[s.currentAgent]?.turnLimitMessage ?? null);
+}
+
+// ── Main MessageList component ──────────────────────────────────────────────
+
+export function MessageList({
+  messages,
+  isStreaming,
+  showThinking,
+  isLoadingHistory,
+  emptyState,
+  hiddenCount,
+  onLoadEarlier,
+}: {
+  messages: ChatMessage[];
+  isStreaming: boolean;
+  showThinking: boolean;
+  isLoadingHistory: boolean;
+  emptyState: ReactNode;
+  hiddenCount: number;
+  onLoadEarlier: () => void;
+}) {
+  const { t } = useTranslation();
+  const turnCount = useTurnCount();
+  const turnLimitMessage = useTurnLimitMessage();
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  const isAtBottomRef = useRef(true);
+  // Track whether user manually scrolled up (wheel/touch) vs content growth pushing us up
+  const userScrolledUpRef = useRef(false);
+
+  // Hoist session data so individual UserMessage components don't each subscribe
+  const currentAgent = useChatStore((s) => s.currentAgent);
+  const activeSessionId = useChatStore((s) => s.agents[s.currentAgent]?.activeSessionId ?? null);
+  const { data: sessionsData } = useSessions(currentAgent ?? "");
+  const activeSession = sessionsData?.sessions.find((s) => s.id === activeSessionId);
+  const sessionChannel = activeSession?.channel;
+  const sessionUserId = activeSession?.user_id;
+
+  // Append a virtual "thinking" item so Virtuoso's followOutput auto-scrolls to it.
+  // This is more reliable than rendering in Footer (which is outside the item list).
+  // Must be defined before effects that reference virtualItems.length.
+  const THINKING_ID = "__thinking__";
+  const virtualItems = useMemo(() => {
+    if (!showThinking) return messages;
+    const thinkingItem: ChatMessage = {
+      id: THINKING_ID,
+      role: "assistant" as const,
+      parts: [],
+      createdAt: new Date().toISOString(),
+    };
+    return [...messages, thinkingItem];
+  }, [messages, showThinking]);
+
+  // Force scroll on session switch (messages array identity changes from empty)
+  const prevLenRef = useRef(messages.length);
+  useEffect(() => {
+    const wasEmpty = prevLenRef.current === 0;
+    prevLenRef.current = messages.length;
+    if (wasEmpty && messages.length > 0) {
+      virtuosoRef.current?.scrollToIndex({ index: "LAST" });
+      isAtBottomRef.current = true;
+      setIsAtBottom(true);
+    }
+  }, [messages.length]);
+
+  // Thinking indicator is now a virtual data item — followOutput handles
+  // auto-scrolling natively when virtualItems grows. This effect only
+  // forces scroll when stream starts and Virtuoso's atBottom might be stale
+  // (textarea expansion can push us past atBottomThreshold).
+  const prevStreamingRef = useRef(isStreaming);
+  useEffect(() => {
+    const streamJustStarted = !prevStreamingRef.current && isStreaming;
+    prevStreamingRef.current = isStreaming;
+    if (streamJustStarted && virtualItems.length > 0) {
+      userScrolledUpRef.current = false; // New stream = user wants to see response
+      virtuosoRef.current?.scrollToIndex({ index: virtualItems.length - 1, behavior: "smooth" });
+    }
+  }, [isStreaming, virtualItems.length]);
+
+  const virtualItemsLengthRef = useRef(virtualItems.length);
+  virtualItemsLengthRef.current = virtualItems.length;
+
+  const scrollToBottom = useCallback(() => {
+    virtuosoRef.current?.scrollToIndex({ index: virtualItemsLengthRef.current - 1, behavior: "smooth" });
+    isAtBottomRef.current = true;
+    setIsAtBottom(true);
+  }, []);
+
+  const virtuosoComponents = useMemo(() => ({
+    Header: () => <VirtuosoHeader hiddenCount={hiddenCount} onLoadEarlier={onLoadEarlier} />,
+    Footer: () => <VirtuosoFooter turnLimitMessage={turnLimitMessage} />,
+  }), [hiddenCount, onLoadEarlier, turnLimitMessage]);
+
+  // Loading state — show skeletons while history is being fetched
+  if (isLoadingHistory && messages.length === 0) {
+    return (
+      <div className="flex flex-1 flex-col overflow-y-auto pt-14 lg:pt-0">
+        <MessageListSkeleton />
+      </div>
+    );
+  }
+
+  // Empty state
+  if (messages.length === 0 && !showThinking) {
+    return (
+      <div className="flex flex-1 flex-col overflow-y-auto pt-14 lg:pt-0">
+        {emptyState}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-1 flex-col pt-14 lg:pt-0 relative">
+      <Virtuoso
+        ref={virtuosoRef}
+        data={virtualItems}
+        computeItemKey={(index, item) => item.id}
+        defaultItemHeight={120}
+        skipAnimationFrameInResizeObserver
+        followOutput={() => {
+          // During streaming: always follow unless user explicitly scrolled up
+          if (isStreaming && !userScrolledUpRef.current) return "smooth";
+          // Not streaming: follow only if at bottom
+          return isAtBottomRef.current ? "smooth" : false;
+        }}
+        atBottomStateChange={(atBottom) => {
+          isAtBottomRef.current = atBottom;
+          setIsAtBottom(atBottom);
+          // If we reached bottom, reset user-scrolled-up flag
+          if (atBottom) userScrolledUpRef.current = false;
+        }}
+        isScrolling={(scrolling) => {
+          // Detect user-initiated scroll-up during streaming
+          // When scrolling stops and we're not at bottom during streaming = user scrolled up
+          if (!scrolling && isStreaming && !isAtBottomRef.current) {
+            userScrolledUpRef.current = true;
+          }
+        }}
+        atBottomThreshold={150}
+        initialTopMostItemIndex={messages.length > 0 ? messages.length - 1 : 0}
+        increaseViewportBy={200}
+        components={virtuosoComponents}
+        itemContent={(index, msg) => {
+          // Virtual thinking item — render the thinking indicator as a data item
+          // so Virtuoso's followOutput auto-scrolls to it
+          if (msg.id === THINKING_ID) {
+            return (
+              <div className="mx-auto w-full max-w-4xl px-3 md:px-6 py-2">
+                <ThinkingMessage />
+              </div>
+            );
+          }
+
+          const prev = index > 0 ? virtualItems[index - 1] : null;
+          const showSeparator =
+            prev !== null &&
+            prev.id !== THINKING_ID &&
+            prev.role === "assistant" &&
+            msg.role === "assistant" &&
+            prev.agentId !== msg.agentId &&
+            prev.agentId != null &&
+            msg.agentId != null;
+
+          // Only animate messages that arrived AFTER streaming stopped and are very recent
+          const isNew = !isStreaming && isNewMessage(msg);
+
+          return (
+            <div className="mx-auto w-full max-w-4xl px-3 md:px-6">
+              {showSeparator && (
+                <AgentTurnSeparator
+                  data={{ agentName: msg.agentId!, reason: "" }}
+                  animate={isNew}
+                  turnCount={!isStreaming && isNew ? turnCount : undefined}
+                />
+              )}
+              <div className={cn(
+                isNew && "animate-in fade-in slide-in-from-bottom-2 duration-200 ease-out",
+                isStreaming && index === messages.length - 1 && msg.role === "assistant" && "streaming-message",
+              )}>
+                <MessageItem message={msg} sessionChannel={sessionChannel} sessionUserId={sessionUserId} />
+              </div>
+            </div>
+          );
+        }}
+      />
+
+      <ScrollToBottomButton
+        isAtBottom={isAtBottom}
+        isStreaming={isStreaming}
+        onClick={scrollToBottom}
+        ariaLabel={t("chat.scroll_to_bottom")}
+      />
+    </div>
+  );
+}

@@ -1,0 +1,26 @@
+name: qr_generate
+description: "Generate a QR code via goqr.me API. Returns an image that is sent in the chat."
+endpoint: https://api.qrserver.com/v1/create-qr-code/
+method: GET
+parameters:
+  data:
+    type: string
+    required: true
+    location: query
+    description: "Data to encode in the QR code (URL, text, phone number, etc.)"
+  size:
+    type: string
+    location: query
+    default: "300x300"
+    description: "Image size (e.g. 300x300, 500x500)"
+  format:
+    type: string
+    location: query
+    default: "png"
+    description: "Image format (png, gif, jpeg, jpg, svg, eps)"
+channel_action:
+  action: send_photo
+  data_field: "_binary"
+auth:
+  type: none
+status: verified

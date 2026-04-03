@@ -1,0 +1,14 @@
+name: ip_lookup
+description: "IP geolocation: country, city, ISP, coordinates, organization."
+endpoint: "http://ip-api.com/json/{ip}"
+method: GET
+parameters:
+  ip:
+    type: string
+    required: true
+    location: path
+    description: "IP address to look up (e.g. 8.8.8.8)"
+response_transform: "$"
+auth:
+  type: none
+status: verified

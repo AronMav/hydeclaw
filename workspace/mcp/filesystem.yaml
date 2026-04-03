@@ -1,0 +1,7 @@
+name: mcp-filesystem
+container: mcp-filesystem
+port: 9045
+mode: on-demand
+idle_timeout: 5m
+protocol: http
+enabled: true

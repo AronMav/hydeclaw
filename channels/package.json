@@ -1,0 +1,19 @@
+{
+  "name": "hydeclaw-channels",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@slack/bolt": "^4.1.0",
+    "discord.js": "^14.16.0",
+    "grammy": "^1.30.0",
+    "irc-framework": "^4.13.0",
+    "matrix-bot-sdk": "^0.7.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0"
+  }
+}

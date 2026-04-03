@@ -1,0 +1,19 @@
+name: calendar_upcoming
+description: "Show upcoming calendar events. Defaults to the next 7 days."
+endpoint: "http://localhost:9011/calendar/upcoming"
+method: GET
+parameters:
+  days:
+    type: integer
+    required: false
+    location: query
+    description: "Number of days ahead (default: 7)"
+    default: 7
+  limit:
+    type: integer
+    required: false
+    location: query
+    description: "Maximum events"
+    default: 20
+response_transform: "$.events"
+status: draft

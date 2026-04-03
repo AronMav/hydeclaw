@@ -1,0 +1,28 @@
+name: github_pr_create
+extends: github
+description: "Create a new pull request in a GitHub repository."
+endpoint: "https://api.github.com/repos/{owner}/{repo}/pulls"
+method: POST
+parameters:
+  title:
+    type: string
+    required: true
+    location: body
+    description: "Pull request title"
+  body:
+    type: string
+    required: false
+    location: body
+    description: "PR description in Markdown"
+  head:
+    type: string
+    required: true
+    location: body
+    description: "Branch containing changes"
+  base:
+    type: string
+    required: true
+    location: body
+    description: "Branch to merge into"
+response_transform: "$"
+status: verified

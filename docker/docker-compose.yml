@@ -1,0 +1,234 @@
+services:
+  # ═══════════════════════════════════════════════════
+  # Infrastructure (always on)
+  # ═══════════════════════════════════════════════════
+  postgres:
+    image: hydeclaw-pg:17-age-pgvector
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_DB: hydeclaw
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U hydeclaw" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks: [ hydeclaw ]
+    restart: unless-stopped
+
+  # ═══════════════════════════════════════════════════
+  # Tools (always on)
+  # ═══════════════════════════════════════════════════
+  searxng:
+    image: searxng/searxng:latest
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./config/searxng:/etc/searxng
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [ hydeclaw ]
+    restart: unless-stopped
+
+  browser-renderer:
+    image: browser-renderer:latest
+    build: ./browser-renderer
+    ports:
+      - "127.0.0.1:9020:9020"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -sf http://localhost:9020/health || exit 1" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [ hydeclaw ]
+    restart: unless-stopped
+
+  # ═══════════════════════════════════════════════════
+  # MCP servers (on-demand, managed by core via bollard)
+  # ═══════════════════════════════════════════════════
+  mcp-stock-analysis:
+    container_name: mcp-stock-analysis
+    image: hydeclaw-mcp-stocks:latest
+    build: ./mcp/stock-analysis
+    ports:
+      - "9003:8000"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    profiles: [ "on-demand" ]
+
+  mcp-weather:
+    container_name: mcp-weather
+    image: hydeclaw-mcp-weather:latest
+    build: ./mcp/weather
+    ports:
+      - "9004:8000"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    profiles: [ "on-demand" ]
+
+  mcp-obsidian:
+    container_name: mcp-obsidian
+    image: hydeclaw-mcp-obsidian:latest
+    build: ./mcp/obsidian
+    ports:
+      - "9005:8000"
+    volumes:
+      - ../workspace:/workspace
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    profiles: [ "on-demand" ]
+
+  mcp-browser-cdp:
+    container_name: mcp-browser-cdp
+    image: hydeclaw-mcp-browser-cdp:latest
+    build: ./mcp/browser-cdp
+    ports:
+      - "9030:9030"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    profiles: [ "on-demand" ]
+
+  mcp-postgres:
+    container_name: mcp-postgres
+    image: hydeclaw-mcp-postgres:latest
+    build: ./mcp/postgres
+    ports:
+      - "127.0.0.1:9007:8000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/hydeclaw
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [ hydeclaw ]
+    profiles: [ "on-demand" ]
+
+  mcp-fetch:
+    container_name: mcp-fetch
+    image: hydeclaw-mcp-fetch:latest
+    build: ./mcp/fetch
+    ports:
+      - "9040:8000"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    profiles: [ "on-demand" ]
+
+  mcp-memory:
+    container_name: mcp-memory
+    image: hydeclaw-mcp-memory:latest
+    build: ./mcp/memory
+    ports:
+      - "9041:8000"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    profiles: [ "on-demand" ]
+
+  mcp-sequential-thinking:
+    container_name: mcp-sequential-thinking
+    image: hydeclaw-mcp-sequential-thinking:latest
+    build: ./mcp/sequential-thinking
+    ports:
+      - "9042:8000"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    profiles: [ "on-demand" ]
+
+  mcp-youtube-transcript:
+    container_name: mcp-youtube-transcript
+    image: hydeclaw-mcp-youtube-transcript:latest
+    build: ./mcp/youtube-transcript
+    ports:
+      - "9043:8000"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    profiles: [ "on-demand" ]
+
+  mcp-time:
+    container_name: mcp-time
+    image: hydeclaw-mcp-time:latest
+    build: ./mcp/time
+    ports:
+      - "9044:8000"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    profiles: [ "on-demand" ]
+
+  mcp-filesystem:
+    container_name: mcp-filesystem
+    image: hydeclaw-mcp-filesystem:latest
+    build: ./mcp/filesystem
+    ports:
+      - "9045:8000"
+    volumes:
+      - ~/hydeclaw/workspace:/workspace:rw
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    profiles: [ "on-demand" ]
+
+  mcp-git:
+    container_name: mcp-git
+    image: hydeclaw-mcp-git:latest
+    build: ./mcp/git
+    ports:
+      - "9046:8000"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    profiles: [ "on-demand" ]
+
+  mcp-notion:
+    container_name: mcp-notion
+    image: hydeclaw-mcp-notion:latest
+    build: ./mcp/notion
+    ports:
+      - "9048:8000"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    profiles: [ "on-demand" ]
+
+  mcp-todoist:
+    container_name: mcp-todoist
+    image: hydeclaw-mcp-todoist:latest
+    build: ./mcp/todoist
+    ports:
+      - "9049:8000"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    profiles: [ "on-demand" ]
+
+networks:
+  hydeclaw:
+    name: hydeclaw
+    driver: bridge
+
+volumes:
+  pgdata:

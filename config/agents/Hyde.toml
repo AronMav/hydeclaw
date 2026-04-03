@@ -1,0 +1,45 @@
+[agent]
+name = "Hyde"
+language = "ru"
+provider = "minimax"
+model = "minimax-m2.7"
+temperature = 0.5
+routing = []
+base = true
+
+[agent.access]
+mode = "restricted"
+owner_id = "YOUR_TELEGRAM_USER_ID"
+
+[agent.heartbeat]
+cron = "*/15 * * * *"
+timezone = "UTC"
+
+[agent.tools]
+allow = []
+deny = [
+  "workspace_delete", "workspace_rename",
+]
+allow_all = true
+deny_all_others = false
+
+[agent.tools.groups]
+session_tools = true
+
+[agent.compaction]
+enabled = true
+threshold = 0.8
+preserve_tool_calls = true
+preserve_last_n = 10
+
+[agent.session]
+dm_scope = "shared"
+ttl_days = 30
+max_messages = 0
+
+[agent.tool_loop]
+max_iterations = 50
+compact_on_overflow = true
+detect_loops = true
+warn_threshold = 5
+break_threshold = 10

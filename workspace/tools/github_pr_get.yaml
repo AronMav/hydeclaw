@@ -1,0 +1,13 @@
+name: github_pr_get
+extends: github
+description: "Get details of a specific pull request."
+endpoint: "https://api.github.com/repos/{owner}/{repo}/pulls/{pull_number}"
+method: GET
+parameters:
+  pull_number:
+    type: integer
+    required: true
+    location: path
+    description: "Pull request number"
+response_transform: "$"
+status: verified

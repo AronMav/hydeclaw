@@ -1,0 +1,8 @@
+auth:
+  type: oauth_provider
+  key: google
+headers:
+  Accept: "application/json"
+rate_limit:
+  max_calls_per_minute: 30
+tags: [google]

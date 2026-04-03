@@ -1,0 +1,92 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/hydeclaw-core",
+    "crates/hydeclaw-types",
+    "crates/hydeclaw-watchdog",
+    "crates/hydeclaw-memory-worker",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["AronMav <https://github.com/AronMav>"]
+repository = "https://github.com/AronMav/hydeclaw"
+homepage = "https://github.com/AronMav/hydeclaw"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework
+axum = { version = "0.8", features = ["ws", "multipart"] }
+tower = { version = "0.5" }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs", "set-header"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
+
+# HTTP client (rustls — no openssl dependency for cross-compilation)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots", "charset", "http2", "macos-system-configuration", "stream", "multipart"] }
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["rt"] }
+futures-core = "0.3"
+
+# Docker
+bollard = "0.18"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+toml_edit = "0.22"
+
+# Config hot-reload
+notify = "7"
+
+# HTML parsing (Link Understanding)
+scraper = "0.22"
+
+# Systemd watchdog
+sd-notify = "0.4"
+
+# Cron
+tokio-cron-scheduler = "0.13"
+cron = "0.13"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+opentelemetry = { version = "0.27", features = ["trace"] }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["tonic"] }
+tracing-opentelemetry = "0.28"
+
+# IDs and time
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Env file
+dotenv = "0.15"
+
+# Secrets vault (pure Rust — safe for ARM64 cross-compilation)
+chacha20poly1305 = "0.10"
+hex = "0.4"
+rand = "0.9"
+
+# Async traits
+async-trait = "0.1"
+
+# URL parsing
+url = "2"
+
+# Encoding
+base64 = "0.22"
+
+# Internal crates
+hydeclaw-types = { path = "crates/hydeclaw-types" }

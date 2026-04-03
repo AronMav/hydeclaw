@@ -1,0 +1,25 @@
+name: web
+description: "Read text content of web pages. mode=read (default): fast article reading via Readability. mode=render: rendering JS-heavy sites via Chromium (SPA, Smart-Lab). Use screenshot_web for screenshots."
+endpoint: "http://localhost:9011/web"
+method: POST
+
+parameters:
+  url:
+    type: string
+    required: true
+    location: body
+    description: "Web page URL"
+  mode:
+    type: string
+    required: false
+    location: body
+    description: "read (fast reading), render (JS-heavy SPA via Chromium)"
+    default: "read"
+    enum: ["read", "render"]
+  timeout:
+    type: integer
+    required: false
+    location: body
+    description: "Timeout in seconds (1-60)"
+    default: 15
+status: verified

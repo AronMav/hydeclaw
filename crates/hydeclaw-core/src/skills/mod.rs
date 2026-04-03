@@ -1,0 +1,280 @@
+pub mod evolution;
+
+/// Skill Manager — Markdown-based agent scenarios.
+///
+/// Skills are stored as Markdown files with YAML frontmatter in:
+///   workspace/skills/*.md  (shared by all agents)
+///
+/// Frontmatter format:
+/// ```yaml
+/// ---
+/// name: research-task
+/// description: Deep research on a topic with web search and summary
+/// triggers:
+///   - research
+///   - find information
+///   - explain in detail
+/// tools_required:
+///   - web_search
+///   - workspace_write
+///   - memory_search
+/// priority: 10
+/// ---
+/// ```
+///
+/// The instructions body (after the second `---`) is injected into the system prompt
+/// when a skill is matched. `tools_required` tools are prioritized, but core tools
+/// (memory, workspace, message, shell) are always available.
+use serde::Deserialize;
+use std::path::Path;
+use tokio::fs;
+
+// ── Frontmatter ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct SkillFrontmatter {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub triggers: Vec<String>,
+    #[serde(default)]
+    pub tools_required: Vec<String>,
+    /// Higher priority wins when multiple skills match. Default: 0.
+    #[serde(default)]
+    pub priority: i32,
+}
+
+// ── SkillDef ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct SkillDef {
+    pub meta: SkillFrontmatter,
+    /// Instructions body (Markdown, injected into system prompt).
+    pub instructions: String,
+}
+
+impl SkillDef {
+    /// Parse a Markdown file with YAML frontmatter.
+    /// Returns None if the file lacks valid frontmatter or fails to parse.
+    pub fn parse(content: &str) -> Option<Self> {
+        // Frontmatter is delimited by `---` on its own line
+        let content = content.trim_start();
+        if !content.starts_with("---") {
+            return None;
+        }
+        // Find the closing ---
+        let rest = &content[3..];
+        let close = rest.find("\n---")?;
+        let yaml_str = rest[..close].trim();
+        let body = rest[close + 4..].trim_start().to_string();
+
+        let meta: SkillFrontmatter = serde_yaml::from_str(yaml_str).ok()?;
+        if meta.name.is_empty() {
+            return None;
+        }
+
+        Some(SkillDef {
+            meta,
+            instructions: body,
+        })
+    }
+
+}
+
+// ── Loader ────────────────────────────────────────────────────────────────────
+
+/// Load all shared skills from the workspace skills directory.
+pub async fn load_skills(workspace_dir: &str) -> Vec<SkillDef> {
+    let skills_dir = Path::new(workspace_dir).join("skills");
+
+    let mut skills = Vec::new();
+
+    let mut read_dir = match fs::read_dir(&skills_dir).await {
+        Ok(d) => d,
+        Err(_) => return skills,
+    };
+
+    while let Ok(Some(entry)) = read_dir.next_entry().await {
+        let path = entry.path();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext != "md" {
+            continue;
+        }
+
+        let content = match fs::read_to_string(&path).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(file = %path.display(), error = %e, "failed to read skill file");
+                continue;
+            }
+        };
+
+        match SkillDef::parse(&content) {
+            Some(skill) => {
+                tracing::debug!(skill = %skill.meta.name, "loaded skill");
+                skills.push(skill);
+            }
+            None => {
+                tracing::warn!(file = %path.display(), "failed to parse skill frontmatter");
+            }
+        }
+    }
+
+    // Sort by priority descending — highest priority skills checked first
+    skills.sort_by(|a, b| b.meta.priority.cmp(&a.meta.priority));
+
+    skills
+}
+
+/// Load skills including base-only skills from workspace/skills/hyde/.
+/// Used for base agents — they see everything regular agents see plus base agent skills.
+pub async fn load_skills_for_base(workspace_dir: &str) -> Vec<SkillDef> {
+    let mut skills = load_skills(workspace_dir).await;
+
+    let base_skills_dir = Path::new(workspace_dir).join("skills").join("hyde");
+    if let Ok(mut read_dir) = fs::read_dir(&base_skills_dir).await {
+        while let Ok(Some(entry)) = read_dir.next_entry().await {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let content = match fs::read_to_string(&path).await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(file = %path.display(), error = %e, "failed to read base agent skill");
+                    continue;
+                }
+            };
+            if let Some(skill) = SkillDef::parse(&content) {
+                tracing::debug!(skill = %skill.meta.name, "loaded base agent skill");
+                skills.push(skill);
+            }
+        }
+    }
+
+    skills.sort_by(|a, b| b.meta.priority.cmp(&a.meta.priority));
+    skills
+}
+
+
+// ── Scaffold ─────────────────────────────────────────────────────────────────
+
+/// Create a skill file in the shared skills directory.
+pub async fn write_skill(
+    workspace_dir: &str,
+    name: &str,
+    frontmatter: &SkillFrontmatter,
+    instructions: &str,
+) -> anyhow::Result<()> {
+    let skills_dir = Path::new(workspace_dir).join("skills");
+    fs::create_dir_all(&skills_dir).await?;
+
+    let safe_name = name.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|', ' '], "-");
+    let path = skills_dir.join(format!("{}.md", safe_name));
+
+    let triggers_yaml = frontmatter
+        .triggers
+        .iter()
+        .map(|t| format!("  - {}", t))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let tools_yaml = frontmatter
+        .tools_required
+        .iter()
+        .map(|t| format!("  - {}", t))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let content = format!(
+        "---\nname: {}\ndescription: {}\ntriggers:\n{}\ntools_required:\n{}\npriority: {}\n---\n\n{}",
+        frontmatter.name,
+        frontmatter.description,
+        triggers_yaml,
+        tools_yaml,
+        frontmatter.priority,
+        instructions,
+    );
+
+    fs::write(&path, &content).await?;
+    tracing::info!(skill = %name, file = %path.display(), "skill written");
+    Ok(())
+}
+
+/// List skill file names in the shared skills directory.
+#[allow(dead_code)]
+pub async fn list_skills(workspace_dir: &str) -> Vec<String> {
+    let skills_dir = Path::new(workspace_dir).join("skills");
+    let mut names = Vec::new();
+
+    let mut read_dir = match fs::read_dir(&skills_dir).await {
+        Ok(d) => d,
+        Err(_) => return names,
+    };
+
+    while let Ok(Some(entry)) = read_dir.next_entry().await {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("md")
+            && let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                names.push(stem.to_string());
+            }
+    }
+
+    names.sort();
+    names
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── SkillDef::parse ───────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_valid_frontmatter_returns_some() {
+        let content = "---\nname: test-skill\ndescription: A test\ntriggers:\n  - исследуй\n  - найди\npriority: 5\n---\n\nInstructions body here.";
+        let skill = SkillDef::parse(content).expect("should parse successfully");
+        assert_eq!(skill.meta.name, "test-skill");
+        assert_eq!(skill.meta.description, "A test");
+        assert_eq!(skill.meta.triggers, vec!["исследуй", "найди"]);
+        assert_eq!(skill.meta.priority, 5);
+        assert_eq!(skill.instructions, "Instructions body here.");
+    }
+
+    #[test]
+    fn parse_no_frontmatter_returns_none() {
+        let content = "Just regular markdown without frontmatter.\n\n## Section\nSome text.";
+        assert!(SkillDef::parse(content).is_none());
+    }
+
+    #[test]
+    fn parse_empty_name_returns_none() {
+        let content = "---\nname: \ndescription: something\ntriggers:\n  - hello\n---\n\nBody.";
+        assert!(SkillDef::parse(content).is_none());
+    }
+
+    #[test]
+    fn parse_just_opening_dashes_no_closing_returns_none() {
+        let content = "---\nname: orphan\ndescription: missing closing\n";
+        assert!(SkillDef::parse(content).is_none());
+    }
+
+    #[test]
+    fn parse_minimal_frontmatter_with_defaults() {
+        let content = "---\nname: minimal\n---\n\nBody text.";
+        let skill = SkillDef::parse(content).expect("should parse");
+        assert_eq!(skill.meta.name, "minimal");
+        assert!(skill.meta.triggers.is_empty());
+        assert_eq!(skill.meta.priority, 0);
+        assert_eq!(skill.instructions, "Body text.");
+    }
+
+    #[test]
+    fn parse_leading_whitespace_before_frontmatter_is_trimmed() {
+        let content = "   \n---\nname: indented\n---\n\nBody.";
+        let skill = SkillDef::parse(content).expect("should parse despite leading whitespace");
+        assert_eq!(skill.meta.name, "indented");
+    }
+}

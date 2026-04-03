@@ -1,0 +1,82 @@
+/** Discriminated union of all WebSocket event types from HydeClaw backend. */
+
+export interface WsSessionUpdated {
+  type: "session_updated";
+  session_id: string;
+  agent: string;
+}
+
+export interface WsAgentProcessing {
+  type: "agent_processing";
+  agent: string;
+  status: "start" | "end";
+  phase?: string;
+  session_id?: string;
+  channel?: string;
+}
+
+export interface WsApprovalRequested {
+  type: "approval_requested";
+  approval_id: string;
+  agent: string;
+  tool: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface WsLog {
+  type: "log";
+  level: "ERROR" | "WARN" | "INFO" | "DEBUG";
+  target: string;
+  message: string;
+  timestamp: string;
+}
+
+export interface WsCanvasUpdate {
+  type: "canvas_update";
+  action: string;
+  agent: string;
+  content_type: string;
+  content: string;
+  title?: string;
+}
+
+export interface WsChannelsChanged {
+  type: "channels_changed";
+  agent?: string;
+}
+
+export interface WsApprovalResolved {
+  type: "approval_resolved";
+  approval_id: string;
+  agent: string;
+  status: "approved" | "rejected" | "timeout";
+}
+
+export interface WsAuditEvent {
+  type: "audit_event";
+  event_type: string;
+  agent: string;
+  details: Record<string, unknown>;
+}
+
+export interface WsPong {
+  type: "pong";
+}
+
+/** Union of all known WS event types. */
+export type WsEvent =
+  | WsSessionUpdated
+  | WsAgentProcessing
+  | WsApprovalRequested
+  | WsLog
+  | WsCanvasUpdate
+  | WsChannelsChanged
+  | WsApprovalResolved
+  | WsAuditEvent
+  | WsPong;
+
+/** All valid WS event type strings. */
+export type WsEventType = WsEvent["type"];
+
+/** Extract the event interface for a given type string. */
+export type WsEventOf<T extends WsEventType> = Extract<WsEvent, { type: T }>;

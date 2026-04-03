@@ -1,0 +1,13 @@
+name: github_release_list
+extends: github
+description: "List releases in a GitHub repository."
+endpoint: "https://api.github.com/repos/{owner}/{repo}/releases"
+method: GET
+parameters:
+  per_page:
+    type: integer
+    required: false
+    location: query
+    description: "Results per page"
+    default: 10
+status: verified

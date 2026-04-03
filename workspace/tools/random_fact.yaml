@@ -1,0 +1,11 @@
+name: random_fact
+description: "Get a random interesting fact from the Useless Facts API."
+endpoint: "https://uselessfacts.jsph.pl/api/v2/facts/random"
+method: GET
+parameters:
+  language:
+    type: string
+    location: query
+    default: "en"
+    description: "Language for the fact: en (English) or de (German)"
+status: verified

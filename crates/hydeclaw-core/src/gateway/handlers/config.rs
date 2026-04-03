@@ -1,0 +1,433 @@
+use axum::{
+    body::Body,
+    extract::{FromRequest, State},
+    http::{Request, StatusCode},
+    response::{IntoResponse, Json},
+};
+use serde_json::{json, Value};
+
+use super::super::AppState;
+
+/// Return the current canvas state for a given agent (or null if empty).
+pub(crate) async fn api_canvas_state(
+    State(state): State<AppState>,
+    axum::extract::Path(agent): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let engine = match state.get_engine(&agent).await {
+        Some(e) => e,
+        None => return Json(json!({"visible": false})).into_response(),
+    };
+    let guard = engine.canvas_state.read().await;
+    match guard.as_ref() {
+        Some(cs) => {
+            let action = if cs.content_type == "json" { "push_data" } else { "present" };
+            Json(json!({
+                "visible": true,
+                "agent": agent,
+                "action": action,
+                "content_type": cs.content_type,
+                "content": cs.content,
+                "title": cs.title,
+            })).into_response()
+        }
+        None => Json(json!({"visible": false})).into_response(),
+    }
+}
+
+pub(crate) async fn api_canvas_clear(
+    State(state): State<AppState>,
+    axum::extract::Path(agent): axum::extract::Path<String>,
+) -> StatusCode {
+    if let Some(engine) = state.get_engine(&agent).await {
+        let mut guard = engine.canvas_state.write().await;
+        *guard = None;
+    }
+    StatusCode::NO_CONTENT
+}
+
+pub(crate) async fn api_tts_voices(State(state): State<AppState>) -> impl IntoResponse {
+    let toolgate_url = {
+        let deps = state.agent_deps.read().await;
+        deps.toolgate_url.clone()
+    };
+    let Some(base) = toolgate_url else {
+        return Json(json!({"voices": []})).into_response();
+    };
+    let url = format!("{}/audio/voices", base.trim_end_matches('/'));
+    static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let client = HTTP.get_or_init(reqwest::Client::new);
+    match client.get(&url).timeout(std::time::Duration::from_secs(5)).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.json::<serde_json::Value>().await {
+                Ok(data) => Json(data).into_response(),
+                Err(_) => Json(json!({"voices": []})).into_response(),
+            }
+        }
+        _ => Json(json!({"voices": []})).into_response(),
+    }
+}
+
+/// POST /api/tts/synthesize — synthesize speech via Toolgate
+pub(crate) async fn api_tts_synthesize(
+    State(state): State<AppState>,
+    Json(body): Json<TtsSynthesizeRequest>,
+) -> impl IntoResponse {
+    let toolgate_url = {
+        let deps = state.agent_deps.read().await;
+        deps.toolgate_url.clone()
+    };
+    let Some(base) = toolgate_url else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "Toolgate URL not configured").into_response();
+    };
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/v1/audio/speech", base.trim_end_matches('/')))
+        .json(&serde_json::json!({
+            "input": body.text,
+            "voice": body.voice.unwrap_or_else(|| "alloy".to_string()),
+            "model": body.model.unwrap_or_else(|| "tts-1".to_string()),
+        }))
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let content_type = r.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("audio/mpeg")
+                .to_string();
+            let bytes = r.bytes().await.unwrap_or_default();
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, content_type)],
+                bytes,
+            ).into_response()
+        }
+        Ok(r) => {
+            let status = r.status();
+            let text = r.text().await.unwrap_or_default();
+            (StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY), text).into_response()
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("Toolgate error: {e}")).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct TtsSynthesizeRequest {
+    text: String,
+    voice: Option<String>,
+    model: Option<String>,
+}
+
+// ── Config API ──
+
+pub(crate) async fn api_get_config(State(state): State<AppState>) -> Json<Value> {
+    let config = state.shared_config.read().await;
+    let embed_dim = state.memory_store.embed_dim();
+    let embed_dim_val: Option<u32> = if embed_dim > 0 { Some(embed_dim) } else { None };
+
+    // Return config structure without sensitive values
+    Json(json!({
+        "gateway": {
+            "listen": config.gateway.listen,
+            "auth_token_env": config.gateway.auth_token_env,
+            "public_url": config.gateway.public_url,
+        },
+        "database": {
+            "url": "***hidden***",
+        },
+        "limits": {
+            "max_requests_per_minute": config.limits.max_requests_per_minute,
+            "max_tool_concurrency": config.limits.max_tool_concurrency,
+            "request_timeout_secs": config.limits.request_timeout_secs,
+            "max_agent_turns": config.limits.max_agent_turns,
+        },
+        "typing": {
+            "mode": config.typing.mode,
+        },
+        "subagents": {
+            "enabled": config.subagents.enabled,
+            "default_mode": config.subagents.default_mode,
+            "max_concurrent_in_process": config.subagents.max_concurrent_in_process,
+            "max_concurrent_docker": config.subagents.max_concurrent_docker,
+            "docker_timeout": config.subagents.docker_timeout,
+            "in_process_timeout": config.subagents.in_process_timeout,
+        },
+        "docker": {
+            "compose_file": config.docker.compose_file,
+            "rebuild_allowed": config.docker.rebuild_allowed,
+            "rebuild_timeout_secs": config.docker.rebuild_timeout_secs,
+        },
+        "tools_count": state.tools.len().await,
+        "mcp_count": config.mcp.len(),
+        "tools": state.tools.entries().await,
+        "mcp": config.mcp.keys().collect::<Vec<_>>(),
+        "memory": {
+            "enabled": config.memory.enabled,
+            "embed_dim": embed_dim_val,
+            "available": state.memory_store.is_available(),
+        },
+        "toolgate_url": state.agent_deps.read().await.toolgate_url,
+        "sandbox": {
+            "enabled": config.sandbox.enabled,
+            "image": config.sandbox.image,
+            "timeout_secs": config.sandbox.timeout_secs,
+            "memory_mb": config.sandbox.memory_mb,
+            "extra_binds": config.sandbox.extra_binds,
+        },
+    }))
+}
+
+// ── Config Update API ──
+
+#[derive(serde::Deserialize)]
+pub(crate) struct ConfigUpdatePayload {
+    toolgate_url: Option<String>,
+    embed_enabled: Option<bool>,
+    embed_dim: Option<u32>,
+    subagents_enabled: Option<bool>,
+    max_requests_per_minute: Option<u32>,
+    max_tool_concurrency: Option<u32>,
+    max_agent_turns: Option<usize>,
+    public_url: Option<String>,
+}
+
+pub(crate) async fn api_update_config(
+    State(state): State<AppState>,
+    Json(payload): Json<ConfigUpdatePayload>,
+) -> impl IntoResponse {
+    // Validate URLs (basic check)
+    for (name, url) in [
+        ("toolgate_url", &payload.toolgate_url),
+    ] {
+        if let Some(url) = url
+            && !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": format!("{} must start with http:// or https://", name)})),
+                ).into_response();
+            }
+    }
+
+    let config_path = "config/hydeclaw.toml";
+
+    // Create backup before modifying — fail if unreadable (don't risk empty restore)
+    let config_backup = match tokio::fs::read_to_string(config_path).await {
+        Ok(s) => s,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": format!("cannot read config for backup: {}", e)
+            }))).into_response();
+        }
+    };
+
+    // Update TOML config file
+    if let Err(e) = crate::config::update_service_urls(
+        "config/hydeclaw.toml",
+        payload.toolgate_url.as_deref(),
+    ) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("failed to update config file: {}", e)})),
+        ).into_response();
+    }
+
+    // Update memory config in TOML
+    if (payload.embed_enabled.is_some() || payload.embed_dim.is_some())
+        && let Err(e) = crate::config::update_memory_config(
+            "config/hydeclaw.toml",
+            payload.embed_enabled,
+            None, // embed_url removed — managed by toolgate
+            None, // embed_model removed — managed by toolgate
+            payload.embed_dim,
+        ) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("failed to update memory config: {}", e)})),
+            ).into_response();
+        }
+
+    // Update subagents config in TOML
+    if let Some(enabled) = payload.subagents_enabled
+        && let Err(e) = crate::config::update_subagents_enabled("config/hydeclaw.toml", enabled) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("failed to update subagents config: {}", e)})),
+            ).into_response();
+        }
+
+    // Update limits config in TOML
+    if (payload.max_requests_per_minute.is_some() || payload.max_tool_concurrency.is_some() || payload.max_agent_turns.is_some())
+        && let Err(e) = crate::config::update_limits_config(
+            "config/hydeclaw.toml",
+            payload.max_requests_per_minute,
+            payload.max_tool_concurrency,
+            payload.max_agent_turns,
+        )
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("failed to update limits config: {}", e)})),
+        ).into_response();
+    }
+
+    // Update public_url in TOML
+    if let Some(ref url) = payload.public_url
+        && let Err(e) = crate::config::update_public_url("config/hydeclaw.toml", url)
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("failed to update public_url config: {}", e)})),
+        ).into_response();
+    }
+
+    // Validate the written config can be fully deserialized before proceeding
+    if let Err(e) = crate::config::AppConfig::load(config_path) {
+        // Restore backup — config is broken
+        if let Err(restore_err) = tokio::fs::write(config_path, &config_backup).await {
+            tracing::error!(error = %e, restore_error = %restore_err, "config validation failed AND backup restore failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": format!("config broken AND restore failed: {}. Manual fix required.", restore_err)
+            }))).into_response();
+        }
+        tracing::error!(error = %e, "config validation failed after update, restored backup");
+        return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": format!("config validation failed, restored backup: {}", e)
+        }))).into_response();
+    }
+
+    // Update live AgentDeps
+    {
+        let mut deps = state.agent_deps.write().await;
+        if let Some(ref url) = payload.toolgate_url {
+            deps.toolgate_url = if url.is_empty() { None } else { Some(url.clone()) };
+        }
+    }
+
+    // Reload shared config from file (hot-reload)
+    match crate::config::AppConfig::load("config/hydeclaw.toml") {
+        Ok(new_config) => {
+            let mut config = state.shared_config.write().await;
+            *config = new_config;
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "config file updated but failed to reload into memory");
+        }
+    }
+
+    // Re-initialize memory store if embedding config changed
+    if payload.embed_enabled.is_some() || payload.embed_dim.is_some() {
+        tracing::info!("memory config updated — restart required to apply changes");
+    }
+
+    tracing::info!("config updated via API");
+    crate::db::audit::audit_spawn(state.db.clone(), String::new(), crate::db::audit::event_types::CONFIG_UPDATED, None, json!({"source": "api"}));
+    Json(json!({"ok": true})).into_response()
+}
+
+// ── Restart API ──
+
+pub(crate) async fn api_restart(req: Request<Body>) -> impl IntoResponse {
+    // Require explicit confirmation header to prevent accidental restarts
+    let confirmed = req.headers()
+        .get("X-Confirm-Restart")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    if !confirmed {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "missing X-Confirm-Restart: true header"}))).into_response();
+    }
+
+    let ip = crate::gateway::middleware::extract_client_ip(&req);
+    tracing::warn!(ip = %ip, "AUDIT: restart confirmed via API");
+    // Spawn a delayed exit so the response can be sent first
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        std::process::exit(1);
+    });
+    Json(json!({"ok": true, "message": "restarting..."})).into_response()
+}
+
+// ── Config Export/Import ──
+
+/// GET /api/config/export — export raw TOML configs (app + all agents).
+pub(crate) async fn api_export_config(req: Request<Body>) -> impl IntoResponse {
+    let ip = crate::gateway::middleware::extract_client_ip(&req);
+    tracing::warn!(ip = %ip, "AUDIT: config export requested");
+    let app_toml = std::fs::read_to_string("config/hydeclaw.toml").unwrap_or_default();
+    let mut agents = serde_json::Map::new();
+    if let Ok(entries) = std::fs::read_dir("config/agents") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "toml") {
+                let name = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                let content = std::fs::read_to_string(&path).unwrap_or_default();
+                agents.insert(name, Value::String(content));
+            }
+        }
+    }
+    Json(json!({
+        "app_config": app_toml,
+        "agents": agents,
+    }))
+}
+
+/// POST /api/config/import — import TOML configs (validates before writing, backs up current).
+pub(crate) async fn api_import_config(
+    req: Request<Body>,
+) -> impl IntoResponse {
+    let ip = crate::gateway::middleware::extract_client_ip(&req);
+    tracing::warn!(ip = %ip, "AUDIT: config import requested");
+    let body: Value = match axum::Json::<Value>::from_request(req, &()).await {
+        Ok(axum::Json(v)) => v,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response(),
+    };
+    // Validate app config TOML — full semantic validation, not just syntax
+    if let Some(app_toml) = body.get("app_config").and_then(|v| v.as_str()) {
+        match toml::from_str::<crate::config::AppConfig>(app_toml) {
+            Ok(parsed) => {
+                // Refuse import that removes auth token (would make gateway unauthenticated)
+                if parsed.gateway.auth_token_env.is_none() {
+                    return (StatusCode::BAD_REQUEST, Json(json!({
+                        "error": "imported config must have gateway.auth_token_env set"
+                    }))).into_response();
+                }
+            }
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({
+                    "error": format!("invalid app_config: {e}")
+                }))).into_response();
+            }
+        }
+        // Backup current
+        let _ = std::fs::copy("config/hydeclaw.toml", "config/hydeclaw.toml.bak");
+        if let Err(e) = std::fs::write("config/hydeclaw.toml", app_toml) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
+        }
+    }
+
+    // Import agent configs
+    if let Some(agents) = body.get("agents").and_then(|v| v.as_object()) {
+        let _ = std::fs::create_dir_all("config/agents");
+        for (name, content) in agents {
+            // Sanitize name to prevent path traversal
+            if name.contains('/') || name.contains('\\') || name.contains("..") || name.is_empty() {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("invalid agent name '{name}'")}))).into_response();
+            }
+            if let Some(toml_str) = content.as_str() {
+                if toml_str.parse::<toml::Table>().is_err() {
+                    return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("invalid TOML for agent '{name}'")}))).into_response();
+                }
+                let path = format!("config/agents/{name}.toml");
+                let _ = std::fs::copy(&path, format!("{path}.bak"));
+                if let Err(e) = std::fs::write(&path, toml_str) {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
+                }
+            }
+        }
+    }
+
+    Json(json!({"ok": true})).into_response()
+}

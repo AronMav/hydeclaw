@@ -1,0 +1,7 @@
+name: mcp-github
+container: mcp-github
+port: 9006
+mode: on-demand
+idle_timeout: 5m
+protocol: http
+enabled: true

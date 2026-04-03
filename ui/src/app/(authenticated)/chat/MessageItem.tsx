@@ -1,0 +1,275 @@
+"use client";
+
+import React, { memo } from "react";
+import { useChatStore } from "@/stores/chat-store";
+import { useAuthStore } from "@/stores/auth-store";
+import { useTranslation } from "@/hooks/use-translation";
+import type { ChatMessage, MessagePart, ToolPart, ToolPartState } from "@/stores/chat-store";
+import { formatMessageTime } from "@/lib/format";
+import { ChevronRight } from "lucide-react";
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
+import { BarsLoader } from "@/components/ui/loader";
+import { MessageActions } from "./MessageActions";
+import { TextPart } from "./parts/TextPart";
+import { ReasoningPart } from "./parts/ReasoningPart";
+import {
+  RoleAvatar,
+  ToolCallPartView,
+  FileDataPartView,
+  SourceUrlDataPartView,
+  RichCardDataPartView,
+} from "./ChatThread";
+
+
+// ── Tool status mapping ─────────────────────────────────────────────────────
+
+function mapToolPartState(state: ToolPartState): string {
+  switch (state) {
+    case "input-streaming":
+    case "input-available":
+      return "running";
+    case "output-available":
+      return "complete";
+    case "output-error":
+      return "error";
+    case "output-denied":
+      return "denied";
+  }
+}
+
+// ── Empty part view (loading indicator for empty assistant messages) ─────────
+
+function EmptyPartView() {
+  return <BarsLoader size="sm" className="text-muted-foreground/40 py-1" />;
+}
+
+// ── Part renderer dispatch ──────────────────────────────────────────────────
+
+function renderPart(part: MessagePart, index: number) {
+  switch (part.type) {
+    case "text":
+      return <TextPart key={index} text={part.text} />;
+    case "reasoning":
+      return <ReasoningPart key={index} text={part.text} />;
+    case "tool": {
+      const tp = part as ToolPart;
+      return (
+        <ToolCallPartView
+          key={index}
+          toolName={tp.toolName}
+          args={tp.input as Record<string, unknown>}
+          result={tp.output}
+          status={{ type: mapToolPartState(tp.state) }}
+        />
+      );
+    }
+    case "file":
+      return <FileDataPartView key={index} data={{ url: part.url, mediaType: part.mediaType }} />;
+    case "source-url":
+      return <SourceUrlDataPartView key={index} data={{ url: part.url, title: part.title }} />;
+    case "rich-card":
+      return <RichCardDataPartView key={index} data={{ cardType: part.cardType, ...part.data }} />;
+    default:
+      return null;
+  }
+}
+
+// ── Tool call grouping ─────────────────────────────────────────────────────
+
+function ToolCallGroup({ parts }: { parts: ToolPart[] }) {
+  const { t } = useTranslation();
+
+  const allComplete = parts.every((p) => p.state === "output-available");
+  const hasError = parts.some(
+    (p) => p.state === "output-error" || p.state === "output-denied"
+  );
+  const runningCount = parts.filter(
+    (p) => p.state === "input-streaming" || p.state === "input-available"
+  ).length;
+
+  return (
+    <Collapsible className="rounded-lg border border-border/50 bg-muted/10">
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors group"
+        >
+          <ChevronRight
+            className="h-4 w-4 shrink-0 transition-transform duration-200 group-data-[state=open]:rotate-90"
+          />
+          <span className="font-medium">
+            {runningCount > 0
+              ? t("chat.tools_running", { running: runningCount, total: parts.length })
+              : hasError
+                ? t("chat.tools_with_errors", { count: parts.length })
+                : t("chat.tools_used", { count: parts.length })}
+          </span>
+          {allComplete && !hasError && (
+            <span className="ml-auto text-xs text-success">{t("chat.tools_all_complete")}</span>
+          )}
+          {hasError && (
+            <span className="ml-auto text-xs text-destructive">{t("chat.tools_has_errors")}</span>
+          )}
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="border-t border-border/30 px-1 py-1 space-y-1">
+          {parts.map((tp, i) => (
+            <ToolCallPartView
+              key={i}
+              toolName={tp.toolName}
+              args={tp.input as Record<string, unknown>}
+              result={tp.output}
+              status={{ type: mapToolPartState(tp.state) }}
+            />
+          ))}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function renderPartsWithGrouping(parts: MessagePart[]) {
+  const result: (React.ReactElement | null)[] = [];
+  let i = 0;
+
+  while (i < parts.length) {
+    const part = parts[i];
+
+    if (part.type === "tool") {
+      // Collect consecutive tool parts
+      const toolRun: ToolPart[] = [];
+      while (i < parts.length && parts[i].type === "tool") {
+        toolRun.push(parts[i] as ToolPart);
+        i++;
+      }
+
+      if (toolRun.length >= 3) {
+        // Group 3+ consecutive tool calls
+        result.push(<ToolCallGroup key={`tool-group-${i}`} parts={toolRun} />);
+      } else {
+        // Render individually (1-2 tool calls)
+        toolRun.forEach((tp, j) => {
+          result.push(
+            <ToolCallPartView
+              key={`tool-${i - toolRun.length + j}`}
+              toolName={tp.toolName}
+              args={tp.input as Record<string, unknown>}
+              result={tp.output}
+              status={{ type: mapToolPartState(tp.state) }}
+            />
+          );
+        });
+      }
+    } else {
+      result.push(renderPart(part, i));
+      i++;
+    }
+  }
+
+  return result;
+}
+
+// ── User message ────────────────────────────────────────────────────────────
+
+function UserMessage({ message, sessionChannel, sessionUserId }: { message: ChatMessage; sessionChannel?: string; sessionUserId?: string }) {
+  const { t, locale } = useTranslation();
+  const agentIcons = useAuthStore((s) => s.agentIcons);
+
+  const isReadOnly = sessionChannel === "heartbeat" || sessionChannel === "cron" || sessionChannel === "inter-agent";
+
+  // Per-message agent sender via agentId prop (for inter-agent turn loop messages)
+  const senderAgentName = message.agentId
+    || (isReadOnly && sessionUserId?.startsWith("agent:") ? sessionUserId.slice(6) : null);
+  const isAgentSender = !!senderAgentName;
+  const senderIconUrl = senderAgentName && agentIcons[senderAgentName]
+    ? `/uploads/${agentIcons[senderAgentName]}`
+    : undefined;
+
+  return (
+    <div data-role="user" className="group flex gap-3 py-5 md:py-6 border-t border-border/30 dark:border-border/20 first:border-t-0">
+      <span className="message-avatar">
+        <RoleAvatar
+          role={isAgentSender ? "agent-sender" : "user"}
+          iconUrl={isAgentSender ? senderIconUrl : undefined}
+          agentName={isAgentSender ? senderAgentName : undefined}
+        />
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <div className="message-header flex items-center justify-between min-h-[18px]">
+          <div className="flex items-center gap-2">
+            <span className={`text-xs font-semibold uppercase tracking-wider ${isAgentSender ? "text-muted-foreground/70" : "text-primary"}`}>
+              {isAgentSender ? senderAgentName : t("chat.you")}
+            </span>
+            {message.createdAt && (
+              <span className="text-[10px] font-mono tabular-nums text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-opacity">
+                {formatMessageTime(message.createdAt, locale)}
+              </span>
+            )}
+          </div>
+          <MessageActions message={message} showReload={false} />
+        </div>
+        <div className="min-w-0 space-y-3">
+          {message.parts.map((part, i) => renderPart(part, i))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Assistant message ───────────────────────────────────────────────────────
+
+function AssistantMessage({ message }: { message: ChatMessage }) {
+  const { t, locale } = useTranslation();
+  const currentAgent = useChatStore((s) => s.currentAgent);
+  const agentIcons = useAuthStore((s) => s.agentIcons);
+
+  // Direct agentId from message props -- no more AgentTurnCounterContext hack
+  const agentName = message.agentId || currentAgent;
+  const agentIconUrl = agentName && agentIcons[agentName] ? `/uploads/${agentIcons[agentName]}` : null;
+
+  const hasParts = message.parts.length > 0;
+
+  return (
+    <div data-role="assistant" className="group flex gap-3 py-5 md:py-6 border-t border-border/30 dark:border-border/20 first:border-t-0">
+      <span className="message-avatar">
+        <RoleAvatar role="assistant" iconUrl={agentIconUrl} agentName={agentName} />
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <div className="message-header flex items-center justify-between min-h-[18px]">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70 truncate max-w-[120px]">
+              {agentName || t("chat.assistant")}
+            </span>
+            {message.createdAt && (
+              <span className="text-[10px] font-mono tabular-nums text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-opacity">
+                {formatMessageTime(message.createdAt, locale)}
+              </span>
+            )}
+          </div>
+          <MessageActions message={message} showReload />
+        </div>
+        <div className="min-w-0 space-y-3">
+          {hasParts ? renderPartsWithGrouping(message.parts) : <EmptyPartView />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main MessageItem ────────────────────────────────────────────────────────
+
+export const MessageItem = memo(function MessageItem({
+  message,
+  sessionChannel,
+  sessionUserId,
+}: {
+  message: ChatMessage;
+  sessionChannel?: string;
+  sessionUserId?: string;
+}) {
+  if (message.role === "user") {
+    return <UserMessage message={message} sessionChannel={sessionChannel} sessionUserId={sessionUserId} />;
+  }
+  return <AssistantMessage message={message} />;
+});

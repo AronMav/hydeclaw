@@ -1,0 +1,22 @@
+name: open_library_search
+description: "Search books via Open Library — find by title, author, or topic."
+endpoint: "https://openlibrary.org/search.json"
+method: GET
+parameters:
+  q:
+    type: string
+    required: true
+    location: query
+    description: "Search query: title, author, or topic"
+  limit:
+    type: integer
+    location: query
+    default: 5
+  language:
+    type: string
+    location: query
+    default: "rus"
+response_transform: "$.docs"
+auth:
+  type: none
+status: verified

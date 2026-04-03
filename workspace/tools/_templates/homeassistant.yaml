@@ -1,0 +1,8 @@
+auth:
+  type: bearer_env
+  key: HA_TOKEN
+headers:
+  Content-Type: "application/json"
+rate_limit:
+  max_calls_per_minute: 60
+tags: [homeassistant]

@@ -1,0 +1,69 @@
+[gateway]
+listen = "0.0.0.0:18789"
+auth_token_env = "HYDECLAW_AUTH_TOKEN"
+public_url = "http://your-server:18789"
+
+[database]
+url = "postgresql://hydeclaw:hydeclaw@localhost:5432/hydeclaw"
+
+[limits]
+max_requests_per_minute = 100
+max_tool_concurrency = 10
+
+[typing]
+mode = "instant"
+
+[subagents]
+enabled = true
+default_mode = "in-process"
+max_concurrent_in_process = 5
+max_concurrent_docker = 3
+docker_timeout = "5m"
+in_process_timeout = "2m"
+
+# ═══ Docker service management ═══
+
+[docker]
+compose_file = "docker/docker-compose.yml"
+rebuild_allowed = ["browser-renderer", "searxng"]
+rebuild_timeout_secs = 300
+
+# ═══ Native managed processes (spawned by Core, not Docker) ═══
+
+[[managed_process]]
+name = "channels"
+command = ["bun", "run", "src/index.ts"]
+working_dir = "channels"
+env_passthrough = ["HYDECLAW_AUTH_TOKEN"]
+env_extra = { HYDECLAW_CORE_WS = "ws://localhost:18789", HEALTH_PORT = "3100" }
+health_url = "http://localhost:3100/health"
+port = 3100
+memory_max = "256M"
+
+[[managed_process]]
+name = "toolgate"
+command = [".venv/bin/python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "9011", "--workers", "1", "--loop", "asyncio"]
+working_dir = "toolgate"
+env_passthrough = ["HYDECLAW_AUTH_TOKEN", "WHISPER_URL", "VISION_URL", "VISION_MODEL", "OLLAMA_API_KEY", "TTS_BACKEND_URL", "MINIMAX_API_KEY"]
+env_extra = { AUTH_TOKEN = "${HYDECLAW_AUTH_TOKEN}", INTERNAL_NETWORK = "127.0.0.0/8", CONFIG_PATH = "providers.json" }
+health_url = "http://localhost:9011/health"
+port = 9011
+memory_max = "256M"
+
+# ═══ Sandbox (code execution in agent containers) ═══
+
+[sandbox]
+enabled = true
+image = "hydeclaw-sandbox:latest"
+extra_binds = []
+
+# ═══ Memory (embedding via toolgate) ═══
+
+[memory]
+# embed_dim = 2560  # auto-detected at startup
+
+# ═══ Memory Worker (separate binary for heavy tasks) ═══
+
+[memory_worker]
+enabled = true
+poll_interval_secs = 5

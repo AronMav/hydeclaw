@@ -1,0 +1,11 @@
+name: timezone_info
+description: "Current time, date, and timezone info via WorldTimeAPI. Returns UTC offset, DST status, and datetime."
+endpoint: "https://worldtimeapi.org/api/timezone/{timezone}"
+method: GET
+parameters:
+  timezone:
+    type: string
+    required: true
+    location: path
+    description: "IANA timezone: UTC, America/New_York, Asia/Tokyo, Europe/Moscow, UTC"
+status: verified

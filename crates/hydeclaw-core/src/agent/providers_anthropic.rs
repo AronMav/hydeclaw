@@ -1,0 +1,543 @@
+//! Anthropic Messages API provider —
+//! extracted from providers.rs for readability.
+
+use super::*;
+
+// ── Anthropic Messages API Provider ──────────────────────────────────────────
+
+pub struct AnthropicProvider {
+    client: reqwest::Client,
+    streaming_client: reqwest::Client,
+    base_url: String,
+    api_key_name: String,
+    /// Vault scope for LLM_CREDENTIALS (provider UUID). When set, checked first.
+    credential_scope: Option<String>,
+    secrets: Arc<SecretsManager>,
+    model: ModelOverride,
+    temperature: f64,
+    max_tokens: Option<u32>,
+    prompt_cache: bool,
+}
+
+impl AnthropicProvider {
+    pub fn new(model: String, temperature: f64, max_tokens: Option<u32>, secrets: Arc<SecretsManager>) -> Self {
+        Self::with_options(model, temperature, max_tokens, secrets, None, None, false)
+    }
+
+    pub fn with_options(
+        model: String,
+        temperature: f64,
+        max_tokens: Option<u32>,
+        secrets: Arc<SecretsManager>,
+        base_url: Option<String>,
+        api_key_env: Option<String>,
+        prompt_cache: bool,
+    ) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_default();
+        let streaming_client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_default();
+        Self {
+            client,
+            streaming_client,
+            base_url: base_url.unwrap_or_else(|| "https://api.anthropic.com".to_string()),
+            api_key_name: api_key_env.unwrap_or_else(|| "ANTHROPIC_API_KEY".to_string()),
+            credential_scope: None,
+            secrets,
+            model: ModelOverride::new(model),
+            temperature,
+            max_tokens,
+            prompt_cache,
+        }
+    }
+
+    /// Set vault credential scope (provider UUID) for LLM_CREDENTIALS lookup.
+    pub fn with_credential_scope(mut self, scope: String) -> Self {
+        self.credential_scope = Some(scope);
+        self
+    }
+
+    async fn resolve_api_key(&self) -> Option<String> {
+        super::resolve_credential(
+            &self.secrets,
+            self.credential_scope.as_deref(),
+            &self.api_key_name,
+        ).await
+    }
+
+    fn build_request_body(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> (Option<String>, serde_json::Value) {
+        // Extract system message
+        let system_text: Option<String> = messages
+            .iter()
+            .find(|m| m.role == MessageRole::System)
+            .map(|m| m.content.clone());
+
+        // Convert messages (skip system — it's a separate field)
+        let api_messages: Vec<serde_json::Value> = messages
+            .iter()
+            .filter(|m| m.role != MessageRole::System)
+            .map(|msg| {
+                match msg.role {
+                    MessageRole::Assistant => {
+                        let has_tools = msg.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty());
+                        let has_thinking = !msg.thinking_blocks.is_empty();
+
+                        if has_tools || has_thinking {
+                            let mut content: Vec<serde_json::Value> = Vec::new();
+                            // Thinking blocks MUST come before text and tool_use (Anthropic API requirement)
+                            for tb in &msg.thinking_blocks {
+                                content.push(serde_json::json!({
+                                    "type": "thinking",
+                                    "thinking": tb.thinking,
+                                    "signature": tb.signature,
+                                }));
+                            }
+                            if !msg.content.is_empty() {
+                                content.push(serde_json::json!({"type": "text", "text": msg.content}));
+                            }
+                            if let Some(ref tool_calls) = msg.tool_calls {
+                                for tc in tool_calls {
+                                    content.push(serde_json::json!({
+                                        "type": "tool_use",
+                                        "id": tc.id,
+                                        "name": tc.name,
+                                        "input": tc.arguments,
+                                    }));
+                                }
+                            }
+                            serde_json::json!({"role": "assistant", "content": content})
+                        } else {
+                            serde_json::json!({"role": "assistant", "content": msg.content})
+                        }
+                    }
+                    MessageRole::Tool => {
+                        serde_json::json!({
+                            "role": "user",
+                            "content": [{
+                                "type": "tool_result",
+                                "tool_use_id": msg.tool_call_id.as_deref().unwrap_or(""),
+                                "content": msg.content,
+                            }]
+                        })
+                    }
+                    _ => {
+                        // User
+                        serde_json::json!({"role": "user", "content": msg.content})
+                    }
+                }
+            })
+            .collect();
+
+        let mut body = serde_json::json!({
+            "model": self.model.effective(),
+            "messages": api_messages,
+            "max_tokens": self.max_tokens.unwrap_or(8192),
+            "temperature": self.temperature,
+        });
+
+        if let Some(ref sys) = system_text {
+            if self.prompt_cache {
+                // Anthropic cache_control requires system as array of content blocks
+                body["system"] = serde_json::json!([{
+                    "type": "text",
+                    "text": sys,
+                    "cache_control": {"type": "ephemeral"}
+                }]);
+            } else {
+                body["system"] = serde_json::Value::String(sys.clone());
+            }
+        }
+
+        if !tools.is_empty() {
+            let mut tools_json: Vec<serde_json::Value> = tools
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "input_schema": t.input_schema,
+                    })
+                })
+                .collect();
+            // Add cache_control to last tool (Anthropic cache breakpoint rule)
+            if self.prompt_cache
+                && let Some(last) = tools_json.last_mut() {
+                    last["cache_control"] = serde_json::json!({"type": "ephemeral"});
+                }
+            body["tools"] = serde_json::Value::Array(tools_json);
+        }
+
+        (system_text, body)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AnthropicResponse {
+    pub(super) content: Vec<AnthropicContentBlock>,
+    pub(super) usage: Option<AnthropicUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+pub(super) enum AnthropicContentBlock {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "thinking")]
+    Thinking { thinking: String, signature: String },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AnthropicUsage {
+    pub(super) input_tokens: u32,
+    pub(super) output_tokens: u32,
+    #[serde(default)]
+    pub(super) cache_creation_input_tokens: Option<u32>,
+    #[serde(default)]
+    pub(super) cache_read_input_tokens: Option<u32>,
+}
+
+pub(super) fn parse_anthropic_response(api_resp: AnthropicResponse, model: &str) -> LlmResponse {
+    let mut content = String::new();
+    let mut tool_calls = Vec::new();
+    let mut thinking_blocks = Vec::new();
+
+    for block in api_resp.content {
+        match block {
+            AnthropicContentBlock::Text { text } => {
+                if !content.is_empty() {
+                    content.push('\n');
+                }
+                content.push_str(&text);
+            }
+            AnthropicContentBlock::Thinking { thinking, signature } => {
+                thinking_blocks.push(hydeclaw_types::ThinkingBlock { thinking, signature });
+            }
+            AnthropicContentBlock::ToolUse { id, name, input } => {
+                tool_calls.push(hydeclaw_types::ToolCall {
+                    id,
+                    name,
+                    arguments: input,
+                });
+            }
+            AnthropicContentBlock::Other => {}
+        }
+    }
+
+    let usage = api_resp.usage.map(|u| {
+        if let Some(cache_read) = u.cache_read_input_tokens {
+            tracing::info!(cache_read, cache_create = u.cache_creation_input_tokens, "anthropic cache hit");
+        }
+        hydeclaw_types::TokenUsage {
+            input_tokens: u.input_tokens,
+            output_tokens: u.output_tokens,
+        }
+    });
+
+    LlmResponse {
+        content,
+        tool_calls,
+        usage,
+        model: Some(model.to_string()),
+        provider: Some("anthropic".to_string()),
+        fallback_notice: None,
+        tools_used: vec![],
+        iterations: 0,
+        thinking_blocks,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_thinking_block() {
+        let json = serde_json::json!({
+            "content": [
+                {"type": "thinking", "thinking": "let me think", "signature": "sig_xyz"},
+                {"type": "text", "text": "The answer is 42."}
+            ],
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        });
+        let resp: AnthropicResponse = serde_json::from_value(json).unwrap();
+        let parsed = parse_anthropic_response(resp, "claude-opus-4-6");
+        assert_eq!(parsed.content, "The answer is 42.");
+        assert_eq!(parsed.thinking_blocks.len(), 1);
+        assert_eq!(parsed.thinking_blocks[0].thinking, "let me think");
+        assert_eq!(parsed.thinking_blocks[0].signature, "sig_xyz");
+    }
+
+    #[test]
+    fn thinking_block_other_not_thinking_still_dropped() {
+        let json = serde_json::json!({
+            "content": [
+                {"type": "unknown_future_type", "data": "x"},
+                {"type": "text", "text": "hi"}
+            ],
+            "usage": null
+        });
+        let resp: AnthropicResponse = serde_json::from_value(json).unwrap();
+        let parsed = parse_anthropic_response(resp, "claude-opus-4-6");
+        assert_eq!(parsed.content, "hi");
+        assert!(parsed.thinking_blocks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn build_assistant_message_with_thinking_blocks() {
+        use hydeclaw_types::{Message, MessageRole, ThinkingBlock};
+
+        let msg = Message {
+            role: MessageRole::Assistant,
+            content: "The answer is 42.".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            thinking_blocks: vec![ThinkingBlock {
+                thinking: "I need to reason carefully".to_string(),
+                signature: "sig_abc".to_string(),
+            }],
+        };
+        let messages = vec![msg];
+
+        // Build using a minimal provider (no actual API call needed)
+        let secrets = Arc::new(SecretsManager::new_noop());
+        let provider = AnthropicProvider::new(
+            "claude-opus-4-6".to_string(),
+            1.0,
+            Some(1024),
+            secrets,
+        );
+        let (_, body) = provider.build_request_body(&messages, &[]);
+        let api_messages = body["messages"].as_array().unwrap();
+        assert_eq!(api_messages.len(), 1);
+
+        let content = api_messages[0]["content"].as_array().unwrap();
+        // Thinking block must be first
+        assert_eq!(content[0]["type"], "thinking");
+        assert_eq!(content[0]["thinking"], "I need to reason carefully");
+        assert_eq!(content[0]["signature"], "sig_abc");
+        // Text block comes after
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[1]["text"], "The answer is 42.");
+    }
+
+    #[tokio::test]
+    async fn build_assistant_message_thinking_before_tool_use() {
+        use hydeclaw_types::{Message, MessageRole, ThinkingBlock, ToolCall};
+
+        let msg = Message {
+            role: MessageRole::Assistant,
+            content: String::new(),
+            tool_calls: Some(vec![ToolCall {
+                id: "call_1".to_string(),
+                name: "my_tool".to_string(),
+                arguments: serde_json::json!({"key": "value"}),
+            }]),
+            tool_call_id: None,
+            thinking_blocks: vec![ThinkingBlock {
+                thinking: "Should use tool".to_string(),
+                signature: "sig_xyz".to_string(),
+            }],
+        };
+        let messages = vec![msg];
+
+        let secrets = Arc::new(SecretsManager::new_noop());
+        let provider = AnthropicProvider::new(
+            "claude-opus-4-6".to_string(),
+            1.0,
+            Some(1024),
+            secrets,
+        );
+        let (_, body) = provider.build_request_body(&messages, &[]);
+        let api_messages = body["messages"].as_array().unwrap();
+        let content = api_messages[0]["content"].as_array().unwrap();
+
+        // thinking → tool_use order
+        assert_eq!(content[0]["type"], "thinking");
+        assert_eq!(content[1]["type"], "tool_use");
+        assert_eq!(content[1]["id"], "call_1");
+        assert_eq!(content[1]["name"], "my_tool");
+    }
+}
+
+#[async_trait]
+impl LlmProvider for AnthropicProvider {
+    async fn chat(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        let (_, body) = self.build_request_body(messages, tools);
+        let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
+
+        tracing::info!(
+            provider = "anthropic",
+            model = %self.model,
+            messages = messages.len(),
+            tools = tools.len(),
+            "calling Anthropic API"
+        );
+
+        let api_key = self.resolve_api_key().await;
+
+        let body_text = crate::agent::providers_http::retry_http_post_custom(
+            &self.client, &url, &body, "anthropic",
+            crate::agent::providers_http::RETRYABLE_ANTHROPIC,
+            |req| {
+                let req = req.header("anthropic-version", "2023-06-01");
+                if let Some(ref key) = api_key
+                    && !key.is_empty() {
+                        return req.header("x-api-key", key.as_str());
+                    }
+                req
+            },
+        ).await?;
+
+        let api_resp: AnthropicResponse = serde_json::from_str(&body_text).map_err(|e| {
+            let preview_len = body_text.len().min(500);
+            let preview = &body_text[..body_text.floor_char_boundary(preview_len)];
+            tracing::error!(provider = "anthropic", body_preview = %preview, "failed to parse response");
+            anyhow::anyhow!("anthropic response parse error: {}", e)
+        })?;
+
+        let effective_model = self.model.effective();
+        let response = parse_anthropic_response(api_resp, &effective_model);
+
+        tracing::info!(
+            provider = "anthropic",
+            content_len = response.content.len(),
+            tool_calls = response.tool_calls.len(),
+            input_tokens = response.usage.as_ref().map(|u| u.input_tokens).unwrap_or(0),
+            output_tokens = response.usage.as_ref().map(|u| u.output_tokens).unwrap_or(0),
+            "Anthropic response parsed"
+        );
+
+        Ok(response)
+    }
+
+    async fn chat_stream(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        chunk_tx: mpsc::UnboundedSender<String>,
+    ) -> Result<LlmResponse> {
+        if !tools.is_empty() {
+            let response = self.chat(messages, tools).await?;
+            if response.tool_calls.is_empty() {
+                let filtered = crate::agent::thinking::strip_thinking(&response.content);
+                if !filtered.is_empty() {
+                    chunk_tx.send(filtered).ok();
+                }
+            }
+            return Ok(response);
+        }
+
+        let (_, mut body) = self.build_request_body(messages, tools);
+        body["stream"] = serde_json::Value::Bool(true);
+        let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
+
+        tracing::info!(provider = "anthropic", model = %self.model, "calling Anthropic API (streaming)");
+
+        let start = std::time::Instant::now();
+        let mut req = self.streaming_client
+            .post(&url)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&body);
+        if let Some(key) = self.resolve_api_key().await
+            && !key.is_empty()
+        {
+            req = req.header("x-api-key", key.as_str());
+        }
+        let resp = req.send().await?;
+
+        if !resp.status().is_success() {
+            let err_text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("anthropic API error: {}", err_text);
+        }
+
+        let mut full_content = String::new();
+        let mut buffer = String::new();
+        let mut thinking_filter = crate::agent::thinking::ThinkingFilter::new();
+
+        use tokio_stream::StreamExt;
+        let mut byte_stream = resp.bytes_stream();
+        while let Some(chunk_result) = StreamExt::next(&mut byte_stream).await {
+            let chunk_bytes = chunk_result?;
+            buffer.push_str(&String::from_utf8_lossy(&chunk_bytes));
+
+            while let Some(line_end) = buffer.find('\n') {
+                let line = buffer[..line_end].trim().to_string();
+                buffer = buffer[line_end + 1..].to_string();
+
+                if line.is_empty() || line.starts_with(':') {
+                    continue;
+                }
+
+                if let Some(data) = line.strip_prefix("data: ") {
+                    // Anthropic SSE: content_block_delta with delta.text
+                    if let Ok(event) = serde_json::from_str::<serde_json::Value>(data)
+                        && event.get("type").and_then(|t| t.as_str()) == Some("content_block_delta")
+                            && let Some(text) = event.get("delta")
+                                .and_then(|d| d.get("text"))
+                                .and_then(|t| t.as_str())
+                            {
+                                full_content.push_str(text);
+                                let filtered = thinking_filter.process(text);
+                                if !filtered.is_empty() {
+                                    chunk_tx.send(filtered).ok();
+                                }
+                            }
+                }
+            }
+        }
+
+        let elapsed = start.elapsed();
+        tracing::info!(
+            provider = "anthropic",
+            content_len = full_content.len(),
+            elapsed_ms = elapsed.as_millis() as u64,
+            "streaming response complete"
+        );
+
+        Ok(LlmResponse {
+            content: full_content,
+            tool_calls: vec![],
+            usage: None,
+            model: Some(self.model.effective()),
+            provider: Some("anthropic".to_string()),
+            fallback_notice: None,
+            tools_used: vec![],
+            iterations: 0,
+            thinking_blocks: vec![],
+        })
+    }
+
+    fn name(&self) -> &str {
+        "anthropic"
+    }
+
+    fn set_model_override(&self, model: Option<String>) {
+        self.model.set(model);
+    }
+
+    fn current_model(&self) -> String {
+        self.model.effective()
+    }
+}

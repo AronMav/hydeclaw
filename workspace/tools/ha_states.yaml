@@ -1,0 +1,8 @@
+name: ha_states
+description: "Get smart home device states (Home Assistant). Returns entity_id, state, and attributes for all devices."
+endpoint: "http://homeassistant.local:8123/api/states"
+method: GET
+auth:
+  type: bearer_env
+  key: HA_TOKEN
+status: draft

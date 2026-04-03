@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+watchfiles
+httpx
+python-multipart
+pymupdf
+python-docx
+edge-tts
+readability-lxml
+lxml[html_clean]

@@ -1,0 +1,7 @@
+name: mcp-sequential-thinking
+container: mcp-sequential-thinking
+port: 9042
+mode: on-demand
+idle_timeout: 5m
+protocol: http
+enabled: true

@@ -1,0 +1,12 @@
+name: urban_dictionary
+description: "Look up English slang terms and their definitions from Urban Dictionary."
+endpoint: "https://api.urbandictionary.com/v0/define"
+method: GET
+parameters:
+  term:
+    type: string
+    required: true
+    location: query
+    description: "English slang term to look up"
+response_transform: "$.list[0]"
+status: verified

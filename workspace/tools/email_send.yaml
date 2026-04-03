@@ -1,0 +1,27 @@
+name: email_send
+description: "Send an email. ALWAYS confirm with the user before sending: recipient, subject, and body."
+endpoint: "http://localhost:9011/email/send"
+method: POST
+parameters:
+  to:
+    type: string
+    required: true
+    location: body
+    description: "Recipient email address"
+  subject:
+    type: string
+    required: true
+    location: body
+    description: "Email subject"
+  body:
+    type: string
+    required: true
+    location: body
+    description: "Email body text"
+  html:
+    type: boolean
+    required: false
+    location: body
+    description: "Send as HTML"
+    default: false
+status: draft

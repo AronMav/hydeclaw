@@ -1,0 +1,6 @@
+name: iss_location
+description: "Real-time International Space Station (ISS) current geographic position — latitude and longitude."
+endpoint: "http://api.open-notify.org/iss-now.json"
+method: GET
+response_transform: "$.iss_position"
+status: verified

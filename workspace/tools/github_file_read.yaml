@@ -1,0 +1,17 @@
+name: github_file_read
+extends: github
+description: "Read a file from a GitHub repository. Returns file content (base64-encoded for binary files)."
+endpoint: "https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+method: GET
+parameters:
+  path:
+    type: string
+    required: true
+    location: path
+    description: "File path in repository"
+  ref:
+    type: string
+    required: false
+    location: query
+    description: "Branch, tag, or commit SHA"
+status: verified

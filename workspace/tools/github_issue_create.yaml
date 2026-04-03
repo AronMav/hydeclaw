@@ -1,0 +1,27 @@
+name: github_issue_create
+extends: github
+description: "Create a new issue in a GitHub repository."
+endpoint: "https://api.github.com/repos/{owner}/{repo}/issues"
+method: POST
+parameters:
+  title:
+    type: string
+    required: true
+    location: body
+    description: "Issue title"
+  body:
+    type: string
+    required: false
+    location: body
+    description: "Issue body in Markdown"
+  labels:
+    type: array
+    required: false
+    location: body
+    description: "Array of label names, e.g. [\"bug\", \"enhancement\"]"
+  assignees:
+    type: array
+    required: false
+    location: body
+    description: "Array of GitHub usernames to assign"
+status: verified

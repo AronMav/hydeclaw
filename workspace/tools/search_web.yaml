@@ -1,0 +1,26 @@
+name: search_web
+description: "Web search via SearXNG — a private meta-search engine that aggregates multiple sources. Use as the primary search tool."
+endpoint: "http://localhost:8080/search"
+method: GET
+parallel: true
+parameters:
+  q:
+    type: string
+    required: true
+    location: query
+    description: "Search query"
+  language:
+    type: string
+    required: false
+    location: query
+    description: "Result language (ru, en)"
+    default: "ru"
+  format:
+    type: string
+    required: false
+    location: query
+    description: "Response format"
+    default: "json"
+response_transform: "$.results"
+
+status: verified

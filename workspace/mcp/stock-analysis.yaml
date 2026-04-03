@@ -1,0 +1,7 @@
+name: mcp-stock-analysis
+container: mcp-stock-analysis
+port: 9003
+mode: on-demand
+idle_timeout: 5m
+protocol: http
+enabled: true

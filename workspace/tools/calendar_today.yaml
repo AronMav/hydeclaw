@@ -1,0 +1,6 @@
+name: calendar_today
+description: "Show today's calendar events. Returns a list of events with subject, time, and location."
+endpoint: "http://localhost:9011/calendar/today"
+method: GET
+response_transform: "$.events"
+status: draft

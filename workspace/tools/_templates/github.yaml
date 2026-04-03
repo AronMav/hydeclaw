@@ -1,0 +1,21 @@
+auth:
+  type: oauth_provider
+  key: github
+headers:
+  Accept: "application/vnd.github+json"
+  X-GitHub-Api-Version: "2022-11-28"
+  User-Agent: "HydeClaw/1.0"
+parameters:
+  owner:
+    type: string
+    required: true
+    location: path
+    description: "Repository owner (user or organization)"
+  repo:
+    type: string
+    required: true
+    location: path
+    description: "Repository name"
+rate_limit:
+  max_calls_per_minute: 30
+tags: [github]

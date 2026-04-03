@@ -1,0 +1,22 @@
+[Unit]
+Description=HydeClaw Core — AI Gateway
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=notify
+WatchdogSec=120
+ExecStart=%h/hydeclaw/hydeclaw-core
+WorkingDirectory=%h/hydeclaw
+EnvironmentFile=%h/hydeclaw/.env
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Resource limits
+MemoryMax=256M
+MemorySwapMax=512M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+name: github_issue_comment
+extends: github
+description: "Add a comment to an existing GitHub issue."
+endpoint: "https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/comments"
+method: POST
+parameters:
+  issue_number:
+    type: integer
+    required: true
+    location: path
+    description: "Issue number"
+  body:
+    type: string
+    required: true
+    location: body
+    description: "Comment text in Markdown"
+status: verified

@@ -1,0 +1,37 @@
+name: calendar_create
+description: "Create an event in Google Calendar. CONFIRM with the user the date, time, and subject before creating."
+endpoint: "http://localhost:9011/calendar/create"
+method: POST
+parameters:
+  summary:
+    type: string
+    required: true
+    location: body
+    description: "Event title"
+  start:
+    type: string
+    required: true
+    location: body
+    description: "Start time in ISO 8601 format (e.g. 2026-03-22T10:00:00)"
+  end:
+    type: string
+    required: true
+    location: body
+    description: "End time in ISO 8601 format (e.g. 2026-03-22T11:00:00)"
+  description:
+    type: string
+    required: false
+    location: body
+    description: "Event description"
+  location:
+    type: string
+    required: false
+    location: body
+    description: "Event location"
+  timezone:
+    type: string
+    required: false
+    location: body
+    description: "Timezone"
+    default: "UTC"
+status: draft

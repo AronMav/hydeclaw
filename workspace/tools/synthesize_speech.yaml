@@ -1,0 +1,23 @@
+name: synthesize_speech
+description: "Convert text to speech and send as a voice message. Use when the user asks to read aloud or send a voice message."
+endpoint: "http://localhost:9011/v1/audio/speech"
+method: POST
+parameters:
+  text:
+    type: string
+    required: true
+    location: body
+    description: "Text to synthesize"
+  voice:
+    type: string
+    required: false
+    location: body
+    description: "Voice for speech synthesis (Vivian, Ryan, Sophia, etc.)"
+    default: "Vivian"
+body_template: |
+  {"model": "tts-1-ru", "input": "{{text}}", "voice": "{{voice}}", "response_format": "opus"}
+channel_action:
+  action: send_voice
+  data_field: "_binary"
+
+status: verified

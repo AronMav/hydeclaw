@@ -1,0 +1,10 @@
+name: bcs_portfolio
+description: "Get portfolio from BCS World of Investments. Returns positions (stocks, bonds, currency), balances, and P&L. OAuth authorization is automatic."
+endpoint: "http://localhost:9011/bcs/portfolio"
+method: GET
+parallel: true
+required_secrets:
+  - BCS_REFRESH_TOKEN
+status: verified
+parameters: {}
+tags: ["bcs", "portfolio", "investments"]

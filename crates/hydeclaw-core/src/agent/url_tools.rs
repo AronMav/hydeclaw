@@ -1,0 +1,247 @@
+//! URL extraction and content helpers — standalone functions used by the engine.
+//!
+//! Safety note: `auto_transcribe_audio` uses `http_client` (no SSRF filtering) because
+//! attachment URLs are always from Core's `/uploads/` endpoint (localhost). The caller
+//! must ensure attachments originate from trusted internal sources.
+
+/// Append media attachment hints to the enriched text for LLM.
+pub(crate) fn enrich_with_attachments(text: &mut String, attachments: &[hydeclaw_types::MediaAttachment]) {
+    use hydeclaw_types::MediaType;
+    for att in attachments {
+        let hint = match att.media_type {
+            MediaType::Image => format!("[User attached an image: {}]", att.url),
+            MediaType::Audio => format!("[User sent a voice message: {}]", att.url),
+            MediaType::Video => format!("[User sent a video: {}]", att.url),
+            MediaType::Document => {
+                let name = att.file_name.as_deref().unwrap_or("file");
+                format!("[User attached a document \"{}\": {}]", name, att.url)
+            }
+        };
+        if text.is_empty() {
+            *text = hint;
+        } else {
+            text.push('\n');
+            text.push_str(&hint);
+        }
+    }
+}
+
+/// Auto-transcribe audio attachments via toolgate STT before sending to LLM.
+/// Downloads audio bytes from Core (localhost) then uploads to toolgate /transcribe
+/// (file upload endpoint — no SSRF check, unlike /transcribe-url).
+pub(crate) async fn auto_transcribe_audio(
+    text: &mut String,
+    attachments: &[hydeclaw_types::MediaAttachment],
+    toolgate_url: &str,
+    http_client: &reqwest::Client,
+) {
+    use hydeclaw_types::MediaType;
+    for att in attachments {
+        if att.media_type != MediaType::Audio {
+            continue;
+        }
+        // Step 1: Download audio bytes from Core uploads (localhost)
+        let audio_bytes = match http_client.get(&att.url).send().await {
+            Ok(resp) if resp.status().is_success() => match resp.bytes().await {
+                Ok(b) => b,
+                Err(e) => { tracing::warn!(error = %e, "failed to read audio bytes"); continue; }
+            },
+            Ok(resp) => { tracing::warn!(url = %att.url, status = %resp.status(), "failed to download audio"); continue; }
+            Err(e) => { tracing::warn!(error = %e, "failed to download audio from Core"); continue; }
+        };
+
+        // Step 2: Upload bytes to toolgate /transcribe (file upload, no SSRF check)
+        let url = format!("{}/transcribe", toolgate_url.trim_end_matches('/'));
+        let filename = att.url.split('/').next_back().unwrap_or("voice.ogg");
+        let part = reqwest::multipart::Part::bytes(audio_bytes.to_vec())
+            .file_name(filename.to_string())
+            .mime_str("audio/ogg")
+            .unwrap_or_else(|_| reqwest::multipart::Part::bytes(audio_bytes.to_vec()));
+        let form = reqwest::multipart::Form::new()
+            .part("file", part)
+            .text("language", "ru");
+
+        match http_client.post(&url).multipart(form).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(data) = resp.json::<serde_json::Value>().await
+                    && let Some(transcript) = data["text"].as_str()
+                        && !transcript.is_empty() {
+                            let url_hint = format!("[User sent a voice message: {}]", att.url);
+                            let replacement = format!("[User's voice message (transcribed): {}]", transcript);
+                            *text = text.replace(&url_hint, &replacement);
+                            tracing::info!(len = transcript.len(), "auto-transcribed voice message");
+                        }
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                tracing::warn!(%status, body = %body, "auto-transcribe failed");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "auto-transcribe request failed");
+            }
+        }
+    }
+}
+
+/// Extract URLs from text (deduplicated, order-preserving).
+pub(crate) fn extract_urls(text: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    text.split_whitespace()
+        .filter(|w| w.starts_with("http://") || w.starts_with("https://"))
+        .map(|w| w.trim_matches(|c: char| ",.)]}>".contains(c)).to_string())
+        .filter(|u| seen.insert(u.clone()))
+        .collect()
+}
+
+/// Extract readable text from HTML using the `scraper` crate.
+/// Returns title, meta description, and main content body.
+pub(crate) fn extract_readable_text(html: &str) -> String {
+    use scraper::{Html, Selector};
+
+    let doc = Html::parse_document(html);
+
+    // Extract <title>
+    let title = Selector::parse("title")
+        .ok()
+        .and_then(|s| doc.select(&s).next())
+        .map(|el| el.text().collect::<String>());
+
+    // Extract <meta name="description" content="...">
+    let desc = Selector::parse("meta[name=description]")
+        .ok()
+        .and_then(|s| doc.select(&s).next())
+        .and_then(|el| el.value().attr("content"))
+        .map(String::from);
+
+    // Extract main content: try article > main > [role=main] > body
+    let content_selectors = ["article", "main", "[role=main]", "body"];
+    let mut text = String::new();
+    for sel_str in content_selectors {
+        if let Ok(sel) = Selector::parse(sel_str)
+            && let Some(el) = doc.select(&sel).next() {
+                text = el
+                    .text()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                // Normalize whitespace
+                text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                if text.len() > 100 {
+                    break;
+                }
+            }
+    }
+
+    let mut result = String::new();
+    if let Some(t) = title {
+        let t = t.trim();
+        if !t.is_empty() {
+            result.push_str(&format!("Title: {}\n", t));
+        }
+    }
+    if let Some(d) = desc {
+        let d = d.trim();
+        if !d.is_empty() {
+            result.push_str(&format!("Description: {}\n\n", d));
+        }
+    }
+    result.push_str(&text);
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── extract_urls ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn extract_urls_no_urls_returns_empty() {
+        assert_eq!(extract_urls("hello world, no links here"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn extract_urls_single_http() {
+        assert_eq!(extract_urls("visit http://example.com today"), vec!["http://example.com"]);
+    }
+
+    #[test]
+    fn extract_urls_single_https() {
+        assert_eq!(extract_urls("see https://rust-lang.org for details"), vec!["https://rust-lang.org"]);
+    }
+
+    #[test]
+    fn extract_urls_deduplication() {
+        let text = "https://example.com https://example.com https://other.com";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://example.com", "https://other.com"]);
+    }
+
+    #[test]
+    fn extract_urls_trailing_punctuation_trimmed() {
+        let text = "check https://example.com, and https://other.com.";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://example.com", "https://other.com"]);
+    }
+
+    // ── enrich_with_attachments ──────────────────────────────────────────────
+
+    #[test]
+    fn enrich_with_attachments_empty_no_change() {
+        let mut text = "hello".to_string();
+        enrich_with_attachments(&mut text, &[]);
+        assert_eq!(text, "hello");
+    }
+
+    #[test]
+    fn enrich_with_attachments_single_image() {
+        let mut text = String::new();
+        let att = hydeclaw_types::MediaAttachment {
+            url: "https://example.com/img.jpg".to_string(),
+            media_type: hydeclaw_types::MediaType::Image,
+            file_name: None,
+            mime_type: None,
+            file_size: None,
+        };
+        enrich_with_attachments(&mut text, &[att]);
+        assert_eq!(text, "[User attached an image: https://example.com/img.jpg]");
+    }
+
+    #[test]
+    fn enrich_with_attachments_multiple_joined_with_newline() {
+        let mut text = "look at this".to_string();
+        let att1 = hydeclaw_types::MediaAttachment {
+            url: "https://example.com/img.jpg".to_string(),
+            media_type: hydeclaw_types::MediaType::Image,
+            file_name: None,
+            mime_type: None,
+            file_size: None,
+        };
+        let att2 = hydeclaw_types::MediaAttachment {
+            url: "https://example.com/audio.ogg".to_string(),
+            media_type: hydeclaw_types::MediaType::Audio,
+            file_name: None,
+            mime_type: None,
+            file_size: None,
+        };
+        enrich_with_attachments(&mut text, &[att1, att2]);
+        assert_eq!(
+            text,
+            "look at this\n[User attached an image: https://example.com/img.jpg]\n[User sent a voice message: https://example.com/audio.ogg]"
+        );
+    }
+
+    #[test]
+    fn enrich_with_attachments_document_with_filename() {
+        let mut text = String::new();
+        let att = hydeclaw_types::MediaAttachment {
+            url: "https://example.com/doc.pdf".to_string(),
+            media_type: hydeclaw_types::MediaType::Document,
+            file_name: Some("report.pdf".to_string()),
+            mime_type: None,
+            file_size: None,
+        };
+        enrich_with_attachments(&mut text, &[att]);
+        assert_eq!(text, "[User attached a document \"report.pdf\": https://example.com/doc.pdf]");
+    }
+}

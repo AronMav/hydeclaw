@@ -1,0 +1,14 @@
+name: search_ticker
+description: "Find a stock ticker by company name on Moscow Exchange (MOEX)."
+endpoint: "https://iss.moex.com/iss/securities.json"
+method: GET
+parallel: true
+parameters:
+  q:
+    type: string
+    required: true
+    location: query
+    description: "Company name or partial name (e.g. Sberbank, Gazprom)"
+response_transform: "$.securities.data"
+
+status: verified

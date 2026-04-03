@@ -1,0 +1,5 @@
+headers:
+  Content-Type: "application/json"
+rate_limit:
+  max_calls_per_minute: 30
+tags: [toolgate]

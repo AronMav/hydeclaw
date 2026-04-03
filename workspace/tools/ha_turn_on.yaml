@@ -1,0 +1,14 @@
+name: ha_turn_on
+description: "Turn on a smart home device. Specify entity_id (e.g. light.living_room, switch.fan, climate.thermostat)."
+endpoint: "http://homeassistant.local:8123/api/services/homeassistant/turn_on"
+method: POST
+parameters:
+  entity_id:
+    type: string
+    required: true
+    location: body
+    description: "Device ID (e.g. light.living_room, switch.kitchen)"
+auth:
+  type: bearer_env
+  key: HA_TOKEN
+status: draft

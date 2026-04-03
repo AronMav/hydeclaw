@@ -1,0 +1,13 @@
+name: github_milestone_list
+extends: github
+description: "List milestones in a GitHub repository."
+endpoint: "https://api.github.com/repos/{owner}/{repo}/milestones"
+method: GET
+parameters:
+  state:
+    type: string
+    required: false
+    location: query
+    description: "Filter: open/closed/all"
+    default: "open"
+status: verified

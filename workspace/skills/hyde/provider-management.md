@@ -1,0 +1,128 @@
+---
+name: provider-management
+description: Create, update, delete LLM and media providers via unified /api/providers API
+triggers:
+  - создай провайдера
+  - добавь провайдер
+  - подключи модель
+  - настрой провайдер
+  - provider
+tools_required:
+  - code_exec
+priority: 10
+---
+
+# Provider Management
+
+All providers (LLM and media) use the unified `/api/providers` endpoint. There are NO separate `/api/llm-providers` or `/api/media-providers` endpoints.
+
+## Provider types
+
+**LLM (type="text"):** openai, anthropic, google, minimax, deepseek, groq, together, openrouter, mistral, xai, perplexity, ollama
+
+**Media:** stt, tts, vision, imagegen, embedding — each with its own driver set (see `GET /api/provider-types`)
+
+## Create provider
+
+```bash
+curl -sf -X POST http://localhost:18789/api/providers \
+  -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "my-openai",
+    "type": "text",
+    "provider_type": "openai",
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "sk-...",
+    "default_model": "gpt-4o",
+    "enabled": true
+  }'
+```
+
+For media providers, set `type` to the capability (stt, tts, vision, imagegen, embedding) and `provider_type` to the driver name.
+
+```bash
+# Example: fal.ai image generation
+curl -sf -X POST http://localhost:18789/api/providers \
+  -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "fal-flux",
+    "type": "imagegen",
+    "provider_type": "fal",
+    "api_key": "key-here",
+    "default_model": "fal-ai/flux/schnell",
+    "enabled": true
+  }'
+```
+
+## Activate media provider
+
+After creating a media provider, set it as active for its capability:
+
+```bash
+curl -sf -X PUT http://localhost:18789/api/provider-active \
+  -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"capability": "imagegen", "provider_name": "fal-flux"}'
+```
+
+Then reload toolgate so it picks up the new config:
+
+```bash
+curl -sf -X POST http://localhost:18789/api/services/toolgate/restart \
+  -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN"
+```
+
+Wait 5 seconds, then verify:
+
+```bash
+curl -sf http://localhost:9011/health
+```
+
+The `active_providers` field should show the new provider.
+
+## Update provider
+
+```bash
+curl -sf -X PUT http://localhost:18789/api/providers/PROVIDER_UUID \
+  -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"api_key": "new-key", "default_model": "gpt-4o-mini"}'
+```
+
+UUID is required (not name). Get it from `GET /api/providers`.
+
+## Delete provider
+
+```bash
+curl -sf -X DELETE http://localhost:18789/api/providers/PROVIDER_UUID \
+  -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN"
+```
+
+## Discover models
+
+```bash
+curl -sf http://localhost:18789/api/providers/PROVIDER_UUID/models \
+  -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN"
+```
+
+Returns `{"models": [...]}` — array of strings or `{id, owned_by}` objects.
+
+## Assign LLM provider to agent
+
+After creating a text provider, assign it to an agent using the GET→modify→PUT pattern from the agent-management skill. Set `provider_connection` to the provider **name** (not UUID).
+
+## List available driver types
+
+```bash
+curl -sf http://localhost:18789/api/provider-types \
+  -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN"
+```
+
+## Checklist
+
+1. Create provider via `POST /api/providers`
+2. For media: activate via `PUT /api/provider-active` + restart toolgate
+3. For LLM: assign to agent via `provider_connection` field
+4. Verify: `GET /api/providers` shows the new record

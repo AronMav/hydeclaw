@@ -1,0 +1,279 @@
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::{IntoResponse, Json},
+};
+use serde_json::{json, Value};
+use std::collections::HashMap;
+
+use super::super::AppState;
+
+// ── Tools & Skills API ──
+
+/// GET /api/tool-definitions — all tool names available in the system (system + YAML + MCP).
+/// Used by agent tool policy UI to show individual tool names for allow/deny.
+pub(crate) async fn api_tool_definitions(State(state): State<AppState>) -> Json<Value> {
+    use std::collections::BTreeSet;
+
+    let mut names = BTreeSet::new();
+
+    // 1. System (internal) tools — static list
+    for &name in crate::agent::engine::all_system_tool_names() {
+        names.insert(name.to_string());
+    }
+
+    // 2. YAML tools from workspace
+    let yaml_tools = crate::tools::yaml_tools::load_yaml_tools(
+        crate::config::WORKSPACE_DIR, true, // include draft
+    ).await;
+    for tool in &yaml_tools {
+        names.insert(tool.name.clone());
+    }
+
+    // 3. MCP tools (if MCP registry is available)
+    let deps = state.agent_deps.read().await;
+    if let Some(ref mcp) = deps.mcp {
+        let mcp_tools = mcp.all_tool_definitions().await;
+        for tool in &mcp_tools {
+            names.insert(tool.name.clone());
+        }
+    }
+
+    let sorted: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    Json(json!({ "tools": sorted }))
+}
+
+pub(crate) async fn api_list_tools(State(state): State<AppState>) -> Json<Value> {
+    let tools = state.tools.entries().await;
+    let managed: Vec<String> = state.process_manager
+        .as_ref()
+        .map(|pm| pm.names())
+        .unwrap_or_default();
+    let tools: Vec<_> = tools.into_iter().map(|mut t| {
+        let is_managed = t.get("name")
+            .and_then(|n| n.as_str())
+            .map(|n| managed.iter().any(|m| m == n))
+            .unwrap_or(false);
+        t["managed"] = json!(is_managed);
+        t
+    }).collect();
+    Json(json!({ "tools": tools }))
+}
+
+pub(crate) async fn reload_tool_registry(state: &AppState) {
+    let map = crate::tools::service_registry::load_service_map(crate::config::WORKSPACE_DIR).await;
+    state.tools.reload(&map).await;
+}
+
+pub(crate) async fn api_tool_service_create(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    let entry: crate::tools::service_registry::ServiceFileEntry = match serde_json::from_value(body) {
+        Ok(e) => e,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response(),
+    };
+    match crate::tools::service_registry::save_service_entry(crate::config::WORKSPACE_DIR, &entry).await {
+        Ok(_) => {
+            reload_tool_registry(&state).await;
+            Json(json!({"ok": true, "name": entry.name})).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+pub(crate) async fn api_tool_service_update(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    let mut entry: crate::tools::service_registry::ServiceFileEntry = match serde_json::from_value(body) {
+        Ok(e) => e,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response(),
+    };
+    entry.name = name;
+    match crate::tools::service_registry::save_service_entry(crate::config::WORKSPACE_DIR, &entry).await {
+        Ok(_) => {
+            reload_tool_registry(&state).await;
+            Json(json!({"ok": true})).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+pub(crate) async fn api_tool_service_delete(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    match crate::tools::service_registry::delete_service_entry(crate::config::WORKSPACE_DIR, &name).await {
+        Ok(true) => {
+            reload_tool_registry(&state).await;
+            Json(json!({"ok": true})).into_response()
+        }
+        Ok(false) => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+pub(crate) async fn api_list_mcp(State(state): State<AppState>) -> Json<Value> {
+    let file_entries = crate::tools::mcp_workspace::load_mcp_entries(crate::config::MCP_DIR).await;
+
+    // Get tool counts from MCP registry cache
+    let tool_counts: HashMap<String, usize> = if let Some(ref deps) = {
+        let deps = state.agent_deps.read().await;
+        deps.mcp.clone()
+    } {
+        let cache = deps.all_tool_definitions().await;
+        // cache is a flat list; count per MCP is not directly available here,
+        // so we leave counts as null (refreshed after discover)
+        drop(cache);
+        HashMap::new()
+    } else {
+        HashMap::new()
+    };
+
+    let entries: Vec<Value> = file_entries.iter().map(|e| {
+        json!({
+            "name": e.name,
+            "url": e.url,
+            "container": e.container,
+            "port": e.port,
+            "mode": e.mode,
+            "protocol": e.protocol,
+            "enabled": e.enabled,
+            "status": null,
+            "tool_count": tool_counts.get(&e.name).copied(),
+        })
+    }).collect();
+
+    Json(json!({ "mcp": entries }))
+}
+
+/// POST /api/mcp — create a new MCP server config.
+pub(crate) async fn api_mcp_create(
+    State(state): State<AppState>,
+    Json(entry): Json<crate::config::McpFileEntry>,
+) -> impl IntoResponse {
+    use crate::tools::mcp_workspace::save_mcp_entry;
+    if let Err(e) = save_mcp_entry(crate::config::MCP_DIR, &entry).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
+    }
+    let cfg = entry.to_config();
+    if let Some(ref cm) = state.container_manager {
+        cm.add_or_update_mcp(entry.name.clone(), cfg).await;
+        if entry.mode == "persistent"
+            && let Err(e) = cm.ensure_running(&entry.name).await {
+                tracing::warn!(mcp = %entry.name, error = %e, "failed to start persistent MCP after create");
+            }
+    }
+    tracing::info!(mcp = %entry.name, "MCP server created via UI");
+    Json(json!({"ok": true})).into_response()
+}
+
+/// PUT /api/mcp/:name — update an existing MCP server config.
+pub(crate) async fn api_mcp_update(
+    State(state): State<AppState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(mut entry): Json<crate::config::McpFileEntry>,
+) -> impl IntoResponse {
+    entry.name = name.clone();
+    // Preserve enabled state from existing config — the UI doesn't send `enabled`,
+    // so serde defaults it to `true`, which would reset a disabled server on every edit.
+    // The toggle endpoint (/api/mcp/{name}/toggle) handles enabled changes separately.
+    {
+        let path = std::path::Path::new(crate::config::MCP_DIR).join(format!("{}.yaml", name));
+        if let Ok(existing_content) = tokio::fs::read_to_string(&path).await
+            && let Ok(existing) = serde_yaml::from_str::<crate::config::McpFileEntry>(&existing_content)
+        {
+            entry.enabled = existing.enabled;
+        }
+    }
+    use crate::tools::mcp_workspace::save_mcp_entry;
+    if let Err(e) = save_mcp_entry(crate::config::MCP_DIR, &entry).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
+    }
+    let cfg = entry.to_config();
+    if let Some(ref cm) = state.container_manager {
+        cm.add_or_update_mcp(name.clone(), cfg).await;
+    }
+    tracing::info!(mcp = %name, "MCP server updated via UI");
+    Json(json!({"ok": true})).into_response()
+}
+
+/// DELETE /api/mcp/:name — delete an MCP server config.
+pub(crate) async fn api_mcp_delete(
+    State(state): State<AppState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    use crate::tools::mcp_workspace::delete_mcp_entry;
+
+    if let Some(ref cm) = state.container_manager {
+        // Stop container if running (best effort)
+        let _ = cm.stop(&name).await;
+        cm.remove_mcp(&name).await;
+    }
+    // Invalidate tool cache
+    {
+        let deps = state.agent_deps.read().await;
+        if let Some(ref mcp) = deps.mcp {
+            mcp.invalidate_mcp_cache(&name).await;
+        }
+    }
+
+    match delete_mcp_entry(crate::config::MCP_DIR, &name).await {
+        Ok(true) => {
+            tracing::info!(mcp = %name, "MCP server deleted via UI");
+            Json(json!({"ok": true})).into_response()
+        }
+        Ok(false) => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+/// POST /api/mcp/:name/reload — invalidate tool cache and rediscover tools.
+pub(crate) async fn api_mcp_reload(
+    State(state): State<AppState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let deps = state.agent_deps.read().await;
+    let Some(ref mcp) = deps.mcp else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "MCP not available"}))).into_response();
+    };
+    match mcp.reload_mcp(&name).await {
+        Ok(tools) => {
+            tracing::info!(mcp = %name, tools = tools.len(), "MCP reloaded via UI");
+            Json(json!({"ok": true, "tool_count": tools.len()})).into_response()
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+/// POST /api/mcp/:name/toggle — flip enabled/disabled in YAML config.
+pub(crate) async fn api_mcp_toggle(
+    State(state): State<AppState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    use crate::tools::mcp_workspace::{load_mcp_entries, save_mcp_entry};
+    let entries = load_mcp_entries(crate::config::MCP_DIR).await;
+    let mut entry = match entries.into_iter().find(|e| e.name == name) {
+        Some(e) => e,
+        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "MCP not found"}))).into_response(),
+    };
+    entry.enabled = !entry.enabled;
+    if let Err(e) = save_mcp_entry(crate::config::MCP_DIR, &entry).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
+    }
+    // Update ContainerManager — add/remove from runtime
+    if let Some(ref cm) = state.container_manager {
+        if entry.enabled {
+            cm.add_or_update_mcp(entry.name.clone(), entry.to_config()).await;
+            if entry.mode == "persistent" {
+                cm.ensure_running(&entry.name).await.ok();
+            }
+        } else {
+            cm.remove_mcp(&entry.name).await;
+        }
+    }
+    tracing::info!(mcp = %name, enabled = entry.enabled, "MCP toggled via UI");
+    Json(json!({"ok": true, "enabled": entry.enabled})).into_response()
+}

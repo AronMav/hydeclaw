@@ -1,0 +1,25 @@
+name: email_check
+description: "Check incoming mail. Returns the latest messages (subject, sender, date, text snippet)."
+endpoint: "http://localhost:9011/email/inbox"
+method: GET
+parameters:
+  folder:
+    type: string
+    required: false
+    location: query
+    description: "Folder (INBOX, Sent, Drafts, Spam)"
+    default: "INBOX"
+  limit:
+    type: integer
+    required: false
+    location: query
+    description: "Number of messages"
+    default: 10
+  unread_only:
+    type: boolean
+    required: false
+    location: query
+    description: "Unread only"
+    default: true
+response_transform: "$.messages"
+status: draft

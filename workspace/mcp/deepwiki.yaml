@@ -1,0 +1,5 @@
+name: deepwiki
+url: https://mcp.deepwiki.com
+mode: always-on
+protocol: http
+enabled: true

@@ -1,0 +1,12 @@
+name: github_issue_get
+extends: github
+description: "Get a single issue from a GitHub repository by issue number."
+endpoint: "https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}"
+method: GET
+parameters:
+  issue_number:
+    type: integer
+    required: true
+    location: path
+    description: "Issue number"
+status: verified

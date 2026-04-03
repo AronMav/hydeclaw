@@ -1,0 +1,32 @@
+name: github_file_write
+extends: github
+description: "Create or update a file in a GitHub repository."
+endpoint: "https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+method: PUT
+parameters:
+  path:
+    type: string
+    required: true
+    location: path
+    description: "File path in repository"
+  message:
+    type: string
+    required: true
+    location: body
+    description: "Commit message"
+  content:
+    type: string
+    required: true
+    location: body
+    description: "File content, base64-encoded"
+  sha:
+    type: string
+    required: false
+    location: body
+    description: "SHA of existing file (required for updates)"
+  branch:
+    type: string
+    required: false
+    location: body
+    description: "Target branch"
+status: verified

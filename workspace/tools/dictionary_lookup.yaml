@@ -1,0 +1,16 @@
+name: dictionary_lookup
+description: "Look up a word definition using Free Dictionary API. Returns phonetics, definitions, parts of speech, and examples."
+endpoint: "https://api.dictionaryapi.dev/api/v2/entries/{lang}/{word}"
+method: GET
+parameters:
+  lang:
+    type: string
+    location: path
+    default: "en"
+    description: "Language code (en, es, fr, de, etc.)"
+  word:
+    type: string
+    required: true
+    location: path
+    description: "Word to look up"
+status: verified

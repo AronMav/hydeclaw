@@ -1,0 +1,5 @@
+name: context7
+url: https://mcp.context7.com
+mode: always-on
+protocol: http
+enabled: true

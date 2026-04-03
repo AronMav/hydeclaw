@@ -1,0 +1,23 @@
+name: crypto_price
+description: "Cryptocurrency price from CoinGecko. Returns price in specified currencies and optionally the 24-hour change percentage."
+endpoint: https://api.coingecko.com/api/v3/simple/price
+method: GET
+headers:
+  User-Agent: "HydeClaw/1.0"
+parameters:
+  ids:
+    type: string
+    required: true
+    location: query
+    description: "Coin ID: bitcoin, ethereum, solana, etc."
+  vs_currencies:
+    type: string
+    location: query
+    default: "rub,usd"
+    description: "Comma-separated list of currencies (rub, usd, eur, etc.)"
+  include_24hr_change:
+    type: string
+    location: query
+    default: "true"
+    description: "Include 24-hour change percentage (true/false)"
+status: verified
