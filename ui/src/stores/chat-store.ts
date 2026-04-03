@@ -918,7 +918,14 @@ export const useChatStore = create<ChatStore>()(
           update(agent, { streamStatus: "idle", pendingTargetAgent: null, turnCount: 0 });
         }
         saveUiState(agent);
-        // Session status is server-driven via WS agent_processing events — no optimistic update needed.
+        // SSE stream finished — clear activeSessionIds for this session so the
+        // thinking indicator stops even if WS agent_processing "end" is delayed or lost.
+        const finishedSessionId = get().agents[agent]?.activeSessionId;
+        if (finishedSessionId) {
+          get().markSessionInactive(agent, finishedSessionId);
+        }
+        // Session status is primarily server-driven via WS agent_processing events;
+        // the markSessionInactive call above is a fallback for delayed/lost WS events.
       } else if (parts.length > 0) {
         // On abort: save partial response to liveMessages.
         // Status set by caller: stopStream → "idle", stale abort → "error" (via .catch)
