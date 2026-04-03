@@ -19,40 +19,56 @@ A self-hosted AI gateway for running personal AI agents. Single native Rust bina
 
 ## Architecture
 
-```text
-  Browser · Telegram · Discord · ...
-          │  HTTP · SSE · WebSocket
-          ▼
-┌─────────────────────────────────────────────────────┐
-│                hydeclaw-core (Rust)                 │
-│                                                     │
-│  HTTP API (Axum) · SSE · WebSocket · Auth           │
-│  Agent Engine · Tool Execution · Secrets Vault      │
-│  Memory (pgvector) · Cron Scheduler · Static UI     │
-└──┬──────────┬────────────┬───────────────┬──────────┘
-   │ child    │ child      │ sqlx          │ HTTPS
-   ▼          ▼            ▼               ▼
-┌─────────┐ ┌──────────┐ ┌────────────┐ ┌────────────────────┐
-│channels/│ │toolgate/ │ │ PostgreSQL │ │   LLM Providers    │
-│  (Bun)  │ │ (Python) │ │ 17+pgvect  │ │ OpenAI · Anthropic │
-│Telegram │ │STT · TTS │ └────────────┘ │ Google · Ollama    │
-│Discord  │ │Vision    │                │ Custom HTTP · ...  │
-│Matrix   │ │ImgGen    │  Bollard ───────────────────────────┐
-│IRC/Slack│ │Embeddings│  (Docker API)                       │
-│WhatsApp │ └──────────┘               ▼                     │
-└─────────┘                 ┌─────────────────────┐          │
-                            │  Docker containers  │          │
-                            │  MCP (on-demand)    │          │
-                            │  code_exec sandbox  │          │
-                            └─────────────────────┘          │
-                                                             │
-docker-compose (infrastructure, not managed by core):        │
-  postgres · searxng · browser-renderer ◄────────────────────┘
-  + MCP images (started on-demand by core via Bollard)
+```mermaid
+graph TB
+    clients["Browser / Telegram / Discord / Matrix / IRC / Slack"]
+    clients -->|"HTTP · SSE · WebSocket"| core
 
-systemd units (separate binaries, auto-installed by core):
-  hydeclaw-watchdog      — health monitoring, alerts via core API
-  hydeclaw-memory-worker — embedding tasks direct to PostgreSQL
+    subgraph core["hydeclaw-core (Rust)"]
+        api["HTTP API (Axum) · Auth · SSE · WebSocket"]
+        engine["Agent Engine · Tool Execution"]
+        vault["Secrets Vault · Cron Scheduler"]
+        mem["Memory (pgvector) · Static UI"]
+    end
+
+    core -->|"child process"| channels
+    core -->|"child process"| toolgate
+    core -->|"sqlx"| pg
+    core -->|"HTTPS"| llm
+    core -->|"Bollard (Docker API)"| containers
+
+    subgraph channels["channels/ (Bun)"]
+        ch_list["Telegram · Discord · Matrix\nIRC · Slack · WhatsApp"]
+    end
+
+    subgraph toolgate["toolgate/ (Python)"]
+        tg_list["STT · TTS · Vision\nImageGen · Embeddings"]
+    end
+
+    subgraph pg["PostgreSQL 17 + pgvector"]
+        pg_data["sessions · messages · memory\ngraph · secrets · cron"]
+    end
+
+    subgraph llm["LLM Providers"]
+        llm_list["OpenAI · Anthropic · Google\nOllama · DeepSeek · 10 more"]
+    end
+
+    subgraph containers["Docker containers"]
+        mcp["MCP servers (on-demand)"]
+        sandbox["code_exec sandbox"]
+    end
+
+    subgraph infra["docker-compose (infrastructure)"]
+        searxng["searxng"]
+        browser["browser-renderer"]
+    end
+
+    watchdog["hydeclaw-watchdog"]
+    worker["hydeclaw-memory-worker"]
+
+    watchdog -.->|"core API"| core
+    worker -.->|"sqlx + toolgate"| pg
+    worker -.-> toolgate
 ```
 
 - **hydeclaw-core** — Rust binary: HTTP API, agent lifecycle, LLM calls, tool dispatch, memory, secrets, scheduler
