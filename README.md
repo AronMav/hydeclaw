@@ -126,8 +126,10 @@ HydeClaw is a polyglot system with a Rust core. In production it runs as **3 Rus
 
 ```mermaid
 graph TD
-    clients["Browser / Telegram / Discord / ..."]
-    clients -->|"HTTP / SSE / WebSocket"| core
+    web["Browser"]
+    web -->|"HTTP / SSE / WebSocket"| core
+    platforms["Telegram / Discord / Slack\nMatrix / IRC / WhatsApp"]
+    platforms -->|"Bot API"| channels
 
     subgraph core["hydeclaw-core (Rust)"]
         direction TB
@@ -137,7 +139,8 @@ graph TD
         scheduler["Cron Scheduler / Static UI"]
     end
 
-    core -->|"child process"| channels["channels/ (Bun)\nTelegram / Discord / Matrix\nIRC / Slack / WhatsApp"]
+    core -->|"child process"| channels["channels/ (Bun)\nChannel adapters"]
+    channels -->|"WebSocket"| core
     core -->|"child process"| toolgate["toolgate/ (Python)\nSTT / TTS / Vision\nImageGen / Embeddings"]
     core -->|"HTTPS"| llm["LLM Providers\nOpenAI / Anthropic / Google\nOllama / DeepSeek / ..."]
     core -->|"Docker API"| containers["On-demand Containers\nMCP servers / code_exec sandbox"]
@@ -153,6 +156,9 @@ graph TD
     core -->|"HTTP"| browser
 
     watchdog["hydeclaw-watchdog (Rust)"] -.->|"health checks"| core
+    watchdog -.-> pg
+    watchdog -.-> channels
+    watchdog -.-> toolgate
     worker["hydeclaw-memory-worker (Rust)"] -.-> pg
     worker -.-> toolgate
 ```
