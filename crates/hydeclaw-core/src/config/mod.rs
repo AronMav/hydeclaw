@@ -501,6 +501,8 @@ pub struct AgentToolPolicy {
 
 /// Toggle switches for internal tool groups.
 /// Disabling a group removes those tools from LLM context entirely.
+/// Supports both legacy named fields (git, tool_management, etc.) and
+/// arbitrary named groups via the `extra` map for extensibility.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ToolGroups {
     /// git_status, git_diff, git_commit, git_push, git_pull, git_ssh_key
@@ -515,6 +517,9 @@ pub struct ToolGroups {
     /// sessions_list, sessions_history, session_search, session_context, session_send, session_export
     #[serde(default = "default_true")]
     pub session_tools: bool,
+    /// Dynamic tool groups — any name can be toggled via TOML.
+    #[serde(flatten, default)]
+    pub extra: std::collections::HashMap<String, bool>,
 }
 
 impl Default for ToolGroups {
@@ -524,6 +529,21 @@ impl Default for ToolGroups {
             tool_management: true,
             skill_editing: true,
             session_tools: true,
+            extra: std::collections::HashMap::new(),
+        }
+    }
+}
+
+impl ToolGroups {
+    /// Check if a named group is enabled. Known groups use struct fields;
+    /// unknown groups check the `extra` map (default: enabled).
+    pub fn is_enabled(&self, group: &str) -> bool {
+        match group {
+            "git" => self.git,
+            "tool_management" => self.tool_management,
+            "skill_editing" => self.skill_editing,
+            "session_tools" => self.session_tools,
+            other => self.extra.get(other).copied().unwrap_or(true),
         }
     }
 }
@@ -1145,6 +1165,7 @@ model = "m2.5"
                         tool_management: true,
                         skill_editing: true,
                         session_tools: false,
+                        extra: std::collections::HashMap::new(),
                     },
                 }),
                 compaction: None,

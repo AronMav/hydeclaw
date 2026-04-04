@@ -38,14 +38,10 @@ pub fn all_system_tool_names() -> &'static [&'static str] {
 
 impl AgentEngine {
     /// Resolve tool group settings (from agent config or defaults).
-    pub(super) fn tool_groups(&self) -> &crate::config::ToolGroups {
-        static DEFAULT: crate::config::ToolGroups = crate::config::ToolGroups {
-            git: true,
-            tool_management: true,
-            skill_editing: true,
-            session_tools: true,
-        };
-        self.agent.tools.as_ref().map(|t| &t.groups).unwrap_or(&DEFAULT)
+    pub(super) fn tool_groups(&self) -> crate::config::ToolGroups {
+        self.agent.tools.as_ref()
+            .map(|t| t.groups.clone())
+            .unwrap_or_default()
     }
 
     /// Return tool definitions for internal tools available to the LLM.
