@@ -153,6 +153,7 @@ const IDLE_STREAM_RESET = {
   streamError: null as string | null,
   pendingTargetAgent: null,
   turnLimitMessage: null,
+  turnCount: 0,
 };
 
 // ── Store interface ─────────────────────────────────────────────────────────
@@ -518,6 +519,7 @@ export const useChatStore = create<ChatStore>()(
         update(agent, {
           streamStatus: "error",
           streamError: err.message || "Stream failed",
+          pendingTargetAgent: null,
         });
         saveUiState(agent);
       });
@@ -934,8 +936,10 @@ export const useChatStore = create<ChatStore>()(
           if (!st) return;
           if (!isError) {
             st.streamStatus = "idle";
+            st.streamError = null;
             st.pendingTargetAgent = null;
             st.turnCount = 0;
+            st.turnLimitMessage = null;
           }
           if (finishedSessionId) {
             st.activeSessionIds = st.activeSessionIds.filter((id: string) => id !== finishedSessionId);
