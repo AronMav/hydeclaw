@@ -161,7 +161,6 @@ impl SecretsManager {
     }
 
     /// Get a global secret value from cache only (no env fallback).
-    #[allow(dead_code)]
     pub async fn get_strict(&self, name: &str) -> Option<String> {
         self.cache.read().await.get(&(name.to_string(), String::new())).cloned()
     }
@@ -204,7 +203,6 @@ impl SecretsManager {
 
     /// Set (upsert) a per-agent scoped secret.
     /// Encrypts, stores in DB, updates cache.
-    #[allow(dead_code)]
     pub async fn set_scoped(
         &self,
         name: &str,

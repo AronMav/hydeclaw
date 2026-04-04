@@ -126,15 +126,8 @@ pub fn user_message_lang(class: &LlmErrorClass, language: &str) -> &'static str 
 }
 
 /// Format error for user display: classify + user message with warning emoji.
-/// Language defaults to Russian. Use `format_user_error_lang` for explicit language.
 pub fn format_user_error(error: &anyhow::Error) -> String {
     format!("⚠️ {}", user_message(&classify(error)))
-}
-
-/// Format error for user display with explicit language.
-#[allow(dead_code)]
-pub fn format_user_error_lang(error: &anyhow::Error, language: &str) -> String {
-    format!("⚠️ {}", user_message_lang(&classify(error), language))
 }
 
 /// Whether the error class is worth retrying at the engine level.

@@ -112,7 +112,6 @@ pub struct YamlAuth {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct YamlRateLimit {
-    #[allow(dead_code)]
     pub max_calls_per_minute: Option<u32>,
 }
 
@@ -186,8 +185,8 @@ pub struct ToolExecutionContext {
     cache: tokio::sync::Mutex<HashMap<String, CachedResponse>>,
 }
 
-#[allow(dead_code)]
 impl ToolExecutionContext {
+    #[allow(dead_code)] // Constructor currently only used in tests
     pub fn new() -> Self {
         Self {
             rate_limiters: tokio::sync::Mutex::new(HashMap::new()),
@@ -386,9 +385,9 @@ pub struct ChannelActionConfig {
 
 /// Full YAML tool definition loaded from a file.
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct YamlToolDef {
     #[serde(default)]
+    #[allow(dead_code)]
     pub extends: Option<String>,
     pub name: String,
     pub description: String,
@@ -822,17 +821,6 @@ impl YamlToolDef {
     /// Backoff base in ms.
     fn backoff_base_ms(&self) -> u64 {
         self.retry.as_ref().map(|r| r.backoff_base_ms).unwrap_or(1000)
-    }
-
-    /// Execute this tool with the given parameters. Returns the response body as a string.
-    #[allow(dead_code)]
-    pub async fn execute(
-        &self,
-        params: &serde_json::Value,
-        http_client: &reqwest::Client,
-        env_resolver: Option<&dyn EnvResolver>,
-    ) -> Result<String> {
-        self.execute_with_ctx(params, http_client, env_resolver, None, None).await
     }
 
     /// Execute with OAuth context for provider-based auth.
@@ -1403,8 +1391,8 @@ pub fn tool_file_path(workspace_dir: &str, _status: &ToolStatus, name: &str) -> 
 
 /// Convert an OpenAPI security scheme JSON to a YamlAuth config.
 /// Supports apiKey (header/query), http (bearer/basic), and oauth2 schemes.
-#[allow(dead_code)]
-pub fn openapi_security_to_yaml_auth(scheme: &serde_json::Value) -> Option<YamlAuth> {
+#[cfg(test)]
+fn openapi_security_to_yaml_auth(scheme: &serde_json::Value) -> Option<YamlAuth> {
     let scheme_type = scheme.get("type")?.as_str()?;
     match scheme_type {
         "apiKey" => {

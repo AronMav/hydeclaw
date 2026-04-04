@@ -80,7 +80,6 @@ impl crate::tools::yaml_tools::EnvResolver for SecretsEnvResolver {
 
 /// Status phases emitted during message processing.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum ProcessingPhase {
     Thinking,
     CallingTool(String),
@@ -100,7 +99,7 @@ impl ProcessingPhase {
 
 /// Events emitted during SSE streaming (AI SDK UI Message Stream Protocol v1).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Variant fields constructed in engine, matched in chat handler
 pub enum StreamEvent {
     /// Session ID resolved/created by build_context — emitted first so the UI can track it.
     SessionId(String),
@@ -123,7 +122,7 @@ pub enum StreamEvent {
 }
 
 /// A background process started by the `process_start` tool (base agents only).
-#[allow(dead_code)]
+#[allow(dead_code)] // Fields set on spawn, read by process_status tool
 pub struct BgProcess {
     pub process_id: String,
     pub command: String,
@@ -306,7 +305,7 @@ impl Drop for ProcessingGuard {
 }
 
 /// Outcome of a session lifecycle — used by `SessionLifecycleGuard`.
-#[allow(dead_code)]
+#[allow(dead_code)] // Variants matched in Drop impl
 enum SessionOutcome {
     Running,
     Done,

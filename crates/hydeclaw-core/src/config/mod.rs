@@ -17,16 +17,13 @@ pub struct AppConfig {
     #[serde(default)]
     pub subagents: SubagentsConfig,
     #[serde(default)]
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Deserialized from TOML, reserved for discussion feature
     pub discussion: DiscussionConfig,
     #[serde(default)]
-    #[allow(dead_code)]
     pub mcp: HashMap<String, McpConfig>,
     #[serde(default)]
-    #[allow(dead_code)]
     pub memory: crate::memory::MemoryConfig,
     #[serde(default)]
-    #[allow(dead_code)]
     pub sandbox: SandboxConfig,
     #[serde(default)]
     pub docker: DockerConfig,
@@ -121,7 +118,6 @@ impl Default for TypingConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)] // Deserialized from TOML; fields used for subagent configuration
 pub struct SubagentsConfig {
     #[serde(default = "default_subagents_enabled")]
     pub enabled: bool,
@@ -135,6 +131,7 @@ pub struct SubagentsConfig {
     pub docker_timeout: String,
     #[serde(default = "default_in_process_timeout")]
     pub in_process_timeout: String,
+    #[allow(dead_code)] // Deserialized from TOML, reserved for Docker subagent image
     pub core_image: Option<String>,
 }
 
@@ -202,7 +199,6 @@ impl Default for DiscussionConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)] // Deserialized from TOML; protocol field reserved for MCP/HTTP routing
 pub struct ToolConfig {
     #[serde(rename = "type")]
     pub tool_type: String,
@@ -210,7 +206,9 @@ pub struct ToolConfig {
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: u32,
     pub healthcheck: Option<String>,
+    #[allow(dead_code)] // Deserialized from TOML, reserved for tool auth
     pub api_key_env: Option<String>,
+    #[allow(dead_code)] // Deserialized from TOML, reserved for MCP/HTTP routing
     pub protocol: Option<String>,
     #[serde(default)]
     pub depends_on: Vec<String>,
@@ -221,7 +219,6 @@ pub struct ToolConfig {
 fn default_max_concurrent() -> u32 { 5 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[allow(dead_code)] // Deserialized from TOML; protocol field reserved for MCP/HTTP routing
 pub struct McpConfig {
     /// Direct URL. If set, connects without Docker (container/port ignored).
     pub url: Option<String>,

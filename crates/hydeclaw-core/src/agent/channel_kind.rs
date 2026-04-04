@@ -1,12 +1,13 @@
 /// Well-known channel identifiers used throughout the engine.
-#[allow(dead_code)]
 pub mod channel {
     pub const CRON: &str = "cron";
     pub const HEARTBEAT: &str = "heartbeat";
     pub const SYSTEM: &str = "system";
     pub const INTER_AGENT: &str = "inter-agent";
     pub const UI: &str = "ui";
+    #[allow(dead_code)] // Available for channel routing
     pub const GROUP: &str = "group";
+    #[allow(dead_code)] // Available for channel routing
     pub const TELEGRAM: &str = "telegram";
 
     /// Returns true for automated channels that bypass approval checks.
