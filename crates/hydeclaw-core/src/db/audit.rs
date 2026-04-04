@@ -26,7 +26,8 @@ pub mod event_types {
     // Memory
     pub const MEMORY_DELETED: &str = "memory_deleted";
     pub const MEMORY_PINNED: &str = "memory_pinned";
-    #[allow(dead_code)] // Defined for future per-event audit logging
+    // Rate limiting (reserved for future per-event logging)
+    #[allow(dead_code)]
     pub const RATE_LIMITED: &str = "rate_limited";
 }
 

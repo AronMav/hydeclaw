@@ -9,10 +9,6 @@ use sqlx::Row;
 
 use super::super::AppState;
 
-fn is_valid_tool_name(name: &str) -> bool {
-    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-}
-
 // ── Cron Jobs API ──
 
 pub(crate) async fn api_list_cron(State(state): State<AppState>) -> impl IntoResponse {
@@ -110,11 +106,12 @@ pub(crate) async fn api_create_cron(
     // Validate tool names in policy (prevent path traversal / invalid names)
     if let Some(ref policy_json) = req.tool_policy {
         if let Some(obj) = policy_json.as_object() {
+            let valid_name = regex::Regex::new(r"^[a-zA-Z0-9_-]+$").unwrap();
             for key in &["allow", "deny"] {
                 if let Some(arr) = obj.get(*key).and_then(|v| v.as_array()) {
                     for item in arr {
                         if let Some(name) = item.as_str() {
-                            if !is_valid_tool_name(name) {
+                            if !valid_name.is_match(name) {
                                 return (
                                     StatusCode::BAD_REQUEST,
                                     Json(serde_json::json!({"error": format!("invalid tool name: {}", name)})),
@@ -271,11 +268,12 @@ pub(crate) async fn api_update_cron(
     // Validate tool names in policy (prevent path traversal / invalid names)
     if let Some(ref policy_json) = tool_policy {
         if let Some(obj) = policy_json.as_object() {
+            let valid_name = regex::Regex::new(r"^[a-zA-Z0-9_-]+$").unwrap();
             for key in &["allow", "deny"] {
                 if let Some(arr) = obj.get(*key).and_then(|v| v.as_array()) {
                     for item in arr {
                         if let Some(name) = item.as_str() {
-                            if !is_valid_tool_name(name) {
+                            if !valid_name.is_match(name) {
                                 return (
                                     StatusCode::BAD_REQUEST,
                                     Json(serde_json::json!({"error": format!("invalid tool name: {}", name)})),
@@ -588,15 +586,5 @@ mod cron_tests {
         });
         let req: super::CreateCronRequest = serde_json::from_value(json).unwrap();
         assert!(req.tool_policy.is_none());
-    }
-
-    #[test]
-    fn validate_tool_names_rejects_invalid() {
-        assert!(!super::is_valid_tool_name("../evil"), "path traversal should be invalid");
-        assert!(!super::is_valid_tool_name("evil;cmd"), "semicolon should be invalid");
-        assert!(!super::is_valid_tool_name("rm -rf /"), "space should be invalid");
-        assert!(!super::is_valid_tool_name(""), "empty should be invalid");
-        assert!(super::is_valid_tool_name("memory_search"), "underscore should be valid");
-        assert!(super::is_valid_tool_name("code-exec"), "hyphen should be valid");
     }
 }

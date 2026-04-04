@@ -120,12 +120,15 @@ impl McpRegistry {
     }
 
     /// Get all discovered tool definitions (for LLM system prompt).
-    /// Sorted deterministically by tool name to stabilize prompt cache fingerprints.
     pub async fn all_tool_definitions(&self) -> Vec<ToolDefinition> {
         let cache = self.tool_cache.read().await;
-        let mut tools: Vec<ToolDefinition> = cache.values().flatten().cloned().collect();
-        tools.sort_by(|a, b| a.name.cmp(&b.name));
-        tools
+        cache.values().flatten().cloned().collect()
+    }
+
+    /// Check if an MCP server is configured in the container manager.
+    #[allow(dead_code)]
+    pub async fn has_mcp(&self, name: &str) -> bool {
+        self.container_manager.has_mcp(name).await
     }
 
     /// Find which MCP provides a given tool name.
@@ -139,12 +142,23 @@ impl McpRegistry {
         None
     }
 
+    /// Load MCP.md from an MCP server's workspace directory for additional context.
+    #[allow(dead_code)] // Available for future MCP-level prompt injection
+    pub async fn load_mcp_prompt(&self, mcp_name: &str, skills_dir: &str) -> Option<String> {
+        let path = std::path::Path::new(skills_dir)
+            .join(mcp_name)
+            .join("MCP.md");
+        tokio::fs::read_to_string(&path).await.ok()
+    }
+
     /// Clear cached tools for an MCP server.
+    #[allow(dead_code)]
     pub async fn invalidate_mcp_cache(&self, mcp_name: &str) {
         self.tool_cache.write().await.remove(mcp_name);
     }
 
     /// Force re-discover tools for an MCP server (invalidate cache + discover).
+    #[allow(dead_code)]
     pub async fn reload_mcp(&self, mcp_name: &str) -> Result<Vec<ToolDefinition>> {
         self.invalidate_mcp_cache(mcp_name).await;
         self.discover_tools(mcp_name).await

@@ -197,7 +197,6 @@ pub(crate) fn agent_to_detail(cfg: &AgentConfig, is_running: bool, config_dirty:
             "max_tokens": r.max_tokens,
             "prompt_cache": r.prompt_cache,
             "cooldown_secs": r.cooldown_secs,
-            "max_failover_attempts": r.max_failover_attempts,
         })).collect::<Vec<_>>(),
         "watchdog": a.watchdog.as_ref().map(|w| json!({
             "inactivity_secs": w.inactivity_secs,
@@ -306,7 +305,6 @@ pub(crate) struct RoutingRulePayload {
     pub prompt_cache: Option<bool>,
     pub max_tokens: Option<u32>,
     pub cooldown_secs: Option<u64>,
-    pub max_failover_attempts: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -411,7 +409,6 @@ pub(crate) fn build_agent_config(name: String, p: AgentCreatePayload) -> AgentCo
                     prompt_cache: r.prompt_cache.unwrap_or(false),
                     max_tokens: r.max_tokens,
                     cooldown_secs: r.cooldown_secs.unwrap_or(60),
-                    max_failover_attempts: r.max_failover_attempts.unwrap_or(3),
                 }
             }).collect(),
             session: p.session.flatten().map(|s| crate::config::SessionConfig {
@@ -833,7 +830,6 @@ pub(crate) async fn api_update_agent(
                 prompt_cache: Some(r.prompt_cache),
                 max_tokens: r.max_tokens,
                 cooldown_secs: Some(r.cooldown_secs),
-                max_failover_attempts: Some(r.max_failover_attempts),
             }).collect()));
         }
         if payload.tool_loop.is_none() {
@@ -1278,6 +1274,101 @@ pub(crate) async fn api_agent_hooks(
         Json(json!({"agent": name, "hooks": names})).into_response()
     } else {
         (StatusCode::NOT_FOUND, Json(json!({"error": "agent not found"}))).into_response()
+    }
+}
+
+// ── Inter-Agent API ──
+
+/// GET /api/inter-agent/messages?limit=100
+/// Returns messages from inter-agent communication sessions (read-only).
+#[allow(dead_code)]
+pub(crate) async fn api_inter_agent_messages(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let limit: i64 = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .min(500);
+
+    let rows = sqlx::query_as::<_, (String, String, String, String, String, chrono::DateTime<chrono::Utc>)>(
+        "SELECT s.agent_id, s.user_id, s.channel, m.role, m.content, m.created_at \
+         FROM sessions s JOIN messages m ON m.session_id = s.id \
+         WHERE s.channel IN ('inter-agent', 'group') \
+         ORDER BY m.created_at DESC LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await;
+
+    match rows {
+        Ok(rows) => Json(json!({
+            "messages": rows.into_iter().rev().map(|(agent, user, channel, role, content, ts)| {
+                // user_id is "agent:Arty" or "human:ui" → normalize to display name
+                let initiator = if user.starts_with("human:") {
+                    "You"
+                } else {
+                    user.strip_prefix("agent:").unwrap_or(&user)
+                };
+                // role=user means initiator→agent; role=assistant means agent→initiator
+                let (source, target) = if role == "user" {
+                    (initiator, agent.as_str())
+                } else {
+                    (agent.as_str(), initiator)
+                };
+                json!({
+                    "source_agent": source,
+                    "target_agent": target,
+                    "role": role,
+                    "content": content,
+                    "channel": channel,
+                    "created_at": ts.to_rfc3339()
+                })
+            }).collect::<Vec<_>>()
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// DELETE /api/inter-agent/messages — clear all inter-agent/group chat messages.
+#[allow(dead_code)]
+pub(crate) async fn api_clear_inter_agent_messages(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let result = async {
+        let mut tx = state.db.begin().await?;
+        sqlx::query(
+            "DELETE FROM messages WHERE session_id IN \
+             (SELECT id FROM sessions WHERE channel IN ('inter-agent', 'group'))",
+        )
+        .execute(&mut *tx)
+        .await?;
+        let r = sqlx::query(
+            "DELETE FROM sessions WHERE channel IN ('inter-agent', 'group')",
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok::<_, sqlx::Error>(r.rows_affected())
+    }
+    .await;
+
+    match result {
+        Ok(deleted) => {
+            tracing::info!(deleted, "inter-agent/group messages cleared via API");
+            Json(json!({"ok": true, "deleted": deleted})).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 

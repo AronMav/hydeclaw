@@ -1030,7 +1030,7 @@ async fn restore_workspace(workspace_dir: &str, files: &[WorkspaceFile]) -> usiz
 }
 
 /// Restore memory and cron jobs atomically within a single DB transaction.
-/// Preserves the `daily-backup` cron job so Hyde continues working after restore.
+/// Preserves the `daily-backup` cron job so Architect continues working after restore.
 async fn restore_memory_and_cron(
     state: &AppState,
     chunks: &[MemoryChunk],
@@ -1065,8 +1065,8 @@ async fn restore_memory_and_cron(
         .await?;
     }
 
-    // Cron: replace all jobs except daily-backup (Hyde re-creates it on heartbeat anyway,
-    // but preserving it means backups keep running even if Hyde hasn't heartbeated yet)
+    // Cron: replace all jobs except daily-backup (Architect re-creates it on heartbeat anyway,
+    // but preserving it means backups keep running even if Architect hasn't heartbeated yet)
     sqlx::query("DELETE FROM scheduled_jobs WHERE name != 'daily-backup'")
         .execute(&mut *tx)
         .await?;
@@ -1150,7 +1150,7 @@ mod tests {
                 name: "tts-\u{00e9}l\u{00e8}ve".to_string(),
                 category: "tts".to_string(),
                 provider_type: "custom".to_string(),
-                base_url: Some("http://localhost:8880".to_string()),
+                base_url: Some("http://192.168.1.132:8880".to_string()),
                 default_model: Some("clone:Arty".to_string()),
                 enabled: true,
                 options: json!(null),

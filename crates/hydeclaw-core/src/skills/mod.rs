@@ -127,13 +127,13 @@ pub async fn load_skills(workspace_dir: &str) -> Vec<SkillDef> {
     skills
 }
 
-/// Load skills including base-only skills from workspace/skills/hyde/.
-/// Used for base agents — they see everything regular agents see plus base agent skills.
+/// Load skills including architect-only skills from workspace/skills/architect/.
+/// Used for base agents — they see everything regular agents see plus architect skills.
 pub async fn load_skills_for_base(workspace_dir: &str) -> Vec<SkillDef> {
     let mut skills = load_skills(workspace_dir).await;
 
-    let base_skills_dir = Path::new(workspace_dir).join("skills").join("hyde");
-    if let Ok(mut read_dir) = fs::read_dir(&base_skills_dir).await {
+    let architect_dir = Path::new(workspace_dir).join("skills").join("architect");
+    if let Ok(mut read_dir) = fs::read_dir(&architect_dir).await {
         while let Ok(Some(entry)) = read_dir.next_entry().await {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("md") {
@@ -142,12 +142,12 @@ pub async fn load_skills_for_base(workspace_dir: &str) -> Vec<SkillDef> {
             let content = match fs::read_to_string(&path).await {
                 Ok(c) => c,
                 Err(e) => {
-                    tracing::warn!(file = %path.display(), error = %e, "failed to read base agent skill");
+                    tracing::warn!(file = %path.display(), error = %e, "failed to read architect skill");
                     continue;
                 }
             };
             if let Some(skill) = SkillDef::parse(&content) {
-                tracing::debug!(skill = %skill.meta.name, "loaded base agent skill");
+                tracing::debug!(skill = %skill.meta.name, "loaded architect skill");
                 skills.push(skill);
             }
         }
@@ -199,6 +199,29 @@ pub async fn write_skill(
     fs::write(&path, &content).await?;
     tracing::info!(skill = %name, file = %path.display(), "skill written");
     Ok(())
+}
+
+/// List skill file names in the shared skills directory.
+#[allow(dead_code)]
+pub async fn list_skills(workspace_dir: &str) -> Vec<String> {
+    let skills_dir = Path::new(workspace_dir).join("skills");
+    let mut names = Vec::new();
+
+    let mut read_dir = match fs::read_dir(&skills_dir).await {
+        Ok(d) => d,
+        Err(_) => return names,
+    };
+
+    while let Ok(Some(entry)) = read_dir.next_entry().await {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("md")
+            && let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                names.push(stem.to_string());
+            }
+    }
+
+    names.sort();
+    names
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

@@ -83,6 +83,11 @@ impl ToolRegistry {
         self.tools.read().await.len()
     }
 
+    #[allow(dead_code)]
+    pub async fn is_empty(&self) -> bool {
+        self.tools.read().await.is_empty()
+    }
+
     /// Call a tool with concurrency control via semaphore.
     pub async fn call(
         &self,
