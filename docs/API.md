@@ -197,7 +197,7 @@ Query parameters:
 | `PUT` | `/api/agents/{name}` | Update agent config |
 | `DELETE` | `/api/agents/{name}` | Delete agent |
 | `POST` | `/api/agents/{name}/model-override` | Temporarily override LLM model |
-| `GET` | `/api/providers/{name}/models` | List available models for a provider |
+| `GET` | `/api/providers/{id}/models` | List available models for a provider |
 | `GET` | `/api/agents/{name}/hooks` | Get agent hook configuration |
 
 ### GET /api/agents
@@ -463,6 +463,7 @@ Abort an in-progress stream. The agent stops processing and the stream is closed
 | `DELETE` | `/api/sessions/{id}` | Delete a session and all its messages |
 | `POST` | `/api/sessions/{id}/compact` | Manually compact session history |
 | `GET` | `/api/sessions/{id}/export` | Export session as JSON or Markdown |
+| `POST` | `/api/sessions/{id}/invite` | Invite an agent into a multi-agent session |
 | `POST` | `/api/sessions/{id}/documents` | Upload a document for session-scoped RAG |
 | `GET` | `/api/sessions/{id}/messages` | List messages in a session |
 | `DELETE` | `/api/messages/{id}` | Delete a single message |
@@ -543,6 +544,22 @@ Query parameters:
 | `format` | string | `json` | `json` or `markdown` |
 
 Markdown export returns a `Content-Disposition: attachment` response.
+
+### POST /api/sessions/{id}/invite
+
+Invite an agent into a multi-agent session. The invited agent is added to the session's `participants` list.
+
+**Request body:**
+```json
+{ "agent_name": "Arty" }
+```
+
+**Response:**
+```json
+{ "ok": true, "participants": ["Hyde", "Arty"] }
+```
+
+Returns `404` if the agent does not exist or the session is not found.
 
 ### POST /api/sessions/{id}/documents
 
@@ -978,6 +995,7 @@ Tasks are multi-step execution pipelines tracked in the database.
 | `GET` | `/api/tasks/{id}` | Get a task |
 | `DELETE` | `/api/tasks/{id}` | Delete a task |
 | `GET` | `/api/tasks/{id}/steps` | Get task execution steps |
+| `GET` | `/api/tasks/audit` | List tool execution audit log |
 
 ### GET /api/tasks
 
@@ -1006,6 +1024,35 @@ Query parameters:
 ### GET /api/tasks/{id}/steps
 
 Returns ordered list of execution steps with their outputs and status.
+
+### GET /api/tasks/audit
+
+Returns tool execution audit log entries.
+
+Query parameters:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `agent` | string | — | Filter by agent name |
+| `status` | string | — | Filter by status |
+| `limit` | integer | 50 | Max results (max 200) |
+
+**Response:**
+```json
+[
+  {
+    "id": "uuid",
+    "agent_id": "agent-name",
+    "session_id": "uuid",
+    "tool_name": "workspace_write",
+    "parameters": { "...": "..." },
+    "status": "ok",
+    "duration_ms": 42,
+    "error": null,
+    "created_at": "2025-01-01T00:00:00Z"
+  }
+]
+```
 
 ---
 
@@ -1049,6 +1096,7 @@ Webhooks let external systems trigger agent processing via HTTP POST.
 | `POST` | `/api/webhooks` | Create a webhook |
 | `PUT` | `/api/webhooks/{id}` | Update a webhook |
 | `DELETE` | `/api/webhooks/{id}` | Delete a webhook |
+| `POST` | `/api/webhooks/{id}/regenerate-secret` | Regenerate webhook secret |
 | `POST` | `/webhook/{name}` | Trigger endpoint (Public, verified by secret) |
 
 ### GET /api/webhooks
@@ -1090,6 +1138,15 @@ Note: The `secret` field is masked (last 4 characters visible). The full secret 
 | `event_filter` | array | No | For GitHub webhooks: list of event types to process (e.g. `["push", "pull_request"]`) |
 
 **Response:** `201 Created` with webhook object including the **full secret** (only visible at creation).
+
+### POST /api/webhooks/{id}/regenerate-secret
+
+Generates a new random secret for the webhook. The old secret is immediately invalidated.
+
+**Response:**
+```json
+{ "ok": true, "secret": "new-64-char-hex-string" }
+```
 
 ### POST /webhook/{name}
 
@@ -1394,8 +1451,8 @@ Media providers handle STT (speech-to-text), TTS (text-to-speech), vision, image
 | `GET` | `/api/providers/{id}` | Get a media provider |
 | `PUT` | `/api/providers/{id}` | Update a media provider |
 | `DELETE` | `/api/providers/{id}` | Delete a media provider |
-| `GET` | `/api/media-active` | Get currently active provider per capability |
-| `PUT` | `/api/media-active` | Set the active provider for a capability |
+| `GET` | `/api/provider-active` | Get currently active provider per capability |
+| `PUT` | `/api/provider-active` | Set the active provider for a capability |
 | `GET` | `/api/media-drivers` | List available driver types |
 | `GET` | `/api/media-config` | Export toolgate-compatible media config |
 
@@ -1425,7 +1482,7 @@ Media providers handle STT (speech-to-text), TTS (text-to-speech), vision, image
 }
 ```
 
-### PUT /api/media-active
+### PUT /api/provider-active
 
 **Request body:**
 ```json

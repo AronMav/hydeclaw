@@ -99,7 +99,7 @@ The core loop runs inside `handle_isolated()` (for internal calls) or the SSE pa
 
 5. Post-loop:
    ├── save final assistant message to DB
-   ├── session graph extraction (background tokio::spawn, ≥5 messages) [deprecated, see Knowledge Graph note]
+   ├── session graph extraction (background tokio::spawn, ≥5 messages)
    └── emit SSE Finish event
 ```
 
@@ -181,7 +181,7 @@ Only `TransientHttp` and `Overloaded` are retried at the engine level (`is_retry
 
 `spawn_subagent` tool creates a background tokio task:
 
-1. Acquires an owned permit from `subagent_semaphore` (default capacity: 4). Returns an error immediately if all permits are taken — no queuing.
+1. Acquires an owned permit from `subagent_semaphore` (default capacity: 5). Returns an error immediately if all permits are taken — no queuing.
 2. Registers the subagent in `SubagentRegistry` (in-memory `RwLock<HashMap>`) with a generated UUID and a `CancellationToken`.
 3. `tokio::spawn`s an async closure that calls `engine.run_subagent()` — a simplified version of `handle_isolated()` that forwards logs to the registry handle.
 4. Returns the subagent ID to the LLM immediately.
@@ -203,6 +203,8 @@ Permits are held for the life of the spawned task and released on completion, ca
 
 ### LLM Providers
 
+28 provider types are defined in `PROVIDER_TYPES` (`providers.rs`):
+
 | Provider key | Implementation | Auth env var |
 |---|---|---|
 | `openai` | OpenAI-compatible HTTP | `OPENAI_API_KEY` |
@@ -216,9 +218,23 @@ Permits are held for the life of the spawned task and released on completion, ca
 | `mistral` | OpenAI-compatible | `MISTRAL_API_KEY` |
 | `xai` | OpenAI-compatible | `XAI_API_KEY` |
 | `perplexity` | OpenAI-compatible | `PERPLEXITY_API_KEY` |
-| `ollama` | OpenAI-compatible, URL from `OLLAMA_URL` secret | — |
+| `ollama` | OpenAI-compatible, local | — |
 | `claude-cli` | Subprocess (Claude CLI inside Docker sandbox) | — |
 | `gemini-cli` | Subprocess (Gemini CLI inside Docker sandbox) | — |
+| `openai_compat` | Generic OpenAI-compatible endpoint | `API_KEY` |
+| `huggingface` | OpenAI-compatible | `HF_API_KEY` |
+| `moonshot` | OpenAI-compatible (Kimi) | `MOONSHOT_API_KEY` |
+| `nvidia` | OpenAI-compatible (NIM) | `NVIDIA_API_KEY` |
+| `venice` | OpenAI-compatible | `VENICE_API_KEY` |
+| `cloudflare` | OpenAI-compatible (AI Gateway) | `CF_AI_API_KEY` |
+| `litellm` | OpenAI-compatible, local proxy | — |
+| `volcengine` | OpenAI-compatible (Doubao) | `VOLCENGINE_API_KEY` |
+| `qwen` | OpenAI-compatible (Alibaba DashScope) | `DASHSCOPE_API_KEY` |
+| `glm` | OpenAI-compatible (Zhipu AI) | `GLM_API_KEY` |
+| `sglang` | OpenAI-compatible, local | — |
+| `vllm` | OpenAI-compatible, local | — |
+| `qianfan` | OpenAI-compatible (Baidu) | `QIANFAN_API_KEY` |
+| `xiaomi` | OpenAI-compatible (MiLM) | `XIAOMI_API_KEY` |
 
 All providers implement `LlmProvider` trait (`chat()` + `chat_stream()`). API keys are resolved from `SecretsManager` on each call, making them hot-reloadable without restart.
 
@@ -276,16 +292,14 @@ The inter-result similarity is approximated as `min(candidate_sim, selected_sim)
 
 | Tier | `pinned` field | Behavior |
 |------|---------------|----------|
-| Raw | `false` | Subject to temporal decay (daily cron at 03:00 UTC): `relevance_score` multiplied by `0.95^days_since_accessed`. Chunks below threshold are deleted. |
+| Raw | `false` | Subject to temporal decay (daily cron at 03:00 UTC): `relevance_score` multiplied by `exp(-0.693 / 30 * days_since_accessed)` (exponential decay with 30-day half-life). A second cleanup job at 08:00 UTC deletes chunks where `relevance_score < 0.1` AND `accessed_at` is older than 180 days. |
 | Pinned | `true` | Never decayed, never deleted by the decay job. Permanent facts explicitly stored by the agent. |
 
 Both tiers are searched together. The `pinned` flag is surfaced in search results so the LLM can distinguish permanent knowledge from time-sensitive context.
 
-### Knowledge Graph (Deprecated)
+### Knowledge Graph
 
-> **Note:** The knowledge graph module exists in the codebase but is deprecated and not part of the active feature set. The tables and extraction code remain for potential future use but are not exercised in normal operation.
-
-Stored in pure PostgreSQL relational tables (no graph database required):
+Automatic entity and relationship extraction runs as a background task after each session with 5+ messages (`engine.rs`). Stored in pure PostgreSQL relational tables (no graph database required):
 
 ```
 graph_entities   id, name, name_normalized, entity_type, updated_at
