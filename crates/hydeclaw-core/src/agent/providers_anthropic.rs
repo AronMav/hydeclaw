@@ -455,22 +455,69 @@ impl LlmProvider for AnthropicProvider {
         tracing::info!(provider = "anthropic", model = %self.model, "calling Anthropic API (streaming)");
 
         let start = std::time::Instant::now();
-        let mut req = self.streaming_client
-            .post(&url)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&body);
-        if let Some(key) = self.resolve_api_key().await
-            && !key.is_empty()
-        {
-            req = req.header("x-api-key", key.as_str());
-        }
-        let resp = req.send().await?;
+        let api_key = self.resolve_api_key().await;
 
-        if !resp.status().is_success() {
-            let err_text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("anthropic API error: {}", err_text);
+        // Transient retry for streaming: up to 2 retries with exponential backoff (1s, 2s)
+        let transient_delays = [1u64, 2];
+        let mut last_err_text = String::new();
+        let mut resp = None;
+        for attempt in 0..=transient_delays.len() {
+            let mut req = self.streaming_client
+                .post(&url)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .json(&body);
+            if let Some(ref key) = api_key {
+                if !key.is_empty() {
+                    req = req.header("x-api-key", key.as_str());
+                }
+            }
+            let r = req.send().await?;
+
+            if r.status().is_success() {
+                resp = Some(r);
+                break;
+            }
+
+            let status = r.status();
+            let retry_after_secs = if status.as_u16() == 429 {
+                r.headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(crate::agent::error_classify::parse_retry_after)
+            } else {
+                None
+            };
+
+            let err_text = r.text().await.unwrap_or_default();
+            let error_kind = crate::agent::error_classify::classify_provider_error(
+                &anyhow::anyhow!("anthropic API error {}: {}", status, err_text),
+            );
+            last_err_text = format!("anthropic API error {}: {}", status, err_text);
+
+            if !crate::agent::error_classify::should_retry_locally(&error_kind) || attempt >= transient_delays.len() {
+                if let Some(ra) = retry_after_secs {
+                    anyhow::bail!("{} (retry-after: {}s)", last_err_text, ra);
+                }
+                anyhow::bail!("{}", last_err_text);
+            }
+
+            let delay = if let Some(ra) = retry_after_secs {
+                ra.min(30)
+            } else {
+                transient_delays[attempt]
+            };
+            tracing::warn!(
+                provider = "anthropic",
+                status = %status,
+                error_kind = ?error_kind,
+                attempt,
+                backoff_secs = delay,
+                "streaming: transient retry"
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
         }
+        let resp = resp.ok_or_else(|| anyhow::anyhow!("{}", last_err_text))?;
 
         let mut full_content = String::new();
         let mut buffer = String::new();

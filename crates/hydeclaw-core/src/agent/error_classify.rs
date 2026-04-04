@@ -145,6 +145,71 @@ pub fn is_retryable(class: &LlmErrorClass) -> bool {
     )
 }
 
+// ── ProviderErrorKind ─────────────────────────────────────────────────────────
+// Failover-oriented classification: tells the routing layer what to do.
+
+/// Error kind for provider failover decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderErrorKind {
+    /// 500, 502, 503, timeout, overloaded — retry locally then failover.
+    Transient,
+    /// 429, rate limited — cooldown with Retry-After if available.
+    RateLimit,
+    /// 400, 404, context overflow, session corruption — don't retry or failover.
+    Permanent,
+    /// 401, 403, billing — alert user, don't retry.
+    Auth,
+}
+
+/// Classify a provider error into a failover-oriented kind.
+pub fn classify_provider_error(error: &anyhow::Error) -> ProviderErrorKind {
+    let class = classify(error);
+    provider_kind_from_class(&class)
+}
+
+/// Map LlmErrorClass to ProviderErrorKind.
+pub fn provider_kind_from_class(class: &LlmErrorClass) -> ProviderErrorKind {
+    match class {
+        LlmErrorClass::TransientHttp | LlmErrorClass::Overloaded | LlmErrorClass::Unknown => {
+            ProviderErrorKind::Transient
+        }
+        LlmErrorClass::RateLimit => ProviderErrorKind::RateLimit,
+        LlmErrorClass::AuthPermanent | LlmErrorClass::Billing => ProviderErrorKind::Auth,
+        LlmErrorClass::ContextOverflow | LlmErrorClass::SessionCorruption => {
+            ProviderErrorKind::Permanent
+        }
+    }
+}
+
+/// Whether a ProviderErrorKind should trigger failover to the next provider.
+pub fn should_failover(kind: &ProviderErrorKind) -> bool {
+    matches!(kind, ProviderErrorKind::Transient | ProviderErrorKind::RateLimit)
+}
+
+/// Whether a ProviderErrorKind should be retried locally before failover.
+pub fn should_retry_locally(kind: &ProviderErrorKind) -> bool {
+    matches!(kind, ProviderErrorKind::Transient)
+}
+
+/// Parse the Retry-After header value (seconds or HTTP date).
+/// Returns seconds to wait, or None if the header is absent or unparseable.
+pub fn parse_retry_after(header_value: &str) -> Option<u64> {
+    // Try as integer seconds first
+    if let Ok(secs) = header_value.trim().parse::<u64>() {
+        return Some(secs);
+    }
+    // Try as HTTP date (RFC 7231): e.g. "Mon, 04 Apr 2026 12:00:00 GMT"
+    if let Ok(date) = chrono::DateTime::parse_from_rfc2822(header_value.trim()) {
+        let now = chrono::Utc::now();
+        let delta = date.signed_duration_since(now);
+        if delta.num_seconds() > 0 {
+            return Some(delta.num_seconds() as u64);
+        }
+        return Some(0);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,5 +317,68 @@ mod tests {
         for class in &classes {
             assert!(!user_message(class).is_empty(), "empty message for {:?}", class);
         }
+    }
+
+    // ── ProviderErrorKind tests ─────────────────────────────────────────────
+
+    #[test]
+    fn provider_kind_transient_from_http_errors() {
+        assert_eq!(provider_kind_from_class(&LlmErrorClass::TransientHttp), ProviderErrorKind::Transient);
+        assert_eq!(provider_kind_from_class(&LlmErrorClass::Overloaded), ProviderErrorKind::Transient);
+        assert_eq!(provider_kind_from_class(&LlmErrorClass::Unknown), ProviderErrorKind::Transient);
+    }
+
+    #[test]
+    fn provider_kind_rate_limit() {
+        assert_eq!(provider_kind_from_class(&LlmErrorClass::RateLimit), ProviderErrorKind::RateLimit);
+    }
+
+    #[test]
+    fn provider_kind_permanent_from_context_and_session() {
+        assert_eq!(provider_kind_from_class(&LlmErrorClass::ContextOverflow), ProviderErrorKind::Permanent);
+        assert_eq!(provider_kind_from_class(&LlmErrorClass::SessionCorruption), ProviderErrorKind::Permanent);
+    }
+
+    #[test]
+    fn provider_kind_auth_from_auth_and_billing() {
+        assert_eq!(provider_kind_from_class(&LlmErrorClass::AuthPermanent), ProviderErrorKind::Auth);
+        assert_eq!(provider_kind_from_class(&LlmErrorClass::Billing), ProviderErrorKind::Auth);
+    }
+
+    #[test]
+    fn should_failover_transient_and_rate_limit() {
+        assert!(should_failover(&ProviderErrorKind::Transient));
+        assert!(should_failover(&ProviderErrorKind::RateLimit));
+        assert!(!should_failover(&ProviderErrorKind::Permanent));
+        assert!(!should_failover(&ProviderErrorKind::Auth));
+    }
+
+    #[test]
+    fn should_retry_locally_only_transient() {
+        assert!(should_retry_locally(&ProviderErrorKind::Transient));
+        assert!(!should_retry_locally(&ProviderErrorKind::RateLimit));
+        assert!(!should_retry_locally(&ProviderErrorKind::Permanent));
+        assert!(!should_retry_locally(&ProviderErrorKind::Auth));
+    }
+
+    // ── parse_retry_after tests ─────────────────────────────────────────────
+
+    #[test]
+    fn parse_retry_after_integer_seconds() {
+        assert_eq!(parse_retry_after("120"), Some(120));
+        assert_eq!(parse_retry_after(" 60 "), Some(60));
+        assert_eq!(parse_retry_after("0"), Some(0));
+    }
+
+    #[test]
+    fn parse_retry_after_garbage_returns_none() {
+        assert_eq!(parse_retry_after("not-a-number"), None);
+        assert_eq!(parse_retry_after(""), None);
+    }
+
+    #[test]
+    fn parse_retry_after_past_date_returns_zero() {
+        // A date far in the past
+        assert_eq!(parse_retry_after("Mon, 01 Jan 2024 00:00:00 GMT"), Some(0));
     }
 }

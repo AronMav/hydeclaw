@@ -94,6 +94,16 @@ pub async fn retry_http_post_custom(
                     return Ok(resp.text().await?);
                 }
 
+                // Extract Retry-After header before consuming the response body
+                let retry_after_secs = if status.as_u16() == 429 {
+                    resp.headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(super::error_classify::parse_retry_after)
+                } else {
+                    None
+                };
+
                 let err_text = resp.text().await.unwrap_or_default();
                 last_error = format!("{} API error {}: {}", provider_name, status, err_text);
 
@@ -112,7 +122,19 @@ pub async fn retry_http_post_custom(
                     anyhow::bail!("{}", last_error);
                 }
 
-                let backoff = policy.delay(attempt);
+                // Honor Retry-After header for 429 responses, otherwise use exponential backoff
+                let backoff = if let Some(ra_secs) = retry_after_secs {
+                    let capped = ra_secs.min(policy.max_delay.as_secs());
+                    tracing::info!(
+                        provider = %provider_name,
+                        retry_after_secs = ra_secs,
+                        capped_secs = capped,
+                        "honoring Retry-After header"
+                    );
+                    Duration::from_secs(capped)
+                } else {
+                    policy.delay(attempt)
+                };
                 tracing::warn!(
                     provider = %provider_name,
                     status = %status,

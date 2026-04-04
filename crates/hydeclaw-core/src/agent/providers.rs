@@ -916,12 +916,48 @@ impl RoutingProvider {
         map.insert(name.to_string(), std::time::Instant::now() + duration);
     }
 
-    /// Classify error and apply appropriate cooldown. Returns the computed cooldown duration.
-    fn handle_provider_error(&self, e: &anyhow::Error, provider_name: &str, max_cooldown: std::time::Duration) {
+    /// Classify error and apply appropriate cooldown.
+    /// Parses `retry-after` from error message if present (embedded by providers on 429).
+    /// Returns the ProviderErrorKind for the caller to decide on failover.
+    fn handle_provider_error(&self, e: &anyhow::Error, provider_name: &str, max_cooldown: std::time::Duration) -> super::error_classify::ProviderErrorKind {
         let class = super::error_classify::classify(e);
-        let cd = super::error_classify::cooldown_duration(&class).min(max_cooldown);
-        tracing::warn!(provider = %provider_name, error = %e, error_class = ?class, cooldown_secs = cd.as_secs(), "provider failed");
+        let kind = super::error_classify::provider_kind_from_class(&class);
+
+        // Check for Retry-After embedded in error message (format: "(retry-after: Ns)")
+        let err_msg = e.to_string();
+        let retry_after_cd = Self::extract_retry_after_from_error(&err_msg)
+            .map(|secs| std::time::Duration::from_secs(secs));
+
+        let cd = if let Some(ra_cd) = retry_after_cd {
+            // Honor Retry-After for rate limit responses, capped at max_cooldown
+            ra_cd.min(max_cooldown)
+        } else {
+            super::error_classify::cooldown_duration(&class).min(max_cooldown)
+        };
+
+        tracing::warn!(
+            provider = %provider_name,
+            error = %e,
+            error_class = ?class,
+            error_kind = ?kind,
+            cooldown_secs = cd.as_secs(),
+            retry_after = ?retry_after_cd.map(|d| d.as_secs()),
+            "provider failed"
+        );
         if !cd.is_zero() { self.set_cooldown(provider_name, cd); }
+        kind
+    }
+
+    /// Extract retry-after seconds from error message pattern "(retry-after: Ns)".
+    fn extract_retry_after_from_error(msg: &str) -> Option<u64> {
+        // Pattern: "(retry-after: 60s)" embedded by providers
+        if let Some(start) = msg.find("(retry-after: ") {
+            let rest = &msg[start + 14..];
+            if let Some(end) = rest.find("s)") {
+                return rest[..end].parse::<u64>().ok();
+            }
+        }
+        None
     }
 
     /// Get all route entries that could serve as fallbacks (not on cooldown, not excluded).
@@ -990,14 +1026,17 @@ impl LlmProvider for RoutingProvider {
             match primary.provider.chat(messages, tools).await {
                 Ok(resp) => return Ok(resp),
                 Err(e) => {
-                    let class = super::error_classify::classify(&e);
-                    self.handle_provider_error(&e, &primary_name, primary_cooldown);
+                    let kind = self.handle_provider_error(&e, &primary_name, primary_cooldown);
                     tracing::warn!(
                         from = %primary_name,
-                        error_class = ?class,
+                        error_kind = ?kind,
                         cooldown_secs = primary_cooldown.as_secs(),
                         "provider failover: primary failed"
                     );
+                    // Permanent and Auth errors should not trigger failover
+                    if !super::error_classify::should_failover(&kind) {
+                        return Err(e);
+                    }
                     last_error = Some(e);
                 }
             }
@@ -1024,23 +1063,26 @@ impl LlmProvider for RoutingProvider {
                     tracing::warn!(
                         from = %primary_name,
                         to = %fb_name,
-                        error_class = "failover_success",
+                        error_kind = "failover_success",
                         cooldown_secs = fb.cooldown_duration.as_secs(),
                         "provider failover"
                     );
-                    resp.fallback_notice = Some(format!("↪️ {} �� {} ({})", primary_name, fb_name, reason));
+                    resp.fallback_notice = Some(format!("↪️ {} → {} ({})", primary_name, fb_name, reason));
                     return Ok(resp);
                 }
                 Err(e) => {
-                    let class = super::error_classify::classify(&e);
+                    let kind = self.handle_provider_error(&e, &fb_name, fb.cooldown_duration);
                     tracing::warn!(
                         from = %fb_name,
                         to = "next",
-                        error_class = ?class,
+                        error_kind = ?kind,
                         cooldown_secs = fb.cooldown_duration.as_secs(),
                         "provider failover"
                     );
-                    self.handle_provider_error(&e, &fb_name, fb.cooldown_duration);
+                    // Permanent/Auth errors: stop failover chain immediately
+                    if !super::error_classify::should_failover(&kind) {
+                        return Err(e);
+                    }
                     last_error = Some(e);
                 }
             }
@@ -1092,15 +1134,16 @@ impl LlmProvider for RoutingProvider {
                             "streaming: mid-stream failure, partial output already sent — cannot failover");
                         return Err(e);
                     }
-                    let class = super::error_classify::classify(&e);
-                    let cd = super::error_classify::cooldown_duration(&class).min(primary_cooldown);
+                    let kind = self.handle_provider_error(&e, &primary_name, primary_cooldown);
                     tracing::warn!(
                         from = %primary_name,
-                        error_class = ?class,
-                        cooldown_secs = cd.as_secs(),
+                        error_kind = ?kind,
                         "provider failover: streaming primary failed before first chunk"
                     );
-                    if !cd.is_zero() { self.set_cooldown(&primary_name, cd); }
+                    // Permanent and Auth errors should not trigger failover
+                    if !super::error_classify::should_failover(&kind) {
+                        return Err(e);
+                    }
                     last_error = Some(e);
                 }
             }
@@ -1127,7 +1170,7 @@ impl LlmProvider for RoutingProvider {
                     tracing::warn!(
                         from = %primary_name,
                         to = %fb_name,
-                        error_class = "failover_success",
+                        error_kind = "failover_success",
                         cooldown_secs = fb.cooldown_duration.as_secs(),
                         "provider failover"
                     );
@@ -1135,16 +1178,18 @@ impl LlmProvider for RoutingProvider {
                     return Ok(resp);
                 }
                 Err(e) => {
-                    let class = super::error_classify::classify(&e);
-                    let cd = super::error_classify::cooldown_duration(&class).min(fb.cooldown_duration);
+                    let kind = self.handle_provider_error(&e, &fb_name, fb.cooldown_duration);
                     tracing::warn!(
                         from = %fb_name,
                         to = "next",
-                        error_class = ?class,
-                        cooldown_secs = cd.as_secs(),
+                        error_kind = ?kind,
+                        cooldown_secs = fb.cooldown_duration.as_secs(),
                         "provider failover"
                     );
-                    if !cd.is_zero() { self.set_cooldown(&fb_name, cd); }
+                    // Permanent/Auth errors: stop failover chain immediately
+                    if !super::error_classify::should_failover(&kind) {
+                        return Err(e);
+                    }
                     last_error = Some(e);
                 }
             }
