@@ -7,12 +7,6 @@
 import { buildEnvConfig, wsToHttp } from "./config";
 import { spawnSessionLoop, type SessionConfig } from "./session";
 import { initHealth, startHealthServer } from "./health";
-import { createTelegramDriver } from "./drivers/telegram";
-import { createDiscordDriver } from "./drivers/discord";
-import { createMatrixDriver } from "./drivers/matrix";
-import { createIrcDriver } from "./drivers/irc";
-import { createSlackDriver } from "./drivers/slack";
-import { createWhatsAppDriver } from "./drivers/whatsapp";
 import { getFormattingPrompt } from "./formatting";
 
 const HEALTH_PORT = Number(process.env.HEALTH_PORT ?? "3000");
@@ -28,17 +22,30 @@ interface DbChannel {
   error_msg: string | null;
 }
 
-function getDriverFactory(channelType: string) {
-  switch (channelType) {
-    case "telegram": return createTelegramDriver;
-    case "discord": return createDiscordDriver;
-    case "matrix": return createMatrixDriver;
-    case "irc": return createIrcDriver;
-    case "slack": return createSlackDriver;
-    case "whatsapp": return createWhatsAppDriver;
-    default:
-      throw new Error(`Unknown channel type: ${channelType}`);
+// ── Driver Registry ──────────────────────────────────────────────────────────
+// Adding a new channel driver requires only one entry here.
+// Each driver is lazy-loaded via dynamic import() — unused drivers don't consume startup memory.
+
+type DriverFactory = (config: SessionConfig) => unknown;
+type DriverLoader = () => Promise<{ default: DriverFactory } | { [key: string]: DriverFactory }>;
+
+const DRIVER_REGISTRY: Record<string, { module: string; export: string }> = {
+  telegram:  { module: "./drivers/telegram",  export: "createTelegramDriver" },
+  discord:   { module: "./drivers/discord",   export: "createDiscordDriver" },
+  matrix:    { module: "./drivers/matrix",    export: "createMatrixDriver" },
+  irc:       { module: "./drivers/irc",       export: "createIrcDriver" },
+  slack:     { module: "./drivers/slack",     export: "createSlackDriver" },
+  whatsapp:  { module: "./drivers/whatsapp",  export: "createWhatsAppDriver" },
+};
+
+async function getDriverFactory(channelType: string): Promise<DriverFactory> {
+  const entry = DRIVER_REGISTRY[channelType];
+  if (!entry) {
+    const available = Object.keys(DRIVER_REGISTRY).join(", ");
+    throw new Error(`Unknown channel type: ${channelType}. Available: ${available}`);
   }
+  const mod = await import(entry.module);
+  return mod[entry.export] as DriverFactory;
 }
 
 /** Extract credential (bot token) from channel config JSON. */
@@ -89,7 +96,7 @@ function startChannel(ch: DbChannel, envConfig: ReturnType<typeof buildEnvConfig
     formattingPrompt: getFormattingPrompt(ch.channel_type),
   };
 
-  const driverFactory = getDriverFactory(ch.channel_type);
+  const driverFactory = await getDriverFactory(ch.channel_type);
   const controller = spawnSessionLoop(sessionConfig, driverFactory);
   activeSessions.set(ch.id, { controller, ch });
   console.log(`[${ch.agent_name}] ${ch.channel_type} '${ch.display_name}' started`);
