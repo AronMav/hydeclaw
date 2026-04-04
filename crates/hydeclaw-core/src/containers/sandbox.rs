@@ -227,7 +227,9 @@ impl CodeSandbox {
         const BLOCKED_PREFIXES: &[&str] = &[
             "/etc/shadow", "/etc/passwd", "/root", "/home",
             "/proc", "/sys", "/dev", "/run", "/var/run",
-            // Credential directories (defense-in-depth for non-/home paths)
+        ];
+        // Credential directory segments — block any path containing these
+        const BLOCKED_SEGMENTS: &[&str] = &[
             "/.ssh", "/.aws", "/.config/gcloud", "/.docker",
             "/.kube", "/.gnupg",
         ];
@@ -242,7 +244,9 @@ impl CodeSandbox {
                 } else {
                     src.to_string()
                 };
-                if BLOCKED_PREFIXES.iter().any(|p| check_path.starts_with(p)) {
+                if BLOCKED_PREFIXES.iter().any(|p| check_path.starts_with(p))
+                    || BLOCKED_SEGMENTS.iter().any(|s| check_path.contains(s))
+                {
                     tracing::warn!(bind = %bind, "sandbox: blocked sensitive bind mount");
                     continue;
                 }
