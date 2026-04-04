@@ -120,9 +120,12 @@ impl McpRegistry {
     }
 
     /// Get all discovered tool definitions (for LLM system prompt).
+    /// Sorted deterministically by tool name to stabilize prompt cache fingerprints.
     pub async fn all_tool_definitions(&self) -> Vec<ToolDefinition> {
         let cache = self.tool_cache.read().await;
-        cache.values().flatten().cloned().collect()
+        let mut tools: Vec<ToolDefinition> = cache.values().flatten().cloned().collect();
+        tools.sort_by(|a, b| a.name.cmp(&b.name));
+        tools
     }
 
     /// Check if an MCP server is configured in the container manager.

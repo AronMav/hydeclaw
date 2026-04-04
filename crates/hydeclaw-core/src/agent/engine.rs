@@ -2034,7 +2034,8 @@ impl AgentEngine {
             .map(|c| c.preserve_last_n as usize)
             .unwrap_or(10);
 
-        // Count tool messages, compact oldest ones
+        // Count tool messages, compact newest ones first to preserve prompt cache prefix.
+        // Keeping oldest messages stable means the system prompt + early context stay cached.
         let tool_indices: Vec<usize> = messages.iter().enumerate()
             .filter(|(_, m)| m.role == MessageRole::Tool)
             .map(|(i, _)| i)
@@ -2044,7 +2045,8 @@ impl AgentEngine {
 
         let mut compacted = 0usize;
         let mut chars_removed = 0usize;
-        for &idx in tool_indices.iter().take(to_compact) {
+        // Iterate from newest tool results (end of vector) to preserve oldest for cache prefix
+        for &idx in tool_indices.iter().rev().take(to_compact) {
             let old_len = messages[idx].content.chars().count();
             if old_len > 100 {
                 let replacement = "[tool result compacted]";
