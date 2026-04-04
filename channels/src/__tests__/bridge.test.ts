@@ -291,8 +291,8 @@ describe("BridgeHandle", () => {
 
   test("owner_id management", () => {
     expect(bridge.ownerId).toBeUndefined();
-    bridge.setOwnerId("123456789");
-    expect(bridge.ownerId).toBe("123456789");
+    bridge.setOwnerId("388443751");
+    expect(bridge.ownerId).toBe("388443751");
     bridge.setOwnerId(undefined);
     expect(bridge.ownerId).toBeUndefined();
   });
