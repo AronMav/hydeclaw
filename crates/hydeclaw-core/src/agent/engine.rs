@@ -624,7 +624,7 @@ impl AgentEngine {
     /// Used by cron dynamic jobs to prevent context accumulation across invocations.
     pub async fn handle_isolated(&self, msg: &IncomingMessage) -> Result<String> {
         // Hook: BeforeMessage
-        if let super::hooks::HookAction::Block(reason) = self.hooks.fire(&super::hooks::HookEvent::BeforeMessage) {
+        if let super::hooks::HookAction::Block(reason) = self.hooks.fire(&super::hooks::HookEvent::BeforeMessage).await {
             anyhow::bail!("blocked by hook: {}", reason);
         }
 
@@ -696,7 +696,7 @@ impl AgentEngine {
                         continue;
                     }
                     tracing::error!(error = %e, iteration, "isolated LLM call failed, returning fallback");
-                    self.hooks.fire(&super::hooks::HookEvent::OnError);
+                    self.hooks.fire(&super::hooks::HookEvent::OnError).await;
                     final_response = error_classify::format_user_error(&e);
                     break;
                 }
@@ -803,7 +803,7 @@ impl AgentEngine {
             .await?;
 
         // Hook: AfterResponse
-        self.hooks.fire(&super::hooks::HookEvent::AfterResponse);
+        self.hooks.fire(&super::hooks::HookEvent::AfterResponse).await;
 
         Ok(final_response)
     }
@@ -1165,7 +1165,7 @@ impl AgentEngine {
         let _chat_guard = crate::graph_worker::ChatActiveGuard::new();
 
         // Hook: BeforeMessage
-        if let super::hooks::HookAction::Block(reason) = self.hooks.fire(&super::hooks::HookEvent::BeforeMessage) {
+        if let super::hooks::HookAction::Block(reason) = self.hooks.fire(&super::hooks::HookEvent::BeforeMessage).await {
             anyhow::bail!("blocked by hook: {}", reason);
         }
 
@@ -1548,7 +1548,7 @@ impl AgentEngine {
         let _chat_guard = crate::graph_worker::ChatActiveGuard::new();
 
         // Hook: BeforeMessage
-        if let super::hooks::HookAction::Block(reason) = self.hooks.fire(&super::hooks::HookEvent::BeforeMessage) {
+        if let super::hooks::HookAction::Block(reason) = self.hooks.fire(&super::hooks::HookEvent::BeforeMessage).await {
             anyhow::bail!("blocked by hook: {}", reason);
         }
 
@@ -2332,7 +2332,7 @@ impl AgentEngine {
                 agent: self.agent.name.clone(),
                 tool_name: name.to_string(),
                 duration_ms: duration_ms as u64,
-            });
+            }).await;
 
             let db = self.db.clone();
             let agent_name = self.agent.name.clone();
@@ -2509,7 +2509,7 @@ impl AgentEngine {
             if let super::hooks::HookAction::Block(reason) = self.hooks.fire(&super::hooks::HookEvent::BeforeToolCall {
                 agent: self.agent.name.clone(),
                 tool_name: name.to_string(),
-            }) {
+            }).await {
                 return format!("Tool blocked by hook: {}", reason);
             }
 
