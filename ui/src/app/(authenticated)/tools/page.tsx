@@ -520,7 +520,7 @@ parameters:
             <Field label={t("tools.service_field_url")} hint={t("tools.service_hint_url")}>
               <Input type="text" required value={serviceForm.url}
                 onChange={(e) => setServiceForm((f) => ({ ...f, url: e.target.value }))}
-                placeholder="http://localhost:11434/v1" />
+                placeholder="http://192.168.1.132:11434/v1" />
             </Field>
             <Field label={t("tools.service_field_healthcheck")} hint={t("tools.service_hint_healthcheck")}>
               <Input type="text" value={serviceForm.healthcheck}

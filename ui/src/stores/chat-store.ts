@@ -147,15 +147,6 @@ function emptyAgentState(): AgentState {
   };
 }
 
-/** Shared partial for resetting stream-related state to idle. */
-const IDLE_STREAM_RESET = {
-  streamStatus: "idle" as const,
-  streamError: null as string | null,
-  pendingTargetAgent: null,
-  turnLimitMessage: null,
-  turnCount: 0,
-};
-
 // ── Store interface ─────────────────────────────────────────────────────────
 
 const LAST_SESSION_KEY = "hydeclaw.chat.lastSession";
@@ -166,13 +157,6 @@ const agentAbortControllers: Record<string, AbortController | null> = {};
 // Stream generation counter — prevents stale SSE deltas from writing to wrong session
 // after session switch. Incremented on each startStream(), checked in pushUpdate().
 let streamGeneration = 0;
-
-// Stale stream detection — abort if no SSE data received within this window.
-// Prevents streamStatus from getting stuck in "streaming" when the connection hangs
-// (e.g. LLM stall, network break) and reader.read() blocks indefinitely.
-const STREAM_STALE_TIMEOUT_MS = 60_000;
-const staleStreamTimers: Record<string, ReturnType<typeof setInterval> | null> = {};
-const staleAbortedFlags: Record<string, boolean> = {};
 
 interface ChatStore {
   /** Per-agent state map. */
@@ -432,15 +416,10 @@ export const useChatStore = create<ChatStore>()(
 
   /** Abort active stream for an agent and reset status. */
   function abortActiveStream(agent: string) {
-    if (staleStreamTimers[agent]) {
-      clearInterval(staleStreamTimers[agent]!);
-      staleStreamTimers[agent] = null;
-    }
-    staleAbortedFlags[agent] = false;
     if (agentAbortControllers[agent]) {
       agentAbortControllers[agent].abort();
       agentAbortControllers[agent] = null;
-      update(agent, IDLE_STREAM_RESET);
+      update(agent, { streamStatus: "idle" });
     }
   }
 
@@ -504,22 +483,10 @@ export const useChatStore = create<ChatStore>()(
         return processSSEStream(agent, resp.body!, controller.signal, myGeneration);
       })
       .catch((err) => {
-        if (err.name === "AbortError") {
-          // Stale stream abort — show error so user knows what happened
-          if (staleAbortedFlags[agent]) {
-            update(agent, {
-              streamStatus: "error",
-              streamError: "Stream timed out — no response for 60s",
-              pendingTargetAgent: null,
-            });
-            saveUiState(agent);
-          }
-          return;
-        }
+        if (err.name === "AbortError") return;
         update(agent, {
           streamStatus: "error",
           streamError: err.message || "Stream failed",
-          pendingTargetAgent: null,
         });
         saveUiState(agent);
       });
@@ -534,17 +501,6 @@ export const useChatStore = create<ChatStore>()(
     const reader = body.getReader();
     const decoder = new TextDecoder();
     const buffer = { current: "" };
-
-    // Stale stream detection: track last received data timestamp
-    let lastDataAt = Date.now();
-    staleAbortedFlags[agent] = false;
-    staleStreamTimers[agent] = setInterval(() => {
-      if (Date.now() - lastDataAt > STREAM_STALE_TIMEOUT_MS) {
-        console.warn(`[chat] SSE stream stale for ${STREAM_STALE_TIMEOUT_MS / 1000}s, aborting`);
-        staleAbortedFlags[agent] = true;
-        agentAbortControllers[agent]?.abort();
-      }
-    }, 5_000);
 
     // Mutable assistant message being built
     let assistantId = uuid();
@@ -677,7 +633,6 @@ export const useChatStore = create<ChatStore>()(
         if (signal.aborted) break;
         const { done, value } = await reader.read();
         if (done) break;
-        lastDataAt = Date.now();
 
         const chunk = decoder.decode(value, { stream: true });
         const lines = parseSSELines(chunk, buffer);
@@ -854,7 +809,6 @@ export const useChatStore = create<ChatStore>()(
                 role: "assistant",
                 parts: syncParts.length > 0 ? syncParts : [{ type: "text", text: "" }],
                 createdAt: assistantCreatedAt,
-                agentId: currentRespondingAgent ?? undefined,
               };
 
               // Replace live messages: keep user messages + add sync assistant message
@@ -870,15 +824,11 @@ export const useChatStore = create<ChatStore>()(
                 const errorText = syncStatus === "error" ? (event.error ?? null) : null;
                 // Don't reset to idle during turn loop — pendingTargetAgent means more agents coming
                 const inTurnLoop = !!get().agents[agent]?.pendingTargetAgent;
-                if (syncStatus === "error") {
+                if (syncStatus === "error" || !inTurnLoop) {
                   update(agent, {
-                    streamStatus: "error",
+                    streamStatus: syncStatus === "error" ? "error" : "idle",
                     streamError: errorText,
-                    pendingTargetAgent: null,
-                    turnLimitMessage: null,
                   });
-                } else if (!inTurnLoop) {
-                  update(agent, IDLE_STREAM_RESET);
                 }
               }
               break;
@@ -902,9 +852,9 @@ export const useChatStore = create<ChatStore>()(
               const errText = event.errorText;
               if (errText.includes("turn limit") || errText.includes("cycle detected")) {
                 // Turn management message — show inline as info card, not as error banner
-                update(agent, { turnLimitMessage: errText, turnCount: 0, pendingTargetAgent: null });
+                update(agent, { turnLimitMessage: errText, turnCount: 0 });
               } else {
-                update(agent, { streamStatus: "error", streamError: errText, pendingTargetAgent: null });
+                update(agent, { streamStatus: "error", streamError: errText });
               }
               break;
             }
@@ -912,10 +862,6 @@ export const useChatStore = create<ChatStore>()(
         }
       }
     } finally {
-      if (staleStreamTimers[agent]) {
-        clearInterval(staleStreamTimers[agent]!);
-        staleStreamTimers[agent] = null;
-      }
       reader.releaseLock();
       // Execute any pending update synchronously instead of cancelling it
       // (prevents losing the final text-delta that was scheduled but not yet rendered)
@@ -928,29 +874,16 @@ export const useChatStore = create<ChatStore>()(
       if (!signal.aborted) {
         // Only push if there's content — avoids phantom empty message after finish reset
         if (parts.length > 0) pushUpdate();
-        // Single batched update: reset stream state + clear activeSessionIds + thinkingSessionId.
-        // Merged into one set() to avoid multiple subscriber notifications outside React batching.
-        const finishedSessionId = receivedSessionId ?? get().agents[agent]?.activeSessionId;
+        // Preserve error status if error event was already received
         const isError = get().agents[agent]?.streamStatus === "error";
-        set((draft) => {
-          const st = draft.agents[agent];
-          if (!st) return;
-          if (!isError) {
-            st.streamStatus = "idle";
-            st.streamError = null;
-            st.pendingTargetAgent = null;
-            st.turnCount = 0;
-            st.turnLimitMessage = null;
-          }
-          if (finishedSessionId) {
-            st.activeSessionIds = st.activeSessionIds.filter((id: string) => id !== finishedSessionId);
-          }
-          st.thinkingSessionId = null;
-        });
+        if (!isError) {
+          update(agent, { streamStatus: "idle", pendingTargetAgent: null, turnCount: 0 });
+        }
         saveUiState(agent);
+        // Session status is server-driven via WS agent_processing events — no optimistic update needed.
       } else if (parts.length > 0) {
-        // On abort: save partial response to liveMessages.
-        // Status set by caller: stopStream → "idle", stale abort → "error" (via .catch)
+        // On abort: save partial response to liveMessages but keep idle status
+        // (stopStream already set streamStatus to "idle")
         const st = get().agents[agent];
         if (st) {
           const assistantMsg: ChatMessage = {
@@ -1014,7 +947,6 @@ export const useChatStore = create<ChatStore>()(
             liveMessages: prevState?.liveMessages ?? [],
             viewMode: prevState?.viewMode ?? "live",
             streamStatus: prevState?.streamStatus ?? "idle",
-            forceNewSession: false,
           });
           set({ currentAgent: name });
           saveLastSession(name, activeSessionId);
@@ -1026,16 +958,17 @@ export const useChatStore = create<ChatStore>()(
       if (agentAbortControllers[prev]) {
         agentAbortControllers[prev].abort();
         agentAbortControllers[prev] = null;
-        update(prev, IDLE_STREAM_RESET);
+        update(prev, { streamStatus: "idle" });
       }
       ensure(name);
       // Immediately reset to new-chat state so no stale session is shown during render.
       // The restore effect in page.tsx may later select a server-active session.
       update(name, {
-        ...IDLE_STREAM_RESET,
         activeSessionId: null,
         viewMode: "live",
         liveMessages: [],
+        streamStatus: "idle",
+        streamError: null,
         forceNewSession: true,
       });
       set({ currentAgent: name });
@@ -1061,7 +994,6 @@ export const useChatStore = create<ChatStore>()(
       abortActiveStream(agent);
 
       update(agent, {
-        ...IDLE_STREAM_RESET,
         activeSessionId: sessionId,
         viewMode: "history",
         forceNewSession: false,
@@ -1077,13 +1009,17 @@ export const useChatStore = create<ChatStore>()(
       // Switch to the agent and select the session
       set({ currentAgent: agent });
       ensure(agent);
-      abortActiveStream(agent);
+      // Abort any active stream for this agent
+      if (agentAbortControllers[agent]) {
+        agentAbortControllers[agent].abort();
+        agentAbortControllers[agent] = null;
+      }
       update(agent, {
-        ...IDLE_STREAM_RESET,
         activeSessionId: sessionId,
         viewMode: "history",
         forceNewSession: false,
         liveMessages: [],
+        streamStatus: "idle",
       });
       saveLastSession(agent, sessionId);
       // Data fetching handled by useSessionMessages() React Query hook
@@ -1094,10 +1030,11 @@ export const useChatStore = create<ChatStore>()(
       agentAbortControllers[agent]?.abort();
       agentAbortControllers[agent] = null;
       update(agent, {
-        ...IDLE_STREAM_RESET,
         activeSessionId: null,
         viewMode: "live",
         liveMessages: [],
+        streamStatus: "idle",
+        streamError: null,
         forceNewSession: true,
       });
       saveLastSession(agent);
@@ -1192,7 +1129,7 @@ export const useChatStore = create<ChatStore>()(
       const agent = get().currentAgent;
       agentAbortControllers[agent]?.abort();
       agentAbortControllers[agent] = null;
-      update(agent, IDLE_STREAM_RESET);
+      update(agent, { streamStatus: "idle" });
     },
 
     regenerate: () => {
@@ -1204,7 +1141,7 @@ export const useChatStore = create<ChatStore>()(
       if (isActiveStream(st.streamStatus)) {
         agentAbortControllers[agent]?.abort();
         agentAbortControllers[agent] = null;
-        update(agent, IDLE_STREAM_RESET);
+        update(agent, { streamStatus: "idle" });
       }
 
       let sessionId = st.activeSessionId;
@@ -1244,7 +1181,7 @@ export const useChatStore = create<ChatStore>()(
       if (isActiveStream(st.streamStatus)) {
         agentAbortControllers[agent]?.abort();
         agentAbortControllers[agent] = null;
-        update(agent, IDLE_STREAM_RESET);
+        update(agent, { streamStatus: "idle" });
       }
 
       let sessionId = st.activeSessionId;
@@ -1298,7 +1235,7 @@ export const useChatStore = create<ChatStore>()(
         agentAbortControllers[agent] = null;
         update(agent, {
           activeSessionId: null, viewMode: "live", liveMessages: [],
-          ...IDLE_STREAM_RESET, forceNewSession: true,
+          streamStatus: "idle", streamError: null, forceNewSession: true,
         });
         saveLastSession(agent);
       }
@@ -1313,7 +1250,7 @@ export const useChatStore = create<ChatStore>()(
       agentAbortControllers[agent] = null;
       update(agent, {
         activeSessionId: null, viewMode: "live", liveMessages: [],
-        ...IDLE_STREAM_RESET, forceNewSession: true,
+        streamStatus: "idle", streamError: null, forceNewSession: true,
       });
       saveLastSession(agent);
       queryClient.invalidateQueries({ queryKey: qk.sessions(agent) });

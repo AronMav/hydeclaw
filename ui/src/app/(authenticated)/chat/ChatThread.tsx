@@ -27,8 +27,7 @@ import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/component
 import { BarsLoader } from "@/components/ui/loader";
 import { Button } from "@/components/ui/button";
 import { RichCard } from "@/components/ui/rich-card";
-import { AutocompletePopover } from "./parts/AutocompletePopover";
-import type { AutocompleteItem } from "./parts/AutocompletePopover";
+import { SlashMenu } from "./parts/SlashMenu";
 import { MessageList } from "./MessageList";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import {
@@ -390,17 +389,32 @@ function ModelDropdown({ agent }: { agent: string }) {
   );
 }
 
-// ── Slash command keys ──────────────────────────────────────────────────────
+// ── @-mention autocomplete ──────────────────────────────────────────────────
 
-const SLASH_COMMAND_KEYS = [
-  { cmd: "/new",     key: "chat.slash_new" },
-  { cmd: "/reset",   key: "chat.slash_reset" },
-  { cmd: "/stop",    key: "chat.slash_stop" },
-  { cmd: "/think:0", key: "chat.slash_think_off" },
-  { cmd: "/think:1", key: "chat.slash_think_min" },
-  { cmd: "/think:3", key: "chat.slash_think_med" },
-  { cmd: "/think:5", key: "chat.slash_think_max" },
-] as const;
+export function MentionAutocomplete({ query, agents, onSelect }: {
+  query: string;
+  agents: string[];
+  onSelect: (name: string) => void;
+}) {
+  const q = query.toLowerCase();
+  const filtered = agents.filter(p => p.toLowerCase().startsWith(q));
+
+  if (filtered.length === 0) return null;
+
+  return (
+    <div className="absolute bottom-full mb-1 left-0 bg-popover border border-border rounded-lg shadow-lg p-1 z-50">
+      {filtered.map(name => (
+        <button
+          key={name}
+          className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-md hover:bg-muted w-full text-left"
+          onMouseDown={(e) => { e.preventDefault(); onSelect(name); }}
+        >
+          <span className="font-semibold">@{name}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
 
 // ── Composer ──────────────────────────────────────────────────────────────────
 
@@ -415,16 +429,13 @@ function ChatComposer() {
   const { t } = useTranslation();
   const currentAgent = useChatStore((s) => s.currentAgent);
   const agents = useAuthStore((s) => s.agents);
-  const agentIcons = useAuthStore((s) => s.agentIcons);
-  const { data: allAgents } = useAgents();
   const viewMode = useChatStore((s) => s.agents[s.currentAgent]?.viewMode ?? "live");
   const streamStatus = useChatStore((s) => s.agents[s.currentAgent]?.streamStatus ?? "idle");
   const liveMessages = useChatStore((s) => s.agents[s.currentAgent]?.liveMessages ?? EMPTY_LIVE_MESSAGES);
   const isStreaming = streamStatus === "submitted" || streamStatus === "streaming";
   const hasMessages = viewMode === "live" ? liveMessages.length > 0 : true;
-  const [menuType, setMenuType] = useState<"slash" | "mention" | null>(null);
-  const [menuQuery, setMenuQuery] = useState("");
-  const [activeIndex, setActiveIndex] = useState(0);
+  const [slashQuery, setSlashQuery] = useState<string | null>(null);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [resolvedMention, setResolvedMention] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<AttachmentEntry[]>([]);
   const formRef = useRef<HTMLFormElement | null>(null);
@@ -447,50 +458,6 @@ function ChatComposer() {
     ta.style.height = `${ta.scrollHeight}px`;
   }, []);
 
-  // ── Unified autocomplete item lists ──────────────────────────────────────
-
-  const slashCommands: AutocompleteItem[] = useMemo(
-    () => SLASH_COMMAND_KEYS.map(({ cmd, key }) => ({
-      id: cmd,
-      label: cmd,
-      description: t(key),
-      value: cmd,
-    })),
-    [t],
-  );
-
-  const mentionItems: AutocompleteItem[] = useMemo(
-    () => agents.filter(a => a !== currentAgent).map(name => {
-      const info = allAgents?.find(a => a.name === name);
-      const iconFile = agentIcons[name];
-      return {
-        id: name,
-        label: `@${name}`,
-        description: info?.model ?? undefined,
-        icon: iconFile ? `/uploads/${iconFile}` : null,
-        value: name,
-      };
-    }),
-    [agents, currentAgent, allAgents, agentIcons],
-  );
-
-  const filteredItems = useMemo(() => {
-    if (menuType === "slash") {
-      return slashCommands.filter(item => item.label.startsWith(menuQuery));
-    }
-    if (menuType === "mention") {
-      const q = menuQuery.toLowerCase();
-      return mentionItems.filter(item => item.value.toLowerCase().startsWith(q));
-    }
-    return [];
-  }, [menuType, menuQuery, slashCommands, mentionItems]);
-
-  useEffect(() => { setActiveIndex(0); }, [filteredItems.length, menuQuery]);
-
-  const menuVisible = menuType !== null && filteredItems.length > 0;
-
-  // ── Input and keyboard handlers ──────────────────────────────────────────
-
   const handleComposerInput = useCallback((e: React.FormEvent<HTMLFormElement>) => {
     const ta = e.target instanceof HTMLTextAreaElement ? e.target : null;
     if (!ta) return;
@@ -498,17 +465,13 @@ function ChatComposer() {
     autoResize();
     const val = ta.value;
     if (val.startsWith("/") && !val.includes(" ")) {
-      setMenuType("slash");
-      setMenuQuery(val);
+      setSlashQuery(val);
+      setMentionQuery(null);
     } else {
+      setSlashQuery(null);
+      // Detect @mention at end of input (preceded by whitespace or SOL)
       const match = val.match(/(?:^|\s)@(\w*)$/);
-      if (match) {
-        setMenuType("mention");
-        setMenuQuery(match[1]);
-      } else {
-        setMenuType(null);
-        setMenuQuery("");
-      }
+      setMentionQuery(match ? match[1] : null);
     }
     // Clear resolvedMention if @AgentName was removed from textarea
     setResolvedMention((prev) => {
@@ -518,41 +481,20 @@ function ChatComposer() {
     });
   }, [autoResize]);
 
-  const handleAutocompleteSelect = useCallback((item: AutocompleteItem) => {
-    setMenuType(null);
-    setMenuQuery("");
+  const handleMentionSelect = useCallback((name: string) => {
+    setMentionQuery(null);
+    setResolvedMention(name);
     const ta = textareaRef.current;
     if (!ta) return;
-
-    if (item.id.startsWith("/")) {
-      // Slash command: clear textarea and execute command
+    const val = ta.value;
+    const match = val.match(/(?:^|\s)@(\w*)$/);
+    if (match) {
+      const before = val.slice(0, (match.index ?? 0) + (match[0].startsWith(" ") ? 1 : 0));
+      const newVal = `${before}@${name} `;
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-      setter?.call(ta, "");
+      setter?.call(ta, newVal);
       ta.dispatchEvent(new Event("input", { bubbles: true }));
-      const store = useChatStore.getState();
-      if (item.value === "/stop")           { store.stopStream(); return; }
-      if (item.value === "/new")            { store.newChat(); return; }
-      if (item.value.startsWith("/think:")) { store.setThinkingLevel(parseInt(item.value.split(":")[1])); return; }
-      // /reset and other commands are sent as messages
-      store.sendMessage(item.value);
-    } else {
-      // Mention: insert @Name into textarea at the trigger position
-      setResolvedMention(item.value);
-      const val = ta.value;
-      const match = val.match(/(?:^|\s)@(\w*)$/);
-      if (match) {
-        const before = val.slice(0, (match.index ?? 0) + (match[0].startsWith(" ") ? 1 : 0));
-        const newVal = `${before}@${item.value} `;
-        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-        setter?.call(ta, newVal);
-        ta.dispatchEvent(new Event("input", { bubbles: true }));
-        // Set cursor after the inserted mention
-        requestAnimationFrame(() => {
-          const cursorPos = newVal.length;
-          ta.selectionStart = ta.selectionEnd = cursorPos;
-          ta.focus();
-        });
-      }
+      ta.focus();
     }
   }, []);
 
@@ -568,6 +510,25 @@ function ChatComposer() {
     ta.focus();
   }, []);
 
+  const handleSlashSelect = useCallback((cmd: string) => {
+    setSlashQuery(null);
+    const ta = textareaRef.current;
+    if (ta) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(ta, "");
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    const store = useChatStore.getState();
+    if (cmd === "/stop")           { store.stopStream(); return; }
+    if (cmd === "/new")            { store.newChat(); return; }
+    if (cmd.startsWith("/think:")) { store.setThinkingLevel(parseInt(cmd.split(":")[1])); return; }
+    // /reset and other commands are sent as messages — backend (engine_commands.rs) handles them
+    store.sendMessage(cmd);
+  }, [currentAgent]);
+
+  const handleSlashClose = useCallback(() => {
+    setSlashQuery(null);
+  }, []);
 
   const handleFileAdd = useCallback(async (file: File) => {
     const formData = new FormData();
@@ -592,8 +553,6 @@ function ChatComposer() {
 
   const handleSubmit = useCallback((e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    setMenuType(null);
-    setMenuQuery("");
     const text = textareaRef.current?.value?.trim() ?? "";
     if (!text && attachments.length === 0) return;
     useChatStore.getState().sendMessage(text);
@@ -606,42 +565,11 @@ function ChatComposer() {
   }, [attachments]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // IME guard -- never intercept during CJK composition (KBD-05)
-    if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
-
-    if (menuVisible) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setActiveIndex(i => (i + 1) % filteredItems.length);
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setActiveIndex(i => (i - 1 + filteredItems.length) % filteredItems.length);
-        return;
-      }
-      if (e.key === "Enter" || e.key === "Tab") {
-        e.preventDefault();
-        e.stopPropagation();
-        const item = filteredItems[activeIndex];
-        if (item) handleAutocompleteSelect(item);
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        setMenuType(null);
-        setMenuQuery("");
-        return;
-      }
-    }
-
-    // Default: Enter submits form (unchanged behavior)
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       formRef.current?.requestSubmit();
     }
-  }, [menuVisible, filteredItems, activeIndex, handleAutocompleteSelect]);
+  }, []);
 
   // ── Paste and drag-drop file attachment ──────────────────────────────────
 
@@ -708,6 +636,20 @@ function ChatComposer() {
               </div>
             </div>
           )}
+          {slashQuery !== null && (
+            <SlashMenu
+              query={slashQuery}
+              onSelect={handleSlashSelect}
+              onClose={handleSlashClose}
+            />
+          )}
+          {mentionQuery !== null && agents.length > 1 && (
+            <MentionAutocomplete
+              query={mentionQuery}
+              agents={agents.filter(a => a !== currentAgent)}
+              onSelect={handleMentionSelect}
+            />
+          )}
           {attachments.length > 0 && attachments.map((att) => (
             <div key={att.id} className="flex items-center gap-2 px-3 pt-2 text-xs text-muted-foreground">
               <Paperclip className="h-3 w-3" />
@@ -724,7 +666,7 @@ function ChatComposer() {
           <textarea
             ref={textareaRef}
             rows={1}
-            enterKeyHint={menuVisible ? "done" : "send"}
+            enterKeyHint="send"
             autoCorrect="off"
             autoCapitalize="sentences"
             placeholder={
@@ -735,6 +677,19 @@ function ChatComposer() {
             className="min-h-[44px] max-h-[120px] md:max-h-[240px] resize-none bg-transparent px-4 py-3 text-[15px] text-foreground outline-none placeholder:text-muted-foreground/35"
             onKeyDown={handleKeyDown}
           />
+          {resolvedMention && (
+            <div data-testid="target-agent-indicator" className="flex items-center gap-1.5 px-4 py-1 text-xs text-muted-foreground">
+              <span>Targeting</span>
+              <span className="font-semibold text-primary">@{resolvedMention}</span>
+              <button
+                type="button"
+                onClick={clearResolvedMention}
+                className="rounded p-0.5 hover:bg-muted/50 text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          )}
           <div className="flex items-center justify-between px-3 pb-3">
             <div className="flex items-center gap-2">
               <input
@@ -794,14 +749,6 @@ function ChatComposer() {
             </div>
           </div>
         </form>
-        <AutocompletePopover
-          items={filteredItems}
-          activeIndex={activeIndex}
-          onSelect={handleAutocompleteSelect}
-          onActiveIndexChange={setActiveIndex}
-          anchorRef={textareaRef}
-          visible={menuVisible}
-        />
       </div>
     </div>
   );

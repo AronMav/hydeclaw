@@ -464,8 +464,8 @@ describe("Session Management (SESS)", () => {
 
       // We verify this by testing the store's setCurrentAgent function directly.
       // Import the real store for this specific test.
-      const { create } = require("zustand") as typeof import("zustand");
-      const { immer } = require("zustand/middleware/immer") as typeof import("zustand/middleware/immer");
+      const { create } = require("zustand");
+      const { immer } = require("zustand/middleware/immer");
 
       // Minimal recreation of the carry-over logic
       type AgentState = {
@@ -545,8 +545,8 @@ describe("Session Management (SESS)", () => {
     });
 
     it("does NOT carry over session when new agent is NOT a participant", () => {
-      const { create } = require("zustand") as typeof import("zustand");
-      const { immer } = require("zustand/middleware/immer") as typeof import("zustand/middleware/immer");
+      const { create } = require("zustand");
+      const { immer } = require("zustand/middleware/immer");
 
       type AgentState = {
         activeSessionId: string | null;
@@ -623,8 +623,8 @@ describe("Session Management (SESS)", () => {
     });
 
     it("no-ops when switching to the same agent", () => {
-      const { create } = require("zustand") as typeof import("zustand");
-      const { immer } = require("zustand/middleware/immer") as typeof import("zustand/middleware/immer");
+      const { create } = require("zustand");
+      const { immer } = require("zustand/middleware/immer");
 
       type AgentState = {
         activeSessionId: string | null;

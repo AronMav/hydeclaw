@@ -162,60 +162,46 @@ vi.mock("@/components/ui/rich-card", () => ({
 
 // ── Import components under test ───────────────────────────────────────────
 
-import { AutocompletePopover } from "@/app/(authenticated)/chat/parts/AutocompletePopover";
-import type { AutocompleteItem } from "@/app/(authenticated)/chat/parts/AutocompletePopover";
+import { MentionAutocomplete } from "@/app/(authenticated)/chat/ChatThread";
+import { SlashMenu } from "@/app/(authenticated)/chat/parts/SlashMenu";
 
-// ── INPT-01: @-mention autocomplete (via AutocompletePopover) ─────────────
+// ── INPT-01: @-mention autocomplete ───────────────────────────────────────
 
-describe("AutocompletePopover mention items (INPT-01)", () => {
-  const mentionItems: AutocompleteItem[] = [
-    { id: "Arty", label: "@Arty", value: "Arty" },
-    { id: "Bob", label: "@Bob", value: "Bob" },
-  ];
-  const anchorRef = { current: document.createElement("textarea") };
-
-  it("renders filtered agent list when visible", () => {
+describe("MentionAutocomplete (INPT-01)", () => {
+  it("renders filtered agent list matching query", () => {
     render(
-      <AutocompletePopover
-        items={[mentionItems[0]]}
-        activeIndex={0}
+      <MentionAutocomplete
+        query="Ar"
+        agents={["Arty", "Bob"]}
         onSelect={vi.fn()}
-        onActiveIndexChange={vi.fn()}
-        anchorRef={anchorRef}
-        visible={true}
       />,
     );
     expect(screen.getByText("@Arty")).toBeInTheDocument();
+    expect(screen.queryByText("@Bob")).not.toBeInTheDocument();
   });
 
-  it("returns null when not visible", () => {
+  it("returns null when no agents match query", () => {
     const { container } = render(
-      <AutocompletePopover
-        items={mentionItems}
-        activeIndex={0}
+      <MentionAutocomplete
+        query="zzz"
+        agents={["Arty", "Bob"]}
         onSelect={vi.fn()}
-        onActiveIndexChange={vi.fn()}
-        anchorRef={anchorRef}
-        visible={false}
       />,
     );
     expect(container.innerHTML).toBe("");
   });
 
-  it("calls onSelect with item on mouseDown", () => {
+  it("calls onSelect with agent name on click", () => {
     const onSelect = vi.fn();
     render(
-      <AutocompletePopover
-        items={[mentionItems[0]]}
-        activeIndex={0}
+      <MentionAutocomplete
+        query="Ar"
+        agents={["Arty", "Bob"]}
         onSelect={onSelect}
-        onActiveIndexChange={vi.fn()}
-        anchorRef={anchorRef}
-        visible={true}
       />,
     );
     fireEvent.mouseDown(screen.getByText("@Arty"));
-    expect(onSelect).toHaveBeenCalledWith(mentionItems[0]);
+    expect(onSelect).toHaveBeenCalledWith("Arty");
   });
 });
 
@@ -281,79 +267,42 @@ describe("Textarea presence (INPT-04)", () => {
   });
 });
 
-// ── INPT-05: Slash commands (via AutocompletePopover) ─────────────────────
+// ── INPT-05: SlashMenu ────────────────────────────────────────────────────
 
-describe("AutocompletePopover slash items (INPT-05)", () => {
-  const slashItems: AutocompleteItem[] = [
-    { id: "/new", label: "/new", description: "chat.slash_new", value: "/new" },
-    { id: "/reset", label: "/reset", description: "chat.slash_reset", value: "/reset" },
-    { id: "/stop", label: "/stop", description: "chat.slash_stop", value: "/stop" },
-    { id: "/think:0", label: "/think:0", description: "chat.slash_think_off", value: "/think:0" },
-    { id: "/think:1", label: "/think:1", description: "chat.slash_think_min", value: "/think:1" },
-  ];
-  const anchorRef = { current: document.createElement("textarea") };
-
-  it("renders all commands when given full list", () => {
+describe("SlashMenu (INPT-05)", () => {
+  it("renders all commands when query is /", () => {
     render(
-      <AutocompletePopover
-        items={slashItems}
-        activeIndex={0}
-        onSelect={vi.fn()}
-        onActiveIndexChange={vi.fn()}
-        anchorRef={anchorRef}
-        visible={true}
-      />,
+      <SlashMenu query="/" onSelect={vi.fn()} onClose={vi.fn()} />,
     );
     expect(screen.getByText("/new")).toBeInTheDocument();
     expect(screen.getByText("/reset")).toBeInTheDocument();
     expect(screen.getByText("/stop")).toBeInTheDocument();
   });
 
-  it("renders only filtered items when subset provided", () => {
-    const filtered = slashItems.filter(item => item.label.startsWith("/th"));
+  it("filters commands matching query prefix", () => {
     render(
-      <AutocompletePopover
-        items={filtered}
-        activeIndex={0}
-        onSelect={vi.fn()}
-        onActiveIndexChange={vi.fn()}
-        anchorRef={anchorRef}
-        visible={true}
-      />,
+      <SlashMenu query="/th" onSelect={vi.fn()} onClose={vi.fn()} />,
     );
+    // Only /think:N commands should match /th
     expect(screen.getByText("/think:0")).toBeInTheDocument();
     expect(screen.getByText("/think:1")).toBeInTheDocument();
     expect(screen.queryByText("/new")).not.toBeInTheDocument();
     expect(screen.queryByText("/stop")).not.toBeInTheDocument();
   });
 
-  it("returns null when items array is empty", () => {
+  it("returns null when no commands match", () => {
     const { container } = render(
-      <AutocompletePopover
-        items={[]}
-        activeIndex={0}
-        onSelect={vi.fn()}
-        onActiveIndexChange={vi.fn()}
-        anchorRef={anchorRef}
-        visible={true}
-      />,
+      <SlashMenu query="/zzz" onSelect={vi.fn()} onClose={vi.fn()} />,
     );
     expect(container.innerHTML).toBe("");
   });
 
-  it("calls onSelect with item on mouseDown", () => {
+  it("calls onSelect with command on click", () => {
     const onSelect = vi.fn();
     render(
-      <AutocompletePopover
-        items={[slashItems[0]]}
-        activeIndex={0}
-        onSelect={onSelect}
-        onActiveIndexChange={vi.fn()}
-        anchorRef={anchorRef}
-        visible={true}
-      />,
+      <SlashMenu query="/new" onSelect={onSelect} onClose={vi.fn()} />,
     );
     fireEvent.mouseDown(screen.getByText("/new"));
-    expect(onSelect).toHaveBeenCalledWith(slashItems[0]);
+    expect(onSelect).toHaveBeenCalledWith("/new");
   });
 });

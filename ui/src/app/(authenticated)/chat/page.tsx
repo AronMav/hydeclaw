@@ -310,12 +310,9 @@ export default function ChatPage() {
     if (session.agent_id === s.currentAgent) {
       s.selectSession(session.id);
     } else {
-      // Switch agent first (resets state), then select session (sets activeSessionId).
-      // Mark as restored to prevent auto-restore from overriding the explicit selection.
       restoredAgents.current.add(session.agent_id);
+      s.selectSession(session.id, session.agent_id);
       s.setCurrentAgent(session.agent_id);
-      // selectSession after setCurrentAgent so it doesn't get overwritten
-      useChatStore.getState().selectSession(session.id, session.agent_id);
     }
     setSheetOpen(false);
   }, []);
@@ -598,7 +595,7 @@ export default function ChatPage() {
                         <div className="absolute left-0 top-1/2 -translate-y-1/2 h-8 w-[2px] rounded-full bg-primary" />
                       )}
                     </button>
-                    <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5 md:opacity-0 md:pointer-events-none md:group-hover:opacity-100 md:group-hover:pointer-events-auto transition-opacity duration-150">
+                    <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5 md:opacity-0 md:group-hover:opacity-100 transition-opacity duration-150">
                         <Button
                           variant="ghost"
                           size="icon-xs"
@@ -652,6 +649,21 @@ export default function ChatPage() {
             <ParticipantBar sessionId={activeSessionId} currentAgent={currentAgent} />
             <ChatCanvasTabs />
           </div>
+          {viewingHistory && (
+            <div className="ml-auto flex items-center gap-2">
+              <div className="rounded-md border border-primary/30 bg-primary/10 px-3 py-1 font-mono text-[10px] font-semibold uppercase tracking-widest text-primary/70">
+                {t("chat.history")}
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => useChatStore.getState().newChat()}
+                className="text-xs text-primary"
+              >
+                {t("chat.return_to_live")}
+              </Button>
+            </div>
+          )}
           {streamError && (
             <div className="ml-auto flex items-center gap-1 text-destructive/60">
               <div className="h-2 w-2 rounded-full bg-destructive/60 animate-pulse" />

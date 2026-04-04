@@ -11,9 +11,6 @@ const mockSession: SessionRow = {
   channel: "web",
   started_at: "2024-01-15T10:30:00.000Z",
   last_message_at: "2024-01-15T10:35:00.000Z",
-  title: null,
-  run_status: null,
-  metadata: null,
 };
 
 // Minimal ChatMessage mocks matching the real ChatMessage type

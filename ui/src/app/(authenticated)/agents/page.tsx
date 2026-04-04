@@ -54,7 +54,7 @@ const emptyForm: FormState = {
   maxTokens: "",
   hbEnabled: false,
   hbCron: "",
-  hbTimezone: "UTC",
+  hbTimezone: "Europe/Samara",
   toolsEnabled: false,
   toolsAllowAll: true,
   toolsDenyAllOthers: false,

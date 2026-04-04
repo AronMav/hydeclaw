@@ -41,7 +41,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Clock, Play, Power, PowerOff, Trash2, Edit3, Plus, ChevronDown, ChevronUp, History } from "lucide-react";
 import type { CronJob, CronRun, ChannelRow } from "@/types/api";
 
-const emptyJob = { name: "", agent: "", cron: "", timezone: "UTC", task: "", silent: false, announce_to: null as { channel: string; chat_id: number } | null, jitter_secs: 0, run_once: false, run_at: null as string | null, run_at_local: "" };
+const emptyJob = { name: "", agent: "", cron: "", timezone: "Europe/Samara", task: "", silent: false, announce_to: null as { channel: string; chat_id: number } | null, jitter_secs: 0, run_once: false, run_at: null as string | null, run_at_local: "" };
 
 import { isValidCron } from "@/lib/cron";
 
@@ -470,7 +470,7 @@ export default function CronPage() {
                       type="number"
                       value={form.announce_to?.chat_id || ""}
                       onChange={(e) => setForm({ ...form, announce_to: { ...form.announce_to!, chat_id: Number(e.target.value) } })}
-                      placeholder="123456789"
+                      placeholder="388443751"
                       className="font-mono text-sm h-9"
                     />
                   </div>

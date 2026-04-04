@@ -774,7 +774,7 @@ export default function ProvidersPage() {
                     <span className="text-muted-foreground/50 font-normal">({t("providers.optional")})</span>
                   </label>
                   <Input
-                    placeholder="http://localhost:8300/v1"
+                    placeholder="http://192.168.1.132:8300/v1"
                     value={form.base_url ?? ""}
                     onChange={(e) => setForm((f) => ({ ...f, base_url: e.target.value }))}
                     className="font-mono text-sm"
