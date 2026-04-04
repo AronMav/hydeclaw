@@ -431,7 +431,7 @@ export const useChatStore = create<ChatStore>()(
     if (agentAbortControllers[agent]) {
       agentAbortControllers[agent].abort();
       agentAbortControllers[agent] = null;
-      update(agent, { streamStatus: "idle" });
+      update(agent, { streamStatus: "idle", pendingTargetAgent: null });
     }
   }
 
@@ -858,9 +858,15 @@ export const useChatStore = create<ChatStore>()(
                 const errorText = syncStatus === "error" ? (event.error ?? null) : null;
                 // Don't reset to idle during turn loop — pendingTargetAgent means more agents coming
                 const inTurnLoop = !!get().agents[agent]?.pendingTargetAgent;
-                if (syncStatus === "error" || !inTurnLoop) {
+                if (syncStatus === "error") {
                   update(agent, {
-                    streamStatus: syncStatus === "error" ? "error" : "idle",
+                    streamStatus: "error",
+                    streamError: errorText,
+                    pendingTargetAgent: null,
+                  });
+                } else if (!inTurnLoop) {
+                  update(agent, {
+                    streamStatus: "idle",
                     streamError: errorText,
                   });
                 }
@@ -886,9 +892,9 @@ export const useChatStore = create<ChatStore>()(
               const errText = event.errorText;
               if (errText.includes("turn limit") || errText.includes("cycle detected")) {
                 // Turn management message — show inline as info card, not as error banner
-                update(agent, { turnLimitMessage: errText, turnCount: 0 });
+                update(agent, { turnLimitMessage: errText, turnCount: 0, pendingTargetAgent: null });
               } else {
-                update(agent, { streamStatus: "error", streamError: errText });
+                update(agent, { streamStatus: "error", streamError: errText, pendingTargetAgent: null });
               }
               break;
             }
@@ -1004,7 +1010,7 @@ export const useChatStore = create<ChatStore>()(
       if (agentAbortControllers[prev]) {
         agentAbortControllers[prev].abort();
         agentAbortControllers[prev] = null;
-        update(prev, { streamStatus: "idle" });
+        update(prev, { streamStatus: "idle", pendingTargetAgent: null });
       }
       ensure(name);
       // Immediately reset to new-chat state so no stale session is shown during render.
@@ -1015,6 +1021,7 @@ export const useChatStore = create<ChatStore>()(
         liveMessages: [],
         streamStatus: "idle",
         streamError: null,
+        pendingTargetAgent: null,
         forceNewSession: true,
       });
       set({ currentAgent: name });
@@ -1045,6 +1052,7 @@ export const useChatStore = create<ChatStore>()(
         forceNewSession: false,
         liveMessages: [],
         streamStatus: "idle",
+        pendingTargetAgent: null,
         renderLimit: 100,
       });
       saveLastSession(agent, sessionId);
@@ -1067,6 +1075,7 @@ export const useChatStore = create<ChatStore>()(
         forceNewSession: false,
         liveMessages: [],
         streamStatus: "idle",
+        pendingTargetAgent: null,
       });
       saveLastSession(agent, sessionId);
       // Data fetching handled by useSessionMessages() React Query hook
@@ -1082,6 +1091,7 @@ export const useChatStore = create<ChatStore>()(
         liveMessages: [],
         streamStatus: "idle",
         streamError: null,
+        pendingTargetAgent: null,
         forceNewSession: true,
       });
       saveLastSession(agent);
@@ -1176,7 +1186,7 @@ export const useChatStore = create<ChatStore>()(
       const agent = get().currentAgent;
       agentAbortControllers[agent]?.abort();
       agentAbortControllers[agent] = null;
-      update(agent, { streamStatus: "idle" });
+      update(agent, { streamStatus: "idle", pendingTargetAgent: null });
     },
 
     regenerate: () => {
@@ -1188,7 +1198,7 @@ export const useChatStore = create<ChatStore>()(
       if (isActiveStream(st.streamStatus)) {
         agentAbortControllers[agent]?.abort();
         agentAbortControllers[agent] = null;
-        update(agent, { streamStatus: "idle" });
+        update(agent, { streamStatus: "idle", pendingTargetAgent: null });
       }
 
       let sessionId = st.activeSessionId;
@@ -1228,7 +1238,7 @@ export const useChatStore = create<ChatStore>()(
       if (isActiveStream(st.streamStatus)) {
         agentAbortControllers[agent]?.abort();
         agentAbortControllers[agent] = null;
-        update(agent, { streamStatus: "idle" });
+        update(agent, { streamStatus: "idle", pendingTargetAgent: null });
       }
 
       let sessionId = st.activeSessionId;
@@ -1282,7 +1292,7 @@ export const useChatStore = create<ChatStore>()(
         agentAbortControllers[agent] = null;
         update(agent, {
           activeSessionId: null, viewMode: "live", liveMessages: [],
-          streamStatus: "idle", streamError: null, forceNewSession: true,
+          streamStatus: "idle", streamError: null, pendingTargetAgent: null, forceNewSession: true,
         });
         saveLastSession(agent);
       }
@@ -1297,7 +1307,7 @@ export const useChatStore = create<ChatStore>()(
       agentAbortControllers[agent] = null;
       update(agent, {
         activeSessionId: null, viewMode: "live", liveMessages: [],
-        streamStatus: "idle", streamError: null, forceNewSession: true,
+        streamStatus: "idle", streamError: null, pendingTargetAgent: null, forceNewSession: true,
       });
       saveLastSession(agent);
       queryClient.invalidateQueries({ queryKey: qk.sessions(agent) });
