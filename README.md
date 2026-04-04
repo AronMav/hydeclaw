@@ -16,7 +16,7 @@ HydeClaw is a self-hosted AI gateway for running personal AI agents. The Rust co
 
 <div align="center">
 
-**15 LLM Providers** &bull; **6 Chat Channels** &bull; **3 Rust Binaries + 2 Managed Processes**
+**28 LLM Providers** &bull; **6 Chat Channels** &bull; **3 Rust Binaries + 2 Managed Processes**
 
 </div>
 
@@ -75,7 +75,6 @@ curl -X POST http://localhost:18789/api/agents \
 - **Multi-channel** -- Telegram, Discord, Matrix, IRC, Slack, WhatsApp adapters; agents opt in per channel
 - **Tool execution** -- YAML-defined HTTP tools (hot-reload, no restart), sandboxed code execution (Docker), MCP protocol support
 - **Long-term memory** -- PostgreSQL + pgvector hybrid search (semantic + FTS) with MMR reranking; two-tier: raw (time-decay) + pinned (permanent)
-- **Knowledge graph** -- automatic entity and relationship extraction from conversations
 - **Skills system** -- Markdown-based behavioral instructions loaded at runtime; per-agent and shared skills
 - **Secrets vault** -- ChaCha20Poly1305 encryption with per-agent scoping and env var fallback
 - **PII protection** -- automatic redaction of tokens, keys, passwords, and credentials in code execution output
@@ -86,7 +85,7 @@ curl -X POST http://localhost:18789/api/agents \
 
 ## Supported LLM Providers
 
-Any OpenAI-compatible API works out of the box. 15 built-in providers:
+28 built-in providers. Any OpenAI-compatible API also works out of the box.
 
 | Provider | Models |
 |----------|--------|
@@ -104,7 +103,20 @@ Any OpenAI-compatible API works out of the box. 15 built-in providers:
 | **Perplexity** | Search-augmented models |
 | **Claude CLI** | Claude Code as subprocess |
 | **Gemini CLI** | Gemini CLI as subprocess |
-| **Custom HTTP** | Any OpenAI-compatible endpoint |
+| **Hugging Face** | Inference API |
+| **NVIDIA** | NIM models |
+| **Qwen** | Alibaba DashScope |
+| **GLM** | Zhipu AI |
+| **Moonshot** | Kimi |
+| **Venice AI** | Privacy-focused inference |
+| **Cloudflare** | AI Gateway |
+| **LiteLLM** | Local proxy |
+| **Volcengine** | Doubao (ByteDance) |
+| **Qianfan** | Baidu |
+| **Xiaomi** | MiLM |
+| **SGLang** | Local serving |
+| **vLLM** | Local serving |
+| **OpenAI Compatible** | Any custom endpoint |
 
 Provider registry with active capability mapping (LLM, STT, TTS, Vision, ImageGen, Embedding).
 
@@ -147,7 +159,7 @@ graph TD
 | **channels/** | TypeScript / Bun | Managed child process | Telegram, Discord, Matrix, IRC, Slack, WhatsApp adapters. Started by core, communicates via internal WebSocket. |
 | **toolgate/** | Python / FastAPI | Managed child process | STT, TTS, Vision, Image Generation, Embeddings. Started by core with uvicorn (single process, asyncio loop). |
 | **ui/** | Next.js 16 + React 19 | Static build (nginx) | Web dashboard. Pre-built to static files, served by core's built-in static file handler. |
-| **PostgreSQL** | 17 + pgvector + Apache AGE | Docker container | Sessions, messages, memory, knowledge graph, cron, secrets. |
+| **PostgreSQL** | 17 + pgvector | Docker container | Sessions, messages, memory, cron, secrets. |
 | **SearXNG** | Latest | Docker container | Meta-search engine for web search tools. |
 | **browser-renderer** | Headless browser | Docker container | Browser automation and page rendering. |
 | **MCP servers** | Various | Docker (on-demand) | 14 MCP protocol servers, started by core via Docker API as needed. |
@@ -183,7 +195,7 @@ graph TD
 
 **Docker containers (on-demand):**
 
-14 MCP servers (ports 9003-9049) + sandbox containers for code execution -- started and stopped by core via the Docker API (Bollard).
+14 MCP servers + sandbox containers for code execution -- started and stopped by core via the Docker API (Bollard).
 
 </details>
 
@@ -278,7 +290,7 @@ Preserves `.env`, `config/`, `workspace/`, and database.
 
 ```bash
 make check          # cargo check --all-targets
-make test           # cargo test + UI tests
+make test           # cargo test
 make lint           # cargo clippy
 make build-arm64    # cross-compile for ARM64 (Raspberry Pi, AWS Graviton)
 make deploy         # full deploy to remote server (binary + UI + migrations)
