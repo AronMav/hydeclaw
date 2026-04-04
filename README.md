@@ -129,7 +129,7 @@ graph TD
     web["Browser"]
     web -->|"HTTP / SSE / WebSocket"| core
     platforms["Telegram / Discord / Slack\nMatrix / IRC / WhatsApp"]
-    platforms -->|"Bot API"| channels
+    platforms <-->|"Bot API"| channels
 
     subgraph core["hydeclaw-core (Rust)"]
         direction TB
@@ -139,9 +139,8 @@ graph TD
         scheduler["Cron Scheduler / Static UI"]
     end
 
-    core -->|"child process"| channels["channels/ (Bun)\nChannel adapters"]
-    channels -->|"WebSocket"| core
-    core -->|"child process"| toolgate["toolgate/ (Python)\nSTT / TTS / Vision\nImageGen / Embeddings"]
+    core <-->|"WebSocket"| channels["channels/ (Bun)\nChannel adapters"]
+    core -->|"HTTP"| toolgate["toolgate/ (Python)\nSTT / TTS / Vision\nImageGen / Embeddings"]
     core -->|"HTTPS"| llm["LLM Providers\nOpenAI / Anthropic / Google\nOllama / DeepSeek / ..."]
     core -->|"Docker API"| containers["On-demand Containers\nMCP servers / code_exec sandbox"]
 
@@ -155,13 +154,16 @@ graph TD
     core -->|"HTTP"| searxng
     core -->|"HTTP"| browser
 
-    watchdog["hydeclaw-watchdog (Rust)"] -.->|"health checks"| core
+    watchdog["hydeclaw-watchdog"] -.->|"health checks"| core
     watchdog -.-> pg
     watchdog -.-> channels
     watchdog -.-> toolgate
-    worker["hydeclaw-memory-worker (Rust)"] -.-> pg
-    worker -.-> toolgate
+    watchdog -.-> worker
+    worker["hydeclaw-memory-worker"] -.->|"tasks"| pg
+    worker -.->|"embeddings"| toolgate
 ```
+
+> Both `channels` and `toolgate` are spawned by core as managed child processes (auto-restart on crash). `watchdog` and `memory-worker` run as independent systemd services.
 
 <details>
 <summary><strong>Component details</strong></summary>
