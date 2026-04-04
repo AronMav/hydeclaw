@@ -153,13 +153,13 @@ pub async fn search_fts(
     Ok(rows.iter().map(row_to_memory_result).collect())
 }
 
-/// Update accessed_at timestamp and increment recall_count for the given chunk IDs.
+/// Update accessed_at timestamp for the given chunk IDs.
 pub async fn touch_accessed(db: &PgPool, ids: &[uuid::Uuid]) {
     if ids.is_empty() {
         return;
     }
     let _ = sqlx::query(
-        "UPDATE memory_chunks SET accessed_at = now(), recall_count = recall_count + 1 WHERE id = ANY($1)",
+        "UPDATE memory_chunks SET accessed_at = now() WHERE id = ANY($1)",
     )
     .bind(ids)
     .execute(db)
@@ -306,29 +306,4 @@ pub async fn delete_chunk(db: &PgPool, chunk_id: &str) -> Result<bool> {
         .await
         .context("failed to delete memory chunk")?;
     Ok(res.rows_affected() > 0)
-}
-
-// ── Dreaming ────────────────────────────────────────────────────────────────
-
-/// Promote frequently-recalled raw memories to pinned tier.
-/// Returns count of promoted chunks.
-pub async fn promote_frequent_memories(
-    db: &PgPool,
-    recall_threshold: i32,
-    lookback_days: i32,
-) -> Result<u64> {
-    let result = sqlx::query(
-        r#"UPDATE memory_chunks
-           SET pinned = true
-           WHERE pinned = false
-             AND recall_count >= $1
-             AND accessed_at >= now() - make_interval(days => $2)
-        "#,
-    )
-    .bind(recall_threshold)
-    .bind(lookback_days)
-    .execute(db)
-    .await
-    .context("failed to promote frequent memories")?;
-    Ok(result.rows_affected())
 }
