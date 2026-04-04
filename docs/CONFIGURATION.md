@@ -104,11 +104,17 @@ Rate limiting and concurrency controls applied globally across all agents.
 |---|---|---|---|
 | `max_requests_per_minute` | integer | `100` | Maximum number of incoming requests per minute across the entire gateway. Requests over this limit receive HTTP 429. |
 | `max_tool_concurrency` | integer | `10` | Maximum number of tool calls executing simultaneously across all agent sessions. Enforced by a tokio `Semaphore`. Prevents runaway tool loops from starving other sessions. |
+| `request_timeout_secs` | integer | `180` | Maximum duration for a single API request in seconds. Requests exceeding this limit are terminated. |
+| `max_agent_turns` | integer | `5` | Maximum agent-to-agent turns in a single request. Prevents infinite delegation loops between agents. |
+| `max_handoff_context_chars` | integer | `2000` | Maximum context size (in characters) passed during agent handoffs. Longer contexts are truncated. |
 
 ```toml
 [limits]
 max_requests_per_minute = 100
 max_tool_concurrency = 10
+request_timeout_secs = 180
+max_agent_turns = 5
+max_handoff_context_chars = 2000
 ```
 
 ### [typing]
@@ -227,12 +233,16 @@ Code execution sandbox for regular (non-base (sandboxed)) agents. Runs arbitrary
 | `enabled` | bool | `true` | When false, `code_exec` tool calls from non-base (sandboxed) agents are rejected. |
 | `image` | string | `"hydeclaw-sandbox:latest"` | Docker image to use for the sandbox container. Build it from `docker/Dockerfile.sandbox`. |
 | `extra_binds` | array of strings | `[]` | Additional volume mounts in `host:container` format. Use to give sandbox access to specific directories on the host. |
+| `timeout_secs` | integer | `30` | Execution timeout in seconds before the sandbox container is killed. |
+| `memory_mb` | integer | `256` | Memory limit per sandbox execution in megabytes. |
 
 ```toml
 [sandbox]
 enabled = true
 image = "hydeclaw-sandbox:latest"
 extra_binds = []
+timeout_secs = 30
+memory_mb = 256
 ```
 
 Privileged agents (those with `base = true` in their agent config) bypass the sandbox and run `code_exec` directly on the host. Use this only for trusted system management agents.
@@ -285,8 +295,7 @@ Core identity and LLM settings.
 | `model` | string | Yes | Model identifier for the chosen provider. Example: `"gpt-4o-mini"`, `"minimax-m2.7"`, `"claude-sonnet-4-5"`. |
 | `temperature` | float | No | Sampling temperature (0.0–2.0). Lower = more deterministic. Default varies by provider. |
 | `routing` | array of strings | No | List of Telegram user IDs or patterns that are routed to this agent. Empty array means the agent accepts traffic from its own registered channels. |
-| `base` | bool | No | When `true`, `code_exec` runs directly on the host without the Docker sandbox. Use only for trusted system agents. Default: `false`. |
-| `base` | bool | No | When `true`, this agent is always loaded at startup even if no channels are active. Default: `false`. |
+| `base` | bool | No | System agent flag. When `true`: cannot be renamed or deleted via API, SOUL.md and IDENTITY.md are read-only, `code_exec` runs directly on the host (no Docker sandbox), can write to service source directories and use tools marked `required_base = true`. Default: `false`. |
 
 ```toml
 [agent]
@@ -296,7 +305,6 @@ provider = "minimax"
 model = "minimax-m2.7"
 temperature = 0.5
 routing = []
-base = true
 base = true
 ```
 
@@ -324,7 +332,7 @@ Configures the agent's periodic self-triggered task, based on cron scheduling.
 | Field | Type | Description |
 |---|---|---|
 | `cron` | string | Standard 5-field cron expression. Example: `"*/15 * * * *"` (every 15 minutes), `"0 10 * * *"` (daily at 10:00). |
-| `timezone` | string | IANA timezone name. Example: `"UTC"`, `"UTC"`, `"America/New_York"`. |
+| `timezone` | string | IANA timezone name. Example: `"UTC"`, `"Europe/Moscow"`, `"America/New_York"`. |
 
 When the cron fires, Core sends a `HEARTBEAT` message to the agent. The agent's `HEARTBEAT.md` skill file describes what to do (backups, memory deduplication, reports, etc.).
 
@@ -464,7 +472,7 @@ HydeClaw uses Docker Compose for infrastructure services. The `docker/docker-com
 
 | Service | Image | Port | Description |
 |---|---|---|---|
-| `postgres` | `hydeclaw-pg:17-age-pgvector` | `127.0.0.1:5432` | PostgreSQL 17 with pgvector and Apache AGE extensions. Data stored in the `pgdata` named volume. |
+| `postgres` | `hydeclaw-pg:17-age-pgvector` | `127.0.0.1:5432` | PostgreSQL 17 with pgvector extension. Apache AGE is installed in the Docker image but not actively used — the knowledge graph uses pure PostgreSQL relational tables (`graph_entities`, `graph_edges`, `graph_episodes`). Data stored in the `pgdata` named volume. |
 | `searxng` | `searxng/searxng:latest` | `127.0.0.1:8080` | Private meta search engine. Used by the `search_web` YAML tool. Config in `docker/config/searxng/`. |
 | `browser-renderer` | `browser-renderer:latest` (local build) | `127.0.0.1:9020` | Headless Chrome service for URL screenshot rendering. Used by the `screenshot_web` tool. |
 

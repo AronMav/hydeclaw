@@ -139,9 +139,18 @@ graph TD
 
     core -->|"child process"| channels["channels/ (Bun)\nTelegram / Discord / Matrix\nIRC / Slack / WhatsApp"]
     core -->|"child process"| toolgate["toolgate/ (Python)\nSTT / TTS / Vision\nImageGen / Embeddings"]
-    core -->|"sqlx"| pg[("PostgreSQL 17\n+ pgvector")]
     core -->|"HTTPS"| llm["LLM Providers\nOpenAI / Anthropic / Google\nOllama / DeepSeek / ..."]
-    core -->|"Docker API"| containers["Docker Containers\nMCP servers / code_exec sandbox"]
+    core -->|"Docker API"| containers["On-demand Containers\nMCP servers / code_exec sandbox"]
+
+    subgraph infra["Docker Infrastructure"]
+        pg[("PostgreSQL 17\n+ pgvector")]
+        searxng["SearXNG\nMeta-search"]
+        browser["browser-renderer\nHeadless browser"]
+    end
+
+    core -->|"sqlx"| pg
+    core -->|"HTTP"| searxng
+    core -->|"HTTP"| browser
 
     watchdog["hydeclaw-watchdog (Rust)"] -.->|"health checks"| core
     worker["hydeclaw-memory-worker (Rust)"] -.-> pg

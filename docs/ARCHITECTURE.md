@@ -2,43 +2,50 @@
 
 ## Overview
 
-HydeClaw is a self-hosted AI gateway and multi-agent platform written in Rust. The primary deployment target is a Raspberry Pi 4 (ARM64), where the entire stack runs as a single Rust binary (`hydeclaw-core`) with a handful of managed child processes.
+HydeClaw is a self-hosted AI gateway and multi-agent platform written in Rust. The primary deployment target is a Raspberry Pi 4 (ARM64). The stack consists of three Rust binaries (`hydeclaw-core`, `hydeclaw-watchdog`, `hydeclaw-memory-worker`) running as independent systemd services, with two managed child processes (`channels` in Bun/TypeScript, `toolgate` in Python/FastAPI) spawned by core.
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          hydeclaw-core (systemd)                        │
-│                                                                         │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌────────────┐  │
-│  │  AgentEngine │  │  AgentEngine │  │  Scheduler   │  │  Gateway   │  │
-│  │  "Hyde"      │  │  "Arty"      │  │  (cron jobs) │  │  (axum)    │  │
-│  └──────┬───────┘  └──────┬───────┘  └──────────────┘  └─────┬──────┘  │
-│         │                 │                                    │         │
-│  ┌──────▼─────────────────▼────────────────────────────────────▼──────┐  │
-│  │             ChannelActionRouter  /  ProcessingTracker              │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                         │
-│  ┌─────────────┐  ┌──────────────┐  ┌─────────────┐  ┌─────────────┐  │
-│  │ SecretsVault│  │ MemoryStore  │  │ McpRegistry │  │ToolRegistry │  │
-│  │ ChaCha20    │  │ pgvector+FTS │  │ (bollard)   │  │ RwLock<Map> │  │
-│  └─────────────┘  └──────────────┘  └─────────────┘  └─────────────┘  │
-└───────────────────────────────┬─────────────────────────────────────────┘
-                                │  manages child processes
-              ┌─────────────────┼─────────────────┐
-              │                 │                 │
-     ┌────────▼───────┐  ┌──────▼──────┐  ┌──────▼──────┐
-     │  channel-ws    │  │  toolgate   │  │  memory-    │
-     │  adapter       │  │  (media hub)│  │  worker     │
-     │  (teloxide etc)│  │  port 9011  │  │  (separate  │
-     │  WebSocket ↔   │  └─────────────┘  │  binary)    │
-     │  hydeclaw-core │                   └─────────────┘
-     └────────────────┘
-                                │
-              ┌─────────────────▼──────────────────┐
-              │        PostgreSQL 17 + pgvector      │
-              │  sessions, messages, memory_chunks,  │
-              │  graph_entities, graph_edges,        │
-              │  secrets, tasks, agent_channels      │
-              └────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                          hydeclaw-core (systemd)                         │
+│                                                                          │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌────────────┐   │
+│  │  AgentEngine │  │  AgentEngine │  │  Scheduler   │  │  Gateway   │   │
+│  │  "Hyde"      │  │  "Arty"      │  │  (cron jobs) │  │  (axum)    │   │
+│  └──────┬───────┘  └──────┬───────┘  └──────────────┘  └─────┬──────┘   │
+│         │                 │                                    │          │
+│  ┌──────▼─────────────────▼────────────────────────────────────▼──────┐   │
+│  │             ChannelActionRouter  /  ProcessingTracker              │   │
+│  └───────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+│  ┌─────────────┐  ┌──────────────┐  ┌─────────────┐  ┌─────────────┐   │
+│  │ SecretsVault│  │ MemoryStore  │  │ McpRegistry │  │ToolRegistry │   │
+│  │ ChaCha20    │  │ pgvector+FTS │  │ (bollard)   │  │ RwLock<Map> │   │
+│  └─────────────┘  └──────────────┘  └─────────────┘  └─────────────┘   │
+└───────────────────────────┬──────────────────────────────────────────────┘
+                            │  manages child processes
+                  ┌─────────┴─────────┐
+                  │                   │
+         ┌────────▼───────┐   ┌───────▼──────┐
+         │  channels      │   │  toolgate    │
+         │  (Bun/TS)      │   │  (Python)    │
+         │  WebSocket ↔   │   │  port 9011   │
+         │  hydeclaw-core │   └──────────────┘
+         └────────────────┘
+
+┌──────────────────┐  ┌──────────────────┐
+│ hydeclaw-watchdog│  │ hydeclaw-memory- │
+│ (systemd)        │  │ worker (systemd) │
+│ health monitor   │  │ background index │
+└────────┬─────────┘  └────────┬─────────┘
+         │                     │
+         └──────────┬──────────┘
+                    │
+     ┌──────────────▼──────────────────┐
+     │      PostgreSQL 17 + pgvector    │
+     │  sessions, messages,             │
+     │  memory_chunks, secrets,         │
+     │  tasks, agent_channels           │
+     └─────────────────────────────────┘
 ```
 
 **Key binaries:**
@@ -92,7 +99,7 @@ The core loop runs inside `handle_isolated()` (for internal calls) or the SSE pa
 
 5. Post-loop:
    ├── save final assistant message to DB
-   ├── session graph extraction (background tokio::spawn, ≥5 messages)
+   ├── session graph extraction (background tokio::spawn, ≥5 messages) [deprecated, see Knowledge Graph note]
    └── emit SSE Finish event
 ```
 
@@ -274,7 +281,9 @@ The inter-result similarity is approximated as `min(candidate_sim, selected_sim)
 
 Both tiers are searched together. The `pinned` flag is surfaced in search results so the LLM can distinguish permanent knowledge from time-sensitive context.
 
-### Knowledge Graph
+### Knowledge Graph (Deprecated)
+
+> **Note:** The knowledge graph module exists in the codebase but is deprecated and not part of the active feature set. The tables and extraction code remain for potential future use but are not exercised in normal operation.
 
 Stored in pure PostgreSQL relational tables (no graph database required):
 
@@ -374,7 +383,7 @@ Channel adapters (Telegram, Discord, etc.) connect to Core via a WebSocket hands
 │                                                                         │
 │   channel adapter task (tokio)          AgentEngine                    │
 │   ┌─────────────────────────────────┐   ┌────────────────────────────┐  │
-│   │  teloxide / discord / etc.      │   │                            │  │
+│   │  grammy / discord.js / etc.     │   │                            │  │
 │   │  listens on external API        │   │  tool handlers             │  │
 │   │          │                      │   │       │                    │  │
 │   │          ▼                      │   │       ▼                    │  │
@@ -394,7 +403,7 @@ The adapter and engine never share memory directly — all communication is seri
 ### Inbound Message Flow
 
 ```
-1. Adapter receives external message (e.g. Telegram update via teloxide long-poll)
+1. Adapter receives external message (e.g. Telegram update via grammy long-poll)
 2. Adapter serializes to ChannelInbound JSON: {text, attachments, context, sender_id, ...}
 3. Adapter sends JSON frame over /ws/channel/{agent_name}
 4. Gateway WS handler deserializes to IncomingMessage

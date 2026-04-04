@@ -4,7 +4,7 @@
 
 **Authentication:** All routes require `Authorization: Bearer <HYDECLAW_AUTH_TOKEN>` unless explicitly marked **Public**. The token is configured via `gateway.auth_token_env` in `hydeclaw.toml`.
 
-**Rate limiting:** 10 failed auth attempts within 5 minutes triggers a 5-minute lockout (per IP). General request rate limiting is configurable via `limits.max_requests_per_minute`.
+**Rate limiting:** 10 failed auth attempts within 5 minutes triggers a 5-minute lockout (per IP). Loopback (127.0.0.1) and private LAN IPs are exempt from auth lockout. General request rate limiting is configurable via `limits.max_requests_per_minute`.
 
 ---
 
@@ -21,28 +21,26 @@
 9. [YAML Tools](#9-yaml-tools)
 10. [Skills](#10-skills)
 11. [Channels](#11-channels)
-12. [Goals](#12-goals)
-13. [Cron Jobs](#13-cron-jobs)
-14. [Tasks](#14-tasks)
-15. [Approvals](#15-approvals)
-16. [Webhooks](#16-webhooks)
-17. [Secrets](#17-secrets)
-18. [Config](#18-config)
-19. [Backup and Restore](#19-backup-and-restore)
-20. [Services](#20-services)
-21. [Watchdog](#21-watchdog)
-22. [LLM Providers](#22-llm-providers)
-23. [Media Providers](#23-media-providers)
-24. [TTS](#24-tts)
-25. [Media Upload](#25-media-upload)
-26. [Workspace](#26-workspace)
-27. [Canvas](#27-canvas)
-28. [OAuth](#28-oauth)
-29. [Access / Pairing](#29-access--pairing)
-30. [WebSocket (UI Events)](#30-websocket-ui-events)
-31. [Email Triggers (Gmail)](#31-email-triggers-gmail)
-32. [GitHub Integration](#32-github-integration)
-33. [Audit Log](#33-audit-log)
+12. [Cron Jobs](#12-cron-jobs)
+13. [Tasks](#13-tasks)
+14. [Approvals](#14-approvals)
+15. [Webhooks](#15-webhooks)
+16. [Secrets](#16-secrets)
+17. [Config](#17-config)
+18. [Backup and Restore](#18-backup-and-restore)
+19. [Services](#19-services)
+20. [Watchdog](#20-watchdog)
+21. [Providers](#21-providers)
+22. [TTS](#22-tts)
+23. [Media Upload](#23-media-upload)
+24. [Workspace](#24-workspace)
+25. [Canvas](#25-canvas)
+26. [OAuth](#26-oauth)
+27. [Access / Pairing](#27-access--pairing)
+28. [WebSocket (UI Events)](#28-websocket-ui-events)
+29. [Email Triggers (Gmail)](#29-email-triggers-gmail)
+30. [GitHub Integration](#30-github-integration)
+31. [Audit Log](#31-audit-log)
 
 ---
 
@@ -426,6 +424,7 @@ Primary chat endpoint. Returns a Server-Sent Events stream compatible with the *
 
 | Event type | Description | Example data |
 |------------|-------------|--------------|
+| `data-session-id` | First event; contains the session ID | `{ "sessionId": "uuid" }` |
 | `start` | Stream begins | `{ "session_id": "uuid", "stream_id": "uuid" }` |
 | `text-start` | Text block starting | `{ "id": "block-uuid" }` |
 | `text-delta` | Incremental text chunk | `{ "value": "Hello" }` |
@@ -436,6 +435,7 @@ Primary chat endpoint. Returns a Server-Sent Events stream compatible with the *
 | `tool-output-available` | Tool result ready | `{ "toolCallId": "id", "result": "..." }` |
 | `rich-card` | Structured display card | `{ "card_type": "...", "data": {...} }` |
 | `file` | File produced by tool (audio, image) | `{ "url": "...", "mediaType": "audio/ogg" }` |
+| `sync` | Message sync (content + tool state) | `{ "content": "...", "toolCalls": [...], "status": "...", "error": null }` |
 | `finish` | Stream complete | `{ "usage": {...}, "tools_used": [...] }` |
 | `error` | Error during processing | `{ "message": "error text" }` |
 
@@ -903,43 +903,7 @@ The adapter sends `ChannelInbound` JSON messages and receives `ChannelOutbound` 
 
 ---
 
-## 12. Goals
-
-Goals are tracked objectives for an agent, with optional check-in cron schedules.
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/agents/{name}/goals` | List agent goals |
-| `POST` | `/api/agents/{name}/goals` | Create a goal |
-| `PUT` | `/api/goals/{id}` | Update goal progress or status |
-| `DELETE` | `/api/goals/{id}` | Delete a goal |
-
-### POST /api/agents/{name}/goals
-
-**Request body:**
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `title` | string | Yes | Short goal title |
-| `description` | string | Yes | Full goal description |
-| `check_cron` | string | No | Cron expression for periodic check-ins |
-
-**Response:** `201 Created` with goal object.
-
-### PUT /api/goals/{id}
-
-**Request body** (provide one):
-```json
-{ "progress": "Completed phase 1 of 3" }
-```
-or:
-```json
-{ "status": "completed" }
-```
-
----
-
-## 13. Cron Jobs
+## 12. Cron Jobs
 
 Cron jobs run agent tasks on a schedule.
 
@@ -1003,7 +967,7 @@ Accepts the same fields as `POST /api/cron`. All fields are optional (patch sema
 
 ---
 
-## 14. Tasks
+## 13. Tasks
 
 Tasks are multi-step execution pipelines tracked in the database.
 
@@ -1045,7 +1009,7 @@ Returns ordered list of execution steps with their outputs and status.
 
 ---
 
-## 15. Approvals
+## 14. Approvals
 
 Human-in-the-loop approval for sensitive tool calls.
 
@@ -1075,7 +1039,7 @@ Values: `"approve"` or `"deny"`.
 
 ---
 
-## 16. Webhooks
+## 15. Webhooks
 
 Webhooks let external systems trigger agent processing via HTTP POST.
 
@@ -1158,7 +1122,7 @@ Trigger endpoint called by external systems. Not behind the standard auth middle
 
 ---
 
-## 17. Secrets
+## 16. Secrets
 
 The secrets vault stores credentials and API keys. Secrets have a name and an optional scope. Scoped secrets take priority over global ones during lookup.
 
@@ -1197,7 +1161,7 @@ Query parameters:
 
 ---
 
-## 18. Config
+## 17. Config
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -1223,7 +1187,7 @@ Signals the process to exit (systemd or the watchdog will restart it). Returns i
 
 ---
 
-## 19. Backup and Restore
+## 18. Backup and Restore
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -1277,7 +1241,7 @@ Restores data from the named backup file. Existing data in the target tables is 
 
 ---
 
-## 20. Services
+## 19. Services
 
 Manage Docker services and native child processes controlled by HydeClaw.
 
@@ -1308,7 +1272,7 @@ For **natively managed processes** (non-Docker), only `restart`, `start`, `stop`
 
 ---
 
-## 21. Watchdog
+## 20. Watchdog
 
 The watchdog is a separate binary (`hydeclaw-watchdog`) that monitors services and can restart them automatically. Status is communicated via a JSON file at `/tmp/hydeclaw-watchdog.json`.
 
@@ -1347,20 +1311,24 @@ Updatable keys:
 
 ---
 
-## 22. LLM Providers
+## 21. Providers
+
+All providers (LLM and media) share the unified `/api/providers` endpoint. LLM and media providers are distinguished by their `kind` field (`"llm"` or `"media"`).
+
+### LLM Providers
 
 Named LLM provider connections allow configuring multiple providers with their API keys.
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/provider-types` | List supported provider types |
-| `GET` | `/api/llm-providers` | List configured LLM providers |
-| `POST` | `/api/llm-providers` | Create an LLM provider |
-| `GET` | `/api/llm-providers/{id}` | Get an LLM provider |
-| `PUT` | `/api/llm-providers/{id}` | Update an LLM provider |
-| `DELETE` | `/api/llm-providers/{id}` | Delete an LLM provider |
-| `GET` | `/api/llm-providers/{id}/models` | List models from this provider |
-| `GET` | `/api/llm-providers/{id}/resolve` | Resolve connection details |
+| `GET` | `/api/providers` | List configured providers (filter by `kind` query param) |
+| `POST` | `/api/providers` | Create a provider |
+| `GET` | `/api/providers/{id}` | Get a provider |
+| `PUT` | `/api/providers/{id}` | Update a provider |
+| `DELETE` | `/api/providers/{id}` | Delete a provider |
+| `GET` | `/api/providers/{id}/models` | List models from this provider |
+| `GET` | `/api/providers/{id}/resolve` | Resolve connection details |
 
 ### GET /api/provider-types
 
@@ -1381,13 +1349,14 @@ Named LLM provider connections allow configuring multiple providers with their A
 }
 ```
 
-### POST /api/llm-providers
+### POST /api/providers (LLM)
 
 **Request body:**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | Yes | Human-readable connection name |
+| `kind` | string | Yes | `"llm"` for LLM providers |
 | `provider_type` | string | Yes | Provider type ID (e.g. `openai`, `anthropic`, `minimax`) |
 | `base_url` | string | No | Override base URL |
 | `api_key` | string | No | API key (stored in vault, masked in responses) |
@@ -1402,6 +1371,7 @@ Named LLM provider connections allow configuring multiple providers with their A
 {
   "id": "uuid",
   "name": "MiniMax Production",
+  "kind": "llm",
   "provider_type": "minimax",
   "base_url": "https://api.minimax.io/v1",
   "api_key": "****...xyz9",
@@ -1413,19 +1383,17 @@ Named LLM provider connections allow configuring multiple providers with their A
 }
 ```
 
----
+### Media Providers
 
-## 23. Media Providers
-
-Media providers handle STT (speech-to-text), TTS (text-to-speech), vision, image generation, and embedding capabilities.
+Media providers handle STT (speech-to-text), TTS (text-to-speech), vision, image generation, and embedding capabilities. They use the same `/api/providers` endpoint as LLM providers, with `kind` set to `"media"`.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/media-providers` | List configured media providers |
-| `POST` | `/api/media-providers` | Create a media provider |
-| `GET` | `/api/media-providers/{id}` | Get a media provider |
-| `PUT` | `/api/media-providers/{id}` | Update a media provider |
-| `DELETE` | `/api/media-providers/{id}` | Delete a media provider |
+| `GET` | `/api/providers` | List providers (use `?kind=media` to filter) |
+| `POST` | `/api/providers` | Create a media provider |
+| `GET` | `/api/providers/{id}` | Get a media provider |
+| `PUT` | `/api/providers/{id}` | Update a media provider |
+| `DELETE` | `/api/providers/{id}` | Delete a media provider |
 | `GET` | `/api/media-active` | Get currently active provider per capability |
 | `PUT` | `/api/media-active` | Set the active provider for a capability |
 | `GET` | `/api/media-drivers` | List available driver types |
@@ -1446,6 +1414,7 @@ Media providers handle STT (speech-to-text), TTS (text-to-speech), vision, image
 ```json
 {
   "id": "whisper-local",
+  "kind": "media",
   "type": "stt",
   "driver": "openai",
   "base_url": "http://localhost:8300/v1",
@@ -1471,7 +1440,7 @@ Omit a capability to leave its active provider unchanged.
 
 ---
 
-## 24. TTS
+## 22. TTS
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -1491,7 +1460,7 @@ Omit a capability to leave its active provider unchanged.
 
 ---
 
-## 25. Media Upload
+## 23. Media Upload
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
@@ -1519,7 +1488,7 @@ Public — no auth required. Serves the file with appropriate `Content-Type`. Re
 
 ---
 
-## 26. Workspace
+## 24. Workspace
 
 Browse, read, write, and delete files within the `workspace/` directory.
 
@@ -1552,7 +1521,7 @@ For **files**: returns the raw file content with appropriate `Content-Type`.
 
 ---
 
-## 27. Canvas
+## 25. Canvas
 
 The canvas stores ephemeral shared state (e.g. a document being collaboratively edited) per agent.
 
@@ -1574,7 +1543,7 @@ The canvas stores ephemeral shared state (e.g. a document being collaboratively 
 
 ---
 
-## 28. OAuth
+## 26. OAuth
 
 OAuth 2.0 integration for connecting agent tools to external services (Google, GitHub, etc.).
 
@@ -1621,7 +1590,7 @@ Generates an authorization URL. Redirect the user to this URL to complete OAuth.
 
 ---
 
-## 29. Access / Pairing
+## 27. Access / Pairing
 
 Agents with `access.mode: allowlist` require users to be approved before they can chat. The pairing flow works via a 6-character code sent by the user in the channel.
 
@@ -1673,7 +1642,7 @@ Agents with `access.mode: allowlist` require users to be approved before they ca
 
 ---
 
-## 30. WebSocket (UI Events)
+## 28. WebSocket (UI Events)
 
 | Path | Auth | Description |
 |------|------|-------------|
@@ -1699,7 +1668,7 @@ The WebSocket connection at `/ws` delivers real-time events to the UI. Authentic
 
 ---
 
-## 31. Email Triggers (Gmail)
+## 29. Email Triggers (Gmail)
 
 Gmail Pub/Sub push triggers notify the agent when new emails arrive in a connected Gmail account.
 
@@ -1729,7 +1698,7 @@ Called by Google Pub/Sub when new mail arrives. Public endpoint — Google does 
 
 ---
 
-## 32. GitHub Integration
+## 30. GitHub Integration
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -1751,7 +1720,7 @@ The GitHub repo allowlist controls which repositories an agent's GitHub tools ca
 
 ---
 
-## 33. Audit Log
+## 31. Audit Log
 
 See [Monitoring](#2-monitoring) for audit endpoints. Event types include:
 

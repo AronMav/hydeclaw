@@ -45,7 +45,7 @@ Core connects to Docker via TCP (`tcp://127.0.0.1:2375`). The Docker TCP listene
 
 ### Container Restart Whitelist
 
-The API can only restart whitelisted containers (browser-renderer, searxng, mcp-*). PostgreSQL is excluded.
+The API can only restart containers listed in `docker.rebuild_allowed` (default: `browser-renderer`, `searxng`). PostgreSQL and other unlisted containers are excluded. MCP containers can be added to the whitelist in `hydeclaw.toml` if needed.
 
 ### Webhook Auth Throttling
 
