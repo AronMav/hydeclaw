@@ -183,6 +183,59 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Add memory dreaming job: promotes frequently-recalled raw memories to pinned tier.
+    /// Schedule and thresholds come from [memory.dreaming] config section.
+    pub async fn add_memory_dreaming(
+        &self,
+        db: PgPool,
+        config: &crate::memory::DreamingConfig,
+    ) -> Result<()> {
+        if !config.enabled {
+            tracing::debug!("memory dreaming disabled");
+            return Ok(());
+        }
+
+        let recall_threshold = config.recall_threshold;
+        let lookback_days = config.lookback_days;
+
+        // tokio-cron-scheduler expects 6-field cron (sec min hour dom mon dow).
+        // Normalize standard 5-field cron by prepending "0 " for seconds.
+        let cron_6field = {
+            let raw = config.schedule.trim();
+            let fields: Vec<&str> = raw.split_whitespace().collect();
+            if fields.len() == 5 {
+                format!("0 {}", raw)
+            } else {
+                raw.to_string()
+            }
+        };
+
+        tracing::info!(
+            schedule = %config.schedule,
+            recall_threshold,
+            lookback_days,
+            "scheduling memory dreaming"
+        );
+
+        let job = Job::new_async(cron_6field.as_str(), move |_uuid, _lock| {
+            let db = db.clone();
+            Box::pin(async move {
+                tracing::info!("memory dreaming triggered");
+                match crate::db::memory_queries::promote_frequent_memories(
+                    &db, recall_threshold, lookback_days,
+                ).await {
+                    Ok(promoted) => {
+                        tracing::info!(promoted, "memory dreaming completed");
+                    }
+                    Err(e) => tracing::error!(error = %e, "memory dreaming failed"),
+                }
+            })
+        })?;
+
+        self.scheduler.add(job).await?;
+        Ok(())
+    }
+
     /// Add task cleanup job (daily at 4:00 UTC — delete old completed/failed tasks).
     pub async fn add_task_cleanup(&self, db: PgPool) -> Result<()> {
         tracing::info!("scheduling task cleanup (daily 04:00 UTC)");

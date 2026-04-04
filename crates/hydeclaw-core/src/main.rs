@@ -780,6 +780,11 @@ async fn main() -> Result<()> {
         tracing::warn!(error = %e, "failed to schedule memory decay");
     }
 
+    // Memory dreaming (promotes frequently-recalled raw memories to pinned)
+    if let Err(e) = sched.add_memory_dreaming(db_pool.clone(), &cfg.memory.dreaming).await {
+        tracing::warn!(error = %e, "failed to schedule memory dreaming");
+    }
+
     // Task cleanup (daily — delete old completed/failed tasks)
     if let Err(e) = sched.add_task_cleanup(db_pool.clone()).await {
         tracing::warn!(error = %e, "failed to schedule task cleanup");

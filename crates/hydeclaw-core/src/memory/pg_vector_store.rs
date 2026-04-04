@@ -106,4 +106,12 @@ impl VectorStore for PgVectorStore {
     async fn ensure_hnsw_index(&self, dim: u32) -> Result<()> {
         crate::db::memory_queries::ensure_hnsw_index(&self.db, dim).await
     }
+
+    async fn promote_frequent_memories(
+        &self,
+        recall_threshold: i32,
+        lookback_days: i32,
+    ) -> Result<u64> {
+        crate::db::memory_queries::promote_frequent_memories(&self.db, recall_threshold, lookback_days).await
+    }
 }

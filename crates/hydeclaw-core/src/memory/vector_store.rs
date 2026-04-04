@@ -75,4 +75,14 @@ pub trait VectorStore: Send + Sync {
 
     /// Create HNSW index if it doesn't exist.
     async fn ensure_hnsw_index(&self, dim: u32) -> Result<()>;
+
+    // ── Dreaming ──────────────────────────────────────────────────────────────
+
+    /// Promote frequently-recalled raw memories to pinned tier.
+    /// Returns count of promoted chunks.
+    async fn promote_frequent_memories(
+        &self,
+        recall_threshold: i32,
+        lookback_days: i32,
+    ) -> Result<u64>;
 }

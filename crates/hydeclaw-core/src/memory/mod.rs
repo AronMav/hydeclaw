@@ -32,6 +32,42 @@ pub struct MemoryConfig {
     #[serde(default = "default_true")]
     #[allow(dead_code)]
     pub graph_enabled: bool,
+    /// Memory dreaming: scheduled promotion of frequently-recalled raw memories.
+    #[serde(default)]
+    pub dreaming: DreamingConfig,
+}
+
+/// Configuration for the memory dreaming cron job.
+/// Dreaming promotes frequently-recalled raw memories to pinned tier.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct DreamingConfig {
+    /// Enable the dreaming cron job. Defaults to false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Cron schedule (5-field). Defaults to daily at 3am: "0 3 * * *".
+    #[serde(default = "default_dreaming_schedule")]
+    pub schedule: String,
+    /// Minimum recall_count to qualify for promotion. Defaults to 3.
+    #[serde(default = "default_recall_threshold")]
+    pub recall_threshold: i32,
+    /// Only consider memories accessed within this many days. Defaults to 7.
+    #[serde(default = "default_lookback_days")]
+    pub lookback_days: i32,
+}
+
+fn default_dreaming_schedule() -> String { "0 3 * * *".to_string() }
+fn default_recall_threshold() -> i32 { 3 }
+fn default_lookback_days() -> i32 { 7 }
+
+impl Default for DreamingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            schedule: default_dreaming_schedule(),
+            recall_threshold: default_recall_threshold(),
+            lookback_days: default_lookback_days(),
+        }
+    }
 }
 
 use crate::config::default_true;
@@ -619,6 +655,16 @@ impl MemoryStore {
         }
     }
 
+    // ── Dreaming ──────────────────────────────────────────────────────────────
+
+    /// Promote frequently-recalled raw memories to pinned tier.
+    /// Queries non-pinned chunks with recall_count >= threshold accessed within lookback_days.
+    /// Returns the count of promoted memories.
+    #[allow(dead_code)]
+    pub async fn dreaming(&self, recall_threshold: i32, lookback_days: i32) -> Result<u64> {
+        self.store.promote_frequent_memories(recall_threshold, lookback_days).await
+    }
+
     // ── Delete ────────────────────────────────────────────────────────────────
 
     /// Rebuild all tsv columns with the current FTS language.
@@ -931,6 +977,7 @@ mod tests {
             embed_dim: None,
             fts_language: None,
             graph_enabled: true,
+            dreaming: DreamingConfig::default(),
         }
     }
 
@@ -1046,5 +1093,51 @@ mod tests {
         assert_eq!(cfg.embed_dim.unwrap(), 768);
         assert_eq!(cfg.fts_language.unwrap(), "english");
         assert!(!cfg.graph_enabled);
+    }
+
+    // ── DreamingConfig ───────────────────────────────────────────────────────
+
+    #[test]
+    fn dreaming_config_defaults() {
+        let cfg: DreamingConfig = serde_json::from_str("{}").unwrap();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.schedule, "0 3 * * *");
+        assert_eq!(cfg.recall_threshold, 3);
+        assert_eq!(cfg.lookback_days, 7);
+    }
+
+    #[test]
+    fn dreaming_config_custom() {
+        let cfg: DreamingConfig = serde_json::from_str(r#"{
+            "enabled": true,
+            "schedule": "0 4 * * *",
+            "recall_threshold": 5,
+            "lookback_days": 14
+        }"#).unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.schedule, "0 4 * * *");
+        assert_eq!(cfg.recall_threshold, 5);
+        assert_eq!(cfg.lookback_days, 14);
+    }
+
+    #[test]
+    fn memory_config_with_dreaming() {
+        let cfg: MemoryConfig = serde_json::from_str(r#"{
+            "dreaming": {
+                "enabled": true,
+                "recall_threshold": 10
+            }
+        }"#).unwrap();
+        assert!(cfg.dreaming.enabled);
+        assert_eq!(cfg.dreaming.recall_threshold, 10);
+        assert_eq!(cfg.dreaming.lookback_days, 7); // default
+        assert_eq!(cfg.dreaming.schedule, "0 3 * * *"); // default
+    }
+
+    #[test]
+    fn memory_config_dreaming_defaults_when_absent() {
+        let cfg: MemoryConfig = serde_json::from_str("{}").unwrap();
+        assert!(!cfg.dreaming.enabled);
+        assert_eq!(cfg.dreaming.recall_threshold, 3);
     }
 }
