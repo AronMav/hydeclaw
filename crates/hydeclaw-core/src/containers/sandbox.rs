@@ -228,11 +228,6 @@ impl CodeSandbox {
             "/etc/shadow", "/etc/passwd", "/root", "/home",
             "/proc", "/sys", "/dev", "/run", "/var/run",
         ];
-        // Credential directory segments — block any path containing these
-        const BLOCKED_SEGMENTS: &[&str] = &[
-            "/.ssh", "/.aws", "/.config/gcloud", "/.docker",
-            "/.kube", "/.gnupg",
-        ];
         let ws_path = std::path::Path::new(workspace_host_path);
         let project_root = ws_path.parent(); // workspace parent = project root
         for bind in &self.extra_binds {
@@ -244,9 +239,7 @@ impl CodeSandbox {
                 } else {
                     src.to_string()
                 };
-                if BLOCKED_PREFIXES.iter().any(|p| check_path.starts_with(p))
-                    || BLOCKED_SEGMENTS.iter().any(|s| check_path.contains(s))
-                {
+                if BLOCKED_PREFIXES.iter().any(|p| check_path.starts_with(p)) {
                     tracing::warn!(bind = %bind, "sandbox: blocked sensitive bind mount");
                     continue;
                 }
@@ -268,22 +261,11 @@ impl CodeSandbox {
             binds.push("/etc/timezone:/etc/timezone:ro".to_string());
         }
         
-        // Git credential env vars (from OAuth bindings), with dangerous vars filtered out.
-        // Block vars that could leak host credentials or redirect package managers.
-        const BLOCKED_ENV_PREFIXES: &[&str] = &[
-            "HYDECLAW_", "DATABASE_URL", "BROWSER=", "GIT_EDITOR=",
-            "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "NPM_CONFIG_REGISTRY",
-            "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-            "UV_PYTHON", "UV_INDEX_URL",
-        ];
-        let filtered_env: Vec<String> = git_env.iter()
-            .filter(|v| !BLOCKED_ENV_PREFIXES.iter().any(|p| v.starts_with(p)))
-            .cloned()
-            .collect();
-        let env: Option<Vec<String>> = if filtered_env.is_empty() {
+        // Git credential env vars (from OAuth bindings)
+        let env: Option<Vec<String>> = if git_env.is_empty() {
             None
         } else {
-            Some(filtered_env)
+            Some(git_env.to_vec())
         };
 
         self.docker.create_container(

@@ -109,11 +109,50 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for BroadcastLogLayer 
     }
 }
 
-/// Initialize tracing subscriber.
-fn init_tracing(log_tx: tokio::sync::broadcast::Sender<String>, _cfg: &config::AppConfig) {
+/// Initialize tracing subscriber with optional OTEL layer.
+fn init_tracing(log_tx: tokio::sync::broadcast::Sender<String>, cfg: &config::AppConfig) {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| "hydeclaw_core=info".into());
     let fmt_layer = tracing_subscriber::fmt::layer();
     let broadcast_layer = BroadcastLogLayer { tx: log_tx };
+
+    #[cfg(feature = "otel")]
+    {
+        use opentelemetry_otlp::WithExportConfig;
+
+        if cfg.otel.enabled {
+            let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+                .unwrap_or_else(|_| "http://localhost:4317".to_string());
+            eprintln!("[otel] exporting traces to {endpoint} as {:?}", cfg.otel.service_name);
+
+            if let Ok(exporter) = opentelemetry_otlp::SpanExporter::builder()
+                .with_tonic()
+                .with_endpoint(&endpoint)
+                .build()
+            {
+                let provider = opentelemetry_sdk::trace::TracerProvider::builder()
+                    .with_simple_exporter(exporter)
+                    .with_resource(opentelemetry_sdk::Resource::new([
+                        opentelemetry::KeyValue::new("service.name", cfg.otel.service_name.clone()),
+                    ]))
+                    .build();
+                opentelemetry::global::set_tracer_provider(provider.clone());
+                let tracer = opentelemetry::trace::TracerProvider::tracer(&provider, "hydeclaw");
+                let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+
+                tracing_subscriber::registry()
+                    .with(env_filter)
+                    .with(fmt_layer)
+                    .with(broadcast_layer)
+                    .with(otel_layer)
+                    .init();
+                return;
+            }
+            eprintln!("[otel] failed to create exporter, falling back to non-OTEL tracing");
+        }
+    }
+
+    #[cfg(not(feature = "otel"))]
+    let _ = &cfg.otel; // suppress unused warning
 
     tracing_subscriber::registry()
         .with(env_filter)
@@ -741,11 +780,6 @@ async fn main() -> Result<()> {
         tracing::warn!(error = %e, "failed to schedule memory decay");
     }
 
-    // Memory dreaming (promotes frequently-recalled raw memories to pinned)
-    if let Err(e) = sched.add_memory_dreaming(db_pool.clone(), &cfg.memory.dreaming).await {
-        tracing::warn!(error = %e, "failed to schedule memory dreaming");
-    }
-
     // Task cleanup (daily — delete old completed/failed tasks)
     if let Err(e) = sched.add_task_cleanup(db_pool.clone()).await {
         tracing::warn!(error = %e, "failed to schedule task cleanup");
@@ -935,6 +969,11 @@ async fn main() -> Result<()> {
 
     #[cfg(target_os = "linux")]
     let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
+
+    #[cfg(feature = "otel")]
+    if cfg.otel.enabled {
+        opentelemetry::global::shutdown_tracer_provider();
+    }
 
     tracing::info!("HydeClaw Core shutting down");
     Ok(())
