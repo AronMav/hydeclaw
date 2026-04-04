@@ -362,11 +362,16 @@ export function createTelegramDriver(
     const approveMatch = data.match(/^(approve|reject):(.+)$/);
     if (approveMatch) {
       const [, action, approvalId] = approveMatch;
+
+      // Access control: only allowed users can approve/reject tool calls
+      const { allowed, isOwner } = await bridge.checkAccess(userId);
+      if (!allowed && !isOwner) {
+        await ctx.answerCallbackQuery({ text: "Access denied" }).catch(() => {});
+        return;
+      }
+
       const status = action === "approve" ? "approved" : "rejected";
       const label = status === "approved" ? strings.approvalApproved : strings.approvalRejected;
-
-      // Answer callback immediately to stop Telegram spinner
-      await ctx.answerCallbackQuery({ text: label }).catch(() => {});
 
       // Call Core API to resolve approval
       const coreUrl = (process.env.HYDECLAW_CORE_WS || "ws://localhost:18789").replace("ws://", "http://");
@@ -381,17 +386,25 @@ export function createTelegramDriver(
         if (!resp.ok) {
           const err = await resp.text().catch(() => "unknown error");
           console.error(`[tg] approval resolve failed: ${resp.status} ${err}`);
+          await ctx.answerCallbackQuery({ text: "Error: " + err.slice(0, 50) }).catch(() => {});
+          return;
         }
       } catch (err) {
         console.error("[tg] approval HTTP error:", err);
+        await ctx.answerCallbackQuery({ text: "Connection error" }).catch(() => {});
+        return;
       }
 
-      // Update message: replace buttons text with result, remove keyboard
+      // Answer callback with success label after confirmed API success
+      await ctx.answerCallbackQuery({ text: label }).catch(() => {});
+
+      // Update message: replace header with result and remove inline keyboard
       if (chatId && msgId) {
         const origText = ctx.callbackQuery.message?.text || "";
-        // Replace the 🔐 header with result
         const resultText = origText.replace(/^🔐[^\n]*/, label);
-        await retryTg(() => bot.api.editMessageText(chatId, msgId, resultText)).catch(() => {});
+        await retryTg(() => bot.api.editMessageText(chatId, msgId, resultText, {
+          reply_markup: { inline_keyboard: [] },
+        })).catch(() => {});
       }
       return;
     }
