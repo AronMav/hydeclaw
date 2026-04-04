@@ -75,7 +75,7 @@ mod tests {
     use super::*;
 
     fn agents() -> Vec<String> {
-        vec!["Arty".to_string(), "Hyde".to_string(), "Alma".to_string()]
+        vec!["Arty".to_string(), "Architect".to_string(), "Alma".to_string()]
     }
 
     #[test]
@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn no_match_in_email_with_dot() {
-        assert_eq!(parse_first_mention("user.name@Hyde.org", &agents()), None);
+        assert_eq!(parse_first_mention("user.name@Architect.org", &agents()), None);
     }
 
     #[test]
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn match_at_start() {
-        assert_eq!(parse_first_mention("@Hyde review this", &agents()), Some("Hyde".to_string()));
+        assert_eq!(parse_first_mention("@Architect review this", &agents()), Some("Architect".to_string()));
     }
 
     #[test]
@@ -133,16 +133,16 @@ mod tests {
 
     #[test]
     fn multiple_mentions() {
-        let result = parse_mentions("@Arty and @Hyde review this", &agents());
-        assert_eq!(result, vec!["Arty".to_string(), "Hyde".to_string()]);
+        let result = parse_mentions("@Arty and @Architect review this", &agents());
+        assert_eq!(result, vec!["Arty".to_string(), "Architect".to_string()]);
     }
 
     #[test]
     fn self_mention_filtered_finds_other() {
-        // D-11: "I, @Arty, will ask @Hyde" -> filter out self (Arty) -> find Hyde
-        let mentions = parse_mentions("I, @Arty, will ask @Hyde to review", &agents());
+        // D-11: "I, @Arty, will ask @Architect" -> filter out self (Arty) -> find Architect
+        let mentions = parse_mentions("I, @Arty, will ask @Architect to review", &agents());
         let non_self: Vec<_> = mentions.into_iter().filter(|n| n != "Arty").collect();
-        assert_eq!(non_self, vec!["Hyde".to_string()]);
+        assert_eq!(non_self, vec!["Architect".to_string()]);
     }
 
     #[test]
@@ -155,9 +155,9 @@ mod tests {
 
     #[test]
     fn self_mention_preserves_order() {
-        // parse_mentions returns in agent-list order (Arty, Hyde, Alma), not text order
-        let mentions = parse_mentions("@Arty says ask @Alma then @Hyde", &agents());
+        // parse_mentions returns in agent-list order (Arty, Architect, Alma), not text order
+        let mentions = parse_mentions("@Arty says ask @Alma then @Architect", &agents());
         let non_self: Vec<_> = mentions.into_iter().filter(|n| n != "Arty").collect();
-        assert_eq!(non_self, vec!["Hyde".to_string(), "Alma".to_string()]);
+        assert_eq!(non_self, vec!["Architect".to_string(), "Alma".to_string()]);
     }
 }

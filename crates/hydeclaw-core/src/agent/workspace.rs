@@ -49,7 +49,7 @@ pub struct RuntimeContext {
     pub owner_id: Option<String>,
     pub channel: String,
     pub model: String,
-    /// e.g. "2026-03-13 14:30 (UTC, UTC+4)"
+    /// e.g. "2026-03-13 14:30 (Europe/Samara, UTC+4)"
     pub datetime_display: String,
     /// Channel-specific formatting instructions (from channel adapter Ready message).
     /// Only set when the message arrives through a connected channel.
@@ -63,10 +63,9 @@ pub fn format_local_datetime(timezone: &str) -> String {
     let offset = crate::scheduler::timezone_offset_hours(timezone);
     let utc_now = chrono::Utc::now();
     let local = utc_now + chrono::Duration::hours(offset as i64);
-    // Round to hour to stabilize prompt cache fingerprint (cache window: 1 hour instead of 1 minute)
     format!(
         "{} ({}, UTC{:+})",
-        local.format("%Y-%m-%d %H:00"),
+        local.format("%Y-%m-%d %H:%M"),
         timezone,
         offset
     )
@@ -75,7 +74,7 @@ pub fn format_local_datetime(timezone: &str) -> String {
 /// Workspace root files that agents cannot modify regardless of base status.
 const READ_ONLY_FILES: &[&str] = &["AGENTS.md"];
 
-/// Workspace root files that only base agents (Hyde) can modify.
+/// Workspace root files that only base agents (Architect) can modify.
 const PRIVILEGED_ROOT_FILES: &[&str] = &["TOOLS.md"];
 
 // Service dirs (toolgate/, channels/) and tools/ are base-only.
@@ -102,7 +101,7 @@ fn is_read_only(workspace_dir: &str, resolved: &Path, base: bool) -> bool {
     if READ_ONLY_FILES.iter().any(|name| resolved == root.join(name)) {
         return true;
     }
-    // Root-level base files (only Hyde/base agents can modify)
+    // Root-level base files (only Architect/base agents can modify)
     if !base && PRIVILEGED_ROOT_FILES.iter().any(|name| resolved == root.join(name)) {
         return true;
     }
@@ -121,7 +120,7 @@ fn is_read_only(workspace_dir: &str, resolved: &Path, base: bool) -> bool {
         return !base;
     }
 
-    // toolgate/ and channels/ no longer in workspace — Hyde uses code_exec on host
+    // toolgate/ and channels/ no longer in workspace — Architect uses code_exec on host
     false
 }
 
@@ -333,14 +332,14 @@ pub fn build_system_prompt(
         if capabilities.is_base {
             prompt.push_str("- **Scheduling**: `cron` to create, list, delete, or run scheduled tasks\n");
         } else {
-            prompt.push_str("- **Scheduling**: `cron(action=\"list\")` to view scheduled tasks (read-only). To create/delete/run cron jobs, use `handoff` to delegate to **Hyde**\n");
+            prompt.push_str("- **Scheduling**: `cron(action=\"list\")` to view scheduled tasks (read-only). To create/delete/run cron jobs, use `handoff` to delegate to **Architect**\n");
         }
     }
     if capabilities.has_message_actions {
         prompt.push_str("- **Channel Actions**: send photos, voice messages, buttons via channel actions after tool calls\n");
     }
     if !capabilities.is_base {
-        prompt.push_str("- **Secrets**: `secret_set` saves secrets scoped to you. For global secrets (shared tools like BCS, Brave), use `handoff` to delegate to **Hyde**\n");
+        prompt.push_str("- **Secrets**: `secret_set` saves secrets scoped to you. For global secrets (shared tools like BCS, Brave), use `handoff` to delegate to **Architect**\n");
     }
     if capabilities.has_yaml_tools {
         prompt.push_str("- **External Tools**: YAML-defined tools in workspace/tools/ — check tool list for specifics\n");
@@ -510,7 +509,7 @@ async fn validate_workspace_path_inner(
     // Files that always live at workspace root (shared between agents)
     const SHARED_ROOT_FILES: &[&str] = &["USER.md", "AGENTS.md", "TOOLS.md", "SYSTEM_TOOLS.md"];
     // Directories that always live at workspace root (not under agents/)
-    // toolgate/ and channels/ removed — Hyde uses code_exec on host directly
+    // toolgate/ and channels/ removed — Architect uses code_exec on host directly
     const SHARED_ROOT_DIRS: &[&str] = &["tools", "skills", "mcp", "uploads"];
 
     // Bare filename (no directory separator):
@@ -669,25 +668,14 @@ pub async fn delete_workspace_file(
 
 /// Move or rename a workspace file/directory.
 /// Both old_path and new_path are resolved through the same access-control rules.
-/// `base`: pass `self.agent.base` — non-base agents cannot move files in protected directories
-/// (tools/, TOOLS.md, etc.) even when the path is otherwise reachable.
 pub async fn rename_workspace_file(
     workspace_dir: &str,
     agent_name: &str,
     old_path: &str,
     new_path: &str,
-    base: bool,
 ) -> Result<()> {
     let src = validate_workspace_path(workspace_dir, agent_name, old_path).await?;
     let dst = validate_workspace_path(workspace_dir, agent_name, new_path).await?;
-
-    // Block renaming from or into protected directories (e.g. tools/) for non-base agents.
-    if is_read_only(workspace_dir, &src, base) {
-        anyhow::bail!("'{}' is a protected file and cannot be moved", old_path);
-    }
-    if is_read_only(workspace_dir, &dst, base) {
-        anyhow::bail!("'{}' is a protected destination and cannot be written", new_path);
-    }
 
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent).await?;
@@ -825,7 +813,7 @@ pub async fn ensure_workspace_scaffold(workspace_dir: &str, agent_name: &str) ->
     ];
 
     // TOOLS.md — single source of truth for all tools (system + YAML).
-    // Only base agents (Hyde) can modify this file.
+    // Only base agents (Architect) can modify this file.
     let tools_md = Path::new(workspace_dir).join("TOOLS.md");
     if !tools_md.exists() {
         fs::write(&tools_md, include_str!("../../../../workspace/TOOLS.md")).await?;
@@ -837,7 +825,7 @@ pub async fn ensure_workspace_scaffold(workspace_dir: &str, agent_name: &str) ->
     if !user_md.exists() {
         fs::write(&user_md, concat!(
             "# User Profile\n\n",
-            "- Timezone: UTC\n",
+            "- Timezone: Europe/Samara\n",
             "- Language: Russian\n",
         )).await?;
         tracing::info!("created workspace/USER.md scaffold");
@@ -870,7 +858,7 @@ pub async fn ensure_workspace_scaffold(workspace_dir: &str, agent_name: &str) ->
 }
 
 /// Parse timezone from workspace USER.md (looks for `Timezone: XXX` line).
-/// Falls back to "UTC" if not found.
+/// Falls back to "Europe/Samara" if not found.
 pub async fn parse_user_timezone(workspace_dir: &str) -> String {
     let user_md = Path::new(workspace_dir).join("USER.md");
     if let Ok(content) = fs::read_to_string(&user_md).await {
@@ -884,7 +872,7 @@ pub async fn parse_user_timezone(workspace_dir: &str) -> String {
             }
         }
     }
-    "UTC".to_string()
+    "Europe/Samara".to_string()
 }
 
 fn format_size(bytes: u64) -> String {
