@@ -124,47 +124,6 @@ Provider registry with active capability mapping (LLM, STT, TTS, Vision, ImageGe
 
 HydeClaw is a polyglot system with a Rust core. In production it runs as **3 Rust binaries + 2 managed child processes + Docker infrastructure**.
 
-```mermaid
-graph TD
-    web["Browser"]
-    web -->|"HTTP / SSE / WebSocket"| core
-    platforms["Telegram / Discord / Slack\nMatrix / IRC / WhatsApp"]
-    platforms <-->|"Bot API"| channels
-
-    subgraph core["hydeclaw-core (Rust)"]
-        direction TB
-        api["HTTP API (Axum) / Auth"]
-        engine["Agent Engine / Tool Execution"]
-        memory["Memory (pgvector) / Secrets Vault"]
-        scheduler["Cron Scheduler / Static UI"]
-    end
-
-    core <-->|"WebSocket"| channels["channels/ (Bun)\nChannel adapters"]
-    core -->|"HTTP"| toolgate["toolgate/ (Python)\nSTT / TTS / Vision\nImageGen / Embeddings"]
-    core -->|"HTTPS"| llm["LLM Providers\nOpenAI / Anthropic / Google\nOllama / DeepSeek / ..."]
-    core -->|"Docker API"| containers["On-demand Containers\nMCP servers / code_exec sandbox"]
-
-    subgraph infra["Docker Infrastructure"]
-        pg[("PostgreSQL 17\n+ pgvector")]
-        searxng["SearXNG\nMeta-search"]
-        browser["browser-renderer\nHeadless browser"]
-    end
-
-    core -->|"sqlx"| pg
-    core -->|"HTTP"| searxng
-    core -->|"HTTP"| browser
-
-    watchdog["hydeclaw-watchdog"] -.->|"health checks"| core
-    watchdog -.-> pg
-    watchdog -.-> channels
-    watchdog -.-> toolgate
-    watchdog -.-> worker
-    worker["hydeclaw-memory-worker"] -.->|"tasks"| pg
-    worker -.->|"embeddings"| toolgate
-```
-
-> Both `channels` and `toolgate` are spawned by core as managed child processes (auto-restart on crash). `watchdog` and `memory-worker` run as independent systemd services.
-
 <details>
 <summary><strong>Component details</strong></summary>
 
