@@ -3,7 +3,7 @@
 use anyhow::Result;
 use rand::Rng;
 use std::time::Duration;
-
+use tokio::sync::mpsc;
 
 /// Configurable backoff policy for HTTP retries.
 pub struct BackoffPolicy {
@@ -94,16 +94,6 @@ pub async fn retry_http_post_custom(
                     return Ok(resp.text().await?);
                 }
 
-                // Extract Retry-After header before consuming the response body
-                let retry_after_secs = if status.as_u16() == 429 {
-                    resp.headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(super::error_classify::parse_retry_after)
-                } else {
-                    None
-                };
-
                 let err_text = resp.text().await.unwrap_or_default();
                 last_error = format!("{} API error {}: {}", provider_name, status, err_text);
 
@@ -122,19 +112,7 @@ pub async fn retry_http_post_custom(
                     anyhow::bail!("{}", last_error);
                 }
 
-                // Honor Retry-After header for 429 responses, otherwise use exponential backoff
-                let backoff = if let Some(ra_secs) = retry_after_secs {
-                    let capped = ra_secs.min(policy.max_delay.as_secs());
-                    tracing::info!(
-                        provider = %provider_name,
-                        retry_after_secs = ra_secs,
-                        capped_secs = capped,
-                        "honoring Retry-After header"
-                    );
-                    Duration::from_secs(capped)
-                } else {
-                    policy.delay(attempt)
-                };
+                let backoff = policy.delay(attempt);
                 tracing::warn!(
                     provider = %provider_name,
                     status = %status,
@@ -174,3 +152,45 @@ pub const RETRYABLE_OPENAI: &[u16] = &[429, 500, 502, 503];
 /// Retryable codes for Anthropic (includes 529 overloaded).
 pub const RETRYABLE_ANTHROPIC: &[u16] = &[429, 500, 502, 503, 529];
 
+/// Parse an SSE byte stream, calling `on_data` for each `data:` line.
+/// Returns the accumulated full content and thinking filter state.
+#[allow(dead_code)]
+pub async fn parse_sse_stream(
+    resp: reqwest::Response,
+    chunk_tx: &mpsc::UnboundedSender<String>,
+    mut on_data: impl FnMut(&str, &mut crate::agent::thinking::ThinkingFilter, &mpsc::UnboundedSender<String>) -> SseAction,
+) -> Result<()> {
+    let mut buffer = String::new();
+    let mut thinking_filter = crate::agent::thinking::ThinkingFilter::new();
+
+    use tokio_stream::StreamExt;
+    let mut byte_stream = resp.bytes_stream();
+    while let Some(chunk_result) = StreamExt::next(&mut byte_stream).await {
+        let chunk_bytes = chunk_result?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk_bytes));
+        while let Some(line_end) = buffer.find('\n') {
+            let line = buffer[..line_end].trim().to_string();
+            buffer = buffer[line_end + 1..].to_string();
+            if line.is_empty() || line.starts_with(':') {
+                continue;
+            }
+            if let Some(data) = line.strip_prefix("data: ") {
+                if data == "[DONE]" {
+                    return Ok(());
+                }
+                match on_data(data, &mut thinking_filter, chunk_tx) {
+                    SseAction::Continue => {}
+                    SseAction::Done => return Ok(()),
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Control flow from SSE data handler.
+#[allow(dead_code)]
+pub enum SseAction {
+    Continue,
+    Done,
+}

@@ -336,59 +336,13 @@ impl LlmProvider for GoogleProvider {
         tracing::info!(provider = "google", model = %self.model, "calling Google Gemini API (streaming)");
 
         let start = std::time::Instant::now();
+        let req = self.streaming_client.post(&url).json(&body);
+        let resp = req.send().await?;
 
-        // Transient retry for streaming: up to 2 retries with exponential backoff (1s, 2s)
-        let transient_delays = [1u64, 2];
-        let mut last_err_text = String::new();
-        let mut resp = None;
-        for attempt in 0..=transient_delays.len() {
-            let req = self.streaming_client.post(&url).json(&body);
-            let r = req.send().await?;
-
-            if r.status().is_success() {
-                resp = Some(r);
-                break;
-            }
-
-            let status = r.status();
-            let retry_after_secs = if status.as_u16() == 429 {
-                r.headers()
-                    .get("retry-after")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(crate::agent::error_classify::parse_retry_after)
-            } else {
-                None
-            };
-
-            let err_text = r.text().await.unwrap_or_default();
-            let error_kind = crate::agent::error_classify::classify_provider_error(
-                &anyhow::anyhow!("google API error {}: {}", status, err_text),
-            );
-            last_err_text = format!("google API error {}: {}", status, err_text);
-
-            if !crate::agent::error_classify::should_retry_locally(&error_kind) || attempt >= transient_delays.len() {
-                if let Some(ra) = retry_after_secs {
-                    anyhow::bail!("{} (retry-after: {}s)", last_err_text, ra);
-                }
-                anyhow::bail!("{}", last_err_text);
-            }
-
-            let delay = if let Some(ra) = retry_after_secs {
-                ra.min(30)
-            } else {
-                transient_delays[attempt]
-            };
-            tracing::warn!(
-                provider = "google",
-                status = %status,
-                error_kind = ?error_kind,
-                attempt,
-                backoff_secs = delay,
-                "streaming: transient retry"
-            );
-            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+        if !resp.status().is_success() {
+            let err_text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("google API error: {}", err_text);
         }
-        let resp = resp.ok_or_else(|| anyhow::anyhow!("{}", last_err_text))?;
 
         let mut full_content = String::new();
         let mut buffer = String::new();

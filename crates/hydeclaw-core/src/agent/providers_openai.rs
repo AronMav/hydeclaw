@@ -350,35 +350,15 @@ impl LlmProvider for OpenAiCompatibleProvider {
         let start = std::time::Instant::now();
         let api_key = self.resolve_api_key().await;
         let effective_url = self.resolve_url().await;
+        let mut req = self.streaming_client.post(&effective_url).json(&body);
+        if !api_key.is_empty() {
+            req = req.bearer_auth(&api_key);
+        }
+        let resp = req.send().await?;
 
-        // Transient retry for streaming: up to 2 retries with exponential backoff (1s, 2s)
-        let transient_delays = [1u64, 2];
-        let mut last_err_text = String::new();
-        let mut resp = None;
-        for attempt in 0..=transient_delays.len() {
-            let mut req = self.streaming_client.post(&effective_url).json(&body);
-            if !api_key.is_empty() {
-                req = req.bearer_auth(&api_key);
-            }
-            let r = req.send().await?;
-
-            if r.status().is_success() {
-                resp = Some(r);
-                break;
-            }
-
-            let status = r.status();
-            // Extract Retry-After before consuming body
-            let retry_after_secs = if status.as_u16() == 429 {
-                r.headers()
-                    .get("retry-after")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(crate::agent::error_classify::parse_retry_after)
-            } else {
-                None
-            };
-
-            let err_text = r.text().await.unwrap_or_default();
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let err_text = resp.text().await.unwrap_or_default();
             if status.as_u16() == 400 {
                 let body_preview = serde_json::to_string(&body).unwrap_or_default();
                 let truncated = &body_preview[..body_preview.len().min(4000)];
@@ -388,39 +368,8 @@ impl LlmProvider for OpenAiCompatibleProvider {
                     "400 Bad Request (stream) — dumping request body for diagnosis"
                 );
             }
-
-            // Classify and decide whether to retry locally
-            let error_kind = crate::agent::error_classify::classify_provider_error(
-                &anyhow::anyhow!("{} API error {}: {}", self.provider_name, status, err_text),
-            );
-            last_err_text = format!("{} API error {}: {}", self.provider_name, status, err_text);
-
-            if !crate::agent::error_classify::should_retry_locally(&error_kind) || attempt >= transient_delays.len() {
-                // For rate limit with Retry-After, embed the duration in the error message
-                // so the RoutingProvider can use it for cooldown
-                if let Some(ra) = retry_after_secs {
-                    anyhow::bail!("{} (retry-after: {}s)", last_err_text, ra);
-                }
-                anyhow::bail!("{}", last_err_text);
-            }
-
-            // Use Retry-After for rate limits, otherwise exponential backoff
-            let delay = if let Some(ra) = retry_after_secs {
-                ra.min(30)
-            } else {
-                transient_delays[attempt]
-            };
-            tracing::warn!(
-                provider = %self.provider_name,
-                status = %status,
-                error_kind = ?error_kind,
-                attempt,
-                backoff_secs = delay,
-                "streaming: transient retry"
-            );
-            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            anyhow::bail!("{} API error: {}", self.provider_name, err_text);
         }
-        let resp = resp.ok_or_else(|| anyhow::anyhow!("{}", last_err_text))?;
 
         // Parse SSE stream: accumulate content (streamed) + tool calls (buffered)
         let mut full_content = String::new();

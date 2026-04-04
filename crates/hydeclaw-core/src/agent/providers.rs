@@ -57,6 +57,7 @@ pub trait LlmProvider: Send + Sync {
         Ok(response)
     }
 
+    #[allow(dead_code)]
     fn name(&self) -> &str;
 
     /// Override the model for subsequent calls. None clears the override.
@@ -113,18 +114,23 @@ impl ModelOverride {
     }
 }
 
-// OPENAI_COMPAT_PROVIDERS removed — replaced by PROVIDER_TYPES registry below.
+/// Known OpenAI-compatible providers: (name, default_base_url, api_key_env).
+/// base_url is the base URL without path — chat path is resolved via `resolve_chat_url()`.
+pub(crate) const OPENAI_COMPAT_PROVIDERS: &[(&str, &str, &str)] = &[
+    ("minimax",    "https://api.minimax.io",         "MINIMAX_API_KEY"),
+    ("deepseek",   "https://api.deepseek.com",       "DEEPSEEK_API_KEY"),
+    ("groq",       "https://api.groq.com/openai",    "GROQ_API_KEY"),
+    ("together",   "https://api.together.xyz",       "TOGETHER_API_KEY"),
+    ("openrouter", "https://openrouter.ai/api",      "OPENROUTER_API_KEY"),
+    ("mistral",    "https://api.mistral.ai",         "MISTRAL_API_KEY"),
+    ("xai",        "https://api.x.ai",               "XAI_API_KEY"),
+    ("perplexity", "https://api.perplexity.ai",      "PERPLEXITY_API_KEY"),
+];
 
 /// Create a provider from agent config.
 /// API keys are read from SecretsManager on each LLM call (hot-reloadable).
 /// `sandbox` + `agent_name` + `workspace_dir` are required for CLI providers (claude-cli, gemini-cli)
 /// that execute inside the agent's Docker container.
-///
-/// Provider resolution order:
-/// 1. Native API providers (anthropic, google) — dedicated implementations
-/// 2. CLI providers (claude-cli, gemini-cli) — Docker sandbox subprocess
-/// 3. PROVIDER_TYPES registry — any known OpenAI-compatible provider
-/// 4. Fallback — treat as generic OpenAI-compatible with warning
 #[allow(clippy::too_many_arguments)]
 pub fn create_provider(
     provider_name: &str,
@@ -137,61 +143,81 @@ pub fn create_provider(
     workspace_dir: &str,
     base: bool,
 ) -> Arc<dyn LlmProvider> {
-    // Native API providers with dedicated implementations
     match provider_name {
-        "anthropic" => return Arc::new(AnthropicProvider::new(
-            model.to_string(), temperature, max_tokens, secrets,
+        "anthropic" => Arc::new(AnthropicProvider::new(
+            model.to_string(),
+            temperature,
+            max_tokens,
+            secrets,
         )),
-        "google" | "gemini" => return Arc::new(GoogleProvider::new(
-            model.to_string(), temperature, max_tokens, secrets,
+        "google" | "gemini" => Arc::new(GoogleProvider::new(
+            model.to_string(),
+            temperature,
+            max_tokens,
+            secrets,
         )),
-        "claude-cli" => return Arc::new(ClaudeCliProvider::new(
+        "claude-cli" => Arc::new(ClaudeCliProvider::new(
             "claude-cli", cli_backend::default_claude_backend(), model.to_string(), sandbox, agent_name.to_string(), workspace_dir.to_string(), base,
         )),
-        "gemini-cli" => return Arc::new(GeminiCliProvider::new(
+        "gemini-cli" => Arc::new(GeminiCliProvider::new(
             "gemini-cli", cli_backend::default_gemini_backend(), model.to_string(), sandbox, agent_name.to_string(), workspace_dir.to_string(), base,
         )),
-        _ => {}
-    }
-
-    // Registry lookup: resolve via PROVIDER_TYPES metadata table
-    if let Some(meta) = PROVIDER_TYPES.iter().find(|pt| pt.id == provider_name) {
-        let base_url = if provider_name == "openai" {
-            std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| meta.default_base_url.to_string())
-        } else if provider_name == "ollama" {
-            std::env::var("OLLAMA_URL").unwrap_or_else(|_| meta.default_base_url.to_string())
-        } else {
-            meta.default_base_url.to_string()
-        };
-        let url = resolve_chat_url(provider_name, &base_url);
-        let provider = OpenAiCompatibleProvider::new(
-            provider_name, &url, meta.default_secret_name,
-            model.to_string(), temperature, max_tokens, secrets,
-        );
-        // Ollama supports runtime base URL override via secret
-        if provider_name == "ollama" {
-            return Arc::new(provider.with_base_url_env("OLLAMA_URL", "/v1/chat/completions"));
+        "openai" => {
+            let base = std::env::var("OPENAI_BASE_URL")
+                .unwrap_or_else(|_| "https://api.openai.com".to_string());
+            let url = resolve_chat_url("openai", &base);
+            Arc::new(OpenAiCompatibleProvider::new(
+                "openai",
+                &url,
+                "OPENAI_API_KEY",
+                model.to_string(),
+                temperature,
+                max_tokens,
+                secrets,
+            ))
         }
-        return Arc::new(provider);
+        "ollama" => {
+            // Default URL used when OLLAMA_URL secret is not set
+            let fallback = std::env::var("OLLAMA_URL")
+                .unwrap_or_else(|_| "http://localhost:11434".to_string());
+            let url = resolve_chat_url("ollama", &fallback);
+            Arc::new(OpenAiCompatibleProvider::new(
+                "ollama",
+                &url,
+                "OLLAMA_API_KEY",
+                model.to_string(),
+                temperature,
+                max_tokens,
+                secrets,
+            ).with_base_url_env("OLLAMA_URL", "/v1/chat/completions"))
+        }
+        other => {
+            // Check known OpenAI-compatible providers
+            if let Some((_, base_url, key_env)) = OPENAI_COMPAT_PROVIDERS.iter().find(|(n, _, _)| *n == other) {
+                let url = resolve_chat_url(other, base_url);
+                return Arc::new(OpenAiCompatibleProvider::new(
+                    other,
+                    &url,
+                    key_env,
+                    model.to_string(),
+                    temperature,
+                    max_tokens,
+                    secrets,
+                ));
+            }
+            tracing::warn!(provider = %other, "unknown provider, defaulting to minimax");
+            let url = resolve_chat_url("minimax", "https://api.minimax.io");
+            Arc::new(OpenAiCompatibleProvider::new(
+                "minimax",
+                &url,
+                "MINIMAX_API_KEY",
+                model.to_string(),
+                temperature,
+                max_tokens,
+                secrets,
+            ))
+        }
     }
-
-    // Unknown provider — list available providers in error
-    let available: Vec<&str> = std::iter::once("anthropic")
-        .chain(std::iter::once("google"))
-        .chain(std::iter::once("claude-cli"))
-        .chain(std::iter::once("gemini-cli"))
-        .chain(PROVIDER_TYPES.iter().map(|pt| pt.id))
-        .collect();
-    tracing::warn!(
-        provider = %provider_name,
-        available = %available.join(", "),
-        "unknown provider, falling back to openai-compatible"
-    );
-    let url = resolve_chat_url(provider_name, "");
-    Arc::new(OpenAiCompatibleProvider::new(
-        provider_name, &url, "API_KEY",
-        model.to_string(), temperature, max_tokens, secrets,
-    ))
 }
 
 /// Build a provider from a routing rule entry, falling back to env-based defaults.
@@ -235,26 +261,43 @@ pub fn create_provider_from_route(
         _ => {}
     }
 
-    // Registry-based URL and key resolution via PROVIDER_TYPES
-    let provider_id = route.provider.as_str();
-    let (url, api_key_name) = if let Some(meta) = PROVIDER_TYPES.iter().find(|pt| pt.id == provider_id) {
-        let default_base = if provider_id == "openai" {
-            std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| meta.default_base_url.to_string())
-        } else if provider_id == "ollama" {
-            std::env::var("OLLAMA_URL").unwrap_or_else(|_| meta.default_base_url.to_string())
-        } else {
-            meta.default_base_url.to_string()
-        };
-        let base = route.base_url.clone().unwrap_or(default_base);
-        let url = resolve_chat_url(provider_id, &base);
-        let key = route.api_key_env.clone().unwrap_or_else(|| meta.default_secret_name.to_string());
-        (url, key)
-    } else {
-        tracing::warn!(provider = %provider_id, "unknown provider in routing rule, treating as openai-compatible");
-        let base = route.base_url.clone().unwrap_or_default();
-        let url = resolve_chat_url(provider_id, &base);
-        let key = route.api_key_env.clone().unwrap_or_else(|| "API_KEY".to_string());
-        (url, key)
+    let (url, api_key_name) = match route.provider.as_str() {
+        "openai" => {
+            let default_base = std::env::var("OPENAI_BASE_URL")
+                .unwrap_or_else(|_| "https://api.openai.com".to_string());
+            let base = route.base_url.clone().unwrap_or(default_base);
+            let url = resolve_chat_url("openai", &base);
+            (
+                url,
+                route.api_key_env.clone().unwrap_or_else(|| "OPENAI_API_KEY".to_string()),
+            )
+        }
+        "ollama" => {
+            let default_host = std::env::var("OLLAMA_URL")
+                .unwrap_or_else(|_| "http://localhost:11434".to_string());
+            let base = route.base_url.clone().unwrap_or(default_host);
+            let url = resolve_chat_url("ollama", &base);
+            (url, route.api_key_env.clone().unwrap_or_default())
+        }
+        other => {
+            // Check known OpenAI-compatible providers
+            if let Some((_, default_base, default_key)) = OPENAI_COMPAT_PROVIDERS.iter().find(|(n, _, _)| *n == other) {
+                let base = route.base_url.clone().unwrap_or_else(|| default_base.to_string());
+                let url = resolve_chat_url(other, &base);
+                (
+                    url,
+                    route.api_key_env.clone().unwrap_or_else(|| default_key.to_string()),
+                )
+            } else {
+                tracing::warn!(provider = %other, "unknown provider in routing rule, using minimax");
+                let base = route.base_url.clone().unwrap_or_else(|| "https://api.minimax.io".to_string());
+                let url = resolve_chat_url("minimax", &base);
+                (
+                    url,
+                    route.api_key_env.clone().unwrap_or_else(|| "MINIMAX_API_KEY".to_string()),
+                )
+            }
+        }
     };
 
     let provider = OpenAiCompatibleProvider::new(
@@ -294,13 +337,9 @@ pub fn create_routing_provider(
         })
         .collect();
 
-    // Use the max_failover_attempts from the first route (primary), default 3
-    let max_failover = routes.first().map(|r| r.max_failover_attempts).unwrap_or(3);
-
     Arc::new(RoutingProvider {
         routes: entries,
         cooldowns: std::sync::Mutex::new(std::collections::HashMap::new()),
-        max_failover_attempts: max_failover,
     })
 }
 
@@ -427,9 +466,8 @@ pub struct ProviderTypeMeta {
     pub supports_model_listing: bool,
 }
 
-/// Provider type registry: single source of truth for all known providers.
-/// Adding a new OpenAI-compatible provider requires only one entry here.
-pub const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
+/// Known provider types with extended metadata.
+pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
     ProviderTypeMeta {
         id: "minimax",
         name: "MiniMax",
@@ -821,21 +859,9 @@ pub async fn resolve_provider_for_agent(
         }
     }
 
-    // Legacy fallback: try DB provider lookup by legacy provider name before compile-time table.
-    // This enables dynamically created providers (via UI/API) to work even without provider_connection.
-    if !agent.provider.is_empty() {
-        if let Ok(Some(conn)) = crate::db::providers::get_provider_by_name(db, &agent.provider).await {
-            if conn.category == "text" {
-                tracing::debug!(agent = %agent_name, provider = %agent.provider, "resolved legacy provider via DB");
-                let model_override = if agent.model.is_empty() { None } else { Some(agent.model.as_str()) };
-                return create_provider_from_connection(
-                    &conn, model_override, temperature, max_tokens, secrets, sandbox, agent_name, workspace_dir, base,
-                );
-            }
-        }
-    }
-
-    // Final fallback — compile-time PROVIDER_TYPES table.
+    // Legacy fallback — kept for backward compatibility during migration window.
+    // NOTE: vault-scoped keys (PROVIDER_CREDENTIALS) are not consulted here.
+    // This path is only reached when provider_connection is not set and DB lookup fails.
     create_provider(
         &agent.provider,
         &agent.model,
@@ -862,8 +888,6 @@ pub struct RoutingProvider {
     routes: Vec<RouteEntry>,
     /// Tracks providers on cooldown (provider name → cooldown expiry).
     cooldowns: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
-    /// Maximum number of fallback providers to try before giving up (default: 3).
-    max_failover_attempts: u32,
 }
 
 impl RoutingProvider {
@@ -874,7 +898,7 @@ impl RoutingProvider {
         &self,
         messages: &[hydeclaw_types::Message],
         tools: &[hydeclaw_types::ToolDefinition],
-    ) -> Result<&RouteEntry> {
+    ) -> &RouteEntry {
         let last_user_msg = messages
             .iter()
             .rev()
@@ -899,14 +923,14 @@ impl RoutingProvider {
             };
             if matches {
                 tracing::debug!(condition = %entry.condition, "routing condition matched");
-                return Ok(entry);
+                return entry;
             }
         }
 
-        // Last resort: return last route (or first if routes is empty)
+        // Last resort: return last route (or first if routes is empty — shouldn't happen)
         self.routes.last()
             .or_else(|| self.routes.first())
-            .ok_or_else(|| anyhow::anyhow!("RoutingProvider has no routes configured"))
+            .expect("RoutingProvider has no routes")
     }
 
     /// Check if a provider is on cooldown.
@@ -927,48 +951,12 @@ impl RoutingProvider {
         map.insert(name.to_string(), std::time::Instant::now() + duration);
     }
 
-    /// Classify error and apply appropriate cooldown.
-    /// Parses `retry-after` from error message if present (embedded by providers on 429).
-    /// Returns the ProviderErrorKind for the caller to decide on failover.
-    fn handle_provider_error(&self, e: &anyhow::Error, provider_name: &str, max_cooldown: std::time::Duration) -> super::error_classify::ProviderErrorKind {
+    /// Classify error and apply appropriate cooldown. Returns the computed cooldown duration.
+    fn handle_provider_error(&self, e: &anyhow::Error, provider_name: &str, max_cooldown: std::time::Duration) {
         let class = super::error_classify::classify(e);
-        let kind = super::error_classify::provider_kind_from_class(&class);
-
-        // Check for Retry-After embedded in error message (format: "(retry-after: Ns)")
-        let err_msg = e.to_string();
-        let retry_after_cd = Self::extract_retry_after_from_error(&err_msg)
-            .map(|secs| std::time::Duration::from_secs(secs));
-
-        let cd = if let Some(ra_cd) = retry_after_cd {
-            // Honor Retry-After for rate limit responses, capped at max_cooldown
-            ra_cd.min(max_cooldown)
-        } else {
-            super::error_classify::cooldown_duration(&class).min(max_cooldown)
-        };
-
-        tracing::warn!(
-            provider = %provider_name,
-            error = %e,
-            error_class = ?class,
-            error_kind = ?kind,
-            cooldown_secs = cd.as_secs(),
-            retry_after = ?retry_after_cd.map(|d| d.as_secs()),
-            "provider failed"
-        );
+        let cd = super::error_classify::cooldown_duration(&class).min(max_cooldown);
+        tracing::warn!(provider = %provider_name, error = %e, error_class = ?class, cooldown_secs = cd.as_secs(), "provider failed");
         if !cd.is_zero() { self.set_cooldown(provider_name, cd); }
-        kind
-    }
-
-    /// Extract retry-after seconds from error message pattern "(retry-after: Ns)".
-    fn extract_retry_after_from_error(msg: &str) -> Option<u64> {
-        // Pattern: "(retry-after: 60s)" embedded by providers
-        if let Some(start) = msg.find("(retry-after: ") {
-            let rest = &msg[start + 14..];
-            if let Some(end) = rest.find("s)") {
-                return rest[..end].parse::<u64>().ok();
-            }
-        }
-        None
     }
 
     /// Get all route entries that could serve as fallbacks (not on cooldown, not excluded).
@@ -1026,82 +1014,36 @@ impl LlmProvider for RoutingProvider {
         messages: &[hydeclaw_types::Message],
         tools: &[hydeclaw_types::ToolDefinition],
     ) -> Result<hydeclaw_types::LlmResponse> {
-        let primary = self.select_route(messages, tools)?;
+        let primary = self.select_route(messages, tools);
         let primary_name = primary.provider.name().to_string();
         let primary_cooldown = primary.cooldown_duration;
 
         let primary_skipped = self.is_on_cooldown(&primary_name);
-        let mut last_error: Option<anyhow::Error> = None;
-
         if !primary_skipped {
             match primary.provider.chat(messages, tools).await {
                 Ok(resp) => return Ok(resp),
                 Err(e) => {
-                    let kind = self.handle_provider_error(&e, &primary_name, primary_cooldown);
-                    tracing::warn!(
-                        from = %primary_name,
-                        error_kind = ?kind,
-                        cooldown_secs = primary_cooldown.as_secs(),
-                        "provider failover: primary failed"
-                    );
-                    // Permanent and Auth errors should not trigger failover
-                    if !super::error_classify::should_failover(&kind) {
-                        return Err(e);
-                    }
-                    last_error = Some(e);
+                    self.handle_provider_error(&e, &primary_name, primary_cooldown);
                 }
             }
         } else {
             tracing::debug!(provider = %primary_name, "primary on cooldown, skipping");
         }
 
-        let fallbacks = self.available_fallbacks(&primary_name);
-        let max_attempts = self.max_failover_attempts as usize;
-        for (attempt, fb) in fallbacks.into_iter().enumerate() {
-            if attempt >= max_attempts {
-                tracing::warn!(
-                    provider = %primary_name,
-                    max_failover_attempts = max_attempts,
-                    "max failover attempts reached, giving up"
-                );
-                break;
-            }
-            let fb_name = fb.provider.name().to_string();
-            tracing::info!(provider = %fb_name, attempt = attempt + 1, "trying fallback provider");
+        for fb in self.available_fallbacks(&primary_name) {
+            tracing::info!(provider = %fb.provider.name(), "trying fallback provider");
             match fb.provider.chat(messages, tools).await {
                 Ok(mut resp) => {
                     let reason = if primary_skipped { "cooldown" } else { "primary_failed" };
-                    tracing::warn!(
-                        from = %primary_name,
-                        to = %fb_name,
-                        error_kind = "failover_success",
-                        cooldown_secs = fb.cooldown_duration.as_secs(),
-                        "provider failover"
-                    );
-                    resp.fallback_notice = Some(format!("↪️ {} → {} ({})", primary_name, fb_name, reason));
+                    resp.fallback_notice = Some(format!("↪️ {} → {} ({})", primary_name, fb.provider.name(), reason));
                     return Ok(resp);
                 }
                 Err(e) => {
-                    let kind = self.handle_provider_error(&e, &fb_name, fb.cooldown_duration);
-                    tracing::warn!(
-                        from = %fb_name,
-                        to = "next",
-                        error_kind = ?kind,
-                        cooldown_secs = fb.cooldown_duration.as_secs(),
-                        "provider failover"
-                    );
-                    // Permanent/Auth errors: stop failover chain immediately
-                    if !super::error_classify::should_failover(&kind) {
-                        return Err(e);
-                    }
-                    last_error = Some(e);
+                    self.handle_provider_error(&e, fb.provider.name(), fb.cooldown_duration);
                 }
             }
         }
-        match last_error {
-            Some(e) => Err(e.context("all providers failed (including fallbacks)")),
-            None => anyhow::bail!("all providers on cooldown, no available routes"),
-        }
+        anyhow::bail!("all providers failed (including fallbacks)")
     }
 
     async fn chat_stream(
@@ -1110,13 +1052,11 @@ impl LlmProvider for RoutingProvider {
         tools: &[hydeclaw_types::ToolDefinition],
         chunk_tx: tokio::sync::mpsc::UnboundedSender<String>,
     ) -> Result<hydeclaw_types::LlmResponse> {
-        let primary = self.select_route(messages, tools)?;
+        let primary = self.select_route(messages, tools);
         let primary_name = primary.provider.name().to_string();
         let primary_cooldown = primary.cooldown_duration;
 
         let primary_skipped = self.is_on_cooldown(&primary_name);
-        let mut last_error: Option<anyhow::Error> = None;
-
         if !primary_skipped {
             use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
             let chunks_sent = Arc::new(AtomicBool::new(false));
@@ -1145,70 +1085,34 @@ impl LlmProvider for RoutingProvider {
                             "streaming: mid-stream failure, partial output already sent — cannot failover");
                         return Err(e);
                     }
-                    let kind = self.handle_provider_error(&e, &primary_name, primary_cooldown);
-                    tracing::warn!(
-                        from = %primary_name,
-                        error_kind = ?kind,
-                        "provider failover: streaming primary failed before first chunk"
-                    );
-                    // Permanent and Auth errors should not trigger failover
-                    if !super::error_classify::should_failover(&kind) {
-                        return Err(e);
-                    }
-                    last_error = Some(e);
+                    let class = super::error_classify::classify(&e);
+                    let cd = super::error_classify::cooldown_duration(&class).min(primary_cooldown);
+                    tracing::warn!(provider = %primary_name, error = %e, error_class = ?class,
+                        "streaming: primary failed before first chunk, trying fallback chain");
+                    if !cd.is_zero() { self.set_cooldown(&primary_name, cd); }
                 }
             }
         } else {
             tracing::debug!(provider = %primary_name, "primary on cooldown, skipping for streaming");
         }
 
-        let fallbacks = self.available_fallbacks(&primary_name);
-        let max_attempts = self.max_failover_attempts as usize;
-        for (attempt, fb) in fallbacks.into_iter().enumerate() {
-            if attempt >= max_attempts {
-                tracing::warn!(
-                    provider = %primary_name,
-                    max_failover_attempts = max_attempts,
-                    "max failover attempts reached for streaming, giving up"
-                );
-                break;
-            }
-            let fb_name = fb.provider.name().to_string();
-            tracing::info!(provider = %fb_name, attempt = attempt + 1, "trying streaming fallback provider");
+        for fb in self.available_fallbacks(&primary_name) {
+            tracing::info!(provider = %fb.provider.name(), "trying streaming fallback provider");
             match fb.provider.chat_stream(messages, tools, chunk_tx.clone()).await {
                 Ok(mut resp) => {
                     let reason = if primary_skipped { "cooldown" } else { "primary_failed" };
-                    tracing::warn!(
-                        from = %primary_name,
-                        to = %fb_name,
-                        error_kind = "failover_success",
-                        cooldown_secs = fb.cooldown_duration.as_secs(),
-                        "provider failover"
-                    );
-                    resp.fallback_notice = Some(format!("↪️ {} → {} ({})", primary_name, fb_name, reason));
+                    resp.fallback_notice = Some(format!("↪️ {} → {} ({})", primary_name, fb.provider.name(), reason));
                     return Ok(resp);
                 }
                 Err(e) => {
-                    let kind = self.handle_provider_error(&e, &fb_name, fb.cooldown_duration);
-                    tracing::warn!(
-                        from = %fb_name,
-                        to = "next",
-                        error_kind = ?kind,
-                        cooldown_secs = fb.cooldown_duration.as_secs(),
-                        "provider failover"
-                    );
-                    // Permanent/Auth errors: stop failover chain immediately
-                    if !super::error_classify::should_failover(&kind) {
-                        return Err(e);
-                    }
-                    last_error = Some(e);
+                    let class = super::error_classify::classify(&e);
+                    let cd = super::error_classify::cooldown_duration(&class).min(fb.cooldown_duration);
+                    tracing::warn!(provider = %fb.provider.name(), error = %e, error_class = ?class, "streaming fallback also failed");
+                    if !cd.is_zero() { self.set_cooldown(fb.provider.name(), cd); }
                 }
             }
         }
-        match last_error {
-            Some(e) => Err(e.context("all streaming providers failed (including fallbacks)")),
-            None => anyhow::bail!("all streaming providers on cooldown, no available routes"),
-        }
+        anyhow::bail!("all streaming providers failed (including fallbacks)")
     }
 
     fn name(&self) -> &str {
