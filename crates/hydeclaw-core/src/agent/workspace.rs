@@ -63,9 +63,10 @@ pub fn format_local_datetime(timezone: &str) -> String {
     let offset = crate::scheduler::timezone_offset_hours(timezone);
     let utc_now = chrono::Utc::now();
     let local = utc_now + chrono::Duration::hours(offset as i64);
+    // Round to hour to stabilize prompt cache fingerprint (cache window: 1 hour instead of 1 minute)
     format!(
         "{} ({}, UTC{:+})",
-        local.format("%Y-%m-%d %H:%M"),
+        local.format("%Y-%m-%d %H:00"),
         timezone,
         offset
     )
