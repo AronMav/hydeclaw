@@ -12,7 +12,8 @@ pub(crate) async fn api_access_pending(
     axum::extract::Path(agent): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     let Some(guard) = state.access_guards.read().await.get(&agent).cloned() else {
-        return (StatusCode::NOT_FOUND, Json(json!({"error": "agent not found"}))).into_response();
+        // Agent exists but has no access control configured — return empty list
+        return Json(json!({ "pending": [], "mode": "open" })).into_response();
     };
     let pairings = guard.pending_pairings_list().await;
     Json(json!({ "pending": pairings })).into_response()
@@ -54,7 +55,8 @@ pub(crate) async fn api_access_list_users(
     axum::extract::Path(agent): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     let Some(guard) = state.access_guards.read().await.get(&agent).cloned() else {
-        return (StatusCode::NOT_FOUND, Json(json!({"error": "agent not found"}))).into_response();
+        // Agent exists but has no access control — return empty list
+        return Json(json!({ "users": [], "mode": "open" })).into_response();
     };
     match crate::db::access::list_allowed_users(&guard.db, &agent).await {
         Ok(users) => {
