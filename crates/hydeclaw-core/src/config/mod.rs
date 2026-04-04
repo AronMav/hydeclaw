@@ -35,9 +35,6 @@ pub struct AppConfig {
     /// Tailscale Funnel: expose gateway via Tailscale serve/funnel.
     #[serde(default)]
     pub tailscale: TailscaleConfig,
-    /// OpenTelemetry trace export (requires `otel` feature).
-    #[serde(default)]
-    pub otel: OtelConfig,
     /// Native child processes managed by Core (channels, toolgate).
     #[serde(default)]
     pub managed_process: Vec<crate::process_manager::ManagedProcessConfig>,
@@ -45,20 +42,6 @@ pub struct AppConfig {
     #[serde(default)]
     pub agent: AgentSectionConfig,
 }
-
-/// OpenTelemetry configuration.
-#[derive(Debug, Clone, Deserialize, Default)]
-#[allow(dead_code)] // fields read only with `otel` feature
-pub struct OtelConfig {
-    /// Enable OTEL trace export. Also set OTEL_EXPORTER_OTLP_ENDPOINT env var.
-    #[serde(default)]
-    pub enabled: bool,
-    /// Service name reported to the collector (default: "hydeclaw-core").
-    #[serde(default = "default_otel_service")]
-    pub service_name: String,
-}
-
-fn default_otel_service() -> String { "hydeclaw-core".to_string() }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GatewayConfig {

@@ -66,16 +66,6 @@ dashmap = "6"
 # Internal
 hydeclaw-types = { workspace = true }
 
-# OpenTelemetry (optional, behind `otel` feature)
-opentelemetry = { workspace = true, optional = true }
-opentelemetry_sdk = { workspace = true, optional = true }
-opentelemetry-otlp = { workspace = true, optional = true }
-tracing-opentelemetry = { workspace = true, optional = true }
-
-[features]
-default = []
-otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
-
 # Systemd watchdog (Linux-only)
 [target.'cfg(target_os = "linux")'.dependencies]
 sd-notify = { workspace = true }
