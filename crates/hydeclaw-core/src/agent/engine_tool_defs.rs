@@ -38,10 +38,14 @@ pub fn all_system_tool_names() -> &'static [&'static str] {
 
 impl AgentEngine {
     /// Resolve tool group settings (from agent config or defaults).
-    pub(super) fn tool_groups(&self) -> crate::config::ToolGroups {
-        self.agent.tools.as_ref()
-            .map(|t| t.groups.clone())
-            .unwrap_or_default()
+    pub(super) fn tool_groups(&self) -> &crate::config::ToolGroups {
+        static DEFAULT: crate::config::ToolGroups = crate::config::ToolGroups {
+            git: true,
+            tool_management: true,
+            skill_editing: true,
+            session_tools: true,
+        };
+        self.agent.tools.as_ref().map(|t| &t.groups).unwrap_or(&DEFAULT)
     }
 
     /// Return tool definitions for internal tools available to the LLM.
@@ -178,7 +182,7 @@ impl AgentEngine {
             ToolDefinition {
                 name: "handoff".to_string(),
                 description: "Transfer control to another agent. The target agent joins the session and responds next. \
-                    Use when you need a different agent's expertise (e.g. 'спроси у Арти', 'ask Hyde'). \
+                    Use when you need a different agent's expertise (e.g. 'спроси у Арти', 'ask Architect'). \
                     Provide the task description and relevant context.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
@@ -333,7 +337,7 @@ impl AgentEngine {
         } else {
             ToolDefinition {
                 name: "cron".to_string(),
-                description: "View your scheduled tasks. To create or modify jobs, invite Hyde into this chat.".to_string(),
+                description: "View your scheduled tasks. To create or modify jobs, invite Architect into this chat.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -504,12 +508,10 @@ impl AgentEngine {
                 }
             });
             let desc = if self.agent.base {
-                if let Some(obj) = props.as_object_mut() {
-                    obj.insert("global".to_string(), serde_json::json!({
-                        "type": "boolean",
-                        "description": "If true, store as global (available to all agents). Default: false (scoped to current agent)."
-                    }));
-                }
+                props.as_object_mut().expect("props is always an object (constructed inline)").insert("global".to_string(), serde_json::json!({
+                    "type": "boolean",
+                    "description": "If true, store as global (available to all agents). Default: false (scoped to current agent)."
+                }));
                 "Store an API key or secret in the encrypted vault. Available as env var for YAML tools (auth.key). Set global=true for all agents. NEVER repeat the secret value in your response."
             } else {
                 "Store an API key or secret in the encrypted vault, scoped to this agent. Available as env var for YAML tools (auth.key). NEVER repeat the secret value in your response."

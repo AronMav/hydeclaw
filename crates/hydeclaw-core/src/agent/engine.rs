@@ -80,6 +80,7 @@ impl crate::tools::yaml_tools::EnvResolver for SecretsEnvResolver {
 
 /// Status phases emitted during message processing.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum ProcessingPhase {
     Thinking,
     CallingTool(String),
@@ -99,7 +100,7 @@ impl ProcessingPhase {
 
 /// Events emitted during SSE streaming (AI SDK UI Message Stream Protocol v1).
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Variant fields constructed in engine, matched in chat handler
+#[allow(dead_code)]
 pub enum StreamEvent {
     /// Session ID resolved/created by build_context — emitted first so the UI can track it.
     SessionId(String),
@@ -122,7 +123,7 @@ pub enum StreamEvent {
 }
 
 /// A background process started by the `process_start` tool (base agents only).
-#[allow(dead_code)] // Fields set on spawn, read by process_status tool
+#[allow(dead_code)]
 pub struct BgProcess {
     pub process_id: String,
     pub command: String,
@@ -173,7 +174,7 @@ pub struct AgentEngine {
     pub handoff_target: Arc<tokio::sync::Mutex<Option<HandoffRequest>>>,
     /// Shared tracker for currently processing agents (for WS reconnection).
     pub processing_tracker: Option<crate::gateway::ProcessingTracker>,
-    /// Default timezone parsed from USER.md at startup (fallback: UTC).
+    /// Default timezone parsed from USER.md at startup (fallback: Europe/Samara).
     pub default_timezone: String,
     /// Mutex for atomic MEMORY.md read-modify-write operations.
     pub memory_md_lock: tokio::sync::Mutex<()>,
@@ -200,7 +201,6 @@ pub struct AgentEngine {
     /// TTL: 5 minutes. Prevents duplicate HTTP calls for identical queries.
     pub(crate) search_cache: tokio::sync::RwLock<std::collections::HashMap<u64, (String, std::time::Instant)>>,
     /// Global app config for reading [agent.defaults] and other system-level settings.
-    #[allow(dead_code)]
     pub app_config: std::sync::Arc<crate::config::AppConfig>,
     /// Dedicated LLM provider for context compaction (cheap model). None = use primary provider.
     pub compaction_provider: Option<Arc<dyn LlmProvider>>,
@@ -305,7 +305,7 @@ impl Drop for ProcessingGuard {
 }
 
 /// Outcome of a session lifecycle — used by `SessionLifecycleGuard`.
-#[allow(dead_code)] // Variants matched in Drop impl
+#[allow(dead_code)]
 enum SessionOutcome {
     Running,
     Done,
@@ -623,7 +623,7 @@ impl AgentEngine {
     /// Used by cron dynamic jobs to prevent context accumulation across invocations.
     pub async fn handle_isolated(&self, msg: &IncomingMessage) -> Result<String> {
         // Hook: BeforeMessage
-        if let super::hooks::HookAction::Block(reason) = self.hooks.fire(&super::hooks::HookEvent::BeforeMessage).await {
+        if let super::hooks::HookAction::Block(reason) = self.hooks.fire(&super::hooks::HookEvent::BeforeMessage) {
             anyhow::bail!("blocked by hook: {}", reason);
         }
 
@@ -695,7 +695,7 @@ impl AgentEngine {
                         continue;
                     }
                     tracing::error!(error = %e, iteration, "isolated LLM call failed, returning fallback");
-                    self.hooks.fire(&super::hooks::HookEvent::OnError).await;
+                    self.hooks.fire(&super::hooks::HookEvent::OnError);
                     final_response = error_classify::format_user_error(&e);
                     break;
                 }
@@ -802,7 +802,7 @@ impl AgentEngine {
             .await?;
 
         // Hook: AfterResponse
-        self.hooks.fire(&super::hooks::HookEvent::AfterResponse).await;
+        self.hooks.fire(&super::hooks::HookEvent::AfterResponse);
 
         Ok(final_response)
     }
@@ -1164,11 +1164,11 @@ impl AgentEngine {
         let _chat_guard = crate::graph_worker::ChatActiveGuard::new();
 
         // Hook: BeforeMessage
-        if let super::hooks::HookAction::Block(reason) = self.hooks.fire(&super::hooks::HookEvent::BeforeMessage).await {
+        if let super::hooks::HookAction::Block(reason) = self.hooks.fire(&super::hooks::HookEvent::BeforeMessage) {
             anyhow::bail!("blocked by hook: {}", reason);
         }
 
-        let (session_id, mut messages, available_tools) =
+        let (session_id, mut messages, mut available_tools) =
             self.build_context(msg, true, None, false).await?;
 
         // Store session_id for tool handlers that need session context (e.g., handoff)
@@ -1547,7 +1547,7 @@ impl AgentEngine {
         let _chat_guard = crate::graph_worker::ChatActiveGuard::new();
 
         // Hook: BeforeMessage
-        if let super::hooks::HookAction::Block(reason) = self.hooks.fire(&super::hooks::HookEvent::BeforeMessage).await {
+        if let super::hooks::HookAction::Block(reason) = self.hooks.fire(&super::hooks::HookEvent::BeforeMessage) {
             anyhow::bail!("blocked by hook: {}", reason);
         }
 
@@ -2033,8 +2033,7 @@ impl AgentEngine {
             .map(|c| c.preserve_last_n as usize)
             .unwrap_or(10);
 
-        // Count tool messages, compact newest ones first to preserve prompt cache prefix.
-        // Keeping oldest messages stable means the system prompt + early context stay cached.
+        // Count tool messages, compact oldest ones
         let tool_indices: Vec<usize> = messages.iter().enumerate()
             .filter(|(_, m)| m.role == MessageRole::Tool)
             .map(|(i, _)| i)
@@ -2044,8 +2043,7 @@ impl AgentEngine {
 
         let mut compacted = 0usize;
         let mut chars_removed = 0usize;
-        // Iterate from newest tool results (end of vector) to preserve oldest for cache prefix
-        for &idx in tool_indices.iter().rev().take(to_compact) {
+        for &idx in tool_indices.iter().take(to_compact) {
             let old_len = messages[idx].content.chars().count();
             if old_len > 100 {
                 let replacement = "[tool result compacted]";
@@ -2331,7 +2329,7 @@ impl AgentEngine {
                 agent: self.agent.name.clone(),
                 tool_name: name.to_string(),
                 duration_ms: duration_ms as u64,
-            }).await;
+            });
 
             let db = self.db.clone();
             let agent_name = self.agent.name.clone();
@@ -2508,7 +2506,7 @@ impl AgentEngine {
             if let super::hooks::HookAction::Block(reason) = self.hooks.fire(&super::hooks::HookEvent::BeforeToolCall {
                 agent: self.agent.name.clone(),
                 tool_name: name.to_string(),
-            }).await {
+            }) {
                 return format!("Tool blocked by hook: {}", reason);
             }
 
@@ -2578,18 +2576,8 @@ impl AgentEngine {
             if name == "graph_query" {
                 return self.handle_graph_query(arguments).await;
             }
-            // Tool management — base agents only (non-base should delegate via handoff)
-            if name == "tool_create" || name == "tool_verify" || name == "tool_disable" || name == "tool_discover" {
-                if !self.agent.base {
-                    return format!("Error: '{}' requires a base agent. Use handoff to delegate to Hyde.", name);
-                }
-                return match name {
-                    "tool_create" => self.handle_tool_create(arguments).await,
-                    "tool_verify" => self.handle_tool_verify(arguments).await,
-                    "tool_disable" => self.handle_tool_disable(arguments).await,
-                    "tool_discover" => self.handle_tool_discover(arguments).await,
-                    _ => unreachable!(),
-                };
+            if name == "tool_create" {
+                return self.handle_tool_create(arguments).await;
             }
             if name == "tool_list" {
                 return self.handle_tool_list(arguments).await;
@@ -2597,11 +2585,14 @@ impl AgentEngine {
             if name == "tool_test" {
                 return self.handle_tool_test(arguments).await;
             }
+            if name == "tool_verify" {
+                return self.handle_tool_verify(arguments).await;
+            }
+            if name == "tool_disable" {
+                return self.handle_tool_disable(arguments).await;
+            }
             if name == "skill" {
                 let action = arguments.get("action").and_then(|v| v.as_str()).unwrap_or("");
-                if matches!(action, "create" | "update") && !self.agent.base {
-                    return format!("Error: skill '{}' requires a base agent. Use handoff to delegate to Hyde.", action);
-                }
                 return match action {
                     "create" => self.handle_skill_create(arguments).await,
                     "update" => self.handle_skill_update(arguments).await,
@@ -2611,6 +2602,9 @@ impl AgentEngine {
             }
             if name == "skill_use" {
                 return self.handle_skill_use(arguments).await;
+            }
+            if name == "tool_discover" {
+                return self.handle_tool_discover(arguments).await;
             }
             if name == "secret_set" {
                 return self.handle_secret_set(arguments).await;
@@ -2769,11 +2763,6 @@ impl AgentEngine {
                 return self.handle_rich_card(arguments);
             }
             if name == "process" {
-                // Defense-in-depth: tool definition is already gated on self.agent.base,
-                // but guard the dispatch too in case of prompt injection.
-                if !self.agent.base {
-                    return "Error: 'process' requires a base agent. Use handoff to delegate to Hyde.".to_string();
-                }
                 let action = arguments.get("action").and_then(|v| v.as_str()).unwrap_or("");
                 return match action {
                     "start" => self.handle_process_start(arguments).await,

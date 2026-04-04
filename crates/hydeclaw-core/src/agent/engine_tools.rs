@@ -378,7 +378,7 @@ impl AgentEngine {
         })).await {
             Ok(v) => {
                 let res = &v["result"];
-                if res.is_string() { res.as_str().unwrap_or_default().to_string() }
+                if res.is_string() { res.as_str().unwrap().to_string() }
                 else { serde_json::to_string(res).unwrap_or_default() }
             }
             Err(e) => format!("JS execution error: {e}"),
@@ -466,7 +466,7 @@ impl AgentEngine {
 
         // Only base agents can set global secrets (prevents credential substitution attacks)
         if global && !self.agent.base {
-            return "Error: only base agents can set global secrets. Use scoped secrets or ask Hyde.".to_string();
+            return "Error: only base agents can set global secrets. Use scoped secrets or ask Architect.".to_string();
         }
 
         let result = if global {

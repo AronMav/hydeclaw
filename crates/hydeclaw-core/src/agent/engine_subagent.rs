@@ -8,16 +8,9 @@ use crate::agent::subagent_state;
 const SUBAGENT_CANCELLED: &str = "subagent cancelled";
 
 /// Tools denied to subagents by default (prevent recursive spawning, unsupervised writes, and dangerous operations).
-/// Tool management tools are included: subagents run on the parent engine (self.agent.base of the spawner),
-/// so the execution guard would still fire, but hiding them from the LLM context avoids confusing
-/// "requires base agent" errors inside subagent loops.
 pub(super) const SUBAGENT_DENIED_TOOLS: &[&str] = &[
     "subagent", "workspace_write", "workspace_edit", "workspace_delete",
     "workspace_rename", "cron", "secret_set", "process",
-    // Tool management — base-agent only; subagents should never attempt these
-    "tool_create", "tool_verify", "tool_disable", "tool_discover",
-    // Skill mutation — base-agent only (skill list/read is fine but blocked at dispatch anyway)
-    "skill",
 ];
 
 impl AgentEngine {
@@ -525,6 +518,57 @@ impl AgentEngine {
     }
 }
 
+// ── invite_agent handler ─────────────────────────────────────────────────────
+
+impl AgentEngine {
+    /// Internal tool: invite another agent into the current chat session.
+    pub(super) async fn handle_invite_agent(&self, args: &serde_json::Value) -> String {
+        let agent_name = match args.get("agent_name").and_then(|v| v.as_str()) {
+            Some(n) if !n.is_empty() => n,
+            _ => return "Error: 'agent_name' is required".to_string(),
+        };
+
+        if agent_name == self.agent.name {
+            return "Error: cannot invite yourself into your own session".to_string();
+        }
+
+        // Verify target agent exists in the agent_map
+        let agent_map = match &self.agent_map {
+            Some(m) => m,
+            None => return "Error: agent registry not available".to_string(),
+        };
+        {
+            let map = agent_map.read().await;
+            if !map.contains_key(agent_name) {
+                return format!("Error: agent '{}' not found. Use agents_list to see available agents.", agent_name);
+            }
+        }
+
+        // Get session_id from the processing context
+        let session_id = match *self.processing_session_id.lock().await {
+            Some(id) => id,
+            None => return "Error: no active session (invite_agent only works during chat processing)".to_string(),
+        };
+
+        // Add to session participants
+        match crate::db::sessions::add_participant(&self.db, session_id, agent_name).await {
+            Ok(participants) => {
+                // Broadcast join event to WebSocket (UI sidebar refresh + live notification)
+                self.broadcast_ui_event(serde_json::json!({
+                    "type": "agent_joined",
+                    "agent_name": agent_name,
+                    "session_id": session_id.to_string(),
+                    "invited_by": self.agent.name,
+                    "participants": participants,
+                }));
+
+                format!("{} has joined the conversation. You can now @-mention them to direct messages.", agent_name)
+            }
+            Err(e) => format!("Error adding participant: {}", e),
+        }
+    }
+}
+
 // ── code_exec handler ────────────────────────────────────────────────────────
 
 impl AgentEngine {
@@ -559,9 +603,7 @@ impl AgentEngine {
                 let mut out = result.stdout;
                 if !result.stderr.is_empty() { out.push_str("\n--- stderr ---\n"); out.push_str(&result.stderr); }
                 if out.is_empty() { out = format!("Exit code: {}", result.exit_code); }
-                let (redacted, rc) = crate::agent::pii::redact_code_output(&out);
-                if rc > 0 { tracing::warn!(redacted = rc, "code_exec sandbox output contained secrets — redacted"); }
-                redacted
+                out
             }
             Err(e) => format!("Error: {}", e),
         }
@@ -609,12 +651,7 @@ impl AgentEngine {
                     result.truncate(16000);
                     result.push_str("\n... (truncated)");
                 }
-                // Redact secrets from output (env vars, tokens, DB URLs)
-                let (redacted, redact_count) = crate::agent::pii::redact_code_output(&result);
-                if redact_count > 0 {
-                    tracing::warn!(redacted = redact_count, "code_exec output contained secrets — redacted");
-                }
-                redacted
+                result
             }
             Ok(Err(e)) => format!("Error executing on host: {}", e),
             Err(_) => "Error: host execution timed out (120s)".to_string(),
@@ -953,12 +990,8 @@ impl AgentEngine {
         if let Some(wd) = args.get("working_directory").and_then(|v| v.as_str()).filter(|d| !d.is_empty()) {
             cmd.current_dir(wd);
         }
-        let log_file_clone = match log_file_std.try_clone() {
-            Ok(f) => f,
-            Err(e) => return format!("Error cloning log file handle: {}", e),
-        };
         let mut child = match cmd
-            .stdout(std::process::Stdio::from(log_file_clone))
+            .stdout(std::process::Stdio::from(log_file_std.try_clone().expect("clone stdout")))
             .stderr(std::process::Stdio::from(log_file_std))
             .spawn()
         {
@@ -1173,12 +1206,6 @@ mod tests {
         assert!(SUBAGENT_DENIED_TOOLS.contains(&"cron"));
         assert!(SUBAGENT_DENIED_TOOLS.contains(&"secret_set"));
         assert!(SUBAGENT_DENIED_TOOLS.contains(&"process"));
-        // Tool management — must never appear in subagent LLM context
-        assert!(SUBAGENT_DENIED_TOOLS.contains(&"tool_create"));
-        assert!(SUBAGENT_DENIED_TOOLS.contains(&"tool_verify"));
-        assert!(SUBAGENT_DENIED_TOOLS.contains(&"tool_disable"));
-        assert!(SUBAGENT_DENIED_TOOLS.contains(&"tool_discover"));
-        assert!(SUBAGENT_DENIED_TOOLS.contains(&"skill"));
     }
 
     #[test]
