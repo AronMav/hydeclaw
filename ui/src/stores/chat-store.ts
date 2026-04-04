@@ -150,6 +150,7 @@ function emptyAgentState(): AgentState {
 /** Shared partial for resetting stream-related state to idle. */
 const IDLE_STREAM_RESET = {
   streamStatus: "idle" as const,
+  streamError: null as string | null,
   pendingTargetAgent: null,
   turnLimitMessage: null,
 };
@@ -874,11 +875,7 @@ export const useChatStore = create<ChatStore>()(
                     turnLimitMessage: null,
                   });
                 } else if (!inTurnLoop) {
-                  update(agent, {
-                    streamStatus: "idle",
-                    streamError: null,
-                    pendingTargetAgent: null,
-                  });
+                  update(agent, IDLE_STREAM_RESET);
                 }
               }
               break;
@@ -1012,6 +1009,7 @@ export const useChatStore = create<ChatStore>()(
             liveMessages: prevState?.liveMessages ?? [],
             viewMode: prevState?.viewMode ?? "live",
             streamStatus: prevState?.streamStatus ?? "idle",
+            forceNewSession: false,
           });
           set({ currentAgent: name });
           saveLastSession(name, activeSessionId);
@@ -1033,7 +1031,6 @@ export const useChatStore = create<ChatStore>()(
         activeSessionId: null,
         viewMode: "live",
         liveMessages: [],
-        streamError: null,
         forceNewSession: true,
       });
       set({ currentAgent: name });
@@ -1100,7 +1097,6 @@ export const useChatStore = create<ChatStore>()(
         activeSessionId: null,
         viewMode: "live",
         liveMessages: [],
-        streamError: null,
         forceNewSession: true,
       });
       saveLastSession(agent);
@@ -1301,7 +1297,7 @@ export const useChatStore = create<ChatStore>()(
         agentAbortControllers[agent] = null;
         update(agent, {
           activeSessionId: null, viewMode: "live", liveMessages: [],
-          ...IDLE_STREAM_RESET, streamError: null, forceNewSession: true,
+          ...IDLE_STREAM_RESET, forceNewSession: true,
         });
         saveLastSession(agent);
       }
@@ -1316,7 +1312,7 @@ export const useChatStore = create<ChatStore>()(
       agentAbortControllers[agent] = null;
       update(agent, {
         activeSessionId: null, viewMode: "live", liveMessages: [],
-        ...IDLE_STREAM_RESET, streamError: null, forceNewSession: true,
+        ...IDLE_STREAM_RESET, forceNewSession: true,
       });
       saveLastSession(agent);
       queryClient.invalidateQueries({ queryKey: qk.sessions(agent) });
