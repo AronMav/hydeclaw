@@ -854,6 +854,7 @@ export const useChatStore = create<ChatStore>()(
                 role: "assistant",
                 parts: syncParts.length > 0 ? syncParts : [{ type: "text", text: "" }],
                 createdAt: assistantCreatedAt,
+                agentId: currentRespondingAgent ?? undefined,
               };
 
               // Replace live messages: keep user messages + add sync assistant message
@@ -1076,11 +1077,7 @@ export const useChatStore = create<ChatStore>()(
       // Switch to the agent and select the session
       set({ currentAgent: agent });
       ensure(agent);
-      // Abort any active stream for this agent
-      if (agentAbortControllers[agent]) {
-        agentAbortControllers[agent].abort();
-        agentAbortControllers[agent] = null;
-      }
+      abortActiveStream(agent);
       update(agent, {
         ...IDLE_STREAM_RESET,
         activeSessionId: sessionId,
