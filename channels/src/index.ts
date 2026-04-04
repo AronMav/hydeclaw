@@ -78,7 +78,7 @@ const activeSessions = new Map<string, { controller: AbortController; ch: DbChan
 // FIX #1: Guard against concurrent reconcile runs
 let reconciling = false;
 
-function startChannel(ch: DbChannel, envConfig: ReturnType<typeof buildEnvConfig>) {
+async function startChannel(ch: DbChannel, envConfig: ReturnType<typeof buildEnvConfig>) {
   const credential = extractCredential(ch);
   if (!credential) {
     console.error(`[${ch.agent_name}] no credential in config for ${ch.channel_type} '${ch.display_name}', skipping`);
@@ -174,7 +174,7 @@ async function doReconcile(envConfig: ReturnType<typeof buildEnvConfig>) {
         // FIX #1: Stop first, wait a tick for cleanup, then start
         stopChannel(ch.id);
         await new Promise(r => setTimeout(r, 100)); // let abort propagate
-        if (startChannel(ch, envConfig)) {
+        if (await startChannel(ch, envConfig)) {
           await ackChannelStatus(httpBase, envConfig.authToken, ch, "running");
         }
       }
