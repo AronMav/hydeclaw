@@ -822,9 +822,21 @@ pub async fn resolve_provider_for_agent(
         }
     }
 
-    // Legacy fallback — kept for backward compatibility during migration window.
-    // NOTE: vault-scoped keys (PROVIDER_CREDENTIALS) are not consulted here.
-    // This path is only reached when provider_connection is not set and DB lookup fails.
+    // Legacy fallback: try DB provider lookup by legacy provider name before compile-time table.
+    // This enables dynamically created providers (via UI/API) to work even without provider_connection.
+    if !agent.provider.is_empty() {
+        if let Ok(Some(conn)) = crate::db::providers::get_provider_by_name(db, &agent.provider).await {
+            if conn.category == "text" {
+                tracing::debug!(agent = %agent_name, provider = %agent.provider, "resolved legacy provider via DB");
+                let model_override = if agent.model.is_empty() { None } else { Some(agent.model.as_str()) };
+                return create_provider_from_connection(
+                    &conn, model_override, temperature, max_tokens, secrets, sandbox, agent_name, workspace_dir, base,
+                );
+            }
+        }
+    }
+
+    // Final fallback — compile-time PROVIDER_TYPES table.
     create_provider(
         &agent.provider,
         &agent.model,
