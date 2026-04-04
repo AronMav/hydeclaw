@@ -7,5 +7,5 @@ parameters:
     type: string
     required: true
     location: path
-    description: "IANA timezone: UTC, America/New_York, Asia/Tokyo, Europe/Moscow, UTC"
+    description: "IANA timezone: Europe/Samara, America/New_York, Asia/Tokyo, Europe/Moscow, UTC"
 status: verified

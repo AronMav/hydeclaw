@@ -33,5 +33,5 @@ parameters:
     required: false
     location: body
     description: "Timezone"
-    default: "UTC"
+    default: "Europe/Samara"
 status: draft

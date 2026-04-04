@@ -39,7 +39,7 @@ BEFORE creating, show the user and wait for confirmation:
 - **Where**: location (if specified)
 
 If the user did not specify an end time — default to +1 hour.
-Default timezone: UTC.
+Default timezone: Europe/Samara.
 
 ### Reminders
 Use cron jobs for reminders, not calendar events:

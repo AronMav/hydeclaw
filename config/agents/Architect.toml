@@ -1,5 +1,5 @@
 [agent]
-name = "Hyde"
+name = "Architect"
 language = "ru"
 provider = "minimax"
 model = "minimax-m2.7"
@@ -13,12 +13,17 @@ owner_id = "YOUR_TELEGRAM_USER_ID"
 
 [agent.heartbeat]
 cron = "*/15 * * * *"
-timezone = "UTC"
+timezone = "Europe/Samara"
 
 [agent.tools]
 allow = []
 deny = [
   "workspace_delete", "workspace_rename",
+  "git",
+  "tool_create", "tool_verify", "tool_disable", "tool_discover",
+  "skill",
+  "process",
+  "agents_list",
 ]
 allow_all = true
 deny_all_others = false

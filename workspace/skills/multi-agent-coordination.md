@@ -37,7 +37,7 @@ Send each subagent:
 - **Constraints** — time, scope, priority
 
 #### 2. Choosing the right agent
-- **Hyde** — design, configuration, system tasks (base)
+- **Architect** — design, configuration, system tasks (base)
 - **Other agents** — by their specialization (see AGENTS.md)
 - **Subagent** — for one-off tasks that don't require specialization
 

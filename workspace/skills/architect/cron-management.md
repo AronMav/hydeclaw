@@ -19,21 +19,21 @@ Use the `cron` tool with action parameter.
 ## Create task
 
 ```
-cron(action="add", agent="AgentName", name="daily-report", cron="0 9 * * *", timezone="UTC", message="Generate daily report and send via Telegram")
+cron(action="add", agent="AgentName", name="daily-report", cron="0 9 * * *", timezone="Europe/Samara", message="Generate daily report and send via Telegram")
 ```
 
 ## Critical rules
 
 ### Agent assignment
 
-Tasks execute in the context of the **assigned agent**. If a task must send Telegram messages — assign it to the agent that HAS a Telegram channel, NOT to Hyde.
+Tasks execute in the context of the **assigned agent**. If a task must send Telegram messages — assign it to the agent that HAS a Telegram channel, NOT to Architect.
 
 ### Cron context has NO channel
 
 Cron sessions run with `channel: "cron"`. There is NO Telegram/Discord context. To send a proactive message, the prompt must explicitly use `session(action="send")`:
 
 ```
-session(action="send", message="...", user_id="OWNER_ID", channel="telegram")
+session(action="send", message="...", user_id="388443751", channel="telegram")
 ```
 
 ### owner_id is REQUIRED
@@ -51,7 +51,7 @@ If `None` — ask the user for their Telegram chat_id first.
 ### Prompt must be explicit
 
 BAD: "Check portfolio and tell the user."
-GOOD: "Check BCS portfolio (bcs_portfolio tool). If total_rub > 555000, use session(action='send', user_id='OWNER_ID', channel='telegram') to notify."
+GOOD: "Check BCS portfolio (bcs_portfolio tool). If total_rub > 555000, use session(action='send', user_id='388443751', channel='telegram') to notify."
 
 ## Other actions
 
