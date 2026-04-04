@@ -2,7 +2,7 @@
 
 # HydeClaw
 
-**Self-hosted AI gateway. Multi-agent orchestration. Single binary.**
+**Self-hosted AI gateway for personal agents**
 
 [![CI](https://img.shields.io/github/actions/workflow/status/AronMav/hydeclaw/ci.yml?branch=master&label=CI)](https://github.com/AronMav/hydeclaw/actions)
 [![Release](https://img.shields.io/github/v/release/AronMav/hydeclaw)](https://github.com/AronMav/hydeclaw/releases)
@@ -12,11 +12,11 @@
 
 </div>
 
-HydeClaw is a self-hosted AI gateway for running personal AI agents. A single native Rust binary handles HTTP API, multi-agent orchestration, LLM calls, tool execution, channel bridging, long-term memory, and encrypted secrets.
+HydeClaw is a self-hosted AI gateway for running personal AI agents. The Rust core orchestrates multi-agent workflows, LLM calls, tool execution, channel bridging, long-term memory, and encrypted secrets. Managed child processes handle chat channels (TypeScript/Bun) and media processing (Python/FastAPI). Infrastructure services run via Docker Compose.
 
 <div align="center">
 
-**15 LLM Providers** &nbsp;&bull;&nbsp; **6 Chat Channels** &nbsp;&bull;&nbsp; **~26 MB Binary** &nbsp;&bull;&nbsp; **~40 MB RAM Idle**
+**15 LLM Providers** &bull; **6 Chat Channels** &bull; **3 Rust Binaries + 2 Managed Processes**
 
 </div>
 
@@ -64,7 +64,7 @@ curl -X POST http://localhost:18789/api/agents \
 
 ## Why HydeClaw?
 
-- **Single binary** -- no microservices, no Kubernetes, no complex orchestration. One `cargo build`, one `scp`, one `systemctl restart`.
+- **Minimal deployment** -- three Rust binaries, two managed processes, one `setup.sh`. No Kubernetes, no microservice mesh. Deploy with `scp` + `systemctl restart`.
 - **Privacy-first** -- runs entirely on your hardware. No data leaves your network unless you configure an external LLM provider.
 - **No vendor lock-in** -- 15 built-in LLM providers + any OpenAI-compatible API. Switch providers by changing one line in a TOML file.
 - **Production-ready** -- encrypted secrets vault, SSRF protection, PII redaction, sandboxed code execution, tool approval workflows.
@@ -110,6 +110,8 @@ Provider registry with active capability mapping (LLM, STT, TTS, Vision, ImageGe
 
 ## Architecture
 
+HydeClaw is a polyglot system with a Rust core. In production it runs as **3 Rust binaries + 2 managed child processes + Docker infrastructure**.
+
 ```mermaid
 graph TD
     clients["Browser / Telegram / Discord / ..."]
@@ -129,25 +131,59 @@ graph TD
     core -->|"HTTPS"| llm["LLM Providers\nOpenAI / Anthropic / Google\nOllama / DeepSeek / ..."]
     core -->|"Docker API"| containers["Docker Containers\nMCP servers / code_exec sandbox"]
 
-    watchdog["hydeclaw-watchdog"] -.->|"health checks"| core
-    worker["hydeclaw-memory-worker"] -.-> pg
+    watchdog["hydeclaw-watchdog (Rust)"] -.->|"health checks"| core
+    worker["hydeclaw-memory-worker (Rust)"] -.-> pg
     worker -.-> toolgate
 ```
 
 <details>
 <summary><strong>Component details</strong></summary>
 
-| Component | Technology | Role |
-|-----------|-----------|------|
-| **hydeclaw-core** | Rust + Axum + Tokio | HTTP API, agent lifecycle, LLM calls, tool dispatch, memory, secrets, scheduler |
-| **hydeclaw-watchdog** | Rust (separate binary) | Health monitoring with channel-based alerting |
-| **hydeclaw-memory-worker** | Rust (separate binary) | Background embedding and reindex tasks |
-| **channels/** | TypeScript / Bun | Telegram, Discord, Matrix, IRC, Slack, WhatsApp adapters |
-| **toolgate/** | Python / FastAPI | STT, TTS, Vision, Image Generation, Embeddings |
-| **ui/** | Next.js 16 + React 19 | Web dashboard (static build, served by nginx) |
-| **PostgreSQL** | 17 + pgvector | Sessions, messages, memory, graph, cron, secrets |
+| Component | Technology | Runtime | Role |
+|-----------|-----------|---------|------|
+| **hydeclaw-core** | Rust + Axum + Tokio | Systemd service | HTTP API, agent lifecycle, LLM calls, tool dispatch, memory, secrets, scheduler. Spawns and supervises channels and toolgate as child processes. |
+| **hydeclaw-watchdog** | Rust (separate binary) | Systemd service | Health monitoring of core, postgres, channels, toolgate; channel-based alerting; auto-restart on failures. |
+| **hydeclaw-memory-worker** | Rust (separate binary) | Systemd service | Background embedding reindex tasks via PostgreSQL task queue. |
+| **channels/** | TypeScript / Bun | Managed child process | Telegram, Discord, Matrix, IRC, Slack, WhatsApp adapters. Started by core, communicates via internal WebSocket. |
+| **toolgate/** | Python / FastAPI | Managed child process | STT, TTS, Vision, Image Generation, Embeddings. Started by core with uvicorn (single process, asyncio loop). |
+| **ui/** | Next.js 16 + React 19 | Static build (nginx) | Web dashboard. Pre-built to static files, served by core's built-in static file handler. |
+| **PostgreSQL** | 17 + pgvector + Apache AGE | Docker container | Sessions, messages, memory, knowledge graph, cron, secrets. |
+| **SearXNG** | Latest | Docker container | Meta-search engine for web search tools. |
+| **browser-renderer** | Headless browser | Docker container | Browser automation and page rendering. |
+| **MCP servers** | Various | Docker (on-demand) | 14 MCP protocol servers, started by core via Docker API as needed. |
+| **Sandbox** | Docker | Docker (on-demand) | Isolated code execution for non-base agents. |
 
-Infrastructure services (PostgreSQL, SearXNG, browser-renderer) run via `docker-compose`. MCP servers are started on-demand by core via the Docker API (Bollard).
+</details>
+
+<details>
+<summary><strong>What runs in production</strong></summary>
+
+**Systemd services (3 Rust binaries):**
+
+| Service | Binary | Description |
+|---------|--------|-------------|
+| `hydeclaw-core` | `hydeclaw-core-{arch}` | Main gateway. Spawns channels and toolgate as child processes. |
+| `hydeclaw-watchdog` | `hydeclaw-watchdog-{arch}` | Health monitor (optional, depends on core). |
+| `hydeclaw-memory-worker` | `hydeclaw-memory-worker-{arch}` | Background tasks (optional, depends on core). |
+
+**Managed child processes (started by core):**
+
+| Process | Runtime | Port | Description |
+|---------|---------|------|-------------|
+| channels | Bun | 3100 | Chat channel adapters |
+| toolgate | Python/uvicorn | 9011 | Media processing hub |
+
+**Docker containers (always running):**
+
+| Container | Port | Description |
+|-----------|------|-------------|
+| postgres | 5432 | PostgreSQL 17 + pgvector |
+| searxng | 8080 | Meta-search engine |
+| browser-renderer | 9020 | Headless browser |
+
+**Docker containers (on-demand):**
+
+14 MCP servers (ports 9003-9049) + sandbox containers for code execution -- started and stopped by core via the Docker API (Bollard).
 
 </details>
 
@@ -282,7 +318,7 @@ hydeclaw/
 - Node.js 22+ (for UI build)
 - Docker (for PostgreSQL + optional services)
 - Bun 1.x (for channel adapters)
-- Python 3.11+ (for toolgate media hub)
+- Python 3 (for toolgate media hub)
 - [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) (only for ARM64 cross-compilation)
 
 </details>
