@@ -17,13 +17,16 @@ pub struct AppConfig {
     #[serde(default)]
     pub subagents: SubagentsConfig,
     #[serde(default)]
-    #[allow(dead_code)] // Deserialized from TOML, reserved for discussion feature
+    #[allow(dead_code)]
     pub discussion: DiscussionConfig,
     #[serde(default)]
+    #[allow(dead_code)]
     pub mcp: HashMap<String, McpConfig>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub memory: crate::memory::MemoryConfig,
     #[serde(default)]
+    #[allow(dead_code)]
     pub sandbox: SandboxConfig,
     #[serde(default)]
     pub docker: DockerConfig,
@@ -32,6 +35,9 @@ pub struct AppConfig {
     /// Tailscale Funnel: expose gateway via Tailscale serve/funnel.
     #[serde(default)]
     pub tailscale: TailscaleConfig,
+    /// OpenTelemetry trace export (requires `otel` feature).
+    #[serde(default)]
+    pub otel: OtelConfig,
     /// Native child processes managed by Core (channels, toolgate).
     #[serde(default)]
     pub managed_process: Vec<crate::process_manager::ManagedProcessConfig>,
@@ -39,6 +45,20 @@ pub struct AppConfig {
     #[serde(default)]
     pub agent: AgentSectionConfig,
 }
+
+/// OpenTelemetry configuration.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[allow(dead_code)] // fields read only with `otel` feature
+pub struct OtelConfig {
+    /// Enable OTEL trace export. Also set OTEL_EXPORTER_OTLP_ENDPOINT env var.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Service name reported to the collector (default: "hydeclaw-core").
+    #[serde(default = "default_otel_service")]
+    pub service_name: String,
+}
+
+fn default_otel_service() -> String { "hydeclaw-core".to_string() }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GatewayConfig {
@@ -118,6 +138,7 @@ impl Default for TypingConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Deserialized from TOML; fields used for subagent configuration
 pub struct SubagentsConfig {
     #[serde(default = "default_subagents_enabled")]
     pub enabled: bool,
@@ -131,7 +152,6 @@ pub struct SubagentsConfig {
     pub docker_timeout: String,
     #[serde(default = "default_in_process_timeout")]
     pub in_process_timeout: String,
-    #[allow(dead_code)] // Deserialized from TOML, reserved for Docker subagent image
     pub core_image: Option<String>,
 }
 
@@ -199,6 +219,7 @@ impl Default for DiscussionConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Deserialized from TOML; protocol field reserved for MCP/HTTP routing
 pub struct ToolConfig {
     #[serde(rename = "type")]
     pub tool_type: String,
@@ -206,9 +227,7 @@ pub struct ToolConfig {
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: u32,
     pub healthcheck: Option<String>,
-    #[allow(dead_code)] // Deserialized from TOML, reserved for tool auth
     pub api_key_env: Option<String>,
-    #[allow(dead_code)] // Deserialized from TOML, reserved for MCP/HTTP routing
     pub protocol: Option<String>,
     #[serde(default)]
     pub depends_on: Vec<String>,
@@ -219,6 +238,7 @@ pub struct ToolConfig {
 fn default_max_concurrent() -> u32 { 5 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[allow(dead_code)] // Deserialized from TOML; protocol field reserved for MCP/HTTP routing
 pub struct McpConfig {
     /// Direct URL. If set, connects without Docker (container/port ignored).
     pub url: Option<String>,
@@ -324,14 +344,9 @@ pub struct ProviderRouteConfig {
     /// Cooldown duration in seconds after provider failure (default: 60).
     #[serde(default = "default_cooldown_secs")]
     pub cooldown_secs: u64,
-    /// Maximum failover attempts before giving up (default: 3).
-    /// After exhausting this many fallback providers, the last error is returned.
-    #[serde(default = "default_max_failover_attempts")]
-    pub max_failover_attempts: u32,
 }
 
 fn default_cooldown_secs() -> u64 { 60 }
-fn default_max_failover_attempts() -> u32 { 3 }
 
 fn default_condition() -> String { "default".to_string() }
 
@@ -486,8 +501,6 @@ pub struct AgentToolPolicy {
 
 /// Toggle switches for internal tool groups.
 /// Disabling a group removes those tools from LLM context entirely.
-/// Supports both legacy named fields (git, tool_management, etc.) and
-/// arbitrary named groups via the `extra` map for extensibility.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ToolGroups {
     /// git_status, git_diff, git_commit, git_push, git_pull, git_ssh_key
@@ -502,9 +515,6 @@ pub struct ToolGroups {
     /// sessions_list, sessions_history, session_search, session_context, session_send, session_export
     #[serde(default = "default_true")]
     pub session_tools: bool,
-    /// Dynamic tool groups — any name can be toggled via TOML.
-    #[serde(flatten, default)]
-    pub extra: std::collections::HashMap<String, bool>,
 }
 
 impl Default for ToolGroups {
@@ -514,21 +524,6 @@ impl Default for ToolGroups {
             tool_management: true,
             skill_editing: true,
             session_tools: true,
-            extra: std::collections::HashMap::new(),
-        }
-    }
-}
-
-impl ToolGroups {
-    /// Check if a named group is enabled. Known groups use struct fields;
-    /// unknown groups check the `extra` map (default: enabled).
-    pub fn is_enabled(&self, group: &str) -> bool {
-        match group {
-            "git" => self.git,
-            "tool_management" => self.tool_management,
-            "skill_editing" => self.skill_editing,
-            "session_tools" => self.session_tools,
-            other => self.extra.get(other).copied().unwrap_or(true),
         }
     }
 }
@@ -1103,7 +1098,6 @@ model = "m2.5"
                     prompt_cache: false,
                     max_tokens: None,
                     cooldown_secs: 60,
-                    max_failover_attempts: 3,
                 }],
                 icon: None,
                 approval: None,
@@ -1138,7 +1132,7 @@ model = "m2.5"
                 access: None,
                 heartbeat: Some(HeartbeatConfig {
                     cron: "0 */30 10-19 * * *".into(),
-                    timezone: Some("UTC".into()),
+                    timezone: Some("Europe/Samara".into()),
                     announce_to: Some("telegram".into()),
                 }),
                 tools: Some(AgentToolPolicy {
@@ -1151,7 +1145,6 @@ model = "m2.5"
                         tool_management: true,
                         skill_editing: true,
                         session_tools: false,
-                        extra: std::collections::HashMap::new(),
                     },
                 }),
                 compaction: None,

@@ -69,17 +69,17 @@ fn detect_fts_language(lang: &str) -> &'static str {
     }
 }
 
-/// Read language from Hyde agent TOML.
+/// Read language from Architect agent TOML.
 ///
-/// Hyde is the designated system-configuration agent — its `[agent] language`
+/// Architect is the designated system-configuration agent — its `[agent] language`
 /// field sets the deployment locale (e.g. "ru", "en"). The memory worker reads this
 /// to select the correct PostgreSQL FTS dictionary (e.g. 'russian', 'english') for
 /// `to_tsvector()` so full-text search matches the actual content language.
-fn read_base_agent_language(config_path: &str) -> String {
+fn read_architect_language(config_path: &str) -> String {
     let config_dir = std::path::Path::new(config_path)
         .parent()
         .unwrap_or(std::path::Path::new("config"));
-    let agent_path = config_dir.join("agents/Hyde.toml");
+    let agent_path = config_dir.join("agents/Architect.toml");
     if let Ok(text) = std::fs::read_to_string(&agent_path) {
         #[derive(Deserialize, Default)]
         struct AgentSection {
@@ -104,7 +104,7 @@ pub fn load_config(path: &str) -> anyhow::Result<WorkerConfig> {
     let text = std::fs::read_to_string(path)?;
     let cfg: AppConfigPartial = toml::from_str(&text)?;
     let db_url = std::env::var("DATABASE_URL").unwrap_or(cfg.database.url);
-    let fts_language = read_base_agent_language(path);
+    let fts_language = read_architect_language(path);
     let toolgate_url = std::env::var("TOOLGATE_URL")
         .unwrap_or_else(|_| "http://localhost:9011".to_string());
 
