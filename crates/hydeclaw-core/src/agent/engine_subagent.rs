@@ -953,8 +953,12 @@ impl AgentEngine {
         if let Some(wd) = args.get("working_directory").and_then(|v| v.as_str()).filter(|d| !d.is_empty()) {
             cmd.current_dir(wd);
         }
+        let log_file_clone = match log_file_std.try_clone() {
+            Ok(f) => f,
+            Err(e) => return format!("Error cloning log file handle: {}", e),
+        };
         let mut child = match cmd
-            .stdout(std::process::Stdio::from(log_file_std.try_clone().expect("clone stdout")))
+            .stdout(std::process::Stdio::from(log_file_clone))
             .stderr(std::process::Stdio::from(log_file_std))
             .spawn()
         {

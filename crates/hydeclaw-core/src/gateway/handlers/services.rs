@@ -393,7 +393,9 @@ pub(crate) async fn api_service_action(
                 "stderr": stderr,
             });
             if let Some(h) = health {
-                resp.as_object_mut().expect("resp is always an object (constructed with json!({}))").insert("health_check".to_string(), h);
+                if let Some(obj) = resp.as_object_mut() {
+                    obj.insert("health_check".to_string(), h);
+                }
             }
             (
                 if ok { StatusCode::OK } else { StatusCode::INTERNAL_SERVER_ERROR },

@@ -504,10 +504,12 @@ impl AgentEngine {
                 }
             });
             let desc = if self.agent.base {
-                props.as_object_mut().expect("props is always an object (constructed inline)").insert("global".to_string(), serde_json::json!({
-                    "type": "boolean",
-                    "description": "If true, store as global (available to all agents). Default: false (scoped to current agent)."
-                }));
+                if let Some(obj) = props.as_object_mut() {
+                    obj.insert("global".to_string(), serde_json::json!({
+                        "type": "boolean",
+                        "description": "If true, store as global (available to all agents). Default: false (scoped to current agent)."
+                    }));
+                }
                 "Store an API key or secret in the encrypted vault. Available as env var for YAML tools (auth.key). Set global=true for all agents. NEVER repeat the secret value in your response."
             } else {
                 "Store an API key or secret in the encrypted vault, scoped to this agent. Available as env var for YAML tools (auth.key). NEVER repeat the secret value in your response."

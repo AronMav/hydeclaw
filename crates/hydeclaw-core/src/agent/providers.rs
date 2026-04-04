@@ -875,7 +875,7 @@ impl RoutingProvider {
         &self,
         messages: &[hydeclaw_types::Message],
         tools: &[hydeclaw_types::ToolDefinition],
-    ) -> &RouteEntry {
+    ) -> Result<&RouteEntry> {
         let last_user_msg = messages
             .iter()
             .rev()
@@ -900,14 +900,14 @@ impl RoutingProvider {
             };
             if matches {
                 tracing::debug!(condition = %entry.condition, "routing condition matched");
-                return entry;
+                return Ok(entry);
             }
         }
 
-        // Last resort: return last route (or first if routes is empty — shouldn't happen)
+        // Last resort: return last route (or first if routes is empty)
         self.routes.last()
             .or_else(|| self.routes.first())
-            .expect("RoutingProvider has no routes")
+            .ok_or_else(|| anyhow::anyhow!("RoutingProvider has no routes configured"))
     }
 
     /// Check if a provider is on cooldown.
@@ -1027,7 +1027,7 @@ impl LlmProvider for RoutingProvider {
         messages: &[hydeclaw_types::Message],
         tools: &[hydeclaw_types::ToolDefinition],
     ) -> Result<hydeclaw_types::LlmResponse> {
-        let primary = self.select_route(messages, tools);
+        let primary = self.select_route(messages, tools)?;
         let primary_name = primary.provider.name().to_string();
         let primary_cooldown = primary.cooldown_duration;
 
@@ -1111,7 +1111,7 @@ impl LlmProvider for RoutingProvider {
         tools: &[hydeclaw_types::ToolDefinition],
         chunk_tx: tokio::sync::mpsc::UnboundedSender<String>,
     ) -> Result<hydeclaw_types::LlmResponse> {
-        let primary = self.select_route(messages, tools);
+        let primary = self.select_route(messages, tools)?;
         let primary_name = primary.provider.name().to_string();
         let primary_cooldown = primary.cooldown_duration;
 
