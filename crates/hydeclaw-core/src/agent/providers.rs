@@ -114,23 +114,18 @@ impl ModelOverride {
     }
 }
 
-/// Known OpenAI-compatible providers: (name, default_base_url, api_key_env).
-/// base_url is the base URL without path — chat path is resolved via `resolve_chat_url()`.
-pub(crate) const OPENAI_COMPAT_PROVIDERS: &[(&str, &str, &str)] = &[
-    ("minimax",    "https://api.minimax.io",         "MINIMAX_API_KEY"),
-    ("deepseek",   "https://api.deepseek.com",       "DEEPSEEK_API_KEY"),
-    ("groq",       "https://api.groq.com/openai",    "GROQ_API_KEY"),
-    ("together",   "https://api.together.xyz",       "TOGETHER_API_KEY"),
-    ("openrouter", "https://openrouter.ai/api",      "OPENROUTER_API_KEY"),
-    ("mistral",    "https://api.mistral.ai",         "MISTRAL_API_KEY"),
-    ("xai",        "https://api.x.ai",               "XAI_API_KEY"),
-    ("perplexity", "https://api.perplexity.ai",      "PERPLEXITY_API_KEY"),
-];
+// OPENAI_COMPAT_PROVIDERS removed — replaced by PROVIDER_TYPES registry below.
 
 /// Create a provider from agent config.
 /// API keys are read from SecretsManager on each LLM call (hot-reloadable).
 /// `sandbox` + `agent_name` + `workspace_dir` are required for CLI providers (claude-cli, gemini-cli)
 /// that execute inside the agent's Docker container.
+///
+/// Provider resolution order:
+/// 1. Native API providers (anthropic, google) — dedicated implementations
+/// 2. CLI providers (claude-cli, gemini-cli) — Docker sandbox subprocess
+/// 3. PROVIDER_TYPES registry — any known OpenAI-compatible provider
+/// 4. Fallback — treat as generic OpenAI-compatible with warning
 #[allow(clippy::too_many_arguments)]
 pub fn create_provider(
     provider_name: &str,
@@ -143,81 +138,61 @@ pub fn create_provider(
     workspace_dir: &str,
     base: bool,
 ) -> Arc<dyn LlmProvider> {
+    // Native API providers with dedicated implementations
     match provider_name {
-        "anthropic" => Arc::new(AnthropicProvider::new(
-            model.to_string(),
-            temperature,
-            max_tokens,
-            secrets,
+        "anthropic" => return Arc::new(AnthropicProvider::new(
+            model.to_string(), temperature, max_tokens, secrets,
         )),
-        "google" | "gemini" => Arc::new(GoogleProvider::new(
-            model.to_string(),
-            temperature,
-            max_tokens,
-            secrets,
+        "google" | "gemini" => return Arc::new(GoogleProvider::new(
+            model.to_string(), temperature, max_tokens, secrets,
         )),
-        "claude-cli" => Arc::new(ClaudeCliProvider::new(
+        "claude-cli" => return Arc::new(ClaudeCliProvider::new(
             "claude-cli", cli_backend::default_claude_backend(), model.to_string(), sandbox, agent_name.to_string(), workspace_dir.to_string(), base,
         )),
-        "gemini-cli" => Arc::new(GeminiCliProvider::new(
+        "gemini-cli" => return Arc::new(GeminiCliProvider::new(
             "gemini-cli", cli_backend::default_gemini_backend(), model.to_string(), sandbox, agent_name.to_string(), workspace_dir.to_string(), base,
         )),
-        "openai" => {
-            let base = std::env::var("OPENAI_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com".to_string());
-            let url = resolve_chat_url("openai", &base);
-            Arc::new(OpenAiCompatibleProvider::new(
-                "openai",
-                &url,
-                "OPENAI_API_KEY",
-                model.to_string(),
-                temperature,
-                max_tokens,
-                secrets,
-            ))
-        }
-        "ollama" => {
-            // Default URL used when OLLAMA_URL secret is not set
-            let fallback = std::env::var("OLLAMA_URL")
-                .unwrap_or_else(|_| "http://localhost:11434".to_string());
-            let url = resolve_chat_url("ollama", &fallback);
-            Arc::new(OpenAiCompatibleProvider::new(
-                "ollama",
-                &url,
-                "OLLAMA_API_KEY",
-                model.to_string(),
-                temperature,
-                max_tokens,
-                secrets,
-            ).with_base_url_env("OLLAMA_URL", "/v1/chat/completions"))
-        }
-        other => {
-            // Check known OpenAI-compatible providers
-            if let Some((_, base_url, key_env)) = OPENAI_COMPAT_PROVIDERS.iter().find(|(n, _, _)| *n == other) {
-                let url = resolve_chat_url(other, base_url);
-                return Arc::new(OpenAiCompatibleProvider::new(
-                    other,
-                    &url,
-                    key_env,
-                    model.to_string(),
-                    temperature,
-                    max_tokens,
-                    secrets,
-                ));
-            }
-            tracing::warn!(provider = %other, "unknown provider, defaulting to minimax");
-            let url = resolve_chat_url("minimax", "https://api.minimax.io");
-            Arc::new(OpenAiCompatibleProvider::new(
-                "minimax",
-                &url,
-                "MINIMAX_API_KEY",
-                model.to_string(),
-                temperature,
-                max_tokens,
-                secrets,
-            ))
-        }
+        _ => {}
     }
+
+    // Registry lookup: resolve via PROVIDER_TYPES metadata table
+    if let Some(meta) = PROVIDER_TYPES.iter().find(|pt| pt.id == provider_name) {
+        let base_url = if provider_name == "openai" {
+            std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| meta.default_base_url.to_string())
+        } else if provider_name == "ollama" {
+            std::env::var("OLLAMA_URL").unwrap_or_else(|_| meta.default_base_url.to_string())
+        } else {
+            meta.default_base_url.to_string()
+        };
+        let url = resolve_chat_url(provider_name, &base_url);
+        let provider = OpenAiCompatibleProvider::new(
+            provider_name, &url, meta.default_secret_name,
+            model.to_string(), temperature, max_tokens, secrets,
+        );
+        // Ollama supports runtime base URL override via secret
+        if provider_name == "ollama" {
+            return Arc::new(provider.with_base_url_env("OLLAMA_URL", "/v1/chat/completions"));
+        }
+        return Arc::new(provider);
+    }
+
+    // Unknown provider — list available providers in error
+    let available: Vec<&str> = std::iter::once("anthropic")
+        .chain(std::iter::once("google"))
+        .chain(std::iter::once("claude-cli"))
+        .chain(std::iter::once("gemini-cli"))
+        .chain(PROVIDER_TYPES.iter().map(|pt| pt.id))
+        .collect();
+    tracing::warn!(
+        provider = %provider_name,
+        available = %available.join(", "),
+        "unknown provider, falling back to openai-compatible"
+    );
+    let url = resolve_chat_url(provider_name, "");
+    Arc::new(OpenAiCompatibleProvider::new(
+        provider_name, &url, "API_KEY",
+        model.to_string(), temperature, max_tokens, secrets,
+    ))
 }
 
 /// Build a provider from a routing rule entry, falling back to env-based defaults.
@@ -261,43 +236,26 @@ pub fn create_provider_from_route(
         _ => {}
     }
 
-    let (url, api_key_name) = match route.provider.as_str() {
-        "openai" => {
-            let default_base = std::env::var("OPENAI_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com".to_string());
-            let base = route.base_url.clone().unwrap_or(default_base);
-            let url = resolve_chat_url("openai", &base);
-            (
-                url,
-                route.api_key_env.clone().unwrap_or_else(|| "OPENAI_API_KEY".to_string()),
-            )
-        }
-        "ollama" => {
-            let default_host = std::env::var("OLLAMA_URL")
-                .unwrap_or_else(|_| "http://localhost:11434".to_string());
-            let base = route.base_url.clone().unwrap_or(default_host);
-            let url = resolve_chat_url("ollama", &base);
-            (url, route.api_key_env.clone().unwrap_or_default())
-        }
-        other => {
-            // Check known OpenAI-compatible providers
-            if let Some((_, default_base, default_key)) = OPENAI_COMPAT_PROVIDERS.iter().find(|(n, _, _)| *n == other) {
-                let base = route.base_url.clone().unwrap_or_else(|| default_base.to_string());
-                let url = resolve_chat_url(other, &base);
-                (
-                    url,
-                    route.api_key_env.clone().unwrap_or_else(|| default_key.to_string()),
-                )
-            } else {
-                tracing::warn!(provider = %other, "unknown provider in routing rule, using minimax");
-                let base = route.base_url.clone().unwrap_or_else(|| "https://api.minimax.io".to_string());
-                let url = resolve_chat_url("minimax", &base);
-                (
-                    url,
-                    route.api_key_env.clone().unwrap_or_else(|| "MINIMAX_API_KEY".to_string()),
-                )
-            }
-        }
+    // Registry-based URL and key resolution via PROVIDER_TYPES
+    let provider_id = route.provider.as_str();
+    let (url, api_key_name) = if let Some(meta) = PROVIDER_TYPES.iter().find(|pt| pt.id == provider_id) {
+        let default_base = if provider_id == "openai" {
+            std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| meta.default_base_url.to_string())
+        } else if provider_id == "ollama" {
+            std::env::var("OLLAMA_URL").unwrap_or_else(|_| meta.default_base_url.to_string())
+        } else {
+            meta.default_base_url.to_string()
+        };
+        let base = route.base_url.clone().unwrap_or(default_base);
+        let url = resolve_chat_url(provider_id, &base);
+        let key = route.api_key_env.clone().unwrap_or_else(|| meta.default_secret_name.to_string());
+        (url, key)
+    } else {
+        tracing::warn!(provider = %provider_id, "unknown provider in routing rule, treating as openai-compatible");
+        let base = route.base_url.clone().unwrap_or_default();
+        let url = resolve_chat_url(provider_id, &base);
+        let key = route.api_key_env.clone().unwrap_or_else(|| "API_KEY".to_string());
+        (url, key)
     };
 
     let provider = OpenAiCompatibleProvider::new(
@@ -466,8 +424,9 @@ pub struct ProviderTypeMeta {
     pub supports_model_listing: bool,
 }
 
-/// Known provider types with extended metadata.
-pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
+/// Provider type registry: single source of truth for all known providers.
+/// Adding a new OpenAI-compatible provider requires only one entry here.
+pub const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
     ProviderTypeMeta {
         id: "minimax",
         name: "MiniMax",

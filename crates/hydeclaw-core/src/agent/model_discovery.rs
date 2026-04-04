@@ -7,7 +7,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::secrets::SecretsManager;
-use super::providers::OPENAI_COMPAT_PROVIDERS;
+use super::providers::PROVIDER_TYPES;
 
 /// Defense-in-depth: block ports that should never be targeted by model discovery,
 /// even from admin-configured URLs. Prevents accidental misconfiguration from
@@ -238,12 +238,10 @@ pub async fn discover_models(
         }
 
         other => {
-            if let Some((_, base_url_default, key_env)) =
-                OPENAI_COMPAT_PROVIDERS.iter().find(|(n, _, _)| *n == other)
-            {
-                let base = base_url_override.unwrap_or(base_url_default);
+            if let Some(meta) = PROVIDER_TYPES.iter().find(|pt| pt.id == other) {
+                let base = base_url_override.unwrap_or(meta.default_base_url);
                 let models_url = derive_models_url_from_base(other, base);
-                let key = resolve_key(secrets, key_env).await;
+                let key = resolve_key(secrets, meta.default_secret_name).await;
                 fetch_openai_models(&models_url, key.as_deref()).await
             } else {
                 Ok(vec![])
@@ -296,10 +294,8 @@ async fn discover_models_with_resolved_key(
             fetch_openai_models(&url, key).await
         }
         other => {
-            if let Some((_, base_url_default, _)) =
-                OPENAI_COMPAT_PROVIDERS.iter().find(|(n, _, _)| *n == other)
-            {
-                let base = base_url_override.unwrap_or(base_url_default);
+            if let Some(meta) = PROVIDER_TYPES.iter().find(|pt| pt.id == other) {
+                let base = base_url_override.unwrap_or(meta.default_base_url);
                 let models_url = derive_models_url_from_base(other, base);
                 fetch_openai_models(&models_url, key).await
             } else {
