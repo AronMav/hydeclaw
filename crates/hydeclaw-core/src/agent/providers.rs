@@ -295,9 +295,13 @@ pub fn create_routing_provider(
         })
         .collect();
 
+    // Use the max_failover_attempts from the first route (primary), default 3
+    let max_failover = routes.first().map(|r| r.max_failover_attempts).unwrap_or(3);
+
     Arc::new(RoutingProvider {
         routes: entries,
         cooldowns: std::sync::Mutex::new(std::collections::HashMap::new()),
+        max_failover_attempts: max_failover,
     })
 }
 
@@ -847,6 +851,8 @@ pub struct RoutingProvider {
     routes: Vec<RouteEntry>,
     /// Tracks providers on cooldown (provider name → cooldown expiry).
     cooldowns: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    /// Maximum number of fallback providers to try before giving up (default: 3).
+    max_failover_attempts: u32,
 }
 
 impl RoutingProvider {
@@ -978,31 +984,71 @@ impl LlmProvider for RoutingProvider {
         let primary_cooldown = primary.cooldown_duration;
 
         let primary_skipped = self.is_on_cooldown(&primary_name);
+        let mut last_error: Option<anyhow::Error> = None;
+
         if !primary_skipped {
             match primary.provider.chat(messages, tools).await {
                 Ok(resp) => return Ok(resp),
                 Err(e) => {
+                    let class = super::error_classify::classify(&e);
                     self.handle_provider_error(&e, &primary_name, primary_cooldown);
+                    tracing::warn!(
+                        from = %primary_name,
+                        error_class = ?class,
+                        cooldown_secs = primary_cooldown.as_secs(),
+                        "provider failover: primary failed"
+                    );
+                    last_error = Some(e);
                 }
             }
         } else {
             tracing::debug!(provider = %primary_name, "primary on cooldown, skipping");
         }
 
-        for fb in self.available_fallbacks(&primary_name) {
-            tracing::info!(provider = %fb.provider.name(), "trying fallback provider");
+        let fallbacks = self.available_fallbacks(&primary_name);
+        let max_attempts = self.max_failover_attempts as usize;
+        for (attempt, fb) in fallbacks.into_iter().enumerate() {
+            if attempt >= max_attempts {
+                tracing::warn!(
+                    provider = %primary_name,
+                    max_failover_attempts = max_attempts,
+                    "max failover attempts reached, giving up"
+                );
+                break;
+            }
+            let fb_name = fb.provider.name().to_string();
+            tracing::info!(provider = %fb_name, attempt = attempt + 1, "trying fallback provider");
             match fb.provider.chat(messages, tools).await {
                 Ok(mut resp) => {
                     let reason = if primary_skipped { "cooldown" } else { "primary_failed" };
-                    resp.fallback_notice = Some(format!("↪️ {} → {} ({})", primary_name, fb.provider.name(), reason));
+                    tracing::warn!(
+                        from = %primary_name,
+                        to = %fb_name,
+                        error_class = "failover_success",
+                        cooldown_secs = fb.cooldown_duration.as_secs(),
+                        "provider failover"
+                    );
+                    resp.fallback_notice = Some(format!("↪️ {} �� {} ({})", primary_name, fb_name, reason));
                     return Ok(resp);
                 }
                 Err(e) => {
-                    self.handle_provider_error(&e, fb.provider.name(), fb.cooldown_duration);
+                    let class = super::error_classify::classify(&e);
+                    tracing::warn!(
+                        from = %fb_name,
+                        to = "next",
+                        error_class = ?class,
+                        cooldown_secs = fb.cooldown_duration.as_secs(),
+                        "provider failover"
+                    );
+                    self.handle_provider_error(&e, &fb_name, fb.cooldown_duration);
+                    last_error = Some(e);
                 }
             }
         }
-        anyhow::bail!("all providers failed (including fallbacks)")
+        match last_error {
+            Some(e) => Err(e.context("all providers failed (including fallbacks)")),
+            None => anyhow::bail!("all providers on cooldown, no available routes"),
+        }
     }
 
     async fn chat_stream(
@@ -1016,6 +1062,8 @@ impl LlmProvider for RoutingProvider {
         let primary_cooldown = primary.cooldown_duration;
 
         let primary_skipped = self.is_on_cooldown(&primary_name);
+        let mut last_error: Option<anyhow::Error> = None;
+
         if !primary_skipped {
             use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
             let chunks_sent = Arc::new(AtomicBool::new(false));
@@ -1046,32 +1094,65 @@ impl LlmProvider for RoutingProvider {
                     }
                     let class = super::error_classify::classify(&e);
                     let cd = super::error_classify::cooldown_duration(&class).min(primary_cooldown);
-                    tracing::warn!(provider = %primary_name, error = %e, error_class = ?class,
-                        "streaming: primary failed before first chunk, trying fallback chain");
+                    tracing::warn!(
+                        from = %primary_name,
+                        error_class = ?class,
+                        cooldown_secs = cd.as_secs(),
+                        "provider failover: streaming primary failed before first chunk"
+                    );
                     if !cd.is_zero() { self.set_cooldown(&primary_name, cd); }
+                    last_error = Some(e);
                 }
             }
         } else {
             tracing::debug!(provider = %primary_name, "primary on cooldown, skipping for streaming");
         }
 
-        for fb in self.available_fallbacks(&primary_name) {
-            tracing::info!(provider = %fb.provider.name(), "trying streaming fallback provider");
+        let fallbacks = self.available_fallbacks(&primary_name);
+        let max_attempts = self.max_failover_attempts as usize;
+        for (attempt, fb) in fallbacks.into_iter().enumerate() {
+            if attempt >= max_attempts {
+                tracing::warn!(
+                    provider = %primary_name,
+                    max_failover_attempts = max_attempts,
+                    "max failover attempts reached for streaming, giving up"
+                );
+                break;
+            }
+            let fb_name = fb.provider.name().to_string();
+            tracing::info!(provider = %fb_name, attempt = attempt + 1, "trying streaming fallback provider");
             match fb.provider.chat_stream(messages, tools, chunk_tx.clone()).await {
                 Ok(mut resp) => {
                     let reason = if primary_skipped { "cooldown" } else { "primary_failed" };
-                    resp.fallback_notice = Some(format!("↪️ {} → {} ({})", primary_name, fb.provider.name(), reason));
+                    tracing::warn!(
+                        from = %primary_name,
+                        to = %fb_name,
+                        error_class = "failover_success",
+                        cooldown_secs = fb.cooldown_duration.as_secs(),
+                        "provider failover"
+                    );
+                    resp.fallback_notice = Some(format!("↪️ {} → {} ({})", primary_name, fb_name, reason));
                     return Ok(resp);
                 }
                 Err(e) => {
                     let class = super::error_classify::classify(&e);
                     let cd = super::error_classify::cooldown_duration(&class).min(fb.cooldown_duration);
-                    tracing::warn!(provider = %fb.provider.name(), error = %e, error_class = ?class, "streaming fallback also failed");
-                    if !cd.is_zero() { self.set_cooldown(fb.provider.name(), cd); }
+                    tracing::warn!(
+                        from = %fb_name,
+                        to = "next",
+                        error_class = ?class,
+                        cooldown_secs = cd.as_secs(),
+                        "provider failover"
+                    );
+                    if !cd.is_zero() { self.set_cooldown(&fb_name, cd); }
+                    last_error = Some(e);
                 }
             }
         }
-        anyhow::bail!("all streaming providers failed (including fallbacks)")
+        match last_error {
+            Some(e) => Err(e.context("all streaming providers failed (including fallbacks)")),
+            None => anyhow::bail!("all streaming providers on cooldown, no available routes"),
+        }
     }
 
     fn name(&self) -> &str {

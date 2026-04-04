@@ -344,9 +344,14 @@ pub struct ProviderRouteConfig {
     /// Cooldown duration in seconds after provider failure (default: 60).
     #[serde(default = "default_cooldown_secs")]
     pub cooldown_secs: u64,
+    /// Maximum failover attempts before giving up (default: 3).
+    /// After exhausting this many fallback providers, the last error is returned.
+    #[serde(default = "default_max_failover_attempts")]
+    pub max_failover_attempts: u32,
 }
 
 fn default_cooldown_secs() -> u64 { 60 }
+fn default_max_failover_attempts() -> u32 { 3 }
 
 fn default_condition() -> String { "default".to_string() }
 
@@ -1118,6 +1123,7 @@ model = "m2.5"
                     prompt_cache: false,
                     max_tokens: None,
                     cooldown_secs: 60,
+                    max_failover_attempts: 3,
                 }],
                 icon: None,
                 approval: None,

@@ -197,6 +197,7 @@ pub(crate) fn agent_to_detail(cfg: &AgentConfig, is_running: bool, config_dirty:
             "max_tokens": r.max_tokens,
             "prompt_cache": r.prompt_cache,
             "cooldown_secs": r.cooldown_secs,
+            "max_failover_attempts": r.max_failover_attempts,
         })).collect::<Vec<_>>(),
         "watchdog": a.watchdog.as_ref().map(|w| json!({
             "inactivity_secs": w.inactivity_secs,
@@ -305,6 +306,7 @@ pub(crate) struct RoutingRulePayload {
     pub prompt_cache: Option<bool>,
     pub max_tokens: Option<u32>,
     pub cooldown_secs: Option<u64>,
+    pub max_failover_attempts: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -409,6 +411,7 @@ pub(crate) fn build_agent_config(name: String, p: AgentCreatePayload) -> AgentCo
                     prompt_cache: r.prompt_cache.unwrap_or(false),
                     max_tokens: r.max_tokens,
                     cooldown_secs: r.cooldown_secs.unwrap_or(60),
+                    max_failover_attempts: r.max_failover_attempts.unwrap_or(3),
                 }
             }).collect(),
             session: p.session.flatten().map(|s| crate::config::SessionConfig {
@@ -830,6 +833,7 @@ pub(crate) async fn api_update_agent(
                 prompt_cache: Some(r.prompt_cache),
                 max_tokens: r.max_tokens,
                 cooldown_secs: Some(r.cooldown_secs),
+                max_failover_attempts: Some(r.max_failover_attempts),
             }).collect()));
         }
         if payload.tool_loop.is_none() {
