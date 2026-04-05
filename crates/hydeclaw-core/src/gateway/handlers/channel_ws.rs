@@ -68,6 +68,7 @@ async fn handle_channel_ws(socket: WebSocket, state: AppState, agent_name: Strin
 
         let engine = handle.engine.clone();
         let guard = state.access_guards.read().await.get(&agent_name).cloned();
+        tracing::info!(agent = %agent_name, has_guard = guard.is_some(), "channel WS: access guard resolved");
         (engine, guard)
     };
 
@@ -686,8 +687,11 @@ async fn channel_ws_loop(
                     }
                     ChannelInbound::PairingCreate { request_id, user_id, display_name } => {
                         let code = if let Some(guard) = access_guard {
-                            guard.create_pairing_code(&user_id, display_name.as_deref()).await
+                            let c = guard.create_pairing_code(&user_id, display_name.as_deref()).await;
+                            tracing::info!(agent = %agent_name, user_id = %user_id, code = %c, "pairing code created");
+                            c
                         } else {
+                            tracing::warn!(agent = %agent_name, user_id = %user_id, "pairing create: no access guard");
                             "000000".to_string()
                         };
                         let msg = ChannelOutbound::PairingCode { request_id, code };

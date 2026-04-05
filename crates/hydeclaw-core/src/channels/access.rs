@@ -1,27 +1,16 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use chrono::{DateTime, Utc};
 use rand::Rng;
 use sqlx::PgPool;
-use tokio::sync::RwLock;
 
 use crate::db::access;
 
-struct PairingEntry {
-    channel_user_id: String,
-    display_name: Option<String>,
-    created_at: DateTime<Utc>,
-}
-
 /// Manages access control for a channel bot.
+/// Pairing codes are stored in PostgreSQL (survive restarts).
 pub struct AccessGuard {
     pub agent_id: String,
     pub(crate) owner_id: Option<String>,
     pub restricted: bool,
     pub(crate) db: PgPool,
-    /// Pending pairing codes: code -> PairingEntry
-    pending_pairings: Arc<RwLock<HashMap<String, PairingEntry>>>,
 }
 
 impl AccessGuard {
@@ -31,13 +20,7 @@ impl AccessGuard {
         restricted: bool,
         db: PgPool,
     ) -> Self {
-        Self {
-            agent_id,
-            owner_id,
-            restricted,
-            db,
-            pending_pairings: Arc::new(RwLock::new(HashMap::new())),
-        }
+        Self { agent_id, owner_id, restricted, db }
     }
 
     /// Check if a user is allowed to use this bot.
@@ -58,83 +41,65 @@ impl AccessGuard {
         self.owner_id.as_deref() == Some(channel_user_id)
     }
 
-    /// Generate a 6-digit pairing code for an unknown user.
+    /// Generate a 6-digit pairing code for an unknown user (persisted in DB).
     pub async fn create_pairing_code(
         &self,
         channel_user_id: &str,
         display_name: Option<&str>,
     ) -> String {
-        let code: String = format!("{:06}", rand::rng().random_range(0..1_000_000u32));
-
-        let entry = PairingEntry {
-            channel_user_id: channel_user_id.to_string(),
-            display_name: display_name.map(|s| s.to_string()),
-            created_at: Utc::now(),
-        };
-
-        let mut pairings = self.pending_pairings.write().await;
-        // Remove any existing code for this user (re-pairing)
-        pairings.retain(|_, e| e.channel_user_id != channel_user_id);
-        pairings.insert(code.clone(), entry);
-
+        let code = format!("{:06}", rand::rng().random_range(0..1_000_000u32));
+        if let Err(e) = access::store_pairing_code(
+            &self.db, &self.agent_id, &code, channel_user_id, display_name,
+        ).await {
+            tracing::error!(error = %e, "failed to store pairing code in DB");
+        }
         code
     }
 
     /// Try to approve a pairing by code.
     /// Returns (success, user_display_info).
     pub async fn approve_pairing(&self, code: &str, approver_id: &str) -> (bool, String) {
-        let mut pairings = self.pending_pairings.write().await;
-
-        if let Some(entry) = pairings.remove(code) {
-            // Check expiration (5 minutes)
-            let elapsed = Utc::now() - entry.created_at;
-            if elapsed.num_seconds() > 300 {
-                return (false, "expired".to_string());
+        match access::take_pairing_code(&self.db, &self.agent_id, code).await {
+            Ok(Some((user_id, name))) => {
+                let display = name.clone().unwrap_or_else(|| user_id.clone());
+                if let Err(e) = access::add_allowed_user(
+                    &self.db, &self.agent_id, &user_id, name.as_deref(), approver_id,
+                ).await {
+                    tracing::error!(error = %e, "failed to add allowed user");
+                    return (false, display);
+                }
+                (true, display)
             }
-
-            let display = entry
-                .display_name
-                .clone()
-                .unwrap_or_else(|| entry.channel_user_id.clone());
-
-            if let Err(e) = access::add_allowed_user(
-                &self.db,
-                &self.agent_id,
-                &entry.channel_user_id,
-                entry.display_name.as_deref(),
-                approver_id,
-            )
-            .await
-            {
-                tracing::error!(error = %e, "failed to add allowed user");
-                return (false, display);
+            Ok(None) => (false, "not_found_or_expired".to_string()),
+            Err(e) => {
+                tracing::error!(error = %e, "failed to take pairing code from DB");
+                (false, "db_error".to_string())
             }
-
-            (true, display)
-        } else {
-            (false, "not_found".to_string())
         }
     }
 
     /// Reject a pending pairing by code.
     pub async fn reject_pairing(&self, code: &str) -> bool {
-        self.pending_pairings.write().await.remove(code).is_some()
+        access::remove_pairing_code(&self.db, &self.agent_id, code)
+            .await
+            .unwrap_or(false)
     }
 
     /// List all pending pairing codes with user info (for UI display).
     pub async fn pending_pairings_list(&self) -> Vec<serde_json::Value> {
-        let pairings = self.pending_pairings.read().await;
-        pairings
-            .iter()
-            .map(|(code, entry)| {
+        match access::list_pairing_codes(&self.db, &self.agent_id).await {
+            Ok(codes) => codes.iter().map(|p| {
                 serde_json::json!({
-                    "code": code,
-                    "channel_user_id": entry.channel_user_id,
-                    "display_name": entry.display_name,
-                    "created_at": entry.created_at.to_rfc3339(),
+                    "code": p.code,
+                    "channel_user_id": p.channel_user_id,
+                    "display_name": p.display_name,
+                    "created_at": p.created_at.to_rfc3339(),
                 })
-            })
-            .collect()
+            }).collect(),
+            Err(e) => {
+                tracing::error!(error = %e, "failed to list pairing codes");
+                vec![]
+            }
+        }
     }
-
 }

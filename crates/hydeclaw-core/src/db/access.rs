@@ -84,3 +84,79 @@ pub struct AllowedUser {
     pub display_name: Option<String>,
     pub approved_at: DateTime<Utc>,
 }
+
+// ── Pairing codes (persistent, survive restarts) ────────────────────────────
+
+/// Store a pairing code in DB. Replaces any existing code for the same user.
+pub async fn store_pairing_code(
+    db: &PgPool,
+    agent_id: &str,
+    code: &str,
+    channel_user_id: &str,
+    display_name: Option<&str>,
+) -> Result<()> {
+    // Remove existing codes for this user (re-pairing)
+    sqlx::query("DELETE FROM pairing_codes WHERE agent_id = $1 AND channel_user_id = $2")
+        .bind(agent_id).bind(channel_user_id).execute(db).await?;
+    sqlx::query(
+        "INSERT INTO pairing_codes (code, agent_id, channel_user_id, display_name)
+         VALUES ($1, $2, $3, $4)"
+    )
+    .bind(code).bind(agent_id).bind(channel_user_id).bind(display_name)
+    .execute(db).await?;
+    Ok(())
+}
+
+/// Get and remove a pairing code. Returns (channel_user_id, display_name) if found and not expired (5 min).
+pub async fn take_pairing_code(
+    db: &PgPool,
+    agent_id: &str,
+    code: &str,
+) -> Result<Option<(String, Option<String>)>> {
+    let row = sqlx::query_as::<_, (String, Option<String>, DateTime<Utc>)>(
+        "DELETE FROM pairing_codes WHERE agent_id = $1 AND code = $2
+         RETURNING channel_user_id, display_name, created_at"
+    )
+    .bind(agent_id).bind(code)
+    .fetch_optional(db).await?;
+    match row {
+        Some((user_id, name, created_at)) => {
+            let elapsed = Utc::now() - created_at;
+            if elapsed.num_seconds() > 300 {
+                Ok(None) // expired
+            } else {
+                Ok(Some((user_id, name)))
+            }
+        }
+        None => Ok(None),
+    }
+}
+
+/// Remove a pairing code (reject).
+pub async fn remove_pairing_code(db: &PgPool, agent_id: &str, code: &str) -> Result<bool> {
+    let r = sqlx::query("DELETE FROM pairing_codes WHERE agent_id = $1 AND code = $2")
+        .bind(agent_id).bind(code).execute(db).await?;
+    Ok(r.rows_affected() > 0)
+}
+
+/// List pending pairing codes for an agent (not expired).
+pub async fn list_pairing_codes(db: &PgPool, agent_id: &str) -> Result<Vec<PairingCode>> {
+    let rows = sqlx::query_as::<_, PairingCode>(
+        "SELECT code, channel_user_id, display_name, created_at FROM pairing_codes
+         WHERE agent_id = $1 AND created_at > now() - interval '5 minutes'
+         ORDER BY created_at"
+    )
+    .bind(agent_id).fetch_all(db).await?;
+    // Cleanup expired
+    sqlx::query("DELETE FROM pairing_codes WHERE created_at <= now() - interval '5 minutes'")
+        .execute(db).await.ok();
+    Ok(rows)
+}
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct PairingCode {
+    pub code: String,
+    pub channel_user_id: String,
+    pub display_name: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
