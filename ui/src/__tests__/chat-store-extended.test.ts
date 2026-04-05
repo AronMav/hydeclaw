@@ -39,6 +39,9 @@ function makeRow(overrides: Partial<MessageRow>): MessageRow {
     tool_calls: null,
     tool_call_id: null,
     created_at: "2026-01-01T00:00:00Z",
+    status: "done",
+    feedback: 0,
+    edited_at: null,
     ...overrides,
   };
 }
