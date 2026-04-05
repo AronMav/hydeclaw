@@ -205,12 +205,12 @@ pub fn create_provider(
                     secrets,
                 ));
             }
-            tracing::warn!(provider = %other, "unknown provider, defaulting to minimax");
-            let url = resolve_chat_url("minimax", "https://api.minimax.io");
+            tracing::error!(provider = %other, "unknown provider — treating as generic OpenAI-compatible");
+            let url = resolve_chat_url(other, "");
             Arc::new(OpenAiCompatibleProvider::new(
-                "minimax",
+                other,
                 &url,
-                "MINIMAX_API_KEY",
+                "API_KEY",
                 model.to_string(),
                 temperature,
                 max_tokens,

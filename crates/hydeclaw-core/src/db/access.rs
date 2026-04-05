@@ -87,7 +87,7 @@ pub struct AllowedUser {
 
 // ── Pairing codes (persistent, survive restarts) ────────────────────────────
 
-/// Store a pairing code in DB. Replaces any existing code for the same user.
+/// Store a pairing code in DB. Replaces any existing code for the same user atomically.
 pub async fn store_pairing_code(
     db: &PgPool,
     agent_id: &str,
@@ -95,24 +95,26 @@ pub async fn store_pairing_code(
     channel_user_id: &str,
     display_name: Option<&str>,
 ) -> Result<()> {
-    // Remove existing codes for this user (re-pairing)
+    // Atomic: delete old codes for this user + insert new one in a transaction
+    let mut tx = db.begin().await?;
     sqlx::query("DELETE FROM pairing_codes WHERE agent_id = $1 AND channel_user_id = $2")
-        .bind(agent_id).bind(channel_user_id).execute(db).await?;
+        .bind(agent_id).bind(channel_user_id).execute(&mut *tx).await?;
     sqlx::query(
         "INSERT INTO pairing_codes (code, agent_id, channel_user_id, display_name)
          VALUES ($1, $2, $3, $4)"
     )
     .bind(code).bind(agent_id).bind(channel_user_id).bind(display_name)
-    .execute(db).await?;
+    .execute(&mut *tx).await?;
+    tx.commit().await?;
     Ok(())
 }
 
-/// Get and remove a pairing code. Returns (channel_user_id, display_name) if found and not expired (5 min).
+/// Get and remove a pairing code. Returns (channel_user_id, display_name, expired).
 pub async fn take_pairing_code(
     db: &PgPool,
     agent_id: &str,
     code: &str,
-) -> Result<Option<(String, Option<String>)>> {
+) -> Result<Option<(String, Option<String>, bool)>> {
     let row = sqlx::query_as::<_, (String, Option<String>, DateTime<Utc>)>(
         "DELETE FROM pairing_codes WHERE agent_id = $1 AND code = $2
          RETURNING channel_user_id, display_name, created_at"
@@ -121,12 +123,8 @@ pub async fn take_pairing_code(
     .fetch_optional(db).await?;
     match row {
         Some((user_id, name, created_at)) => {
-            let elapsed = Utc::now() - created_at;
-            if elapsed.num_seconds() > 300 {
-                Ok(None) // expired
-            } else {
-                Ok(Some((user_id, name)))
-            }
+            let expired = (Utc::now() - created_at).num_seconds() > 300;
+            Ok(Some((user_id, name, expired)))
         }
         None => Ok(None),
     }

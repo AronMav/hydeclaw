@@ -700,7 +700,8 @@ async fn channel_ws_loop(
                     ChannelInbound::PairingApprove { request_id, code } => {
                         let (success, error) = if let Some(guard) = access_guard {
                             let (ok, info) = guard.approve_pairing(&code, "owner").await;
-                            if ok { (true, None) } else { (false, Some(info)) }
+                            // Always pass info — on success it's the display name, on failure the error reason
+                            (ok, Some(info))
                         } else {
                             (false, Some("no access guard".to_string()))
                         };

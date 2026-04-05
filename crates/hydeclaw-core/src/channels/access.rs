@@ -60,7 +60,7 @@ impl AccessGuard {
     /// Returns (success, user_display_info).
     pub async fn approve_pairing(&self, code: &str, approver_id: &str) -> (bool, String) {
         match access::take_pairing_code(&self.db, &self.agent_id, code).await {
-            Ok(Some((user_id, name))) => {
+            Ok(Some((user_id, name, false))) => {
                 let display = name.clone().unwrap_or_else(|| user_id.clone());
                 if let Err(e) = access::add_allowed_user(
                     &self.db, &self.agent_id, &user_id, name.as_deref(), approver_id,
@@ -70,7 +70,8 @@ impl AccessGuard {
                 }
                 (true, display)
             }
-            Ok(None) => (false, "not_found_or_expired".to_string()),
+            Ok(Some((_, _, true))) => (false, "expired".to_string()),
+            Ok(None) => (false, "not_found".to_string()),
             Err(e) => {
                 tracing::error!(error = %e, "failed to take pairing code from DB");
                 (false, "db_error".to_string())
