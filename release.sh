@@ -101,7 +101,7 @@ done
 
 # ── Build UI ──
 info "Building Next.js UI..."
-(cd ui && npm install --silent && npm run build) || err "UI build failed"
+(cd ui && npm install --silent && node node_modules/next/dist/bin/next build && node scripts/flatten-rsc.mjs) || err "UI build failed"
 tar czf "$RELEASE_DIR/hydeclaw-ui.tar.gz" -C ui out
 UI_SIZE=$(du -h "$RELEASE_DIR/hydeclaw-ui.tar.gz" | cut -f1)
 ok "hydeclaw-ui.tar.gz (${UI_SIZE})"
