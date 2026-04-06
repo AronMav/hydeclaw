@@ -150,11 +150,16 @@ pub(crate) async fn api_memory_stats(State(state): State<AppState>) -> Json<Valu
          FROM memory_tasks"
     ).fetch_one(&state.db).await.unwrap_or((0, 0, 0, 0));
 
+    let embed_dim = state.memory_store.embed_dim();
+    let embed_model = state.memory_store.embed_model_name();
+
     Json(json!({
         "total": documents,
         "total_chunks": total,
         "pinned": pinned,
         "avg_score": avg_score,
+        "embed_model": if embed_model.is_empty() { None } else { Some(&embed_model) },
+        "embed_dim": if embed_dim > 0 { Some(embed_dim) } else { None },
         "graph": {
             "entities": graph_entities,
             "edges": graph_edges,

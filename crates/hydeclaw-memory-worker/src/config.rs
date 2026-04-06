@@ -27,6 +27,8 @@ struct AppConfigPartial {
     pub database: DatabaseConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
+    /// Base URL for toolgate. Falls back to env TOOLGATE_URL, then localhost:9011.
+    pub toolgate_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,8 +120,10 @@ pub fn load_config(path: &str) -> anyhow::Result<WorkerConfig> {
     let cfg: AppConfigPartial = toml::from_str(&text)?;
     let db_url = std::env::var("DATABASE_URL").unwrap_or(cfg.database.url);
     let fts_language = read_base_agent_language(path);
-    let toolgate_url = std::env::var("TOOLGATE_URL")
-        .unwrap_or_else(|_| "http://localhost:9011".to_string());
+    let toolgate_url = cfg.toolgate_url
+        .filter(|u| !u.is_empty())
+        .or_else(|| std::env::var("TOOLGATE_URL").ok())
+        .unwrap_or_else(|| "http://localhost:9011".to_string());
 
     Ok(WorkerConfig {
         worker: cfg.memory_worker,

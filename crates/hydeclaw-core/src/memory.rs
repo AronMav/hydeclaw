@@ -63,7 +63,7 @@ pub struct MemoryStore {
     http: reqwest::Client,
     enabled: bool,
     embed_url: String,
-    embed_model: String,
+    embed_model: RwLock<String>,
     /// 0 = not yet detected
     embed_dim: AtomicU32,
     /// PostgreSQL FTS dictionary (e.g. "russian", "english", "simple").
@@ -90,7 +90,7 @@ impl MemoryStore {
             http,
             enabled: config.enabled,
             embed_url,
-            embed_model: String::new(),
+            embed_model: RwLock::new(String::new()),
             embed_dim: AtomicU32::new(config.embed_dim.unwrap_or(0)),
             fts_language: RwLock::new(fts_lang),
             initialized: OnceCell::new(),
@@ -103,8 +103,8 @@ impl MemoryStore {
     }
 
     /// Returns the configured embedding model name.
-    pub fn embed_model_name(&self) -> &str {
-        &self.embed_model
+    pub fn embed_model_name(&self) -> String {
+        self.embed_model.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Returns the detected embedding dimension (0 if not yet detected).
@@ -155,6 +155,30 @@ impl MemoryStore {
         }.to_string()
     }
 
+    /// Query toolgate /health to discover the active embedding provider/model name.
+    async fn fetch_embed_model_from_toolgate(&self) {
+        let health_url = format!(
+            "{}/health",
+            self.embed_url
+                .trim_end_matches('/')
+                .trim_end_matches("/v1"),
+        );
+        match self.http.get(&health_url).send().await {
+            Ok(resp) => {
+                if let Ok(body) = resp.json::<serde_json::Value>().await {
+                    if let Some(name) = body["active_providers"]["embedding"].as_str() {
+                        *self.embed_model.write().unwrap_or_else(|e| e.into_inner()) =
+                            name.to_string();
+                        tracing::info!(embed_model = %name, "discovered embedding model from toolgate");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "could not query toolgate /health for model name");
+            }
+        }
+    }
+
     /// Initialize embedding: auto-detect dimension, validate DB, ensure HNSW index.
     /// Graceful: if embedding endpoint is unreachable, logs a warning and continues
     /// (FTS fallback will be used for search).
@@ -184,7 +208,10 @@ impl MemoryStore {
             }
         };
 
-        // 2. Check if DB has embeddings with a different dimension
+        // 2. Discover embedding model name from toolgate health endpoint
+        self.fetch_embed_model_from_toolgate().await;
+
+        // 3. Check if DB has embeddings with a different dimension
         let existing_dim = crate::db::memory_queries::get_existing_embedding_dim(&self.db).await;
 
         if let Some(old_dim) = existing_dim
@@ -198,11 +225,12 @@ impl MemoryStore {
                 crate::db::memory_queries::drop_hnsw_index(&self.db).await?;
             }
 
-        // 3. Ensure HNSW index with correct dimension
+        // 4. Ensure HNSW index with correct dimension
         self.ensure_index(dim).await?;
 
+        let model = self.embed_model_name();
         tracing::info!(
-            model = %self.embed_model,
+            model = %model,
             dim,
             "embedding initialized"
         );
@@ -230,11 +258,14 @@ impl MemoryStore {
     /// detects dimension and creates HNSW index.
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>> {
         let url = format!("{}/embeddings", self.embed_url.trim_end_matches('/'));
+        let model = self.embed_model_name();
+        let mut body = serde_json::json!({ "input": text });
+        if !model.is_empty() {
+            body["model"] = serde_json::Value::String(model);
+        }
         let resp = self.http
             .post(&url)
-            .json(&serde_json::json!({
-                "input": text
-            }))
+            .json(&body)
             .send()
             .await
             .context("embedding request failed")?;
@@ -251,12 +282,22 @@ impl MemoryStore {
 
         anyhow::ensure!(!vec.is_empty(), "embedding returned empty vector");
 
-        // Lazy init: if dim was unknown (embedding was down at startup), set it now
-        if self.embed_dim.load(Ordering::Relaxed) == 0 {
-            let dim = vec.len() as u32;
-            self.embed_dim.store(dim, Ordering::Relaxed);
-            tracing::info!(dim, model = %self.embed_model, "embedding came online, lazy-initializing");
-            if let Err(e) = self.ensure_index(dim).await {
+        // Validate dimension matches expected (if already known)
+        let expected = self.embed_dim.load(Ordering::Relaxed);
+        if expected > 0 && vec.len() as u32 != expected {
+            anyhow::bail!(
+                "embedding dimension mismatch: expected {}, got {} — possible model change",
+                expected, vec.len()
+            );
+        }
+
+        // Lazy init: if dim was unknown (embedding was down at startup), set it now.
+        // compare_exchange ensures only one thread creates the HNSW index.
+        let detected_dim = vec.len() as u32;
+        if self.embed_dim.compare_exchange(0, detected_dim, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+            let model = self.embed_model_name();
+            tracing::info!(dim = detected_dim, model = %model, "embedding came online, lazy-initializing");
+            if let Err(e) = self.ensure_index(detected_dim).await {
                 tracing::warn!(error = %e, "failed to create HNSW index during lazy init");
             }
         }
@@ -274,11 +315,14 @@ impl MemoryStore {
         }
 
         let url = format!("{}/embeddings", self.embed_url.trim_end_matches('/'));
+        let model = self.embed_model_name();
+        let mut body = serde_json::json!({ "input": texts });
+        if !model.is_empty() {
+            body["model"] = serde_json::Value::String(model);
+        }
         let resp = self.http
             .post(&url)
-            .json(&serde_json::json!({
-                "input": texts
-            }))
+            .json(&body)
             .send()
             .await
             .context("batch embedding request failed")?;
@@ -302,13 +346,29 @@ impl MemoryStore {
             results.push(vec);
         }
 
-        // Lazy init if needed
-        if self.embed_dim.load(Ordering::Relaxed) == 0 && !results.is_empty() {
-            let dim = results[0].len() as u32;
-            self.embed_dim.store(dim, Ordering::Relaxed);
-            tracing::info!(dim, model = %self.embed_model, "embedding came online via batch, lazy-initializing");
-            if let Err(e) = self.ensure_index(dim).await {
-                tracing::warn!(error = %e, "failed to create HNSW index during lazy init");
+        // Validate dimension matches expected (if already known)
+        let expected = self.embed_dim.load(Ordering::Relaxed);
+        if expected > 0 {
+            for (i, v) in results.iter().enumerate() {
+                if v.len() as u32 != expected {
+                    anyhow::bail!(
+                        "batch embedding dimension mismatch at index {}: expected {}, got {}",
+                        i, expected, v.len()
+                    );
+                }
+            }
+        }
+
+        // Lazy init if needed.
+        // compare_exchange ensures only one thread creates the HNSW index.
+        if !results.is_empty() {
+            let detected_dim = results[0].len() as u32;
+            if self.embed_dim.compare_exchange(0, detected_dim, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+                let model = self.embed_model_name();
+                tracing::info!(dim = detected_dim, model = %model, "embedding came online via batch, lazy-initializing");
+                if let Err(e) = self.ensure_index(detected_dim).await {
+                    tracing::warn!(error = %e, "failed to create HNSW index during lazy init");
+                }
             }
         }
 

@@ -37,7 +37,8 @@ async def embeddings(request: Request):
             {"object": "embedding", "index": i, "embedding": vec}
             for i, vec in enumerate(vectors)
         ]
-        return {"object": "list", "data": data, "model": model or ""}
+        actual_model = model or getattr(provider, "model", "") or ""
+        return {"object": "list", "data": data, "model": actual_model}
     except Exception as e:
         log.exception("embedding failed")
         return JSONResponse(
