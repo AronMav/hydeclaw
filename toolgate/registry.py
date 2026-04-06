@@ -133,6 +133,7 @@ DRIVER_INFO: dict[str, list[dict[str, str]]] = {
     ],
     "embedding": [
         {"driver": "ollama", "label": "Ollama Embedding", "requires_key": "false"},
+        {"driver": "openai", "label": "OpenAI Embedding", "requires_key": "true"},
     ],
 }
 

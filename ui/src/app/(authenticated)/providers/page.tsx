@@ -191,6 +191,7 @@ export default function ProvidersPage() {
       setDiscoveredModels(data.models.map((m) => typeof m === "string" ? m : m.id));
     } catch (e) {
       console.warn("[providers] model discovery failed:", e);
+      toast.warning(t("providers.discover_failed"));
     }
     setModelsLoading(false);
   };
@@ -399,8 +400,9 @@ export default function ProvidersPage() {
             const typeLabel = provider.type === "text"
               ? (providerTypes.find((pt) => pt.id === provider.provider_type)?.name ?? provider.provider_type)
               : provider.provider_type;
-            const activeName = getActiveName(provider.type === "text" ? "graph_extraction" : provider.type);
-            const isActive = activeName === provider.name;
+            const isActive = provider.type === "text"
+              ? (getActiveName("graph_extraction") === provider.name || getActiveName("compaction") === provider.name)
+              : getActiveName(provider.type) === provider.name;
 
             return (
               <div

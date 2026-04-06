@@ -62,7 +62,7 @@ def _load_config_from_api() -> ProvidersConfig | None:
     Returns the parsed ProvidersConfig on success, or None if unavailable.
     The Core endpoint returns unmasked api_keys and the data in ProvidersConfig format.
     """
-    core_url = os.environ.get("CORE_API_URL", CORE_API_URL)
+    core_url = CORE_API_URL
     if not core_url:
         return None
     # Read token at call time (not import time) — process manager sets env after module load

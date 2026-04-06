@@ -8,6 +8,9 @@ use serde_json::{json, Value};
 
 use super::super::AppState;
 
+/// Shared reqwest client for Toolgate HTTP calls (voices + synthesize).
+static TOOLGATE_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
 /// Return the current canvas state for a given agent (or null if empty).
 pub(crate) async fn api_canvas_state(
     State(state): State<AppState>,
@@ -54,8 +57,7 @@ pub(crate) async fn api_tts_voices(State(state): State<AppState>) -> impl IntoRe
         return Json(json!({"voices": []})).into_response();
     };
     let url = format!("{}/audio/voices", base.trim_end_matches('/'));
-    static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    let client = HTTP.get_or_init(reqwest::Client::new);
+    let client = TOOLGATE_CLIENT.get_or_init(reqwest::Client::new);
     match client.get(&url).timeout(std::time::Duration::from_secs(5)).send().await {
         Ok(resp) if resp.status().is_success() => {
             match resp.json::<serde_json::Value>().await {
@@ -80,8 +82,7 @@ pub(crate) async fn api_tts_synthesize(
         return (StatusCode::SERVICE_UNAVAILABLE, "Toolgate URL not configured").into_response();
     };
 
-    static TTS_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    let client = TTS_CLIENT.get_or_init(reqwest::Client::new);
+    let client = TOOLGATE_CLIENT.get_or_init(reqwest::Client::new);
     let resp = client
         .post(format!("{}/v1/audio/speech", base.trim_end_matches('/')))
         .json(&serde_json::json!({

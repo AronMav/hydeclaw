@@ -45,7 +45,6 @@ pub struct MemoryResult {
 }
 
 pub struct MemoryChunk {
-    #[allow(dead_code)]
     pub id: String,
     pub content: String,
     pub source: String,
