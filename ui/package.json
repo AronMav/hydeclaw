@@ -1,6 +1,6 @@
 {
   "name": "ui",
-  "version": "--aarch64-only",
+  "version": "0.4.5",
   "private": true,
   "scripts": {
     "dev": "next dev",
