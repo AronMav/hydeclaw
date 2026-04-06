@@ -32,12 +32,26 @@ const MEDIA_CAPABILITIES: &[&str] = &["stt", "tts", "vision", "imagegen", "embed
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Notify toolgate to reload config and invalidate caches.
+/// Retries up to 3 times with a 1-second delay between attempts.
 pub(crate) fn notify_toolgate_reload(toolgate_url: Option<String>) {
     let url = toolgate_url.unwrap_or_else(|| "http://localhost:9011".to_string());
     tokio::spawn(async move {
         let client = reqwest::Client::new();
-        if let Err(e) = client.post(format!("{}/reload", url)).send().await {
-            tracing::warn!(error = %e, "failed to reload toolgate config");
+        const MAX_ATTEMPTS: u32 = 3;
+        for attempt in 1..=MAX_ATTEMPTS {
+            match client.post(format!("{}/reload", url)).send().await {
+                Ok(_) => {
+                    tracing::debug!("toolgate config reloaded successfully");
+                    return;
+                }
+                Err(e) if attempt < MAX_ATTEMPTS => {
+                    tracing::debug!(attempt, error = %e, "toolgate reload failed, retrying in 1s");
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to reload toolgate config after {MAX_ATTEMPTS} attempts");
+                }
+            }
         }
     });
 }

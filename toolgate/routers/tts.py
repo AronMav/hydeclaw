@@ -22,15 +22,28 @@ async def list_voices(
     request: Request,
     provider=Depends(require_provider("tts")),
 ):
-    """Proxy voice listing from upstream TTS server."""
+    """List available voices from the TTS provider."""
     http = request.app.state.http_client
-    try:
-        resp = await http.get(f"{provider.base_url}/v1/audio/voices", timeout=5.0)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        log.warning("Failed to fetch voices: %s", e)
-        return {"voices": []}
+
+    # Prefer a native list_voices() method on the provider instance
+    if hasattr(provider, "list_voices"):
+        try:
+            return await provider.list_voices(http)
+        except Exception as e:
+            log.warning("list_voices() failed on %s: %s", provider.name, e)
+            return {"voices": [], "note": "Voice listing unavailable for this provider"}
+
+    # Fallback: try proxying to base_url if provider exposes one (e.g. local Qwen TTS server)
+    base_url = getattr(provider, "base_url", None)
+    if base_url:
+        try:
+            resp = await http.get(f"{base_url}/v1/audio/voices", timeout=5.0)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            log.warning("Failed to fetch voices from %s: %s", base_url, e)
+
+    return {"voices": [], "note": "This provider does not support voice listing"}
 
 
 class TTSRequest(BaseModel):
@@ -46,6 +59,7 @@ async def tts(
     request: Request,
     provider=Depends(require_provider("tts")),
 ):
+    log.info("Using provider: %s model=%s", provider.name, getattr(provider, "model", ""))
     try:
         audio_bytes = await provider.synthesize(
             request.app.state.http_client, body.text,
@@ -75,6 +89,7 @@ async def openai_speech(
     provider=Depends(require_provider("tts")),
 ):
     """OpenAI-compatible TTS with full Russian text normalization."""
+    log.info("Using provider: %s model=%s", provider.name, getattr(provider, "model", ""))
     http = request.app.state.http_client
     text = body.input
     if text:

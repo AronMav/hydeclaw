@@ -85,7 +85,7 @@ pub(crate) async fn api_tts_synthesize(
         .post(format!("{}/v1/audio/speech", base.trim_end_matches('/')))
         .json(&serde_json::json!({
             "input": body.text,
-            "voice": body.voice.unwrap_or_else(|| "alloy".to_string()),
+            "voice": body.voice.unwrap_or_default(),
             "model": body.model.unwrap_or_else(|| "tts-1".to_string()),
         }))
         .send()

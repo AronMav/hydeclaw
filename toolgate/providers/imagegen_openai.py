@@ -36,4 +36,6 @@ class OpenAIImageGen:
         resp.raise_for_status()
         data = resp.json()
         b64_data = data.get("data", [{}])[0].get("b64_json", "")
+        if not b64_data:
+            raise ValueError("No image data in response")
         return base64.b64decode(b64_data)

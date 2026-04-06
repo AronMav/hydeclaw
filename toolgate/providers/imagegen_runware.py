@@ -5,6 +5,7 @@ import uuid
 import httpx
 
 from providers.base import ImageGenProvider
+from helpers import validate_url_ssrf
 
 
 class RunwareImageGen(ImageGenProvider):
@@ -52,6 +53,7 @@ class RunwareImageGen(ImageGenProvider):
         else:
             raise Exception(f"Unexpected Runware response: {data}")
 
+        validate_url_ssrf(image_url)
         img_resp = await http.get(image_url)
         img_resp.raise_for_status()
         return img_resp.content

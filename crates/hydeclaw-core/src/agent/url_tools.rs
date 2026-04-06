@@ -33,6 +33,7 @@ pub(crate) async fn auto_transcribe_audio(
     text: &mut String,
     attachments: &[hydeclaw_types::MediaAttachment],
     toolgate_url: &str,
+    language: &str,
     http_client: &reqwest::Client,
 ) {
     use hydeclaw_types::MediaType;
@@ -59,7 +60,7 @@ pub(crate) async fn auto_transcribe_audio(
             .unwrap_or_else(|_| reqwest::multipart::Part::bytes(audio_bytes.to_vec()));
         let form = reqwest::multipart::Form::new()
             .part("file", part)
-            .text("language", "ru");
+            .text("language", language.to_string());
 
         match http_client.post(&url).multipart(form).send().await {
             Ok(resp) if resp.status().is_success() => {

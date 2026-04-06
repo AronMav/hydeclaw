@@ -108,10 +108,10 @@ impl AgentEngine {
         enrich_with_attachments(&mut enriched, attachments);
 
         // Auto-transcribe voice messages via toolgate STT
-        let toolgate_url = self.secrets.get("TOOLGATE_URL").await
+        let toolgate_url = self.app_config.toolgate_url.clone()
             .unwrap_or_else(|| "http://localhost:9011".to_string());
         crate::agent::url_tools::auto_transcribe_audio(
-            &mut enriched, attachments, &toolgate_url, &self.http_client,
+            &mut enriched, attachments, &toolgate_url, &self.agent.language, &self.http_client,
         ).await;
 
         enriched

@@ -1,5 +1,7 @@
 """STT (Speech-to-Text) endpoints."""
 
+import logging
+
 from fastapi import APIRouter, UploadFile, File, Form, Request, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -8,6 +10,10 @@ from typing import Optional
 import httpx
 
 from dependencies import require_provider
+
+log = logging.getLogger("toolgate.stt")
+
+STT_MAX_BYTES = 25 * 1024 * 1024  # 25 MB (Whisper API limit)
 
 router = APIRouter(tags=["stt"])
 
@@ -20,7 +26,15 @@ async def transcribe(
     language: str = Form(default="ru"),
     provider=Depends(require_provider("stt")),
 ):
+    log.info("Using provider: %s model=%s", provider.name, getattr(provider, "model", ""))
     audio_bytes = await file.read()
+
+    if len(audio_bytes) > STT_MAX_BYTES:
+        return JSONResponse(
+            status_code=413,
+            content={"error": f"Audio file too large ({len(audio_bytes)} bytes). Max 25 MB."},
+        )
+
     try:
         text = await provider.transcribe(
             request.app.state.http_client, audio_bytes,
@@ -37,6 +51,7 @@ async def transcribe(
 class TranscribeUrlRequest(BaseModel):
     audio_url: str
     language: Optional[str] = "ru"
+    model: Optional[str] = None
 
 
 @router.post("/transcribe-url")
@@ -45,6 +60,7 @@ async def transcribe_url(
     request: Request,
     provider=Depends(require_provider("stt")),
 ):
+    log.info("Using provider: %s model=%s", provider.name, getattr(provider, "model", ""))
     http = request.app.state.http_client
     from helpers import validate_url_ssrf
     validate_url_ssrf(body.audio_url)
@@ -58,11 +74,18 @@ async def transcribe_url(
                             content={"error": f"Failed to download audio: HTTP {resp.status_code}"})
 
     audio_bytes = resp.content
+
+    if len(audio_bytes) > STT_MAX_BYTES:
+        return JSONResponse(
+            status_code=413,
+            content={"error": f"Audio file too large ({len(audio_bytes)} bytes). Max 25 MB."},
+        )
+
     filename = body.audio_url.split("/")[-1].split("?")[0] or "audio.ogg"
 
     try:
         text = await provider.transcribe(
-            http, audio_bytes, filename, body.language or "ru",
+            http, audio_bytes, filename, body.language or "ru", body.model,
         )
         return {"text": text}
     except httpx.HTTPStatusError as e:

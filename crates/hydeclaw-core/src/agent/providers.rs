@@ -289,13 +289,10 @@ pub fn create_provider_from_route(
                     route.api_key_env.clone().unwrap_or_else(|| default_key.to_string()),
                 )
             } else {
-                tracing::warn!(provider = %other, "unknown provider in routing rule, using minimax");
-                let base = route.base_url.clone().unwrap_or_else(|| "https://api.minimax.io".to_string());
-                let url = resolve_chat_url("minimax", &base);
-                (
-                    url,
-                    route.api_key_env.clone().unwrap_or_else(|| "MINIMAX_API_KEY".to_string()),
-                )
+                tracing::error!(provider = %other, "unknown provider in routing rule — route will always fail; fix the agent config");
+                return Arc::new(OpenAiCompatibleProvider::new(
+                    other, "http://invalid", "", route.model.clone(), 0.0, None, secrets,
+                ));
             }
         }
     };
@@ -329,8 +326,10 @@ pub fn create_routing_provider(
         .iter()
         .map(|r| {
             let p = create_provider_from_route(r, default_temperature, secrets.clone());
+            let key = format!("{}:{}", r.condition, p.name());
             RouteEntry {
                 condition: r.condition.clone(),
+                key,
                 provider: p,
                 cooldown_duration: std::time::Duration::from_secs(r.cooldown_secs),
             }
@@ -759,7 +758,10 @@ pub fn create_provider_from_connection(
     base: bool,
 ) -> Arc<dyn LlmProvider> {
     let model = model_override.unwrap_or(conn.default_model.as_deref().unwrap_or("")).to_string();
-    let key_env = "";
+    let key_env = PROVIDER_TYPES.iter()
+        .find(|pt| pt.id == conn.provider_type)
+        .map(|pt| pt.default_secret_name)
+        .unwrap_or("");
     let credential_scope = conn.id.to_string();
 
     match conn.provider_type.as_str() {
@@ -862,6 +864,12 @@ pub async fn resolve_provider_for_agent(
     // Legacy fallback — kept for backward compatibility during migration window.
     // NOTE: vault-scoped keys (PROVIDER_CREDENTIALS) are not consulted here.
     // This path is only reached when provider_connection is not set and DB lookup fails.
+    if agent.provider.is_empty() {
+        tracing::error!(agent = %agent_name, "legacy provider field is empty — no usable LLM provider configured; calls will fail");
+        return Arc::new(OpenAiCompatibleProvider::new(
+            "unconfigured", "http://invalid", "", agent.model.clone(), temperature, max_tokens, secrets,
+        ));
+    }
     create_provider(
         &agent.provider,
         &agent.model,
@@ -879,6 +887,10 @@ pub async fn resolve_provider_for_agent(
 
 struct RouteEntry {
     condition: String,
+    /// Unique key for cooldown tracking: "{condition}:{provider_name}" to prevent
+    /// two routes that use the same provider (but different models/configs) from
+    /// sharing a cooldown bucket.
+    key: String,
     provider: Arc<dyn LlmProvider>,
     cooldown_duration: std::time::Duration,
 }
@@ -960,10 +972,10 @@ impl RoutingProvider {
     }
 
     /// Get all route entries that could serve as fallbacks (not on cooldown, not excluded).
-    fn available_fallbacks(&self, exclude_name: &str) -> Vec<&RouteEntry> {
+    fn available_fallbacks(&self, exclude_key: &str) -> Vec<&RouteEntry> {
         self.routes
             .iter()
-            .filter(|e| e.provider.name() != exclude_name && !self.is_on_cooldown(e.provider.name()))
+            .filter(|e| e.key != exclude_key && !self.is_on_cooldown(&e.key))
             .collect()
     }
 }
@@ -1015,31 +1027,32 @@ impl LlmProvider for RoutingProvider {
         tools: &[hydeclaw_types::ToolDefinition],
     ) -> Result<hydeclaw_types::LlmResponse> {
         let primary = self.select_route(messages, tools);
-        let primary_name = primary.provider.name().to_string();
+        let primary_key = primary.key.clone();
+        let primary_display = primary.provider.name().to_string();
         let primary_cooldown = primary.cooldown_duration;
 
-        let primary_skipped = self.is_on_cooldown(&primary_name);
+        let primary_skipped = self.is_on_cooldown(&primary_key);
         if !primary_skipped {
             match primary.provider.chat(messages, tools).await {
                 Ok(resp) => return Ok(resp),
                 Err(e) => {
-                    self.handle_provider_error(&e, &primary_name, primary_cooldown);
+                    self.handle_provider_error(&e, &primary_key, primary_cooldown);
                 }
             }
         } else {
-            tracing::debug!(provider = %primary_name, "primary on cooldown, skipping");
+            tracing::debug!(provider = %primary_display, "primary on cooldown, skipping");
         }
 
-        for fb in self.available_fallbacks(&primary_name) {
+        for fb in self.available_fallbacks(&primary_key) {
             tracing::info!(provider = %fb.provider.name(), "trying fallback provider");
             match fb.provider.chat(messages, tools).await {
                 Ok(mut resp) => {
                     let reason = if primary_skipped { "cooldown" } else { "primary_failed" };
-                    resp.fallback_notice = Some(format!("↪️ {} → {} ({})", primary_name, fb.provider.name(), reason));
+                    resp.fallback_notice = Some(format!("↪️ {} → {} ({})", primary_display, fb.provider.name(), reason));
                     return Ok(resp);
                 }
                 Err(e) => {
-                    self.handle_provider_error(&e, fb.provider.name(), fb.cooldown_duration);
+                    self.handle_provider_error(&e, &fb.key, fb.cooldown_duration);
                 }
             }
         }
@@ -1053,10 +1066,11 @@ impl LlmProvider for RoutingProvider {
         chunk_tx: tokio::sync::mpsc::UnboundedSender<String>,
     ) -> Result<hydeclaw_types::LlmResponse> {
         let primary = self.select_route(messages, tools);
-        let primary_name = primary.provider.name().to_string();
+        let primary_key = primary.key.clone();
+        let primary_display = primary.provider.name().to_string();
         let primary_cooldown = primary.cooldown_duration;
 
-        let primary_skipped = self.is_on_cooldown(&primary_name);
+        let primary_skipped = self.is_on_cooldown(&primary_key);
         if !primary_skipped {
             use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
             let chunks_sent = Arc::new(AtomicBool::new(false));
@@ -1081,34 +1095,34 @@ impl LlmProvider for RoutingProvider {
                     let _ = forwarder.await;
 
                     if chunks_sent.load(Ordering::Relaxed) {
-                        tracing::warn!(provider = %primary_name, error = %e,
+                        tracing::warn!(provider = %primary_display, error = %e,
                             "streaming: mid-stream failure, partial output already sent — cannot failover");
                         return Err(e);
                     }
                     let class = super::error_classify::classify(&e);
                     let cd = super::error_classify::cooldown_duration(&class).min(primary_cooldown);
-                    tracing::warn!(provider = %primary_name, error = %e, error_class = ?class,
+                    tracing::warn!(provider = %primary_display, error = %e, error_class = ?class,
                         "streaming: primary failed before first chunk, trying fallback chain");
-                    if !cd.is_zero() { self.set_cooldown(&primary_name, cd); }
+                    if !cd.is_zero() { self.set_cooldown(&primary_key, cd); }
                 }
             }
         } else {
-            tracing::debug!(provider = %primary_name, "primary on cooldown, skipping for streaming");
+            tracing::debug!(provider = %primary_display, "primary on cooldown, skipping for streaming");
         }
 
-        for fb in self.available_fallbacks(&primary_name) {
+        for fb in self.available_fallbacks(&primary_key) {
             tracing::info!(provider = %fb.provider.name(), "trying streaming fallback provider");
             match fb.provider.chat_stream(messages, tools, chunk_tx.clone()).await {
                 Ok(mut resp) => {
                     let reason = if primary_skipped { "cooldown" } else { "primary_failed" };
-                    resp.fallback_notice = Some(format!("↪️ {} → {} ({})", primary_name, fb.provider.name(), reason));
+                    resp.fallback_notice = Some(format!("↪️ {} → {} ({})", primary_display, fb.provider.name(), reason));
                     return Ok(resp);
                 }
                 Err(e) => {
                     let class = super::error_classify::classify(&e);
                     let cd = super::error_classify::cooldown_duration(&class).min(fb.cooldown_duration);
                     tracing::warn!(provider = %fb.provider.name(), error = %e, error_class = ?class, "streaming fallback also failed");
-                    if !cd.is_zero() { self.set_cooldown(fb.provider.name(), cd); }
+                    if !cd.is_zero() { self.set_cooldown(&fb.key, cd); }
                 }
             }
         }

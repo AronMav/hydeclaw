@@ -5,6 +5,7 @@ import asyncio
 import httpx
 
 from providers.base import ImageGenProvider
+from helpers import validate_url_ssrf
 
 
 class FalImageGen(ImageGenProvider):
@@ -76,7 +77,9 @@ class FalImageGen(ImageGenProvider):
                     result_data = result_resp.json()
                     images = result_data.get("images", [])
                     if images:
-                        img_resp = await http.get(images[0]["url"])
+                        image_url = images[0]["url"]
+                        validate_url_ssrf(image_url)
+                        img_resp = await http.get(image_url)
                         img_resp.raise_for_status()
                         return img_resp.content
                     raise Exception("fal.ai returned no images")
@@ -87,7 +90,9 @@ class FalImageGen(ImageGenProvider):
 
         # Synchronous response
         if "images" in data:
-            img_resp = await http.get(data["images"][0]["url"])
+            image_url = data["images"][0]["url"]
+            validate_url_ssrf(image_url)
+            img_resp = await http.get(image_url)
             img_resp.raise_for_status()
             return img_resp.content
 

@@ -1,5 +1,7 @@
 """Vision (Image Description) endpoints."""
 
+import logging
+
 from fastapi import APIRouter, UploadFile, File, Form, Request, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -9,6 +11,10 @@ import httpx
 
 from dependencies import require_provider
 from helpers import default_vision_prompt, resolve_content_type
+
+log = logging.getLogger("toolgate.vision")
+
+VISION_MAX_BYTES = 20 * 1024 * 1024  # 20 MB
 
 router = APIRouter(tags=["vision"])
 
@@ -21,7 +27,15 @@ async def describe(
     language: str = Form(default="ru"),
     provider=Depends(require_provider("vision")),
 ):
+    log.info("Using provider: %s model=%s", provider.name, getattr(provider, "model", ""))
     image_bytes = await file.read()
+
+    if len(image_bytes) > VISION_MAX_BYTES:
+        return JSONResponse(
+            status_code=413,
+            content={"error": f"Image too large ({len(image_bytes)} bytes). Max 20 MB."},
+        )
+
     content_type = resolve_content_type(image_bytes, file.content_type or "")
     vision_prompt = prompt.strip() if prompt.strip() else default_vision_prompt(language)
 
@@ -29,7 +43,11 @@ async def describe(
         text = await provider.describe(
             request.app.state.http_client, image_bytes, content_type, vision_prompt,
         )
-        return {"description": text}
+        return {
+            "description": text,
+            "provider": provider.name,
+            "model": getattr(provider, "model", ""),
+        }
     except httpx.HTTPStatusError as e:
         return JSONResponse(status_code=e.response.status_code,
                             content={"error": f"Vision error: {e.response.text}"})
@@ -49,6 +67,7 @@ async def describe_url(
     request: Request,
     provider=Depends(require_provider("vision")),
 ):
+    log.info("Using provider: %s model=%s", provider.name, getattr(provider, "model", ""))
     http = request.app.state.http_client
     from helpers import validate_url_ssrf
     validate_url_ssrf(body.image_url)
@@ -68,6 +87,12 @@ async def describe_url(
         return JSONResponse(status_code=400,
                             content={"error": f"Downloaded content too small ({len(image_bytes)} bytes)"})
 
+    if len(image_bytes) > VISION_MAX_BYTES:
+        return JSONResponse(
+            status_code=413,
+            content={"error": f"Image too large ({len(image_bytes)} bytes). Max 20 MB."},
+        )
+
     content_type = resolve_content_type(image_bytes, resp.headers.get("content-type", ""))
     vision_prompt = (body.question.strip() if body.question and body.question.strip()
                      else default_vision_prompt(body.language or "ru"))
@@ -76,7 +101,11 @@ async def describe_url(
         text = await provider.describe(
             http, image_bytes, content_type, vision_prompt,
         )
-        return {"description": text}
+        return {
+            "description": text,
+            "provider": provider.name,
+            "model": getattr(provider, "model", ""),
+        }
     except httpx.HTTPStatusError as e:
         return JSONResponse(status_code=e.response.status_code,
                             content={"error": f"Vision error: {e.response.text}"})
