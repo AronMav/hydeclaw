@@ -269,6 +269,13 @@ export function ToolCallPartView({ toolName, args, result, status }: {
 export function FileDataPartView({ data }: { data: { url: string; mediaType: string } }) {
   const { url, mediaType } = data;
   const safeUrl = sanitizeUrl(url);
+  if (mediaType.startsWith("image/")) {
+    return (
+      <a href={safeUrl} target="_blank" rel="noopener noreferrer">
+        <img src={safeUrl} alt="" className="max-w-md rounded-xl border border-border" loading="lazy" />
+      </a>
+    );
+  }
   if (mediaType.startsWith("audio/")) {
     return <audio controls src={safeUrl} className="w-full max-w-md" />;
   }
