@@ -158,7 +158,10 @@ class ProviderRegistry:
         self._loaded = bool(self.config.providers)
 
     def reload(self) -> None:
-        self.load()
+        """Reload from Core API (has latest active providers)."""
+        self.config = load_config()
+        self._instantiate_all()
+        self._loaded = bool(self.config.providers)
 
     def _ensure_loaded(self) -> None:
         """Lazy-load: if startup returned empty config, retry from Core API on first use."""

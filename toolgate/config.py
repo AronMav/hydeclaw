@@ -3,14 +3,9 @@
 import json
 import logging
 import os
-import shutil
-from pathlib import Path
 
 import httpx
 from pydantic import BaseModel, Field
-
-CONFIG_PATH = os.environ.get("CONFIG_PATH", "providers.json")
-DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "providers.json")
 
 CORE_API_URL = os.environ.get("CORE_API_URL", "http://127.0.0.1:18789")
 CORE_AUTH_TOKEN = os.environ.get("HYDECLAW_AUTH_TOKEN", os.environ.get("AUTH_TOKEN", ""))
@@ -101,26 +96,17 @@ def _load_config_from_api() -> ProvidersConfig | None:
 
 
 def load_config() -> ProvidersConfig:
-    """Load config: disk file first (written by Core before spawning toolgate),
-    then Core API fallback, then env vars."""
-    # 1. Disk file (written by Core at startup — most reliable)
-    path = Path(CONFIG_PATH)
-    if path.exists():
-        _log.info("Loading config from disk: %s", path)
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            config = ProvidersConfig(**data)
-            if config.providers:
-                return config
-        except Exception as e:
-            _log.warning("Failed to parse %s: %s", path, e)
+    """Load config from Core API with retry. Falls back to env vars if API unavailable.
+    No disk file needed — Core API is the single source of truth."""
+    import time
+    for attempt in range(5):
+        config = _load_config_from_api()
+        if config is not None:
+            return config
+        if attempt < 4:
+            wait = 2 * (attempt + 1)
+            _log.info("Core API not ready, retrying in %ds (attempt %d/5)...", wait, attempt + 1)
+            time.sleep(wait)
 
-    # 2. Core API fallback
-    config = _load_config_from_api()
-    if config is not None:
-        return config
-
-    # 3. Environment variables
-    _log.info("No config source available — seeding from environment variables")
+    _log.warning("Core API unavailable after 5 attempts — seeding from environment variables")
     return _seed_from_env()

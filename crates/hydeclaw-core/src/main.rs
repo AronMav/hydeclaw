@@ -557,22 +557,7 @@ async fn main() -> Result<()> {
         wan_ip_cache: Arc::new(tokio::sync::RwLock::new(None)),
     };
 
-    // Write toolgate provider config to disk before starting managed processes.
-    // Toolgate reads this file at startup — avoids race condition with Core API auth.
-    {
-        let toolgate_config_path = std::env::current_dir().unwrap_or_default().join("toolgate").join("providers.json");
-        let config_json = crate::gateway::export_media_config(&state).await;
-        if let Err(e) = tokio::fs::write(&toolgate_config_path, serde_json::to_string_pretty(&config_json).unwrap_or_default()).await {
-            tracing::warn!(error = %e, "failed to write toolgate/providers.json");
-        } else {
-            tracing::info!("wrote toolgate/providers.json for managed process startup");
-        }
-    }
-
-    // Start managed child processes (channels, toolgate)
-    if let Some(ref pm) = process_manager {
-        pm.start_all().await;
-    }
+    // Managed processes started after TcpListener::bind below — toolgate needs Core API ready.
 
     // Stream cleanup: in-memory broadcast (2 min TTL) + DB jobs (1 hour TTL)
     {
@@ -987,6 +972,17 @@ async fn main() -> Result<()> {
                 }
                 tracing::info!(restarted, failed, "SIGHUP: agent reload complete");
             }
+        });
+    }
+
+    // Start managed child processes just before serve — Core API must be accepting requests
+    // for toolgate to load config from /api/media-config
+    if let Some(ref pm) = process_manager {
+        let pm_clone = pm.clone();
+        tokio::spawn(async move {
+            // Small delay to ensure axum::serve has started accepting
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            pm_clone.start_all().await;
         });
     }
 
