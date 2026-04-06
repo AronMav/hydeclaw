@@ -67,14 +67,17 @@ def _load_config_from_api() -> ProvidersConfig | None:
     Returns the parsed ProvidersConfig on success, or None if unavailable.
     The Core endpoint returns unmasked api_keys and the data in ProvidersConfig format.
     """
-    if not CORE_API_URL:
+    core_url = os.environ.get("CORE_API_URL", CORE_API_URL)
+    if not core_url:
         return None
+    # Read token at call time (not import time) — process manager sets env after module load
+    auth_token = os.environ.get("HYDECLAW_AUTH_TOKEN", os.environ.get("AUTH_TOKEN", ""))
     try:
         headers: dict[str, str] = {}
-        if CORE_AUTH_TOKEN:
-            headers["Authorization"] = f"Bearer {CORE_AUTH_TOKEN}"
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
         resp = httpx.get(
-            f"{CORE_API_URL}/api/media-config",
+            f"{core_url}/api/media-config",
             headers=headers,
             timeout=5.0,
         )
@@ -98,11 +101,17 @@ def _load_config_from_api() -> ProvidersConfig | None:
 
 
 def load_config() -> ProvidersConfig:
-    """Load config from Core API first, fallback to disk."""
-    # Try Core API (preferred — contains real api_keys from DB)
-    config = _load_config_from_api()
-    if config is not None:
-        return config
+    """Load config from Core API first, fallback to disk.
+    Retries Core API up to 5 times (toolgate may start before Core is ready)."""
+    import time
+    for attempt in range(5):
+        config = _load_config_from_api()
+        if config is not None:
+            return config
+        if attempt < 4:
+            wait = 2 * (attempt + 1)
+            _log.info("Core API not ready, retrying in %ds (attempt %d/5)...", wait, attempt + 1)
+            time.sleep(wait)
 
     # Fallback: load from disk
     path = Path(CONFIG_PATH)

@@ -45,7 +45,7 @@ name = "toolgate"
 command = [".venv/bin/python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "9011", "--workers", "1", "--loop", "asyncio"]
 working_dir = "toolgate"
 env_passthrough = ["HYDECLAW_AUTH_TOKEN", "WHISPER_URL", "VISION_URL", "VISION_MODEL", "OLLAMA_API_KEY", "TTS_BACKEND_URL", "MINIMAX_API_KEY"]
-env_extra = { AUTH_TOKEN = "${HYDECLAW_AUTH_TOKEN}", INTERNAL_NETWORK = "127.0.0.0/8", CONFIG_PATH = "providers.json" }
+env_extra = { AUTH_TOKEN = "${HYDECLAW_AUTH_TOKEN}", INTERNAL_NETWORK = "127.0.0.0/8" }
 health_url = "http://localhost:9011/health"
 port = 9011
 memory_max = "256M"
