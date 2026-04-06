@@ -59,7 +59,6 @@ import {
   useDeleteProvider,
   useSetProviderActive,
   useMediaDrivers,
-  useRestartService,
 } from "@/lib/queries";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -70,7 +69,7 @@ type ProviderCategory = typeof ALL_CATEGORIES[number];
 const ALL_CAPABILITIES = ["graph_extraction", "compaction", "stt", "tts", "vision", "imagegen", "embedding"] as const;
 
 /** Capabilities that require toolgate restart when active provider changes */
-const MEDIA_CAPABILITIES = new Set(["stt", "tts", "vision", "imagegen", "embedding"]);
+
 
 
 /** Category-specific badge colors — intentionally distinct per capability */
@@ -142,7 +141,7 @@ export default function ProvidersPage() {
   const updateProvider = useUpdateProvider();
   const deleteProvider = useDeleteProvider();
   const setActive = useSetProviderActive();
-  const restartService = useRestartService();
+
 
   // Dialog state
   const [dialog, setDialog] = useState<DialogState>({ open: false });
@@ -346,18 +345,7 @@ export default function ProvidersPage() {
                       const name = v === "__none__" ? null : v;
                       setActive.mutate({ capability: cap, provider_name: name }, {
                         onSuccess: () => {
-                          if (MEDIA_CAPABILITIES.has(cap)) {
-                            toast(t("providers.active_updated", { capability: capLabel(cap) }), {
-                              description: t("providers.toolgate_restart_needed"),
-                              action: {
-                                label: t("providers.restart_now"),
-                                onClick: () => restartService.mutate("toolgate", {
-                                  onSuccess: () => toast.success(t("providers.toolgate_restarted")),
-                                }),
-                              },
-                              duration: 10000,
-                            });
-                          }
+                          toast.success(t("providers.active_updated", { capability: capLabel(cap) }));
                         },
                       });
                     }}
