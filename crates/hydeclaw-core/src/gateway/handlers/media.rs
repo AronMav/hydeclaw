@@ -99,9 +99,15 @@ pub(crate) async fn api_media_serve(
         _ => "application/octet-stream",
     };
 
+    let disposition = if ct.starts_with("image/") || ct.starts_with("audio/") || ct.starts_with("video/") {
+        "inline"
+    } else {
+        "attachment"
+    };
+
     ([
         (axum::http::header::CONTENT_TYPE, ct),
-        (axum::http::header::CONTENT_DISPOSITION, "attachment"),
+        (axum::http::header::CONTENT_DISPOSITION, disposition),
         (axum::http::header::CACHE_CONTROL, "private, no-store"),
     ], data).into_response()
 }
