@@ -265,8 +265,7 @@ export default function ProvidersPage() {
 
   const setCategory = (cat: ProviderCategory) => {
     if (!dialog.open) return;
-    setForm({ ...EMPTY_FORM, type: cat });
-    setApiKeyValue("");
+    setForm((f) => ({ ...f, type: cat, provider_type: "", default_model: "" }));
     setDiscoveredModels([]);
     setDialog({ ...dialog, category: cat });
   };
