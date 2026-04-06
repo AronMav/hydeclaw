@@ -1,16 +1,164 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useBackups, useCreateBackup } from "@/lib/queries";
-import { getToken } from "@/lib/api";
+import { getToken, apiGet, apiPut } from "@/lib/api";
 import { formatDate, formatBytes } from "@/lib/format";
 import { useTranslation } from "@/hooks/use-translation";
 import { ErrorBanner } from "@/components/ui/error-banner";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { Archive, Download, RefreshCw, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { CronSchedulePicker } from "@/components/ui/cron-schedule-picker";
+import type { CronPreset } from "@/lib/cron";
+import { Archive, Download, RefreshCw, Plus, RotateCcw, Trash2, Settings2 } from "lucide-react";
 import { apiDelete } from "@/lib/api";
 import { toast } from "sonner";
+
+// ── Backup-specific cron presets (5-field) ───────────────────────────────────
+
+const BACKUP_PRESETS: CronPreset[] = [
+  { value: "0 1 * * *", labelKey: "backups.cron_daily_1" },
+  { value: "0 3 * * *", labelKey: "backups.cron_daily_3" },
+  { value: "0 5 * * *", labelKey: "backups.cron_daily_5" },
+  { value: "0 0 * * *", labelKey: "backups.cron_midnight" },
+  { value: "0 5 * * 1", labelKey: "backups.cron_weekly_mon" },
+  { value: "0 5 * * 0", labelKey: "backups.cron_weekly_sun" },
+  { value: "0 0,12 * * *", labelKey: "backups.cron_twice_daily" },
+];
+
+/** Convert 6-field cron (with seconds) to 5-field for UI display */
+function cron6to5(expr: string): string {
+  const parts = expr.trim().split(/\s+/);
+  return parts.length === 6 ? parts.slice(1).join(" ") : expr;
+}
+
+/** Convert 5-field cron to 6-field (prepend "0" seconds) for backend */
+function cron5to6(expr: string): string {
+  const parts = expr.trim().split(/\s+/);
+  return parts.length === 5 ? `0 ${expr}` : expr;
+}
+
+// ── Backup settings section ──────────────────────────────────────────────────
+
+interface BackupConfig {
+  enabled: boolean;
+  cron: string;
+  retention_days: number;
+}
+
+function BackupSettings() {
+  const { t } = useTranslation();
+  const [config, setConfig] = useState<BackupConfig | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [editCron, setEditCron] = useState("");
+  const [editRetention, setEditRetention] = useState("");
+
+  const loadConfig = useCallback(() => {
+    apiGet<{ backup?: BackupConfig }>("/api/config")
+      .then((d) => {
+        if (d.backup) {
+          setConfig(d.backup);
+          setEditCron(cron6to5(d.backup.cron));
+          setEditRetention(String(d.backup.retention_days));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => { loadConfig(); }, [loadConfig]);
+
+  const toggleEnabled = async (enabled: boolean) => {
+    setSaving(true);
+    try {
+      await apiPut("/api/config", { backup_enabled: enabled });
+      toast.success(enabled ? t("backups.scheduler_on") : t("backups.scheduler_off"));
+      loadConfig();
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveSettings = async () => {
+    setSaving(true);
+    try {
+      const payload: Record<string, unknown> = {};
+      if (cron5to6(editCron) !== config?.cron) payload.backup_cron = cron5to6(editCron);
+      if (Number(editRetention) !== config?.retention_days) payload.backup_retention_days = Number(editRetention);
+      if (Object.keys(payload).length > 0) {
+        await apiPut("/api/config", payload);
+        toast.success(t("backups.settings_saved"));
+        loadConfig();
+      }
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!config) return null;
+
+  const hasChanges = cron5to6(editCron) !== config.cron || Number(editRetention) !== config.retention_days;
+
+  return (
+    <div className="rounded-lg border border-border bg-card text-card-foreground shadow-sm p-4 space-y-4">
+      <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+        <Settings2 className="h-4 w-4" />
+        {t("backups.settings")}
+      </div>
+
+      <div className="flex items-center justify-between">
+        <div>
+          <span className="text-sm font-medium">{t("backups.auto_backup")}</span>
+          <p className="text-xs text-muted-foreground">{t("backups.auto_backup_desc")}</p>
+        </div>
+        <Switch
+          checked={config.enabled}
+          onCheckedChange={toggleEnabled}
+          disabled={saving}
+        />
+      </div>
+
+      {config.enabled && (
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <span className="text-sm font-medium text-muted-foreground ml-1">{t("backups.cron_schedule")}</span>
+            <CronSchedulePicker
+              value={editCron}
+              onChange={setEditCron}
+              showTimezone={false}
+              presets={BACKUP_PRESETS}
+            />
+          </div>
+          <div className="space-y-1.5 max-w-[200px]">
+            <span className="text-sm font-medium text-muted-foreground ml-1">{t("backups.retention")}</span>
+            <Input
+              type="number"
+              value={editRetention}
+              onChange={(e) => setEditRetention(e.target.value)}
+              min={1}
+              max={365}
+              className="font-mono text-sm"
+              disabled={saving}
+            />
+            <p className="text-xs text-muted-foreground ml-1">{t("backups.retention_hint")}</p>
+          </div>
+          {hasChanges && (
+            <Button size="sm" onClick={saveSettings} disabled={saving}>
+              {t("common.save")}
+            </Button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main page ────────────────────────────────────────────────────────────────
 
 export default function BackupsPage() {
   const { t, locale } = useTranslation();
@@ -134,6 +282,8 @@ export default function BackupsPage() {
             </Button>
           </div>
         </div>
+
+        <BackupSettings />
 
         {combinedError && <ErrorBanner error={combinedError} />}
 

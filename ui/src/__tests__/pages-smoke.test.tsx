@@ -490,4 +490,16 @@ describe("Page smoke tests", () => {
     expect(container).toBeTruthy();
   });
 
+  it("renders doctor page", async () => {
+    const { default: Page } = await import("@/app/(authenticated)/doctor/page");
+    render(<Page />);
+    expect(screen.getByText("Doctor")).toBeInTheDocument();
+  });
+
+  it("renders setup page", async () => {
+    const { default: Page } = await import("@/app/setup/page");
+    render(<Page />);
+    expect(screen.getByText("setup.step_provider")).toBeInTheDocument();
+  });
+
 });

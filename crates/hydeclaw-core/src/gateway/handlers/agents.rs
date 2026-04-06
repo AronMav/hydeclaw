@@ -584,6 +584,7 @@ pub async fn start_agent_from_config(
     if let Err(e) = crate::agent::workspace::ensure_workspace_scaffold(
         &workspace_dir,
         name,
+        agent_cfg.agent.base,
     ).await {
         tracing::warn!(agent = %name, error = %e, "failed to scaffold workspace");
     }
@@ -659,7 +660,49 @@ pub(crate) async fn api_create_agent(
         }
     }
 
-    let cfg = build_agent_config(name.clone(), payload);
+    let mut cfg = build_agent_config(name.clone(), payload);
+
+    // First agent created is automatically base (system agent) with safe defaults
+    if state.agents.read().await.is_empty() {
+        cfg.agent.base = true;
+        // Set default tool deny-list if none was provided
+        if cfg.agent.tools.is_none() {
+            cfg.agent.tools = Some(crate::config::AgentToolPolicy {
+                allow: vec![],
+                deny: vec![
+                    "workspace_delete".into(),
+                    "workspace_rename".into(),
+                ],
+                allow_all: true,
+                deny_all_others: false,
+                groups: Default::default(),
+            });
+        }
+        // Set restricted access by default (secure out of the box)
+        if cfg.agent.access.is_none() {
+            cfg.agent.access = Some(crate::config::AgentAccessConfig {
+                mode: "restricted".into(),
+                owner_id: None,
+            });
+        }
+    } else {
+        // Non-base agents: deny dangerous tools by default (security audit compliance)
+        if cfg.agent.tools.is_none() {
+            cfg.agent.tools = Some(crate::config::AgentToolPolicy {
+                allow: vec![],
+                deny: vec![
+                    "code_exec".into(),
+                    "process_start".into(),
+                    "workspace_delete".into(),
+                    "workspace_rename".into(),
+                ],
+                allow_all: true,
+                deny_all_others: false,
+                groups: Default::default(),
+            });
+        }
+    }
+
     let toml_str = match cfg.to_toml() {
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
@@ -1305,7 +1348,7 @@ pub(crate) async fn api_inter_agent_messages(
     match rows {
         Ok(rows) => Json(json!({
             "messages": rows.into_iter().rev().map(|(agent, user, channel, role, content, ts)| {
-                // user_id is "agent:Arty" or "human:ui" → normalize to display name
+                // user_id is "agent:AgentName" or "human:ui" → normalize to display name
                 let initiator = if user.starts_with("human:") {
                     "You"
                 } else {

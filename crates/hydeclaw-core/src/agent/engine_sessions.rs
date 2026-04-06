@@ -98,10 +98,12 @@ impl AgentEngine {
         for (name, handle) in map.iter() {
             let a = &handle.engine.agent;
             let is_self = name == &self.agent.name;
+            let base_tag = if a.base { " [BASE]" } else { "" };
             out.push_str(&format!(
-                "- **{}**{}: {} / {} (lang: {})\n",
+                "- **{}**{}{}: {} / {} (lang: {})\n",
                 name,
                 if is_self { " (you)" } else { "" },
+                base_tag,
                 a.provider,
                 a.model,
                 a.language,

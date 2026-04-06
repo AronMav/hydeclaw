@@ -374,6 +374,39 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Register a cron job that creates a backup on a configurable schedule.
+    pub async fn add_backup(
+        &self,
+        cron_expr: &str,
+        retention_days: u32,
+        db: PgPool,
+        secrets: Arc<crate::secrets::SecretsManager>,
+        agent_deps: Arc<tokio::sync::RwLock<crate::gateway::state::AgentDeps>>,
+    ) -> Result<()> {
+        tracing::info!(cron = %cron_expr, retention_days, "scheduling automatic backup");
+
+        let cron_expr = cron_expr.to_string();
+        let job = Job::new_async(cron_expr.as_str(), move |_uuid, _lock| {
+            let db = db.clone();
+            let secrets = secrets.clone();
+            let agent_deps = agent_deps.clone();
+            Box::pin(async move {
+                match crate::gateway::create_backup_internal(
+                    &db,
+                    &secrets,
+                    &agent_deps,
+                    retention_days as i64,
+                ).await {
+                    Ok(f) => tracing::info!(filename = %f, "scheduled backup created"),
+                    Err(e) => tracing::error!(error = %e, "scheduled backup failed"),
+                }
+            })
+        })?;
+
+        self.scheduler.add(job).await?;
+        Ok(())
+    }
+
     /// Add a dynamic job from the database.
     #[allow(clippy::too_many_arguments)]
     pub async fn add_dynamic_job(

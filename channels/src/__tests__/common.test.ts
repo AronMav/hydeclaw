@@ -206,7 +206,7 @@ describe("parseUserCommand", () => {
   });
 
   test("with @botname suffix", () => {
-    expect(parseUserCommand("/stop@arty_mis_bot")).toBe("stop");
+    expect(parseUserCommand("/stop@my_test_bot")).toBe("stop");
     expect(parseUserCommand("/think@mybot")).toBe("think");
     expect(parseUserCommand("/help@somebot")).toBe("help");
   });

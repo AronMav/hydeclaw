@@ -13,7 +13,7 @@ Check for the existence of a daily backup cron job:
 
 ```
 cron(action="create", name="daily-backup", expr="0 5 * * *",
-     timezone="<timezone from USER.md>", message="BACKUP", announce_to="Hyde", silent=false)
+     timezone="<timezone from USER.md>", message="BACKUP", announce_to="{AGENT_NAME}", silent=false)
 ```
 
 ## Daily Backup (upon receiving the BACKUP message)
@@ -54,7 +54,7 @@ If anomalies were detected and resolved: briefly describe — what happened, wha
 
 ## Note
 
-System health monitoring (services, resources, containers, restarts, secrets, alerting) is handled by **Watchdog** — a built-in Core subsystem. Hyde does NOT perform health checks or service restarts during heartbeat.
+System health monitoring (services, resources, containers, restarts, secrets, alerting) is handled by **Watchdog** — a built-in Core subsystem. {AGENT_NAME} does NOT perform health checks or service restarts during heartbeat.
 
 ## Diagnostic Principles
 

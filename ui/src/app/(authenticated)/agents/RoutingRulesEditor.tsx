@@ -107,30 +107,30 @@ function RoutingRuleRow({
           </Select>
           {(() => {
             const rModels = discoveredModels[rule.provider] ?? FALLBACK_MODELS[rule.provider] ?? [];
-            if (rModels.length === 0) {
+            if (rModels.length > 0) {
               return (
-                <Input value={rule.model} placeholder={t("agents.model_placeholder")}
-                  className="bg-background border-border font-mono text-xs h-8"
-                  onChange={(e) => onChange({ model: e.target.value })} />
+                <div className="flex gap-1.5">
+                  <Select
+                    value={rModels.includes(rule.model) ? rule.model : ""}
+                    onValueChange={(v) => onChange({ model: v })}
+                  >
+                    <SelectTrigger className="bg-background border-border font-mono text-xs h-8">
+                      <SelectValue placeholder={t("agents.model_placeholder")} />
+                    </SelectTrigger>
+                    <SelectContent className="border-border max-h-60">
+                      {rModels.map((m) => (<SelectItem key={m} value={m} className="font-mono text-xs">{m}</SelectItem>))}
+                    </SelectContent>
+                  </Select>
+                  <Input value={rule.model} placeholder={t("agents.model_placeholder")}
+                    className="bg-background border-border font-mono text-xs h-8 max-w-[140px]"
+                    onChange={(e) => onChange({ model: e.target.value })} />
+                </div>
               );
             }
-            const isKnown = rModels.includes(rule.model);
             return (
-              <div className="space-y-1">
-                <Select value={isKnown ? rule.model : "__custom__"}
-                  onValueChange={(v) => { if (v !== "__custom__") onChange({ model: v }); else onChange({ model: "" }); }}>
-                  <SelectTrigger className="w-full bg-background border-border font-mono text-xs h-8"><SelectValue /></SelectTrigger>
-                  <SelectContent className="border-border max-h-60">
-                    {rModels.map((m) => (<SelectItem key={m} value={m} className="font-mono text-xs">{m}</SelectItem>))}
-                    <SelectItem value="__custom__" className="text-xs">{t("common.custom")}</SelectItem>
-                  </SelectContent>
-                </Select>
-                {!isKnown && (
-                  <Input value={rule.model} placeholder={t("agents.model_placeholder")}
-                    className="bg-background border-border font-mono text-xs h-8"
-                    onChange={(e) => onChange({ model: e.target.value })} />
-                )}
-              </div>
+              <Input value={rule.model} placeholder={t("agents.model_placeholder")}
+                className="bg-background border-border font-mono text-xs h-8"
+                onChange={(e) => onChange({ model: e.target.value })} />
             );
           })()}
           <Select value={rule.condition} onValueChange={(v) => onChange({ condition: v })}>
@@ -287,7 +287,7 @@ export function RoutingRulesEditor({
         <div className="space-y-3">
           {routing.map((rule, idx) => (
             <RoutingRuleRow
-              key={idx}
+              key={`${rule.provider}-${rule.condition}-${idx}`}
               rule={rule}
               secretNames={secretNames}
               discoveredModels={discoveredModels}

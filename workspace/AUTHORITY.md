@@ -36,7 +36,7 @@ How system prompt content is governed across layers.
 
 **Change process:** Edit markdown file, takes effect on next message (no deploy).
 
-**Budget:** ~2K tokens (~8KB). Current Hyde SOUL.md: 8.7KB. Phase 22 will slim before adding methodology.
+**Budget:** ~2K tokens (~8KB). Keep SOUL.md lean before adding methodology.
 
 ### 3. Skills (on-demand, loaded via `skill_use` tool)
 

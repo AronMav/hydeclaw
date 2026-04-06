@@ -107,12 +107,12 @@ describe("ChannelOutbound deserialization", () => {
   });
 
   test("deserializes config", () => {
-    const json = '{"type":"config","language":"ru","owner_id":"388443751","typing_mode":"realistic"}';
+    const json = '{"type":"config","language":"ru","owner_id":"123456789","typing_mode":"realistic"}';
     const msg = JSON.parse(json) as ChannelOutbound;
     expect(msg.type).toBe("config");
     if (msg.type === "config") {
       expect(msg.language).toBe("ru");
-      expect(msg.owner_id).toBe("388443751");
+      expect(msg.owner_id).toBe("123456789");
       expect(msg.typing_mode).toBe("realistic");
     }
   });

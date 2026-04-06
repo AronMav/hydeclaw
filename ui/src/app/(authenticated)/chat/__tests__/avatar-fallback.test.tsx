@@ -47,19 +47,19 @@ import { RoleAvatar, hashAgentName, AGENT_COLORS } from "@/app/(authenticated)/c
 
 describe("hashAgentName", () => {
   it("returns same value for same input (deterministic)", () => {
-    const a = hashAgentName("Arty");
-    const b = hashAgentName("Arty");
+    const a = hashAgentName("Agent1");
+    const b = hashAgentName("Agent1");
     expect(a).toBe(b);
   });
 
   it("returns different values for different inputs", () => {
-    const a = hashAgentName("Arty");
+    const a = hashAgentName("Agent1");
     const b = hashAgentName("Helper");
     expect(a).not.toBe(b);
   });
 
   it("produces a valid AGENT_COLORS index via modulo", () => {
-    const idx = hashAgentName("Arty") % 8;
+    const idx = hashAgentName("Agent1") % 8;
     expect(idx).toBeGreaterThanOrEqual(0);
     expect(idx).toBeLessThan(8);
   });
@@ -73,13 +73,13 @@ describe("AGENT_COLORS", () => {
 
 describe("RoleAvatar", () => {
   it("shows initial letter when no iconUrl is provided", () => {
-    render(<RoleAvatar role="assistant" agentName="Arty" />);
+    render(<RoleAvatar role="assistant" agentName="Agent1" />);
     expect(screen.getByText("A")).toBeInTheDocument();
     expect(screen.queryByRole("img")).toBeNull();
   });
 
   it("renders Avatar container with fallback when iconUrl is provided", () => {
-    const { container } = render(<RoleAvatar role="assistant" iconUrl="/uploads/test.png" agentName="Arty" />);
+    const { container } = render(<RoleAvatar role="assistant" iconUrl="/uploads/test.png" agentName="Agent1" />);
     // Radix Avatar doesn't render <img> in jsdom (no image load events), so fallback is shown
     expect(container.querySelector('[data-slot="avatar"]')).toBeInTheDocument();
     expect(screen.getByText("A")).toBeInTheDocument();

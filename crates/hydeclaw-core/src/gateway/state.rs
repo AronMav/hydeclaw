@@ -96,6 +96,14 @@ impl PollingDiagnostics {
     }
 }
 
+/// Cached WAN (public) IP address with CGNAT classification and a fetch timestamp.
+#[derive(Clone)]
+pub struct WanIpCache {
+    pub ip: String,
+    pub is_cgnat: bool,
+    pub fetched_at: std::time::Instant,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
@@ -137,6 +145,8 @@ pub struct AppState {
     pub oauth: Arc<crate::oauth::OAuthManager>,
     /// Atomic counters for channel message diagnostics.
     pub polling_diagnostics: Arc<PollingDiagnostics>,
+    /// Cached WAN IP address (refreshed every 5 minutes to avoid hammering STUN/TURN services).
+    pub wan_ip_cache: Arc<tokio::sync::RwLock<Option<WanIpCache>>>,
 }
 
 /// Shared dependencies needed to start new agents at runtime (from CRUD endpoints).

@@ -11,7 +11,7 @@ impl AgentEngine {
             return None;
         }
         let (raw_command, args) = cmd.split_once(' ').unwrap_or((cmd, ""));
-        // Strip @botname suffix (Telegram sends /status@arty_mis_bot)
+        // Strip @botname suffix (Telegram sends /status@my_bot)
         let command = raw_command.split('@').next().unwrap_or(raw_command);
         tracing::debug!(command = %command, raw = %raw_command, "slash command received");
         let dm_scope = self.agent.session.as_ref()

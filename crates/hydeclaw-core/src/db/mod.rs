@@ -5,6 +5,7 @@ pub mod audit;
 pub mod tool_audit;
 pub mod tool_quality;
 pub mod memory_queries;
+pub mod notifications;
 pub mod providers;
 pub mod outbound;
 pub mod pending;

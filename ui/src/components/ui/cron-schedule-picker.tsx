@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   Select,
   SelectContent,
@@ -39,11 +39,14 @@ export function CronSchedulePicker({
   className,
 }: CronSchedulePickerProps) {
   const { t } = useTranslation();
+  const [forceCustom, setForceCustom] = useState(false);
 
-  const isCustom = useMemo(
-    () => !!value && !presets.some((p) => p.value === value),
+  const matchesPreset = useMemo(
+    () => presets.some((p) => p.value === value),
     [value, presets],
   );
+
+  const isCustom = forceCustom || (!!value && !matchesPreset);
 
   const selectValue = isCustom ? CUSTOM_VALUE : value;
   const valid = !value || isValidCron(value);
@@ -57,8 +60,9 @@ export function CronSchedulePicker({
           value={selectValue}
           onValueChange={(v) => {
             if (v === CUSTOM_VALUE) {
-              onChange(value || "");
+              setForceCustom(true);
             } else {
+              setForceCustom(false);
               onChange(v);
             }
           }}

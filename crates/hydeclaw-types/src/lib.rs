@@ -1038,14 +1038,14 @@ mod tests {
     fn channel_action_dto_roundtrip() {
         let action = ChannelActionDto {
             action: "send_voice".into(),
-            params: json!({"text": "Hello world", "voice": "clone:Arty"}),
+            params: json!({"text": "Hello world", "voice": "clone:Agent1"}),
             context: json!({"chat_id": 12345, "message_id": 67}),
         };
         let json = serde_json::to_string(&action).unwrap();
         let back: ChannelActionDto = serde_json::from_str(&json).unwrap();
         assert_eq!(back.action, "send_voice");
         assert_eq!(back.params["text"], "Hello world");
-        assert_eq!(back.params["voice"], "clone:Arty");
+        assert_eq!(back.params["voice"], "clone:Agent1");
         assert_eq!(back.context["chat_id"], 12345);
         assert_eq!(back.context["message_id"], 67);
     }
@@ -1299,20 +1299,20 @@ mod tests {
     fn channel_outbound_config_roundtrip() {
         let original = ChannelOutbound::Config {
             language: "ru".into(),
-            owner_id: Some("388443751".into()),
+            owner_id: Some("123456789".into()),
             typing_mode: "thinking".into(),
         };
         let json = serde_json::to_string(&original).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["type"], "config");
         assert_eq!(v["language"], "ru");
-        assert_eq!(v["owner_id"], "388443751");
+        assert_eq!(v["owner_id"], "123456789");
         assert_eq!(v["typing_mode"], "thinking");
         let back: ChannelOutbound = serde_json::from_str(&json).unwrap();
         match back {
             ChannelOutbound::Config { language, owner_id, typing_mode } => {
                 assert_eq!(language, "ru");
-                assert_eq!(owner_id, Some("388443751".into()));
+                assert_eq!(owner_id, Some("123456789".into()));
                 assert_eq!(typing_mode, "thinking");
             }
             other => panic!("expected Config, got {:?}", other),

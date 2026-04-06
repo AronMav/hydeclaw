@@ -59,7 +59,7 @@ vi.mock("@/hooks/use-tool-progress", () => ({
 const { mockSessionsRef, mockAgentsRef, mockInviteAgent, mockInvalidateQueries } = vi.hoisted(() => ({
   mockSessionsRef: { current: { sessions: [] as Array<{ id: string; agent_id: string; user_id: string; channel: string; started_at: string; last_message_at: string; title: string | null; run_status: string | null; metadata: null; participants?: string[] }> } },
   mockAgentsRef: { current: [] as Array<{ name: string; model: string }> },
-  mockInviteAgent: vi.fn().mockResolvedValue({ participants: ["Arty", "Claude", "Sage"] }),
+  mockInviteAgent: vi.fn().mockResolvedValue({ participants: ["Agent1", "Claude", "Sage"] }),
   mockInvalidateQueries: vi.fn(),
 }));
 
@@ -72,8 +72,8 @@ vi.mock("@/stores/auth-store", () => ({
         token: "test-token",
         isAuthenticated: true,
         version: "1.0.0",
-        agents: ["Arty", "Claude", "Sage"],
-        agentIcons: { Arty: "arty-icon.png", Claude: "claude-icon.png" },
+        agents: ["Agent1", "Claude", "Sage"],
+        agentIcons: { Agent1: "agent1-icon.png", Claude: "claude-icon.png" },
         lastFetched: Date.now(),
         login: vi.fn(),
         logout: vi.fn(),
@@ -87,9 +87,9 @@ vi.mock("@/stores/auth-store", () => ({
 }));
 
 const mockChatStoreState: Record<string, unknown> = {
-  currentAgent: "Arty",
+  currentAgent: "Agent1",
   agents: {
-    Arty: {
+    Agent1: {
       activeSessionId: "s1",
       activeSessionIds: [],
       viewMode: "live",
@@ -110,8 +110,8 @@ vi.mock("@/stores/chat-store", () => ({
     },
     {
       getState: () => ({
-        currentAgent: "Arty",
-        agents: { Arty: { activeSessionId: "s1", activeSessionIds: [], viewMode: "live", streamStatus: "idle" } },
+        currentAgent: "Agent1",
+        agents: { Agent1: { activeSessionId: "s1", activeSessionIds: [], viewMode: "live", streamStatus: "idle" } },
         regenerate: vi.fn(),
         clearError: vi.fn(),
         sendMessage: vi.fn(),
@@ -210,7 +210,7 @@ describe("Session Management (SESS)", () => {
       mockSessionsRef.current = {
         sessions: [{
           id: "s1",
-          agent_id: "Arty",
+          agent_id: "Agent1",
           user_id: "user1",
           channel: "web",
           started_at: "2026-01-01T00:00:00Z",
@@ -218,18 +218,18 @@ describe("Session Management (SESS)", () => {
           title: "Test session",
           run_status: null,
           metadata: null,
-          participants: ["Arty", "Claude"],
+          participants: ["Agent1", "Claude"],
         }],
       };
       mockAgentsRef.current = [
-        { name: "Arty", model: "gpt-4" },
+        { name: "Agent1", model: "gpt-4" },
         { name: "Claude", model: "claude-3" },
       ];
 
-      render(<ParticipantBar sessionId="s1" currentAgent="Arty" />);
+      render(<ParticipantBar sessionId="s1" currentAgent="Agent1" />);
 
       // Both participants should have name labels
-      expect(screen.getByText("Arty")).toBeInTheDocument();
+      expect(screen.getByText("Agent1")).toBeInTheDocument();
       expect(screen.getByText("Claude")).toBeInTheDocument();
     });
 
@@ -237,7 +237,7 @@ describe("Session Management (SESS)", () => {
       mockSessionsRef.current = {
         sessions: [{
           id: "s1",
-          agent_id: "Arty",
+          agent_id: "Agent1",
           user_id: "user1",
           channel: "web",
           started_at: "2026-01-01T00:00:00Z",
@@ -245,16 +245,16 @@ describe("Session Management (SESS)", () => {
           title: "Single agent session",
           run_status: null,
           metadata: null,
-          participants: ["Arty"],
+          participants: ["Agent1"],
         }],
       };
 
-      const { container } = render(<ParticipantBar sessionId="s1" currentAgent="Arty" />);
+      const { container } = render(<ParticipantBar sessionId="s1" currentAgent="Agent1" />);
       expect(container.innerHTML).toBe("");
     });
 
     it("renders nothing when sessionId is null", () => {
-      const { container } = render(<ParticipantBar sessionId={null} currentAgent="Arty" />);
+      const { container } = render(<ParticipantBar sessionId={null} currentAgent="Agent1" />);
       expect(container.innerHTML).toBe("");
     });
 
@@ -262,7 +262,7 @@ describe("Session Management (SESS)", () => {
       mockSessionsRef.current = {
         sessions: [{
           id: "s1",
-          agent_id: "Arty",
+          agent_id: "Agent1",
           user_id: "user1",
           channel: "web",
           started_at: "2026-01-01T00:00:00Z",
@@ -270,15 +270,15 @@ describe("Session Management (SESS)", () => {
           title: "Test",
           run_status: null,
           metadata: null,
-          participants: ["Arty", "Claude"],
+          participants: ["Agent1", "Claude"],
         }],
       };
       mockAgentsRef.current = [
-        { name: "Arty", model: "gpt-4" },
+        { name: "Agent1", model: "gpt-4" },
         { name: "Claude", model: "claude-3" },
       ];
 
-      const { container } = render(<ParticipantBar sessionId="s1" currentAgent="Arty" />);
+      const { container } = render(<ParticipantBar sessionId="s1" currentAgent="Agent1" />);
 
       // Radix Avatar doesn't render <img> in jsdom (no image load events);
       // verify the Avatar container is rendered for the participant with an icon
@@ -294,7 +294,7 @@ describe("Session Management (SESS)", () => {
       mockSessionsRef.current = {
         sessions: [{
           id: "s1",
-          agent_id: "Arty",
+          agent_id: "Agent1",
           user_id: "user1",
           channel: "web",
           started_at: "2026-01-01T00:00:00Z",
@@ -302,17 +302,17 @@ describe("Session Management (SESS)", () => {
           title: "Test",
           run_status: null,
           metadata: null,
-          participants: ["Arty", "Claude"],
+          participants: ["Agent1", "Claude"],
         }],
       };
       // Sage is not a participant yet
       mockAgentsRef.current = [
-        { name: "Arty", model: "gpt-4" },
+        { name: "Agent1", model: "gpt-4" },
         { name: "Claude", model: "claude-3" },
         { name: "Sage", model: "gpt-4" },
       ];
 
-      render(<ParticipantBar sessionId="s1" currentAgent="Arty" />);
+      render(<ParticipantBar sessionId="s1" currentAgent="Agent1" />);
 
       // The (+) button should be rendered (it's a Plus icon inside a button)
       const plusButton = screen.getByRole("button");
@@ -323,7 +323,7 @@ describe("Session Management (SESS)", () => {
       mockSessionsRef.current = {
         sessions: [{
           id: "s1",
-          agent_id: "Arty",
+          agent_id: "Agent1",
           user_id: "user1",
           channel: "web",
           started_at: "2026-01-01T00:00:00Z",
@@ -331,16 +331,16 @@ describe("Session Management (SESS)", () => {
           title: "Test",
           run_status: null,
           metadata: null,
-          participants: ["Arty", "Claude"],
+          participants: ["Agent1", "Claude"],
         }],
       };
       // All agents are already participants
       mockAgentsRef.current = [
-        { name: "Arty", model: "gpt-4" },
+        { name: "Agent1", model: "gpt-4" },
         { name: "Claude", model: "claude-3" },
       ];
 
-      render(<ParticipantBar sessionId="s1" currentAgent="Arty" />);
+      render(<ParticipantBar sessionId="s1" currentAgent="Agent1" />);
 
       // No button should exist since there are no agents to invite
       expect(screen.queryByRole("button")).not.toBeInTheDocument();
@@ -350,7 +350,7 @@ describe("Session Management (SESS)", () => {
       mockSessionsRef.current = {
         sessions: [{
           id: "s1",
-          agent_id: "Arty",
+          agent_id: "Agent1",
           user_id: "user1",
           channel: "web",
           started_at: "2026-01-01T00:00:00Z",
@@ -358,16 +358,16 @@ describe("Session Management (SESS)", () => {
           title: "Test",
           run_status: null,
           metadata: null,
-          participants: ["Arty", "Claude"],
+          participants: ["Agent1", "Claude"],
         }],
       };
       mockAgentsRef.current = [
-        { name: "Arty", model: "gpt-4" },
+        { name: "Agent1", model: "gpt-4" },
         { name: "Claude", model: "claude-3" },
         { name: "Sage", model: "gpt-4" },
       ];
 
-      render(<ParticipantBar sessionId="s1" currentAgent="Arty" />);
+      render(<ParticipantBar sessionId="s1" currentAgent="Agent1" />);
 
       // The (+) button exists as a dropdown trigger
       const plusButton = screen.getByRole("button");
@@ -406,17 +406,17 @@ describe("Session Management (SESS)", () => {
           title: "Shared session",
           run_status: null,
           metadata: null,
-          participants: ["Claude", "Arty"],
+          participants: ["Claude", "Agent1"],
         }],
       };
       mockAgentsRef.current = [] as Array<{ name: string; model: string }>;
 
-      // Render with Arty as currentAgent -- session owned by Claude but with Arty as participant
-      render(<ParticipantBar sessionId="shared-session" currentAgent="Arty" />);
+      // Render with Agent1 as currentAgent -- session owned by Claude but with Agent1 as participant
+      render(<ParticipantBar sessionId="shared-session" currentAgent="Agent1" />);
 
       // If filtering works, the session is found and participants are rendered
       expect(screen.getByText("Claude")).toBeInTheDocument();
-      expect(screen.getByText("Arty")).toBeInTheDocument();
+      expect(screen.getByText("Agent1")).toBeInTheDocument();
     });
 
     it("query key includes agent name for proper cache invalidation", () => {
@@ -426,24 +426,24 @@ describe("Session Management (SESS)", () => {
       // Since qk is mocked, we verify the pattern through the useSessions mock behavior:
       // changing currentAgent should conceptually return different session lists.
 
-      // With Arty sessions
+      // With Agent1 sessions
       mockSessionsRef.current = {
         sessions: [{
-          id: "arty-session",
-          agent_id: "Arty",
+          id: "agent1-session",
+          agent_id: "Agent1",
           user_id: "user1",
           channel: "web",
           started_at: "2026-01-01T00:00:00Z",
           last_message_at: "2026-01-01T00:01:00Z",
-          title: "Arty only",
+          title: "Agent1 only",
           run_status: null,
           metadata: null,
-          participants: ["Arty", "Claude"],
+          participants: ["Agent1", "Claude"],
         }],
       };
 
-      const { unmount } = render(<ParticipantBar sessionId="arty-session" currentAgent="Arty" />);
-      expect(screen.getByText("Arty")).toBeInTheDocument();
+      const { unmount } = render(<ParticipantBar sessionId="agent1-session" currentAgent="Agent1" />);
+      expect(screen.getByText("Agent1")).toBeInTheDocument();
       unmount();
     });
   });

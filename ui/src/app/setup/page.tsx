@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { apiPost } from "@/lib/api";
+import { apiPost, apiGet, apiDelete } from "@/lib/api";
 import { useTranslation } from "@/hooks/use-translation";
 import type { TranslationKey } from "@/i18n/types";
 import { Button } from "@/components/ui/button";
@@ -14,33 +14,64 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Bot, Key, User, MessageSquare, ArrowRight, Check, Loader2 } from "lucide-react";
+import {
+  Bot,
+  Key,
+  User,
+  MessageSquare,
+  ArrowRight,
+  Check,
+  Loader2,
+  Wifi,
+  RefreshCw,
+  ShieldCheck,
+  CheckCircle2,
+  AlertTriangle,
+  XCircle,
+} from "lucide-react";
 
-const PROVIDERS = [
-  { value: "minimax", label: "MiniMax" },
-  { value: "anthropic", label: "Anthropic" },
-  { value: "google", label: "Google Gemini" },
-  { value: "openai", label: "OpenAI" },
-  { value: "deepseek", label: "DeepSeek" },
-  { value: "groq", label: "Groq" },
-  { value: "together", label: "Together AI" },
-  { value: "openrouter", label: "OpenRouter" },
-  { value: "mistral", label: "Mistral" },
-  { value: "xai", label: "xAI (Grok)" },
-  { value: "perplexity", label: "Perplexity" },
-  { value: "ollama", label: "Ollama (local)" },
-] as const;
+// ── Provider type from API ────────────────────────────────────────────────
 
-const PROVIDER_MODELS: Record<string, string[]> = {
+interface ProviderTypeInfo {
+  id: string;
+  name: string;
+  default_base_url?: string;
+  requires_api_key?: boolean;
+  default_secret_name?: string;
+}
+
+// ── Requirements check types ──────────────────────────────────────────────
+
+interface RequirementCheck {
+  status: "ok" | "warn" | "error";
+  message: string;
+  fix_hint?: string | null;
+}
+
+interface RequirementsResult {
+  ok: boolean;
+  checks: {
+    docker: RequirementCheck;
+    postgresql: RequirementCheck;
+    disk_space: RequirementCheck;
+  };
+}
+
+// ── Fallback popular models per provider_type ─────────────────────────────
+
+const FALLBACK_MODELS: Record<string, string[]> = {
   minimax: ["MiniMax-M2.5", "MiniMax-M1"],
   anthropic: ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001", "claude-opus-4-20250514"],
   google: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
   openai: ["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "o4-mini", "o3"],
   deepseek: ["deepseek-chat", "deepseek-reasoner"],
   groq: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+  together: ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "Qwen/Qwen2.5-72B-Instruct-Turbo"],
+  openrouter: ["anthropic/claude-sonnet-4", "openai/gpt-4.1", "google/gemini-2.5-pro"],
   mistral: ["mistral-large-latest", "mistral-small-latest"],
   xai: ["grok-3", "grok-3-mini"],
   perplexity: ["sonar-pro", "sonar"],
+  ollama: ["llama3.3", "qwen3", "gemma3"],
 };
 
 const LANGUAGES = [
@@ -53,63 +84,214 @@ const LANGUAGES = [
   { value: "ja", label: "日本語" },
 ] as const;
 
-const API_KEY_NAMES: Record<string, string> = {
-  minimax: "MINIMAX_API_KEY",
-  anthropic: "ANTHROPIC_API_KEY",
-  google: "GOOGLE_API_KEY",
-  openai: "OPENAI_API_KEY",
-  deepseek: "DEEPSEEK_API_KEY",
-  groq: "GROQ_API_KEY",
-  together: "TOGETHER_API_KEY",
-  openrouter: "OPENROUTER_API_KEY",
-  mistral: "MISTRAL_API_KEY",
-  xai: "XAI_API_KEY",
-  perplexity: "PERPLEXITY_API_KEY",
-  ollama: "",
-};
+interface NetworkAddresses {
+  wan: { ip: string | null; is_cgnat: boolean | null; cgnat_warning: string | null } | null;
+  tailscale: { connected: boolean; backend_state: string; ips: string[]; dns_name: string } | null;
+  lan: { interface: string; ip: string; is_ipv6: boolean }[];
+  mdns: { hostname: string } | null;
+}
 
-type Step = "provider" | "agent" | "channel";
+// ── localStorage key ──────────────────────────────────────────────────────
+
+const WIZARD_STORAGE_KEY = "hydeclaw_wizard_progress";
+
+type Step = "requirements" | "provider" | "agent" | "channel";
 
 const STEPS: { key: Step; labelKey: TranslationKey; icon: typeof Key }[] = [
+  { key: "requirements", labelKey: "setup.step_requirements", icon: ShieldCheck },
   { key: "provider", labelKey: "setup.step_provider", icon: Key },
   { key: "agent", labelKey: "setup.step_agent", icon: User },
   { key: "channel", labelKey: "setup.step_channel", icon: MessageSquare },
 ];
 
 export default function SetupPage() {
-  const { t, locale } = useTranslation();
+  const { t } = useTranslation();
   const router = useRouter();
-  const [step, setStep] = useState<Step>("provider");
+  const [step, setStep] = useState<Step>("requirements");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // Step 1: Provider
-  const [apiKeyName, setApiKeyName] = useState("MINIMAX_API_KEY");
+  // ── Provider types from API ───────────────────────────────────────────
+  const [providerTypes, setProviderTypes] = useState<ProviderTypeInfo[]>([]);
+  useEffect(() => {
+    apiGet<{ provider_types: ProviderTypeInfo[] }>("/api/provider-types")
+      .then((data) => setProviderTypes(data.provider_types ?? []))
+      .catch(() => { /* fallback: manual input */ });
+  }, []);
+
+  // ── Step 0: Requirements ──────────────────────────────────────────────
+  const [requirements, setRequirements] = useState<RequirementsResult | null>(null);
+  const [requirementsLoading, setRequirementsLoading] = useState(false);
+
+  useEffect(() => {
+    if (step !== "requirements") return;
+    setRequirementsLoading(true);
+    apiGet<RequirementsResult>("/api/setup/requirements")
+      .then(setRequirements)
+      .catch(() => setRequirements(null))
+      .finally(() => setRequirementsLoading(false));
+  }, [step]);
+
+  // ── Step 1: Provider ──────────────────────────────────────────────────
+  const [providerType, setProviderType] = useState("");
   const [apiKeyValue, setApiKeyValue] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [defaultModel, setDefaultModel] = useState("");
+  const [providerName, setProviderName] = useState("");
+  const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [testCallStatus, setTestCallStatus] = useState<"idle" | "testing" | "ok" | "fail">("idle");
 
-  // Step 2: Agent
-  const [agentName, setAgentName] = useState("Arty");
+  // ── Step 2: Agent ─────────────────────────────────────────────────────
+  const [agentName, setAgentName] = useState("");
   const [agentLang, setAgentLang] = useState("ru");
-  const [provider, setProvider] = useState("minimax");
-  const [model, setModel] = useState("MiniMax-M2.5");
 
-  // Step 3: Channel
+  // ── Step 3: Channel ───────────────────────────────────────────────────
   const [botToken, setBotToken] = useState("");
   const [skipChannel, setSkipChannel] = useState(false);
 
+  // ── Network info ──────────────────────────────────────────────────────
+  const [networkData, setNetworkData] = useState<NetworkAddresses | undefined>(undefined);
+  useEffect(() => {
+    apiGet<NetworkAddresses>("/api/network/addresses")
+      .then(setNetworkData)
+      .catch(() => {});
+  }, []);
+
+  // ── localStorage: restore on mount ───────────────────────────────────
+  const [restored, setRestored] = useState(false);
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(WIZARD_STORAGE_KEY);
+      if (saved) {
+        const p = JSON.parse(saved) as {
+          step?: Step;
+          providerType?: string;
+          defaultModel?: string;
+          baseUrl?: string;
+          agentName?: string;
+          agentLang?: string;
+        };
+        if (p.step) setStep(p.step);
+        if (p.providerType) setProviderType(p.providerType);
+        if (p.defaultModel) setDefaultModel(p.defaultModel);
+        if (p.baseUrl) setBaseUrl(p.baseUrl);
+        if (p.agentName) setAgentName(p.agentName);
+        if (p.agentLang) setAgentLang(p.agentLang);
+      }
+    } catch { /* ignore parse errors */ }
+    setRestored(true);
+  }, []);
+
+  // ── localStorage: save on every change (only after restore) ─────────
+  useEffect(() => {
+    if (!restored) return;
+    try {
+      localStorage.setItem(WIZARD_STORAGE_KEY, JSON.stringify({
+        step, providerType, defaultModel, baseUrl, agentName, agentLang,
+      }));
+    } catch { /* ignore */ }
+  }, [step, providerType, defaultModel, baseUrl, agentName, agentLang]);
+
   const currentIdx = STEPS.findIndex((s) => s.key === step);
 
+  // ── Provider type helpers ─────────────────────────────────────────────
+
+  const selectedTypeInfo = providerTypes.find((pt) => pt.id === providerType);
+  const fallbackModels = FALLBACK_MODELS[providerType] ?? [];
+  const modelOptions = discoveredModels.length > 0 ? discoveredModels : fallbackModels;
+  void modelOptions; // used via JSX chips below
+
+  const handleProviderTypeChange = (v: string) => {
+    setProviderType(v);
+    setApiKeyValue("");
+    setDefaultModel("");
+    setDiscoveredModels([]);
+    discoverGenRef.current++; // invalidate in-flight discover
+    const info = providerTypes.find((pt) => pt.id === v);
+    if (info?.default_base_url) setBaseUrl(info.default_base_url);
+    else setBaseUrl("");
+    const fb = FALLBACK_MODELS[v];
+    if (fb && fb.length > 0) setDefaultModel(fb[0]);
+  };
+
+  const discoverGenRef = useRef(0);
+  const discoverModels = async () => {
+    if (!providerType) return;
+    const gen = ++discoverGenRef.current;
+    setModelsLoading(true);
+    try {
+      const bUrl = baseUrl || undefined;
+      const url = `/api/providers/${providerType}/models${bUrl ? `?base_url=${encodeURIComponent(bUrl)}` : ""}`;
+      const data = await apiGet<{ models: { id: string }[] | string[] }>(url);
+      if (gen !== discoverGenRef.current) return; // stale response
+      const ids = data.models.map((m) => typeof m === "string" ? m : m.id);
+      setDiscoveredModels(ids);
+      if (ids.length > 0 && !defaultModel) setDefaultModel(ids[0]);
+    } catch {
+      // fallback to hardcoded models
+    }
+    if (gen === discoverGenRef.current) setModelsLoading(false);
+  };
+
+  // ── Step handlers ─────────────────────────────────────────────────────
+
   const doStep1 = async () => {
-    if (!apiKeyValue.trim()) return;
+    if (!providerType || !defaultModel.trim()) return;
     setLoading(true);
     setError("");
+    setTestCallStatus("idle");
     try {
-      await apiPost("/api/secrets", { name: apiKeyName, value: apiKeyValue.trim() });
+      const name = `${providerType}-default`;
+      const created = await apiPost<{ id: string; name: string }>("/api/providers", {
+        name,
+        type: "text",
+        provider_type: providerType,
+        default_model: defaultModel.trim(),
+        api_key: apiKeyValue.trim() || undefined,
+        base_url: baseUrl.trim() || undefined,
+        enabled: true,
+      });
+      setProviderName(created.name ?? name);
+
+      // WIZ-02: validate key with test call
+      setTestCallStatus("testing");
+      try {
+        const modelsData = await apiGet<{ models: Array<{ id: string } | string> }>(
+          `/api/providers/${created.id}/models`
+        );
+        const modelList = modelsData.models ?? [];
+        if (modelList.length === 0 && (selectedTypeInfo?.requires_api_key !== false)) {
+          // No models returned and key is required — likely invalid key
+          // Clean up orphaned provider record
+          await apiDelete(`/api/providers/${created.id}`).catch(() => {});
+          setTestCallStatus("fail");
+          setError(t("setup.provider_test_fail"));
+          setLoading(false);
+          return; // do NOT advance to agent step
+        }
+        // If models returned, use first as defaultModel if none set
+        if (modelList.length > 0 && !defaultModel.trim()) {
+          const first = modelList[0];
+          setDefaultModel(typeof first === "string" ? first : first.id);
+        }
+      } catch {
+        // Test call failed (network error, auth error, etc.)
+        // Clean up orphaned provider record
+        await apiDelete(`/api/providers/${created.id}`).catch(() => {});
+        setTestCallStatus("fail");
+        setError(t("setup.provider_test_fail"));
+        setLoading(false);
+        return;
+      }
+
+      setTestCallStatus("ok");
       setStep("agent");
     } catch (e) {
       setError(`${e}`);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const doStep2 = async () => {
@@ -120,9 +302,10 @@ export default function SetupPage() {
       await apiPost("/api/agents", {
         name: agentName.trim(),
         language: agentLang,
-        provider,
-        model,
+        provider: providerType,
+        model: defaultModel,
         temperature: 1.0,
+        provider_connection: providerName || undefined,
       });
       setStep("channel");
     } catch (e) {
@@ -131,32 +314,54 @@ export default function SetupPage() {
     setLoading(false);
   };
 
+  // Step 3: Channel
+  const [botDisplayName, setBotDisplayName] = useState("");
+
+  const finishSetup = async () => {
+    // Mark setup as complete in DB — prevents redirect loop
+    await apiPost("/api/setup/complete", {}).catch(() => {});
+    localStorage.removeItem(WIZARD_STORAGE_KEY);
+    // Use window.location instead of router.replace to avoid React suspense
+    // boundary error (#185) when transitioning from unauthenticated to authenticated layout
+    window.location.href = "/chat";
+  };
+
   const doStep3 = async () => {
     if (skipChannel || !botToken.trim()) {
-      router.replace("/chat");
+      await finishSetup();
       return;
     }
     setLoading(true);
     setError("");
     try {
-      // Save bot token as scoped secret
-      await apiPost("/api/secrets", {
-        name: "BOT_TOKEN",
-        value: botToken.trim(),
-        scope: agentName.trim(),
-      });
-      // Create Telegram channel
+      // Channel credentials are stored in vault automatically by the backend
       await apiPost(`/api/agents/${agentName.trim()}/channels`, {
         channel_type: "telegram",
-        display_name: `${agentName} Telegram`,
+        display_name: botDisplayName.trim() || `${agentName} Telegram`,
         config: { bot_token: botToken.trim() },
       });
-      router.replace("/chat");
+      await finishSetup();
     } catch (e) {
       setError(`${e}`);
     }
     setLoading(false);
   };
+
+  // ── Step 1 form validation ────────────────────────────────────────────
+  const step1Valid = providerType && defaultModel.trim();
+
+  // ── Requirements step helpers ─────────────────────────────────────────
+  const reqChecks = requirements?.checks;
+  const allChecks = reqChecks
+    ? [
+        { key: "docker", label: t("setup.req_docker"), check: reqChecks.docker },
+        { key: "postgresql", label: t("setup.req_postgresql"), check: reqChecks.postgresql },
+        { key: "disk_space", label: t("setup.req_disk_space"), check: reqChecks.disk_space },
+      ]
+    : [];
+
+  const hasError = allChecks.some((c) => c.check.status === "error");
+  const hasWarn = allChecks.some((c) => c.check.status === "warn");
 
   return (
     <div className="flex min-h-dvh items-center justify-center bg-background p-4">
@@ -200,38 +405,245 @@ export default function SetupPage() {
             </div>
           )}
 
+          {/* ── Step 0: Requirements ──────────────────────────────── */}
+          {step === "requirements" && (
+            <div className="mt-4 space-y-4">
+              {requirementsLoading && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t("setup.requirements_title")}
+                </div>
+              )}
+
+              {!requirementsLoading && allChecks.length > 0 && (
+                <div className="space-y-2">
+                  {allChecks.map(({ key, label, check }) => (
+                    <div
+                      key={key}
+                      className="flex items-start gap-3 rounded-lg border border-border bg-muted/30 p-3"
+                    >
+                      <div className="mt-0.5 shrink-0">
+                        {check.status === "ok" && (
+                          <CheckCircle2 className="h-4 w-4 text-green-500" />
+                        )}
+                        {check.status === "warn" && (
+                          <AlertTriangle className="h-4 w-4 text-amber-500" />
+                        )}
+                        {check.status === "error" && (
+                          <XCircle className="h-4 w-4 text-destructive" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium">{label}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">{check.message}</p>
+                        {check.fix_hint && (
+                          <p className="text-xs text-amber-600 dark:text-amber-400 mt-1 font-mono">
+                            {check.fix_hint}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Summary banner */}
+                  {!hasError && !hasWarn && (
+                    <div className="rounded-lg bg-green-500/10 border border-green-500/20 p-3 text-sm text-green-600 dark:text-green-400">
+                      {t("setup.requirements_pass")}
+                    </div>
+                  )}
+                  {!hasError && hasWarn && (
+                    <div className="rounded-lg bg-amber-500/10 border border-amber-500/20 p-3 text-sm text-amber-600 dark:text-amber-400">
+                      {t("setup.requirements_warn")}
+                    </div>
+                  )}
+                  {hasError && (
+                    <div className="rounded-lg bg-destructive/10 border border-destructive/20 p-3 text-sm text-destructive">
+                      {t("setup.requirements_fail")}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {!requirementsLoading && allChecks.length === 0 && requirements === null && (
+                <p className="text-sm text-muted-foreground">{t("setup.req_checking")}</p>
+              )}
+
+              <div className="flex gap-3">
+                {hasError ? (
+                  <>
+                    <Button disabled className="flex-1">
+                      <ArrowRight className="h-4 w-4 mr-2" />
+                      {t("common.next")}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => setStep("provider")}
+                      disabled={requirementsLoading}
+                    >
+                      {t("setup.req_proceed_anyway")}
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    onClick={() => setStep("provider")}
+                    disabled={requirementsLoading}
+                    className="w-full"
+                  >
+                    <ArrowRight className="h-4 w-4 mr-2" />
+                    {t("common.next")}
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── Step 1: Provider ──────────────────────────────────── */}
           {step === "provider" && (
             <div className="mt-4 space-y-4">
               <p className="text-sm text-muted-foreground">
                 {t("setup.enter_llm_api_key")}
               </p>
+
+              {/* Provider Type */}
               <div className="space-y-2">
-                <label className="text-sm font-medium text-muted-foreground">{t("setup.secret_name")}</label>
-                <Input
-                  value={apiKeyName}
-                  onChange={(e) => setApiKeyName(e.target.value)}
-                  className="font-mono text-sm"
-                  placeholder="MINIMAX_API_KEY"
-                />
+                <label className="text-sm font-medium text-muted-foreground">{t("setup.provider")}</label>
+                {providerTypes.length > 0 ? (
+                  <Select value={providerType} onValueChange={handleProviderTypeChange}>
+                    <SelectTrigger className="text-sm w-full">
+                      <SelectValue placeholder="Select provider..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {providerTypes.map((pt) => (
+                        <SelectItem key={pt.id} value={pt.id}>{pt.name || pt.id}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input
+                    value={providerType}
+                    onChange={(e) => setProviderType(e.target.value)}
+                    className="font-mono text-sm"
+                    placeholder="openai, anthropic, ollama..."
+                  />
+                )}
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-muted-foreground">{t("setup.api_key")}</label>
-                <Input
-                  type="password"
-                  value={apiKeyValue}
-                  onChange={(e) => setApiKeyValue(e.target.value)}
-                  className="font-mono text-sm"
-                  placeholder="your-api-key-here"
-                  onKeyDown={(e) => e.key === "Enter" && doStep1()}
-                />
-              </div>
-              <Button onClick={doStep1} disabled={loading || !apiKeyValue.trim()} className="w-full">
+
+              {/* API Key */}
+              {providerType && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-muted-foreground">{t("setup.api_key")}</label>
+                  <Input
+                    type="password"
+                    value={apiKeyValue}
+                    onChange={(e) => setApiKeyValue(e.target.value)}
+                    className="font-mono text-sm"
+                    placeholder={selectedTypeInfo?.requires_api_key === false ? "(optional)" : "sk-... / key-..."}
+                  />
+                </div>
+              )}
+
+              {/* Base URL */}
+              {providerType && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-muted-foreground">{t("setup.base_url")} <span className="text-xs text-muted-foreground/60">({t("common.optional")})</span></label>
+                  <Input
+                    value={baseUrl}
+                    onChange={(e) => setBaseUrl(e.target.value)}
+                    className="font-mono text-sm"
+                    placeholder={selectedTypeInfo?.default_base_url || "https://api.example.com"}
+                  />
+                </div>
+              )}
+
+              {/* Model */}
+              {providerType && (
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium text-muted-foreground">
+                    {t("setup.model")} <span className="text-destructive">*</span>
+                  </label>
+                  {discoveredModels.length > 0 ? (
+                    <div className="flex gap-2">
+                      <Select
+                        value={discoveredModels.includes(defaultModel) ? defaultModel : ""}
+                        onValueChange={setDefaultModel}
+                      >
+                        <SelectTrigger className="font-mono text-sm">
+                          <SelectValue placeholder="Select model..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {discoveredModels.map((m) => (
+                            <SelectItem key={m} value={m} className="font-mono text-sm">{m}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        className="shrink-0 h-9 w-9"
+                        onClick={discoverModels}
+                        disabled={modelsLoading}
+                      >
+                        <RefreshCw className={`h-3.5 w-3.5 ${modelsLoading ? "animate-spin" : ""}`} />
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex gap-2">
+                      <Input
+                        value={defaultModel}
+                        onChange={(e) => setDefaultModel(e.target.value)}
+                        className="font-mono text-sm"
+                        placeholder={fallbackModels.length > 0 ? fallbackModels[0] : "model-name"}
+                      />
+                      {selectedTypeInfo && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="shrink-0 h-9 text-xs"
+                          onClick={discoverModels}
+                          disabled={modelsLoading}
+                        >
+                          {modelsLoading ? (
+                            <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <RefreshCw className="h-3.5 w-3.5" />
+                          )}
+                          <span className="ml-1">{t("common.discover")}</span>
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                  {fallbackModels.length > 0 && discoveredModels.length === 0 && !defaultModel && (
+                    <div className="flex flex-wrap gap-1.5 mt-1">
+                      {fallbackModels.map((m) => (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => setDefaultModel(m)}
+                          className="rounded-md border border-border bg-muted/50 px-2 py-0.5 font-mono text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                        >
+                          {m}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {testCallStatus === "testing" && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t("setup.provider_test_call")}
+                </div>
+              )}
+
+              <Button onClick={doStep1} disabled={loading || !step1Valid} className="w-full">
                 {loading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <ArrowRight className="h-4 w-4 mr-2" />}
                 {t("common.next")}
               </Button>
             </div>
           )}
 
+          {/* ── Step 2: Agent ─────────────────────────────────────── */}
           {step === "agent" && (
             <div className="mt-4 space-y-4">
               <p className="text-sm text-muted-foreground">
@@ -244,13 +656,13 @@ export default function SetupPage() {
                     value={agentName}
                     onChange={(e) => setAgentName(e.target.value)}
                     className="font-mono text-sm"
-                    placeholder="Arty"
+                    placeholder="Hyde"
                   />
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-muted-foreground">{t("setup.language")}</label>
                   <Select value={agentLang} onValueChange={setAgentLang}>
-                    <SelectTrigger className="font-mono text-sm w-full">
+                    <SelectTrigger className="text-sm w-full">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -260,53 +672,10 @@ export default function SetupPage() {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-muted-foreground">{t("setup.provider")}</label>
-                  <Select value={provider} onValueChange={(v) => {
-                    setProvider(v);
-                    const models = PROVIDER_MODELS[v];
-                    if (models && models.length > 0) setModel(models[0]);
-                    else setModel("");
-                    setApiKeyName(API_KEY_NAMES[v] || "");
-                  }}>
-                    <SelectTrigger className="font-mono text-sm w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {PROVIDERS.map((p) => (
-                        <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-muted-foreground">{t("setup.model")}</label>
-                  {(() => {
-                    const models = PROVIDER_MODELS[provider] ?? [];
-                    if (models.length === 0) {
-                      return (
-                        <Input
-                          value={model}
-                          onChange={(e) => setModel(e.target.value)}
-                          className="font-mono text-sm"
-                          placeholder="model-name"
-                        />
-                      );
-                    }
-                    return (
-                      <Select value={model} onValueChange={setModel}>
-                        <SelectTrigger className="font-mono text-sm w-full">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {models.map((m) => (
-                            <SelectItem key={m} value={m} className="font-mono text-xs">{m}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    );
-                  })()}
-                </div>
+              </div>
+              <div className="rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
+                Provider: <span className="font-medium">{providerType}</span>
+                {" / "}Model: <span className="font-mono">{defaultModel}</span>
               </div>
               <Button onClick={doStep2} disabled={loading || !agentName.trim()} className="w-full">
                 {loading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <ArrowRight className="h-4 w-4 mr-2" />}
@@ -315,11 +684,63 @@ export default function SetupPage() {
             </div>
           )}
 
+          {/* ── Step 3: Channel ───────────────────────────────────── */}
           {step === "channel" && (
             <div className="mt-4 space-y-4">
+              {networkData && (
+                <div className="rounded-md border border-border bg-muted/30 p-3 space-y-2 text-sm">
+                  <p className="font-medium text-xs text-muted-foreground flex items-center gap-1">
+                    <Wifi className="h-3 w-3" />
+                    {t("setup.network_info")}
+                  </p>
+                  {networkData.lan.length > 0 && (
+                    <div>
+                      <span className="text-xs text-muted-foreground">{t("setup.network_local")}:</span>
+                      <span className="ml-2 font-mono text-xs">
+                        {networkData.lan.filter(i => !i.is_ipv6).map(i => i.ip).join(", ")}
+                      </span>
+                    </div>
+                  )}
+                  {networkData.wan?.ip && (
+                    <div>
+                      <span className="text-xs text-muted-foreground">{t("setup.network_wan")}:</span>
+                      <span className="ml-2 font-mono text-xs">{networkData.wan.ip}</span>
+                      {networkData.wan.is_cgnat && (
+                        <span className="ml-2 text-xs text-amber-600 dark:text-amber-400">
+                          ({t("setup.network_cgnat")})
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {networkData.tailscale?.connected && (
+                    <div>
+                      <span className="text-xs text-muted-foreground">{t("setup.network_tailscale")}:</span>
+                      <span className="ml-2 font-mono text-xs">
+                        {networkData.tailscale.dns_name || networkData.tailscale.ips[0] || "connected"}
+                      </span>
+                    </div>
+                  )}
+                  {networkData.mdns?.hostname && (
+                    <div>
+                      <span className="text-xs text-muted-foreground">{t("setup.network_mdns")}:</span>
+                      <span className="ml-2 font-mono text-xs">{networkData.mdns.hostname}</span>
+                    </div>
+                  )}
+                </div>
+              )}
               <p className="text-sm text-muted-foreground">
                 {t("setup.connect_telegram_bot")}
               </p>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-muted-foreground">{t("setup.bot_name")}</label>
+                <Input
+                  value={botDisplayName}
+                  onChange={(e) => setBotDisplayName(e.target.value)}
+                  className="text-sm"
+                  placeholder={`${agentName || "Agent"} Telegram`}
+                  disabled={skipChannel}
+                />
+              </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-muted-foreground">{t("setup.bot_token")}</label>
                 <Input
@@ -339,7 +760,7 @@ export default function SetupPage() {
                 </Button>
                 <Button
                   variant="ghost"
-                  onClick={() => { setSkipChannel(true); router.replace("/chat"); }}
+                  onClick={async () => { setSkipChannel(true); await finishSetup(); }}
                   disabled={loading}
                 >
                   {t("common.skip")}

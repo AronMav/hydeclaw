@@ -49,7 +49,7 @@ impl ServiceFileEntry {
 }
 
 fn services_dir(workspace_dir: &str) -> std::path::PathBuf {
-    Path::new(workspace_dir).join("tools").join("services")
+    Path::new(workspace_dir).join("tools").join("base")
 }
 
 /// Load all service entries from workspace/tools/*.yaml.

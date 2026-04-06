@@ -29,7 +29,7 @@ HydeClaw is a self-hosted AI gateway for running personal AI agents. The Rust co
 Download the [latest release](https://github.com/AronMav/hydeclaw/releases), extract, and run the installer:
 
 ```bash
-tar xzf hydeclaw-v0.1.0.tar.gz
+tar xzf hydeclaw-v0.4.0.tar.gz
 cd hydeclaw
 ./setup.sh
 ```
@@ -82,6 +82,13 @@ curl -X POST http://localhost:18789/api/agents \
 - **Cron scheduler** -- agent-scoped scheduled tasks with timezone support and jitter
 - **Web UI** -- Next.js dashboard: multi-agent chat, agent/provider/tool management, workspace canvas, memory explorer, audit log
 - **Watchdog** -- external health monitor with channel-based alerting
+- **Setup Wizard** -- guided first-run setup: checks prerequisites, configures providers, creates initial agent
+- **Network Discovery** -- automatic detection of LAN addresses for easy multi-device access
+- **Notifications** -- in-app notification system with read/unread state and bulk actions
+- **Config Schema & Validation** -- runtime-exported JSON schema for all configuration; validated on every write
+- **Doctor self-diagnostics** -- health checks with severity levels (critical, warning, info) and actionable remediation hints
+- **Monitor page** -- consolidated monitoring dashboard: system health, process status, resource usage in one view
+- **Base agent scaffold** -- new base agents are bootstrapped from templates with default SOUL.md, skills, and tool policies
 
 ## Supported LLM Providers
 
@@ -257,7 +264,7 @@ Per-agent skills go in `workspace/skills/{agent-name}/` -- only that agent sees 
 ## Updating
 
 ```bash
-~/hydeclaw/update.sh hydeclaw-v0.2.0.tar.gz
+~/hydeclaw/update.sh hydeclaw-v0.4.0.tar.gz
 ```
 
 Preserves `.env`, `config/`, `workspace/`, and database.

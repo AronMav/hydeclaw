@@ -16,7 +16,7 @@ triggers:
 priority: 5
 tools_required:
   - subagent
-  - send_to_agent
+  - handoff
 ---
 
 ## Agent Coordination Strategy
@@ -37,7 +37,7 @@ Send each subagent:
 - **Constraints** — time, scope, priority
 
 #### 2. Choosing the right agent
-- **Architect** — design, configuration, system tasks (base)
+- **Base agent** (`base = true`) — design, configuration, system tasks. Use `agents_list` to find it.
 - **Other agents** — by their specialization (see AGENTS.md)
 - **Subagent** — for one-off tasks that don't require specialization
 

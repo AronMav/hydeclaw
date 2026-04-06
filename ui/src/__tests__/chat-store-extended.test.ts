@@ -149,10 +149,10 @@ describe("convertHistory", () => {
 
   it("preserves agentId from rows", () => {
     const rows: MessageRow[] = [
-      makeRow({ id: "u1", role: "user", content: "hi", agent_id: "Arty" }),
+      makeRow({ id: "u1", role: "user", content: "hi", agent_id: "Agent1" }),
     ];
     const msgs = convertHistory(rows);
-    expect(msgs[0].agentId).toBe("Arty");
+    expect(msgs[0].agentId).toBe("Agent1");
   });
 });
 
@@ -171,8 +171,8 @@ describe("getInitialAgent", () => {
 
 describe("saveLastSession / getLastSessionId", () => {
   it("saves and retrieves session id per agent", () => {
-    saveLastSession("Arty", "sess-1");
-    expect(getLastSessionId("Arty")).toBe("sess-1");
+    saveLastSession("Agent1", "sess-1");
+    expect(getLastSessionId("Agent1")).toBe("sess-1");
   });
 
   it("returns undefined for unknown agent", () => {

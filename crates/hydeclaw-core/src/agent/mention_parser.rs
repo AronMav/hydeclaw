@@ -3,7 +3,7 @@
 ///
 /// Word boundary rule: `@` must be preceded by whitespace, start of string,
 /// or a punctuation character (not alphanumeric or `.`). This prevents
-/// matching inside email addresses like `user@Arty.com`.
+/// matching inside email addresses like `user@Agent1.com`.
 pub fn parse_mentions(text: &str, known_agents: &[String]) -> Vec<String> {
     let mut found = Vec::new();
     let lower_text = text.to_lowercase();
@@ -75,12 +75,12 @@ mod tests {
     use super::*;
 
     fn agents() -> Vec<String> {
-        vec!["Arty".to_string(), "Architect".to_string(), "Alma".to_string()]
+        vec!["Alpha".to_string(), "Base1".to_string(), "Agent2".to_string()]
     }
 
     #[test]
     fn parse_mention_found() {
-        assert_eq!(parse_first_mention("@Arty check portfolio", &agents()), Some("Arty".to_string()));
+        assert_eq!(parse_first_mention("@Alpha check portfolio", &agents()), Some("Alpha".to_string()));
     }
 
     #[test]
@@ -90,74 +90,74 @@ mod tests {
 
     #[test]
     fn parse_mention_case_insensitive() {
-        assert_eq!(parse_first_mention("@arty do something", &agents()), Some("Arty".to_string()));
+        assert_eq!(parse_first_mention("@alpha do something", &agents()), Some("Alpha".to_string()));
     }
 
     #[test]
     fn no_match_in_email() {
-        // Must NOT match @Arty inside an email address
-        assert_eq!(parse_first_mention("email@Arty.com", &agents()), None);
+        // Must NOT match @Alpha inside an email address
+        assert_eq!(parse_first_mention("email@Alpha.com", &agents()), None);
     }
 
     #[test]
     fn no_match_in_email_with_dot() {
-        assert_eq!(parse_first_mention("user.name@Architect.org", &agents()), None);
+        assert_eq!(parse_first_mention("user.name@Base1.org", &agents()), None);
     }
 
     #[test]
     fn match_after_newline() {
-        assert_eq!(parse_first_mention("hello\n@Arty check this", &agents()), Some("Arty".to_string()));
+        assert_eq!(parse_first_mention("hello\n@Alpha check this", &agents()), Some("Alpha".to_string()));
     }
 
     #[test]
     fn match_at_start() {
-        assert_eq!(parse_first_mention("@Architect review this", &agents()), Some("Architect".to_string()));
+        assert_eq!(parse_first_mention("@Base1 review this", &agents()), Some("Base1".to_string()));
     }
 
     #[test]
     fn no_match_partial_name() {
-        // @Art should not match if followed by more alphanumeric chars (e.g. "Arty")
-        let agents = vec!["Art".to_string()];
-        assert_eq!(parse_first_mention("@Arty check", &agents), None);
+        // @Alp should not match if followed by more alphanumeric chars (e.g. "Alpha")
+        let agents = vec!["Alp".to_string()];
+        assert_eq!(parse_first_mention("@Alpha check", &agents), None);
     }
 
     #[test]
     fn strip_mention_cleans_text() {
-        assert_eq!(strip_mention("@Arty check portfolio", "Arty"), "check portfolio");
+        assert_eq!(strip_mention("@Alpha check portfolio", "Alpha"), "check portfolio");
     }
 
     #[test]
     fn strip_mention_case_insensitive() {
-        assert_eq!(strip_mention("@arty check portfolio", "Arty"), "check portfolio");
+        assert_eq!(strip_mention("@alpha check portfolio", "Alpha"), "check portfolio");
     }
 
     #[test]
     fn multiple_mentions() {
-        let result = parse_mentions("@Arty and @Architect review this", &agents());
-        assert_eq!(result, vec!["Arty".to_string(), "Architect".to_string()]);
+        let result = parse_mentions("@Alpha and @Base1 review this", &agents());
+        assert_eq!(result, vec!["Alpha".to_string(), "Base1".to_string()]);
     }
 
     #[test]
     fn self_mention_filtered_finds_other() {
-        // D-11: "I, @Arty, will ask @Architect" -> filter out self (Arty) -> find Architect
-        let mentions = parse_mentions("I, @Arty, will ask @Architect to review", &agents());
-        let non_self: Vec<_> = mentions.into_iter().filter(|n| n != "Arty").collect();
-        assert_eq!(non_self, vec!["Architect".to_string()]);
+        // D-11: "I, @Alpha, will ask @Base1" -> filter out self (Alpha) -> find Base1
+        let mentions = parse_mentions("I, @Alpha, will ask @Base1 to review", &agents());
+        let non_self: Vec<_> = mentions.into_iter().filter(|n| n != "Alpha").collect();
+        assert_eq!(non_self, vec!["Base1".to_string()]);
     }
 
     #[test]
     fn self_mention_only_returns_empty() {
-        // D-09: "I, @Arty, will help you" -> filter out self -> empty -> no routing
-        let mentions = parse_mentions("I, @Arty, will help you with that", &agents());
-        let non_self: Vec<_> = mentions.into_iter().filter(|n| n != "Arty").collect();
+        // D-09: "I, @Alpha, will help you" -> filter out self -> empty -> no routing
+        let mentions = parse_mentions("I, @Alpha, will help you with that", &agents());
+        let non_self: Vec<_> = mentions.into_iter().filter(|n| n != "Alpha").collect();
         assert!(non_self.is_empty());
     }
 
     #[test]
     fn self_mention_preserves_order() {
-        // parse_mentions returns in agent-list order (Arty, Architect, Alma), not text order
-        let mentions = parse_mentions("@Arty says ask @Alma then @Architect", &agents());
-        let non_self: Vec<_> = mentions.into_iter().filter(|n| n != "Arty").collect();
-        assert_eq!(non_self, vec!["Architect".to_string(), "Alma".to_string()]);
+        // parse_mentions returns in agent-list order (Alpha, Base1, Agent2), not text order
+        let mentions = parse_mentions("@Alpha says ask @Agent2 then @Base1", &agents());
+        let non_self: Vec<_> = mentions.into_iter().filter(|n| n != "Alpha").collect();
+        assert_eq!(non_self, vec!["Base1".to_string(), "Agent2".to_string()]);
     }
 }

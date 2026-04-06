@@ -1,6 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
+import { useEffect } from "react"
 import { toast } from "sonner"
-import { apiGet, apiPost, apiPut, apiDelete } from "./api"
+import { apiGet, apiPost, apiPut, apiDelete, apiPatch } from "./api"
+import { useNotificationStore } from "@/stores/notification-store"
+import { useWsSubscription } from "@/hooks/use-ws-subscription"
+import type { NotificationsResponse } from "@/types/api"
 import type {
   AgentInfo,
   SecretInfo,
@@ -64,6 +68,7 @@ export const qk = {
   mediaDrivers: ["media-drivers"] as const,
   oauthAccounts: ["oauth", "accounts"] as const,
   oauthBindings: (agent: string) => ["oauth", "bindings", agent] as const,
+  notifications: ["notifications"] as const,
 }
 
 // ── Query Hooks ─────────────────────────────────────────────────────────────
@@ -491,5 +496,58 @@ export function useOAuthBindings(agent: string) {
     select: (d) => d.bindings,
     enabled: !!agent,
   })
+}
+
+// ── Notifications ──────────────────────────────────────────────────────────
+
+export function useNotifications() {
+  const setNotifications = useNotificationStore((s) => s.setNotifications);
+  const query = useQuery({
+    queryKey: qk.notifications,
+    queryFn: () => apiGet<NotificationsResponse>("/api/notifications?limit=20&offset=0"),
+  });
+  useEffect(() => {
+    if (query.data) {
+      setNotifications(query.data.notifications ?? query.data.items ?? [], query.data.unread_count ?? 0);
+    }
+  }, [query.data, setNotifications]);
+  return query;
+}
+
+export function useMarkNotificationRead() {
+  const markRead = useNotificationStore((s) => s.markRead);
+  return useMutation({
+    mutationFn: (id: string) => apiPatch<unknown>(`/api/notifications/${id}`),
+    onSuccess: (_data, id) => {
+      markRead(id);
+    },
+  });
+}
+
+export function useMarkAllRead() {
+  const markAllRead = useNotificationStore((s) => s.markAllRead);
+  return useMutation({
+    mutationFn: () => apiPost<unknown>("/api/notifications/read-all"),
+    onSuccess: () => {
+      markAllRead();
+    },
+  });
+}
+
+export function useClearAllNotifications() {
+  const clearAll = useNotificationStore((s) => s.clearAll);
+  return useMutation({
+    mutationFn: () => apiDelete("/api/notifications/clear"),
+    onSuccess: () => {
+      clearAll();
+    },
+  });
+}
+
+export function useNotificationWsSync() {
+  const prependNotification = useNotificationStore((s) => s.prependNotification);
+  useWsSubscription("notification", (event) => {
+    prependNotification(event.data);
+  });
 }
 

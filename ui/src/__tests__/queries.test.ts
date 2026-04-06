@@ -7,11 +7,11 @@ describe("query keys", () => {
   });
 
   it("agent key includes name", () => {
-    expect(qk.agent("Arty")).toEqual(["agents", "Arty"]);
+    expect(qk.agent("Agent1")).toEqual(["agents", "Agent1"]);
   });
 
   it("agentChannels key includes agent name", () => {
-    expect(qk.agentChannels("Arty")).toEqual(["agents", "Arty", "channels"]);
+    expect(qk.agentChannels("Agent1")).toEqual(["agents", "Agent1", "channels"]);
   });
 
   it("tools key is stable", () => {
@@ -59,7 +59,7 @@ describe("query keys", () => {
   });
 
   it("audit key includes params", () => {
-    const params = { agent: "Arty", limit: "10" };
+    const params = { agent: "Agent1", limit: "10" };
     expect(qk.audit(params)).toEqual(["audit", params]);
   });
 
@@ -96,7 +96,7 @@ describe("query keys", () => {
   });
 
   it("sessions key includes agent", () => {
-    expect(qk.sessions("Arty")).toEqual(["sessions", "list", "Arty"]);
+    expect(qk.sessions("Agent1")).toEqual(["sessions", "list", "Agent1"]);
   });
 
   it("sessionMessages key includes session id", () => {
@@ -124,7 +124,7 @@ describe("query keys", () => {
   });
 
   it("oauthBindings key includes agent", () => {
-    expect(qk.oauthBindings("Arty")).toEqual(["oauth", "bindings", "Arty"]);
+    expect(qk.oauthBindings("Agent1")).toEqual(["oauth", "bindings", "Agent1"]);
   });
 });
 

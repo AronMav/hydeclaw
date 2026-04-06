@@ -74,7 +74,7 @@ pub fn format_local_datetime(timezone: &str) -> String {
 /// Workspace root files that agents cannot modify regardless of base status.
 const READ_ONLY_FILES: &[&str] = &["AGENTS.md"];
 
-/// Workspace root files that only base agents (Architect) can modify.
+/// Workspace root files that only base agents can modify.
 const PRIVILEGED_ROOT_FILES: &[&str] = &["TOOLS.md"];
 
 // Service dirs (toolgate/, channels/) and tools/ are base-only.
@@ -101,7 +101,7 @@ fn is_read_only(workspace_dir: &str, resolved: &Path, base: bool) -> bool {
     if READ_ONLY_FILES.iter().any(|name| resolved == root.join(name)) {
         return true;
     }
-    // Root-level base files (only Architect/base agents can modify)
+    // Root-level base files (only base agents can modify)
     if !base && PRIVILEGED_ROOT_FILES.iter().any(|name| resolved == root.join(name)) {
         return true;
     }
@@ -120,7 +120,7 @@ fn is_read_only(workspace_dir: &str, resolved: &Path, base: bool) -> bool {
         return !base;
     }
 
-    // toolgate/ and channels/ no longer in workspace — Architect uses code_exec on host
+    // toolgate/ and channels/ no longer in workspace — base agent uses code_exec on host
     false
 }
 
@@ -332,14 +332,14 @@ pub fn build_system_prompt(
         if capabilities.is_base {
             prompt.push_str("- **Scheduling**: `cron` to create, list, delete, or run scheduled tasks\n");
         } else {
-            prompt.push_str("- **Scheduling**: `cron(action=\"list\")` to view scheduled tasks (read-only). To create/delete/run cron jobs, use `handoff` to delegate to **Architect**\n");
+            prompt.push_str("- **Scheduling**: `cron(action=\"list\")` to view scheduled tasks (read-only). To create/delete/run cron jobs, use `handoff` to delegate to the **base agent** (use `agents_list` to find it)\n");
         }
     }
     if capabilities.has_message_actions {
         prompt.push_str("- **Channel Actions**: send photos, voice messages, buttons via channel actions after tool calls\n");
     }
     if !capabilities.is_base {
-        prompt.push_str("- **Secrets**: `secret_set` saves secrets scoped to you. For global secrets (shared tools like BCS, Brave), use `handoff` to delegate to **Architect**\n");
+        prompt.push_str("- **Secrets**: `secret_set` saves secrets scoped to you. For global secrets, use `handoff` to delegate to the **base agent**\n");
     }
     if capabilities.has_yaml_tools {
         prompt.push_str("- **External Tools**: YAML-defined tools in workspace/tools/ — check tool list for specifics\n");
@@ -470,7 +470,7 @@ pub async fn write_workspace_file(
 /// - shared directories: `tools/`, `skills/`, `mcp/`
 ///
 /// A leading `workspace/` prefix is stripped automatically so the bot can
-/// pass either `SOUL.md` or `workspace/agents/Arty/SOUL.md` — both resolve.
+/// pass either `SOUL.md` or `workspace/agents/MyAgent/SOUL.md` — both resolve.
 ///
 /// Bare filenames like `SOUL.md` resolve to `agents/{agent_name}/SOUL.md`.
 /// Paths starting with `agents/` must target the agent's own directory.
@@ -509,7 +509,7 @@ async fn validate_workspace_path_inner(
     // Files that always live at workspace root (shared between agents)
     const SHARED_ROOT_FILES: &[&str] = &["USER.md", "AGENTS.md", "TOOLS.md", "SYSTEM_TOOLS.md"];
     // Directories that always live at workspace root (not under agents/)
-    // toolgate/ and channels/ removed — Architect uses code_exec on host directly
+    // toolgate/ and channels/ removed — base agent uses code_exec on host directly
     const SHARED_ROOT_DIRS: &[&str] = &["tools", "skills", "mcp", "uploads"];
 
     // Bare filename (no directory separator):
@@ -776,44 +776,39 @@ pub async fn edit_workspace_file(
 
 /// Ensure workspace directory for an agent exists with default scaffold files.
 /// Only creates files that don't already exist — safe to call on every start.
-pub async fn ensure_workspace_scaffold(workspace_dir: &str, agent_name: &str) -> Result<()> {
+pub async fn ensure_workspace_scaffold(workspace_dir: &str, agent_name: &str, is_base: bool) -> Result<()> {
     let agent_dir = agent_dir(workspace_dir, agent_name);
     fs::create_dir_all(&agent_dir).await?;
 
-    // Default scaffold files (only created if missing)
-    let scaffolds: &[(&str, &str)] = &[
-        ("SOUL.md", concat!(
-            "# Soul\n\n",
-            "## Who I Am\n\n",
-            "A smart AI assistant. I work fast and to the point.\n\n",
-            "## Communication Style\n\n",
-            "- Language: Russian\n",
-            "- Brief and to the point\n",
-            "- Proactively suggest actions\n\n",
-            "## Principles\n\n",
-            "1. Act first, ask later (if reversible)\n",
-            "2. Honestly acknowledge limitations\n",
-            "3. Use tools — don't invent answers\n",
-        )),
-        ("IDENTITY.md", concat!(
-            "# Identity\n\n",
-            "- Name: Assistant\n",
-            "- Language: Russian\n",
-            "- Style: helpful, concise, proactive\n",
-        )),
-        ("HEARTBEAT.md", concat!(
-            "# Heartbeat\n\n",
-            "Upon receiving a heartbeat:\n",
-            "1. Read this file\n",
-            "2. Check if there are active tasks\n",
-            "3. If yes — execute and report\n",
-            "4. If no — respond: HEARTBEAT_OK\n\n",
-            "(No active tasks)\n",
-        )),
+    // Build scaffold files with agent name and role-appropriate content.
+    // Base agent gets full system agent template (based on proven Hyde config).
+    // Non-base agents get a lighter template that delegates system tasks to base.
+    let soul_content = if is_base {
+        include_str!("../../scaffold/base/SOUL.md").replace("{AGENT_NAME}", agent_name)
+    } else {
+        include_str!("../../scaffold/regular/SOUL.md").replace("{AGENT_NAME}", agent_name)
+    };
+
+    let identity_content = if is_base {
+        include_str!("../../scaffold/base/IDENTITY.md").replace("{AGENT_NAME}", agent_name)
+    } else {
+        include_str!("../../scaffold/regular/IDENTITY.md").replace("{AGENT_NAME}", agent_name)
+    };
+
+    let heartbeat_content = if is_base {
+        include_str!("../../scaffold/base/HEARTBEAT.md").replace("{AGENT_NAME}", agent_name)
+    } else {
+        include_str!("../../scaffold/regular/HEARTBEAT.md").replace("{AGENT_NAME}", agent_name)
+    };
+
+    let scaffolds: Vec<(&str, String)> = vec![
+        ("SOUL.md", soul_content),
+        ("IDENTITY.md", identity_content),
+        ("HEARTBEAT.md", heartbeat_content),
     ];
 
     // TOOLS.md — single source of truth for all tools (system + YAML).
-    // Only base agents (Architect) can modify this file.
+    // Only base agents can modify this file.
     let tools_md = Path::new(workspace_dir).join("TOOLS.md");
     if !tools_md.exists() {
         fs::write(&tools_md, include_str!("../../../../workspace/TOOLS.md")).await?;

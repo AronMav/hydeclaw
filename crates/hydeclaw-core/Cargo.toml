@@ -19,6 +19,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 toml_edit = { workspace = true }
+schemars = { workspace = true }
 notify = { workspace = true }
 tokio-cron-scheduler = { workspace = true }
 cron = { workspace = true }
@@ -56,6 +57,15 @@ scraper = { workspace = true }
 
 # Error classification
 regex = "1"
+
+# mDNS service discovery (pure Rust — no OpenSSL, ARM64-safe)
+mdns-sd = "0.19"
+
+# Network interface enumeration (pure Rust, no OpenSSL)
+if-addrs = "0.14"
+
+# WAN/public IP detection (rustls-tls only — no OpenSSL)
+public-ip-address = { version = "0.4", default-features = false, features = ["rustls-tls"] }
 
 # Security
 subtle = "2"

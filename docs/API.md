@@ -41,6 +41,10 @@
 29. [Email Triggers (Gmail)](#29-email-triggers-gmail)
 30. [GitHub Integration](#30-github-integration)
 31. [Audit Log](#31-audit-log)
+32. [Setup](#32-setup)
+33. [Network](#33-network)
+34. [Notifications](#34-notifications)
+35. [Config Schema](#35-config-schema)
 
 ---
 
@@ -551,12 +555,12 @@ Invite an agent into a multi-agent session. The invited agent is added to the se
 
 **Request body:**
 ```json
-{ "agent_name": "Arty" }
+{ "agent_name": "Agent2" }
 ```
 
 **Response:**
 ```json
-{ "ok": true, "participants": ["Hyde", "Arty"] }
+{ "ok": true, "participants": ["Agent1", "Agent2"] }
 ```
 
 Returns `404` if the agent does not exist or the session is not found.
@@ -861,7 +865,7 @@ Channels connect agents to messaging platforms (Telegram, Discord, etc.). Each c
   "id": "uuid",
   "agent_name": "main",
   "channel_type": "telegram",
-  "display_name": "Arty Bot",
+  "display_name": "My Bot",
   "config": {},
   "status": "running",
   "error_msg": null
@@ -876,7 +880,7 @@ Channels connect agents to messaging platforms (Telegram, Discord, etc.). Each c
 ```json
 {
   "channel_type": "telegram",
-  "display_name": "Arty Bot",
+  "display_name": "My Bot",
   "config": {
     "bot_token": "5092435297:AAH..."
   }
@@ -1511,7 +1515,7 @@ Omit a capability to leave its active provider unchanged.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `text` | string | Yes | Text to synthesize |
-| `voice` | string | No | Voice name or clone identifier (e.g. `clone:Arty`) |
+| `voice` | string | No | Voice name or clone identifier (e.g. `clone:MyVoice`) |
 
 **Response:** Audio binary with appropriate `Content-Type` header (`audio/mpeg`, `audio/ogg`, etc.), or JSON error.
 
@@ -1838,3 +1842,168 @@ For any secret name and agent scope: `(name, scope)` → `(name, "")` global →
 ### CORS
 
 CORS origins are configured via `gateway.cors_origins`. If empty, the gateway allows the UI port (`:5173`) and API port on the same host.
+
+---
+
+## 32. Setup
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/setup/status` | Check whether initial setup has been completed |
+| `GET` | `/api/setup/requirements` | List prerequisites and their current status |
+| `POST` | `/api/setup/complete` | Mark setup as complete after configuration |
+
+### GET /api/setup/status
+
+Returns whether the instance has completed first-run setup.
+
+**Response:**
+```json
+{
+  "setup_complete": false,
+  "missing_steps": ["provider", "agent"]
+}
+```
+
+### GET /api/setup/requirements
+
+Returns a checklist of prerequisites (database, Docker, secrets, providers) with pass/fail status for each.
+
+**Response:**
+```json
+{
+  "requirements": [
+    { "name": "database", "ok": true, "message": "PostgreSQL 17 reachable" },
+    { "name": "master_key", "ok": true, "message": "HYDECLAW_MASTER_KEY set" },
+    { "name": "provider", "ok": false, "message": "No LLM provider configured" },
+    { "name": "agent", "ok": false, "message": "No agents created" }
+  ]
+}
+```
+
+### POST /api/setup/complete
+
+Marks the instance as fully configured. Subsequent calls to `GET /api/setup/status` will return `"setup_complete": true`. Idempotent.
+
+**Request body:**
+```json
+{ "provider": "openai", "model": "gpt-4o-mini", "agent_name": "assistant" }
+```
+
+**Response:** `{ "ok": true }`
+
+---
+
+## 33. Network
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/network/addresses` | List detected LAN addresses for this host |
+
+### GET /api/network/addresses
+
+Returns all non-loopback IP addresses detected on the host, useful for displaying access URLs in the UI or during setup.
+
+**Response:**
+```json
+{
+  "addresses": [
+    { "ip": "192.168.1.85", "interface": "eth0", "family": "ipv4" },
+    { "ip": "fe80::1", "interface": "eth0", "family": "ipv6" }
+  ],
+  "port": 18789
+}
+```
+
+---
+
+## 34. Notifications
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/notifications` | List notifications for the current user |
+| `PATCH` | `/api/notifications/{id}` | Update a notification (e.g. mark as read) |
+| `POST` | `/api/notifications/read-all` | Mark all notifications as read |
+| `DELETE` | `/api/notifications/clear` | Delete all read notifications |
+
+### GET /api/notifications
+
+Query parameters:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `unread` | boolean | — | Filter to unread only |
+| `limit` | integer | 50 | Max results (max 200) |
+| `offset` | integer | 0 | Pagination offset |
+
+**Response:**
+```json
+{
+  "notifications": [
+    {
+      "id": "uuid",
+      "type": "agent_error",
+      "title": "Agent failed",
+      "body": "Provider returned 401 for agent 'analyst'",
+      "read": false,
+      "created_at": "2026-04-06T12:00:00Z"
+    }
+  ],
+  "unread_count": 3
+}
+```
+
+### PATCH /api/notifications/{id}
+
+**Request body:**
+```json
+{ "read": true }
+```
+
+**Response:** `{ "ok": true }`
+
+### POST /api/notifications/read-all
+
+Marks all unread notifications as read. Returns the number of notifications updated.
+
+**Response:** `{ "ok": true, "updated": 5 }`
+
+### DELETE /api/notifications/clear
+
+Deletes all notifications that have been read. Unread notifications are preserved.
+
+**Response:** `{ "ok": true, "deleted": 12 }`
+
+---
+
+## 35. Config Schema
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/config/schema` | Get the JSON schema for gateway configuration |
+
+### GET /api/config/schema
+
+Returns the JSON schema describing all valid fields for `config/hydeclaw.toml`. Useful for UI-driven config editors and client-side validation.
+
+**Response:**
+```json
+{
+  "type": "object",
+  "properties": {
+    "gateway": {
+      "type": "object",
+      "properties": {
+        "listen": { "type": "string", "default": "0.0.0.0:18789" },
+        "cors_origins": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "max_requests_per_minute": { "type": "integer", "default": 100 }
+      }
+    }
+  }
+}
+```

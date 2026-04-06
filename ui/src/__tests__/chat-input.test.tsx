@@ -48,7 +48,7 @@ vi.mock("@/stores/auth-store", () => ({
         token: "test-token",
         isAuthenticated: true,
         version: "1.0.0",
-        agents: ["Arty", "Bob"],
+        agents: ["Agent1", "Bob"],
         agentIcons: {},
         lastFetched: Date.now(),
         login: vi.fn(),
@@ -75,15 +75,15 @@ vi.mock("@/stores/chat-store", () => ({
         inputText: "",
       };
       const state: Record<string, unknown> = {
-        currentAgent: "Arty",
-        agents: { Arty: agentState },
+        currentAgent: "Agent1",
+        agents: { Agent1: agentState },
       };
       return selector ? selector(state) : state;
     },
     {
       getState: () => ({
-        currentAgent: "Arty",
-        agents: { Arty: { activeSessionId: null, activeSessionIds: [], viewMode: "live", streamStatus: "idle" } },
+        currentAgent: "Agent1",
+        agents: { Agent1: { activeSessionId: null, activeSessionIds: [], viewMode: "live", streamStatus: "idle" } },
         regenerate: vi.fn(),
         clearError: vi.fn(),
         sendMessage: vi.fn(),
@@ -172,11 +172,11 @@ describe("MentionAutocomplete (INPT-01)", () => {
     render(
       <MentionAutocomplete
         query="Ar"
-        agents={["Arty", "Bob"]}
+        agents={["Agent1", "Bob"]}
         onSelect={vi.fn()}
       />,
     );
-    expect(screen.getByText("@Arty")).toBeInTheDocument();
+    expect(screen.getByText("@Agent1")).toBeInTheDocument();
     expect(screen.queryByText("@Bob")).not.toBeInTheDocument();
   });
 
@@ -184,7 +184,7 @@ describe("MentionAutocomplete (INPT-01)", () => {
     const { container } = render(
       <MentionAutocomplete
         query="zzz"
-        agents={["Arty", "Bob"]}
+        agents={["Agent1", "Bob"]}
         onSelect={vi.fn()}
       />,
     );
@@ -196,12 +196,12 @@ describe("MentionAutocomplete (INPT-01)", () => {
     render(
       <MentionAutocomplete
         query="Ar"
-        agents={["Arty", "Bob"]}
+        agents={["Agent1", "Bob"]}
         onSelect={onSelect}
       />,
     );
-    fireEvent.mouseDown(screen.getByText("@Arty"));
-    expect(onSelect).toHaveBeenCalledWith("Arty");
+    fireEvent.mouseDown(screen.getByText("@Agent1"));
+    expect(onSelect).toHaveBeenCalledWith("Agent1");
   });
 });
 
@@ -214,14 +214,14 @@ describe("TargetAgentIndicator (INPT-02)", () => {
     const { container } = render(
       <div data-testid="target-agent-indicator" className="flex items-center gap-1.5 px-4 py-1 text-xs text-muted-foreground">
         <span>Targeting</span>
-        <span className="font-semibold text-primary">@Arty</span>
+        <span className="font-semibold text-primary">@Agent1</span>
         <button type="button">
           <span>X</span>
         </button>
       </div>,
     );
     expect(screen.getByText("Targeting")).toBeInTheDocument();
-    expect(screen.getByText("@Arty")).toBeInTheDocument();
+    expect(screen.getByText("@Agent1")).toBeInTheDocument();
     expect(container.querySelector("button")).toBeInTheDocument();
   });
 });

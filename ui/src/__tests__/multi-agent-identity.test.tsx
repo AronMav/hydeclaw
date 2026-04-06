@@ -80,7 +80,7 @@ vi.mock("@/stores/auth-store", () => ({
         isAuthenticated: true,
         version: "1.0.0",
         agents: ["TestAgent"],
-        agentIcons: { Arty: "arty-icon.png", Helper: "helper-icon.png" },
+        agentIcons: { Agent1: "agent1-icon.png", Helper: "helper-icon.png" },
         lastFetched: Date.now(),
         login: vi.fn(),
         logout: vi.fn(),
@@ -219,7 +219,7 @@ describe("Multi-Agent Identity (MAID)", () => {
   describe("MAID-01: Agent turn separators", () => {
     it("renders separator between consecutive assistant messages from different agents — Phase 15 VSEP-01", () => {
       const messages: ChatMessage[] = [
-        makeMsg({ id: "1", role: "assistant", agentId: "Arty", parts: [{ type: "text", text: "I am Arty" }] }),
+        makeMsg({ id: "1", role: "assistant", agentId: "Agent1", parts: [{ type: "text", text: "I am Agent1" }] }),
         makeMsg({ id: "2", role: "assistant", agentId: "Helper", parts: [{ type: "text", text: "I am Helper" }] }),
       ];
 
@@ -242,8 +242,8 @@ describe("Multi-Agent Identity (MAID)", () => {
 
     it("does NOT render separator between consecutive assistant messages from the SAME agent", () => {
       const messages: ChatMessage[] = [
-        makeMsg({ id: "1", role: "assistant", agentId: "Arty", parts: [{ type: "text", text: "First" }] }),
-        makeMsg({ id: "2", role: "assistant", agentId: "Arty", parts: [{ type: "text", text: "Second" }] }),
+        makeMsg({ id: "1", role: "assistant", agentId: "Agent1", parts: [{ type: "text", text: "First" }] }),
+        makeMsg({ id: "2", role: "assistant", agentId: "Agent1", parts: [{ type: "text", text: "Second" }] }),
       ];
 
       render(
@@ -263,7 +263,7 @@ describe("Multi-Agent Identity (MAID)", () => {
 
     it("does NOT render separator when user message sits between different-agent assistants", () => {
       const messages: ChatMessage[] = [
-        makeMsg({ id: "1", role: "assistant", agentId: "Arty", parts: [{ type: "text", text: "Arty says" }] }),
+        makeMsg({ id: "1", role: "assistant", agentId: "Agent1", parts: [{ type: "text", text: "Agent1 says" }] }),
         makeMsg({ id: "2", role: "user", parts: [{ type: "text", text: "User question" }] }),
         makeMsg({ id: "3", role: "assistant", agentId: "Helper", parts: [{ type: "text", text: "Helper says" }] }),
       ];

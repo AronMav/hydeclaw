@@ -9,7 +9,7 @@ Per-agent files live in `agents/{your_name}/` and load automatically:
 - **HEARTBEAT.md** — Heartbeat task instructions
 
 Shared files (workspace root, all agents read):
-- **TOOLS.md** — all tools reference (only Hyde can edit)
+- **TOOLS.md** — all tools reference (only base agent can edit)
 - **AGENTS.md** — this file (read-only for all)
 - **USER.md** — user profile (any agent can edit)
 
@@ -58,14 +58,15 @@ Before creating: `cron(action="list")` → if same purpose exists, remove first.
 
 ## Creating Tools and Services
 
-Creating YAML tools, toolgate providers/routers, and channel adapters is **Hyde**'s responsibility.
+Creating YAML tools, toolgate providers/routers, and channel adapters is the **base agent**'s responsibility. The base agent is the one with `base = true` in its config — use `agents_list` tool to find it.
 
-**Delegate to Hyde** when you need:
+**Delegate to the base agent** when you need:
 - A new YAML tool (HTTP API integration)
 - A new toolgate provider or router (Python)
 - Changes to channels configuration or drivers
 - Service restarts (via Core API)
 
 ```
-send_to_agent("Hyde", "Need: <description>")
+# Find base agent first, then delegate
+handoff(agent="<base_agent_name>", task="<description>")
 ```

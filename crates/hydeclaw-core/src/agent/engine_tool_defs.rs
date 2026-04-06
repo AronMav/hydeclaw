@@ -182,7 +182,7 @@ impl AgentEngine {
             ToolDefinition {
                 name: "handoff".to_string(),
                 description: "Transfer control to another agent. The target agent joins the session and responds next. \
-                    Use when you need a different agent's expertise (e.g. 'спроси у Арти', 'ask Architect'). \
+                    Use when you need a different agent's expertise (e.g. 'ask the base agent', 'delegate to Agent2'). \
                     Provide the task description and relevant context.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
@@ -337,7 +337,7 @@ impl AgentEngine {
         } else {
             ToolDefinition {
                 name: "cron".to_string(),
-                description: "View your scheduled tasks. To create or modify jobs, invite Architect into this chat.".to_string(),
+                description: "View your scheduled tasks. To create or modify jobs, delegate to the base agent.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {

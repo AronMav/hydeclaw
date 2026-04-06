@@ -42,12 +42,12 @@ describe("initial state", () => {
 describe("login", () => {
   it("sets token, isAuthenticated, agents, version on valid token", async () => {
     mockFetch
-      .mockResolvedValueOnce(jsonResponse({ agents: ["Arty"] })) // /api/agents
+      .mockResolvedValueOnce(jsonResponse({ agents: ["Agent1"] })) // /api/agents
       .mockResolvedValueOnce(
         jsonResponse({
           version: "1.2.3",
-          agents: ["Arty"],
-          agent_icons: [{ name: "Arty", icon: "robot" }],
+          agents: ["Agent1"],
+          agent_icons: [{ name: "Agent1", icon: "robot" }],
         }),
       ); // /health
 
@@ -57,9 +57,9 @@ describe("login", () => {
     const state = useAuthStore.getState();
     expect(state.token).toBe("valid-token");
     expect(state.isAuthenticated).toBe(true);
-    expect(state.agents).toEqual(["Arty"]);
+    expect(state.agents).toEqual(["Agent1"]);
     expect(state.version).toBe("1.2.3");
-    expect(state.agentIcons).toEqual({ Arty: "robot" });
+    expect(state.agentIcons).toEqual({ Agent1: "robot" });
   });
 
   it("returns 'invalid' on 401 response", async () => {

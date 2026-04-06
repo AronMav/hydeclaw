@@ -127,28 +127,30 @@ pub async fn load_skills(workspace_dir: &str) -> Vec<SkillDef> {
     skills
 }
 
-/// Load skills including architect-only skills from workspace/skills/architect/.
-/// Used for base agents — they see everything regular agents see plus architect skills.
+/// Load skills including base-agent-only skills from workspace/skills/base/.
+/// Used for base agents — they see everything regular agents see plus base-only skills.
 pub async fn load_skills_for_base(workspace_dir: &str) -> Vec<SkillDef> {
     let mut skills = load_skills(workspace_dir).await;
 
-    let architect_dir = Path::new(workspace_dir).join("skills").join("architect");
-    if let Ok(mut read_dir) = fs::read_dir(&architect_dir).await {
-        while let Ok(Some(entry)) = read_dir.next_entry().await {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            let content = match fs::read_to_string(&path).await {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(file = %path.display(), error = %e, "failed to read architect skill");
+    for dir_name in &["base"] {
+        let base_dir = Path::new(workspace_dir).join("skills").join(dir_name);
+        if let Ok(mut read_dir) = fs::read_dir(&base_dir).await {
+            while let Ok(Some(entry)) = read_dir.next_entry().await {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("md") {
                     continue;
                 }
-            };
-            if let Some(skill) = SkillDef::parse(&content) {
-                tracing::debug!(skill = %skill.meta.name, "loaded architect skill");
-                skills.push(skill);
+                let content = match fs::read_to_string(&path).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!(file = %path.display(), error = %e, "failed to read base skill");
+                        continue;
+                    }
+                };
+                if let Some(skill) = SkillDef::parse(&content) {
+                    tracing::debug!(skill = %skill.meta.name, dir = %dir_name, "loaded base-only skill");
+                    skills.push(skill);
+                }
             }
         }
     }

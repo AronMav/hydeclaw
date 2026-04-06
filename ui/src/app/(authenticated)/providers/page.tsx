@@ -553,7 +553,7 @@ export default function ProvidersPage() {
                     {t("providers.field_name")} <span className="text-destructive">*</span>
                   </label>
                   <Input
-                    placeholder="minimax-arty"
+                    placeholder="my-openai"
                     value={form.name}
                     onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                     className="font-mono text-sm"

@@ -35,7 +35,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { ChannelRow, RoutingRule } from "@/types/api";
-import { ChevronDown, Bot, ExternalLink, Link2, Camera } from "lucide-react";
+import { ChevronDown, Bot, ExternalLink, Link2, Camera, RefreshCw } from "lucide-react";
 import { RoutingRulesEditor } from "./RoutingRulesEditor";
 import { useProviders, useProviderModels } from "@/lib/queries";
 
@@ -166,7 +166,7 @@ export function AgentEditDialog({
   const { data: allProviders = [] } = useProviders();
   const llmProviders = allProviders.filter((p) => p.type === "text");
   const selectedProvider = llmProviders.find((p) => p.name === form.providerConnection);
-  const { data: providerModels = [], isLoading: providerModelsLoading } = useProviderModels(selectedProvider?.id ?? null);
+  const { data: providerModels = [], isLoading: providerModelsLoading, refetch: refetchModels } = useProviderModels(selectedProvider?.id ?? null);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -294,42 +294,55 @@ export function AgentEditDialog({
                   )}
                   {(() => {
                     const models = providerModels;
-                    if (models.length === 0 && !providerModelsLoading) {
+                    if (models.length > 0) {
                       return (
+                        <div className="flex gap-2">
+                          <Select
+                            value={models.includes(form.model) ? form.model : ""}
+                            onValueChange={(v) => upd({ model: v })}
+                          >
+                            <SelectTrigger className="bg-background border-border font-mono text-sm h-8">
+                              <SelectValue placeholder={t("agents.model_placeholder")} />
+                            </SelectTrigger>
+                            <SelectContent className="border-border max-h-60">
+                              {models.map((m) => (
+                                <SelectItem key={m} value={m} className="font-mono text-sm">{m}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            className="shrink-0 h-8 w-8"
+                            onClick={() => refetchModels()}
+                            disabled={providerModelsLoading}
+                          >
+                            <RefreshCw className={`h-3.5 w-3.5 ${providerModelsLoading ? "animate-spin" : ""}`} />
+                          </Button>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="flex gap-2">
                         <Input
                           value={form.model}
                           placeholder="model-name"
                           className="bg-background border-border font-mono text-sm h-8"
                           onChange={(e) => upd({ model: e.target.value })}
                         />
-                      );
-                    }
-                    const isKnown = models.includes(form.model);
-                    return (
-                      <>
-                        <Select
-                          value={isKnown ? form.model : "__custom__"}
-                          onValueChange={(v) => { if (v !== "__custom__") upd({ model: v }); else upd({ model: "" }); }}
-                        >
-                          <SelectTrigger className="w-full bg-background border-border font-mono text-sm h-8">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent className="border-border max-h-60">
-                            {models.map((m) => (
-                              <SelectItem key={m} value={m} className="font-mono text-sm">{m}</SelectItem>
-                            ))}
-                            <SelectItem value="__custom__" className="text-sm">{t("common.custom")}</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        {!isKnown && (
-                          <Input
-                            value={form.model}
-                            placeholder={t("agents.model_placeholder")}
-                            className="bg-background border-border font-mono text-sm h-8 mt-1.5"
-                            onChange={(e) => upd({ model: e.target.value })}
-                          />
+                        {selectedProvider && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="shrink-0 h-8 text-xs"
+                            onClick={() => refetchModels()}
+                            disabled={providerModelsLoading}
+                          >
+                            <RefreshCw className={`h-3.5 w-3.5 ${providerModelsLoading ? "animate-spin" : ""}`} />
+                            <span className="ml-1">Discover</span>
+                          </Button>
                         )}
-                      </>
+                      </div>
                     );
                   })()}
                 </Field>

@@ -271,7 +271,7 @@ impl AgentEngine {
         }
     }
 
-    // send_to_agent removed — replaced by `handoff` tool (Phase 17, v3.0)
+    // Legacy send_to_agent removed — use `handoff` tool instead
 
     /// Fetch a URL and return text content.
     pub(super) async fn handle_web_fetch(&self, args: &serde_json::Value) -> String {

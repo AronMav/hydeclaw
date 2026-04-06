@@ -50,29 +50,29 @@ const assistantWithTool: ChatMessage = {
 
 describe("sessionToMarkdown", () => {
   it("includes agent name", () => {
-    const result = sessionToMarkdown([userMessage, assistantMessage], mockSession, "Arty");
-    expect(result).toContain("Arty");
+    const result = sessionToMarkdown([userMessage, assistantMessage], mockSession, "Agent1");
+    expect(result).toContain("Agent1");
   });
 
   it("includes session id", () => {
-    const result = sessionToMarkdown([userMessage, assistantMessage], mockSession, "Arty");
+    const result = sessionToMarkdown([userMessage, assistantMessage], mockSession, "Agent1");
     expect(result).toContain("sess-abc-123");
   });
 
   it("renders user message", () => {
-    const result = sessionToMarkdown([userMessage], mockSession, "Arty");
+    const result = sessionToMarkdown([userMessage], mockSession, "Agent1");
     expect(result).toContain("Привет, как дела?");
     expect(result).toContain("**You**");
   });
 
   it("renders assistant message", () => {
-    const result = sessionToMarkdown([assistantMessage], mockSession, "Arty");
+    const result = sessionToMarkdown([assistantMessage], mockSession, "Agent1");
     expect(result).toContain("Всё отлично, спасибо!");
-    expect(result).toContain("**Arty**");
+    expect(result).toContain("**Agent1**");
   });
 
   it("does not crash on empty messages array", () => {
-    const result = sessionToMarkdown([], mockSession, "Arty");
+    const result = sessionToMarkdown([], mockSession, "Agent1");
     expect(result).toContain("# Session Export");
   });
 });

@@ -331,7 +331,7 @@ impl AgentEngine {
         // Only base agents can add/update/remove/run cron jobs.
         // list and history are read-only, allowed for all agents.
         if !self.agent.base && !matches!(action, "list" | "history" | "runs") {
-            return format!("Error: cron '{}' requires a base agent. Only Architect can manage cron jobs.", action);
+            return format!("Error: cron '{}' requires a base agent. Only base agents can manage cron jobs.", action);
         }
 
         let scheduler = match &self.scheduler {

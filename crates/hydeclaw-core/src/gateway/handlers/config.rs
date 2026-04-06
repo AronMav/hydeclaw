@@ -123,6 +123,19 @@ pub(crate) struct TtsSynthesizeRequest {
 
 // ── Config API ──
 
+/// GET /api/config/schema — return the JSON Schema for AppConfig.
+///
+/// Schema is generated once at first call and cached for the process lifetime.
+/// The schema is static — it only changes when the binary is rebuilt.
+pub(crate) async fn api_get_config_schema() -> impl IntoResponse {
+    static CONFIG_SCHEMA: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    let schema = CONFIG_SCHEMA.get_or_init(|| {
+        let root = schemars::schema_for!(crate::config::AppConfig);
+        serde_json::to_value(root).unwrap_or(serde_json::Value::Null)
+    });
+    Json(schema.clone())
+}
+
 pub(crate) async fn api_get_config(State(state): State<AppState>) -> Json<Value> {
     let config = state.shared_config.read().await;
     let embed_dim = state.memory_store.embed_dim();
@@ -177,6 +190,11 @@ pub(crate) async fn api_get_config(State(state): State<AppState>) -> Json<Value>
             "memory_mb": config.sandbox.memory_mb,
             "extra_binds": config.sandbox.extra_binds,
         },
+        "backup": {
+            "enabled": config.backup.enabled,
+            "cron": config.backup.cron,
+            "retention_days": config.backup.retention_days,
+        },
     }))
 }
 
@@ -192,23 +210,32 @@ pub(crate) struct ConfigUpdatePayload {
     max_tool_concurrency: Option<u32>,
     max_agent_turns: Option<usize>,
     public_url: Option<String>,
+    backup_enabled: Option<bool>,
+    backup_cron: Option<String>,
+    backup_retention_days: Option<u32>,
 }
 
 pub(crate) async fn api_update_config(
     State(state): State<AppState>,
     Json(payload): Json<ConfigUpdatePayload>,
 ) -> impl IntoResponse {
-    // Validate URLs (basic check)
-    for (name, url) in [
-        ("toolgate_url", &payload.toolgate_url),
-    ] {
-        if let Some(url) = url
-            && !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": format!("{} must start with http:// or https://", name)})),
-                ).into_response();
-            }
+    // Structured validation — build proposed config and validate before writing
+    {
+        let current = state.shared_config.read().await.clone();
+        let mut proposed = current.clone();
+        if let Some(ref url) = payload.toolgate_url {
+            proposed.toolgate_url = if url.is_empty() { None } else { Some(url.clone()) };
+        }
+        if let Some(ref url) = payload.public_url {
+            proposed.gateway.public_url = if url.is_empty() { None } else { Some(url.clone()) };
+        }
+        let errors = crate::config::validate_config(&proposed);
+        if !errors.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "errors": errors })),
+            ).into_response();
+        }
     }
 
     let config_path = "config/hydeclaw.toml";
@@ -223,15 +250,33 @@ pub(crate) async fn api_update_config(
         }
     };
 
+    // Helper: restore backup and return an error response.
+    // Defined as a closure-like macro pattern since async closures can't capture by ref easily.
+    macro_rules! restore_and_fail {
+        ($label:expr, $err:expr) => {{
+            if let Err(restore_err) = tokio::fs::write(config_path, &config_backup).await {
+                tracing::error!(
+                    error = %$err,
+                    restore_error = %restore_err,
+                    "config write failed AND backup restore failed"
+                );
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                    "error": format!("{} AND restore failed: {}. Manual fix required.", $label, restore_err)
+                }))).into_response();
+            }
+            tracing::warn!(error = %$err, "config write failed, restored backup");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": format!("{}: {}", $label, $err)
+            }))).into_response();
+        }};
+    }
+
     // Update TOML config file
     if let Err(e) = crate::config::update_service_urls(
         "config/hydeclaw.toml",
         payload.toolgate_url.as_deref(),
     ) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("failed to update config file: {}", e)})),
-        ).into_response();
+        restore_and_fail!("failed to update config file", e);
     }
 
     // Update memory config in TOML
@@ -243,19 +288,13 @@ pub(crate) async fn api_update_config(
             None, // embed_model removed — managed by toolgate
             payload.embed_dim,
         ) {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("failed to update memory config: {}", e)})),
-            ).into_response();
+            restore_and_fail!("failed to update memory config", e);
         }
 
     // Update subagents config in TOML
     if let Some(enabled) = payload.subagents_enabled
         && let Err(e) = crate::config::update_subagents_enabled("config/hydeclaw.toml", enabled) {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("failed to update subagents config: {}", e)})),
-            ).into_response();
+            restore_and_fail!("failed to update subagents config", e);
         }
 
     // Update limits config in TOML
@@ -267,20 +306,26 @@ pub(crate) async fn api_update_config(
             payload.max_agent_turns,
         )
     {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("failed to update limits config: {}", e)})),
-        ).into_response();
+        restore_and_fail!("failed to update limits config", e);
     }
 
     // Update public_url in TOML
     if let Some(ref url) = payload.public_url
         && let Err(e) = crate::config::update_public_url("config/hydeclaw.toml", url)
     {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("failed to update public_url config: {}", e)})),
-        ).into_response();
+        restore_and_fail!("failed to update public_url config", e);
+    }
+
+    // Update backup config in TOML
+    if payload.backup_enabled.is_some() || payload.backup_cron.is_some() || payload.backup_retention_days.is_some() {
+        if let Err(e) = crate::config::update_backup_config(
+            "config/hydeclaw.toml",
+            payload.backup_enabled,
+            payload.backup_cron.as_deref(),
+            payload.backup_retention_days,
+        ) {
+            restore_and_fail!("failed to update backup config", e);
+        }
     }
 
     // Validate the written config can be fully deserialized before proceeding
@@ -352,6 +397,66 @@ pub(crate) async fn api_restart(req: Request<Body>) -> impl IntoResponse {
 
 // ── Config Export/Import ──
 
+/// Replace the single `hydeclaw.toml.bak` file with timestamped rotation.
+///
+/// Creates `{config_path}.bak.{YYYY-MM-DDTHH-MM-SSZ}` and keeps the newest
+/// `CONFIG_BACKUP_MAX` backups. Older backups are silently deleted.
+/// The legacy `.bak` file (no timestamp) is never touched.
+const CONFIG_BACKUP_MAX: usize = 5;
+
+async fn rotate_config_backups(config_path: &str) {
+    let now = chrono::Utc::now();
+    let stamp = now.format("%Y-%m-%dT%H-%M-%SZ").to_string();
+    let backup_path = format!("{config_path}.bak.{stamp}");
+
+    // Write the new timestamped backup
+    if let Err(e) = tokio::fs::copy(config_path, &backup_path).await {
+        tracing::warn!(error = %e, "failed to write config backup, skipping rotation");
+        return;
+    }
+
+    // Collect existing timestamped backup files (prefix: "hydeclaw.toml.bak.")
+    let base = std::path::Path::new(config_path);
+    let dir = base.parent().unwrap_or(std::path::Path::new("."));
+    let stem = base
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let prefix = format!("{stem}.bak.");
+
+    let mut backups: Vec<std::path::PathBuf> = Vec::new();
+    match tokio::fs::read_dir(dir).await {
+        Ok(mut entries) => {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let name = entry.file_name().to_string_lossy().to_string();
+                // Match ONLY the timestamped pattern: "hydeclaw.toml.bak.YYYY-..."
+                // This avoids deleting the legacy "hydeclaw.toml.bak" file (no trailing dot/timestamp)
+                if name.starts_with(&prefix) {
+                    backups.push(entry.path());
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to read config dir for backup rotation");
+            return;
+        }
+    }
+
+    // Sort lexicographically — ISO timestamps sort correctly (newest = last alphabetically)
+    backups.sort();
+    backups.reverse(); // newest first
+
+    // Remove oldest beyond CONFIG_BACKUP_MAX
+    for old_path in backups.into_iter().skip(CONFIG_BACKUP_MAX) {
+        if let Err(e) = tokio::fs::remove_file(&old_path).await {
+            tracing::warn!(error = %e, path = %old_path.display(), "failed to prune old config backup");
+        } else {
+            tracing::info!(path = %old_path.display(), "pruned old config backup");
+        }
+    }
+}
+
 /// GET /api/config/export — export raw TOML configs (app + all agents).
 pub(crate) async fn api_export_config(req: Request<Body>) -> impl IntoResponse {
     let ip = crate::gateway::middleware::extract_client_ip(&req);
@@ -401,8 +506,8 @@ pub(crate) async fn api_import_config(
                 }))).into_response();
             }
         }
-        // Backup current
-        let _ = std::fs::copy("config/hydeclaw.toml", "config/hydeclaw.toml.bak");
+        // Backup current (timestamped rotation, keeps newest CONFIG_BACKUP_MAX)
+        rotate_config_backups("config/hydeclaw.toml").await;
         if let Err(e) = std::fs::write("config/hydeclaw.toml", app_toml) {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
         }

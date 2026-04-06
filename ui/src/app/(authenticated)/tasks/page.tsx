@@ -470,7 +470,7 @@ export default function CronPage() {
                       type="number"
                       value={form.announce_to?.chat_id || ""}
                       onChange={(e) => setForm({ ...form, announce_to: { ...form.announce_to!, chat_id: Number(e.target.value) } })}
-                      placeholder="388443751"
+                      placeholder="123456789"
                       className="font-mono text-sm h-9"
                     />
                   </div>

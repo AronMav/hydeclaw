@@ -24,6 +24,10 @@ pub(crate) mod oauth;
 pub(crate) mod email_triggers;
 pub(crate) mod github_repos;
 pub(crate) mod github_events;
+pub(crate) mod network;
+pub(crate) mod notifications;
+
+pub(crate) use network::api_network_addresses;
 
 pub(crate) use secrets::*;
 pub(crate) use sessions::*;
@@ -48,3 +52,4 @@ pub(crate) use auth::*;
 pub(crate) use backup::*;
 pub(crate) use oauth::*;
 pub(crate) use email_triggers::*;
+pub(crate) use notifications::*;

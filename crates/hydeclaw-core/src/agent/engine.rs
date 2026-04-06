@@ -1508,7 +1508,24 @@ impl AgentEngine {
             }
             Err(e) => {
                 tracing::error!(error = %e, "streaming LLM call failed, returning fallback");
-                lifecycle_guard.fail(&format!("streaming LLM call failed: {e}")).await;
+                let reason_str = format!("streaming LLM call failed: {e}");
+                lifecycle_guard.fail(&reason_str).await;
+                {
+                    let db = self.db.clone();
+                    let agent_name = self.agent.name.clone();
+                    let rs = reason_str.clone();
+                    if let Some(ref ui_tx) = self.ui_event_tx {
+                        let tx = ui_tx.clone();
+                        tokio::spawn(async move {
+                            crate::gateway::notify(
+                                &db, &tx, "agent_error",
+                                "Agent Error",
+                                &format!("Agent {} run failed: {}", agent_name, rs),
+                                serde_json::json!({"agent": agent_name, "reason": rs}),
+                            ).await.ok();
+                        });
+                    }
+                }
                 (error_classify::format_user_error(&e), None)
             }
         };
@@ -1692,7 +1709,24 @@ impl AgentEngine {
                     if event_tx.send(StreamEvent::StepFinish { step_id, finish_reason: "error".into() }).is_err() {
                         tracing::debug!("SSE event channel closed, engine continues for DB save");
                     }
-                    lifecycle_guard.fail(&format!("SSE LLM call failed: {e}")).await;
+                    let reason_str = format!("SSE LLM call failed: {e}");
+                    lifecycle_guard.fail(&reason_str).await;
+                    {
+                        let db = self.db.clone();
+                        let agent_name = self.agent.name.clone();
+                        let rs = reason_str.clone();
+                        if let Some(ref ui_tx) = self.ui_event_tx {
+                            let tx = ui_tx.clone();
+                            tokio::spawn(async move {
+                                crate::gateway::notify(
+                                    &db, &tx, "agent_error",
+                                    "Agent Error",
+                                    &format!("Agent {} run failed: {}", agent_name, rs),
+                                    serde_json::json!({"agent": agent_name, "reason": rs}),
+                                ).await.ok();
+                            });
+                        }
+                    }
                     break;
                 }
             };
@@ -1911,7 +1945,24 @@ impl AgentEngine {
                             tracing::debug!("SSE event channel closed, engine continues for DB save");
                         }
                         final_response = fallback;
-                        lifecycle_guard.fail(&format!("SSE forced final LLM call failed: {e}")).await;
+                        let reason_str = format!("SSE forced final LLM call failed: {e}");
+                        lifecycle_guard.fail(&reason_str).await;
+                        {
+                            let db = self.db.clone();
+                            let agent_name = self.agent.name.clone();
+                            let rs = reason_str.clone();
+                            if let Some(ref ui_tx) = self.ui_event_tx {
+                                let tx = ui_tx.clone();
+                                tokio::spawn(async move {
+                                    crate::gateway::notify(
+                                        &db, &tx, "agent_error",
+                                        "Agent Error",
+                                        &format!("Agent {} run failed: {}", agent_name, rs),
+                                        serde_json::json!({"agent": agent_name, "reason": rs}),
+                                    ).await.ok();
+                                });
+                            }
+                        }
                     }
                 }
                 if event_tx
@@ -2410,6 +2461,21 @@ impl AgentEngine {
                             "agent": self.agent.name,
                             "tool_name": name,
                         }));
+                        if let Some(ref ui_tx) = self.ui_event_tx {
+                            let db = self.db.clone();
+                            let tx = ui_tx.clone();
+                            let tool_name = name.to_string();
+                            let agent_name = self.agent.name.clone();
+                            let approval_id_str = id.to_string();
+                            tokio::spawn(async move {
+                                crate::gateway::notify(
+                                    &db, &tx, "tool_approval",
+                                    "Tool Approval Required",
+                                    &format!("Agent {} is requesting approval to use tool: {}", agent_name, tool_name),
+                                    serde_json::json!({"agent": agent_name, "tool_name": tool_name, "approval_id": approval_id_str}),
+                                ).await.ok();
+                            });
+                        }
                         id
                     }
                     Err(e) => return format!("Error creating approval: {}", e),

@@ -1,14 +1,20 @@
 use anyhow::{Context, Result};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+pub mod validation;
+pub use validation::{validate_config, ValidationError};
 
 /// Directory for workspace-based MCP configs: workspace/mcp/*.yaml
 pub const MCP_DIR: &str = "workspace/mcp";
 use std::collections::HashMap;
 use std::path::Path;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct AppConfig {
     pub gateway: GatewayConfig,
+    #[serde(skip_serializing)]
+    #[schemars(skip)]
     pub database: DatabaseConfig,
     #[serde(default)]
     pub limits: LimitsConfig,
@@ -21,6 +27,7 @@ pub struct AppConfig {
     pub discussion: DiscussionConfig,
     #[serde(default)]
     #[allow(dead_code)]
+    #[schemars(skip)]
     pub mcp: HashMap<String, McpConfig>,
     #[serde(default)]
     #[allow(dead_code)]
@@ -39,15 +46,49 @@ pub struct AppConfig {
     #[serde(default)]
     pub otel: OtelConfig,
     /// Native child processes managed by Core (channels, toolgate).
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
+    #[schemars(skip)]
     pub managed_process: Vec<crate::process_manager::ManagedProcessConfig>,
     /// Global LLM parameter defaults applied when agent config doesn't specify them.
     #[serde(default)]
     pub agent: AgentSectionConfig,
+    /// Built-in backup scheduler (disabled by default).
+    #[serde(default)]
+    pub backup: BackupConfig,
+}
+
+// ── BackupConfig ──────────────────────────────────────────────────────────────
+
+/// Built-in scheduled backup configuration.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct BackupConfig {
+    /// Enable automatic scheduled backups (default: false).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Cron expression in 6-field tokio-cron-scheduler format (sec min hour dom mon dow).
+    /// Default: "0 0 5 * * *" — daily at 05:00 UTC.
+    #[serde(default = "default_backup_cron")]
+    pub cron: String,
+    /// Number of days to retain old backup files (default: 7).
+    #[serde(default = "default_backup_retention_days")]
+    pub retention_days: u32,
+}
+
+fn default_backup_cron() -> String { "0 0 5 * * *".to_string() }
+fn default_backup_retention_days() -> u32 { 7 }
+
+impl Default for BackupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cron: default_backup_cron(),
+            retention_days: default_backup_retention_days(),
+        }
+    }
 }
 
 /// OpenTelemetry configuration.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 #[allow(dead_code)] // fields read only with `otel` feature
 pub struct OtelConfig {
     /// Enable OTEL trace export. Also set OTEL_EXPORTER_OTLP_ENDPOINT env var.
@@ -60,7 +101,7 @@ pub struct OtelConfig {
 
 fn default_otel_service() -> String { "hydeclaw-core".to_string() }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct GatewayConfig {
     #[serde(default = "default_listen")]
     pub listen: String,
@@ -82,7 +123,7 @@ pub struct DatabaseConfig {
     pub url: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct LimitsConfig {
     #[serde(default = "default_max_requests")]
     pub max_requests_per_minute: u32,
@@ -118,7 +159,7 @@ impl Default for LimitsConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct TypingConfig {
     /// Typing indicator mode: "instant" (on message received), "thinking" (during LLM),
     /// "message" (simulated delay before response), "never" (disabled).
@@ -137,7 +178,7 @@ impl Default for TypingConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[allow(dead_code)] // Deserialized from TOML; fields used for subagent configuration
 pub struct SubagentsConfig {
     #[serde(default = "default_subagents_enabled")]
@@ -176,7 +217,7 @@ impl Default for SubagentsConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DiscussionConfig {
     /// Max discussion rounds (1-3). Research shows >3 leads to sycophancy.
     #[serde(default = "default_discussion_max_rounds")]
@@ -218,7 +259,7 @@ impl Default for DiscussionConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[allow(dead_code)] // Deserialized from TOML; protocol field reserved for MCP/HTTP routing
 pub struct ToolConfig {
     #[serde(rename = "type")]
@@ -379,7 +420,7 @@ pub struct AgentSettings {
     /// Evaluated in order — first matching condition is used.
     #[serde(default)]
     pub routing: Vec<ProviderRouteConfig>,
-    /// URL path to agent icon image (e.g. "uploads/arty-icon.png").
+    /// URL path to agent icon image (e.g. "uploads/agent-icon.png").
     /// Served via GET /uploads/{filename}.
     pub icon: Option<String>,
     /// Optional approval config — require owner confirmation before executing specific tools.
@@ -617,7 +658,7 @@ impl Default for SessionConfig {
 /// timeout_secs = 30
 /// memory_mb = 256
 /// ```
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct SandboxConfig {
     /// Enable the code_exec tool. Requires Docker.
     #[serde(default)]
@@ -655,7 +696,7 @@ impl Default for SandboxConfig {
 
 // ── Docker service management config ──
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct DockerConfig {
     /// Path to docker-compose.yml (relative to working directory or absolute).
     #[serde(default = "default_compose_file")]
@@ -691,8 +732,7 @@ impl Default for DockerConfig {
 /// enabled = true
 /// funnel = true   # public internet access (false = Tailnet only)
 /// ```
-#[derive(Debug, Clone, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct TailscaleConfig {
     /// Enable Tailscale serve integration.
     #[serde(default)]
@@ -933,6 +973,41 @@ pub fn update_public_url(
     Ok(())
 }
 
+/// Update [backup] section in TOML config file.
+pub fn update_backup_config(
+    config_path: &str,
+    enabled: Option<bool>,
+    cron: Option<&str>,
+    retention_days: Option<u32>,
+) -> Result<()> {
+    let content = std::fs::read_to_string(config_path)
+        .with_context(|| format!("failed to read config: {}", config_path))?;
+
+    let mut doc: toml_edit::DocumentMut = content.parse()
+        .with_context(|| "failed to parse config TOML for editing")?;
+
+    if doc.get("backup").is_none() {
+        doc["backup"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+
+    if let Some(v) = enabled {
+        doc["backup"]["enabled"] = toml_edit::value(v);
+    }
+
+    if let Some(v) = cron {
+        doc["backup"]["cron"] = toml_edit::value(v);
+    }
+
+    if let Some(v) = retention_days {
+        doc["backup"]["retention_days"] = toml_edit::value(v as i64);
+    }
+
+    std::fs::write(config_path, doc.to_string())
+        .with_context(|| format!("failed to write config: {}", config_path))?;
+
+    Ok(())
+}
+
 // ── Config hot-reload ──
 
 use std::sync::Arc;
@@ -1008,14 +1083,14 @@ pub fn spawn_config_watcher(config_path: String, shared: SharedConfig) {
 
 /// Global LLM parameter defaults applied when agent config doesn't specify them.
 /// Priority: agent config → [agent.defaults] → provider defaults.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct AgentDefaultsConfig {
     pub temperature: Option<f64>,
     pub max_tokens: Option<u32>,
 }
 
 /// Wrapper for the [agent] section in hydeclaw.toml (global defaults).
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct AgentSectionConfig {
     #[serde(default)]
     pub defaults: AgentDefaultsConfig,

@@ -214,10 +214,10 @@ describe("MessageItem", () => {
       id: "2",
       role: "assistant",
       parts: [{ type: "text", text: "Hi there" }],
-      agentId: "Arty",
+      agentId: "Agent1",
     };
     render(<MessageItem message={msg} />);
-    expect(screen.getByText("Arty")).toBeInTheDocument();
+    expect(screen.getByText("Agent1")).toBeInTheDocument();
   });
 
   it("renders text part with markdown content (REND-07)", () => {

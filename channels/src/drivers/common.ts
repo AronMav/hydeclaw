@@ -146,7 +146,7 @@ export function parseUserCommand(text: string): UserCommand | null {
     return null;
   }
 
-  // Strip @botname (e.g. "/stop@arty_mis_bot" → "/stop")
+  // Strip @botname (e.g. "/stop@my_bot" → "/stop")
   const [cmdWithArgs] = trimmed.split(" ", 1);
   const cmd = cmdWithArgs.split("@")[0];
 

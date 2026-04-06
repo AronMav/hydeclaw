@@ -152,11 +152,11 @@ describe("Query Keys completeness", () => {
   }
 
   it("dynamic key: qk.agent(name) returns array with name", () => {
-    expect(qk.agent("Arty")).toContain("Arty");
+    expect(qk.agent("Agent1")).toContain("Agent1");
   });
 
   it("dynamic key: qk.sessions(agent) returns array with agent", () => {
-    expect(qk.sessions("Arty")).toContain("Arty");
+    expect(qk.sessions("Agent1")).toContain("Agent1");
   });
 
   it("dynamic key: qk.cronRuns(jobId) returns array with jobId", () => {

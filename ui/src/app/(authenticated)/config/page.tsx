@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Settings, Gauge, Box, GitBranch, Keyboard, Loader2, RotateCcw, Save } from "lucide-react";
 import { toast } from "sonner";
 
@@ -24,6 +25,32 @@ interface SubagentsSection {
   docker_timeout: string;
 }
 
+/**
+ * Walk a JSON Schema object and return the description at the given property path.
+ * Returns undefined if the path does not exist or has no description.
+ *
+ * @param schema - Root schema object from GET /api/config/schema
+ * @param path - Dot-separated field path as an array, e.g. ["toolgate_url"] or ["limits", "max_requests_per_minute"]
+ */
+function getFieldDescription(
+  schema: Record<string, unknown> | null,
+  path: string[]
+): string | undefined {
+  if (!schema) return undefined;
+  let node: unknown = schema;
+  for (const key of path) {
+    if (typeof node !== "object" || node === null) return undefined;
+    const obj = node as Record<string, unknown>;
+    // Walk into .properties[key]
+    const props = obj["properties"];
+    if (typeof props !== "object" || props === null) return undefined;
+    node = (props as Record<string, unknown>)[key];
+  }
+  if (typeof node !== "object" || node === null) return undefined;
+  const desc = (node as Record<string, unknown>)["description"];
+  return typeof desc === "string" ? desc : undefined;
+}
+
 export default function ConfigPage() {
   const { t } = useTranslation();
   const [config, setConfig] = useState<ConfigData | null>(null);
@@ -37,6 +64,7 @@ export default function ConfigPage() {
   const [editMaxToolConcurrency, setEditMaxToolConcurrency] = useState("");
   const [editMaxAgentTurns, setEditMaxAgentTurns] = useState("");
   const [savingFields, setSavingFields] = useState(false);
+  const [schema, setSchema] = useState<Record<string, unknown> | null>(null);
 
   const restartPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const restartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -57,6 +85,14 @@ export default function ConfigPage() {
   }, []);
 
   useEffect(() => { loadConfig(); }, [loadConfig]);
+
+  useEffect(() => {
+    apiGet<Record<string, unknown>>("/api/config/schema")
+      .then(setSchema)
+      .catch(() => {
+        // Schema hints are non-critical — degrade gracefully if endpoint unavailable
+      });
+  }, []); // empty dep array: fetch once on mount
 
   const subagents = config?.subagents as SubagentsSection | undefined;
   const toggleSubagents = async (enabled: boolean) => {
@@ -212,53 +248,78 @@ export default function ConfigPage() {
                     <div className="space-y-4">
                       <div className="space-y-1.5">
                         <label className="font-mono text-xs text-muted-foreground">toolgate_url</label>
-                        <Input
-                          value={editToolgateUrl}
-                          onChange={(e) => setEditToolgateUrl(e.target.value)}
-                          placeholder="http://localhost:9100"
-                          className="font-mono text-sm h-9"
-                        />
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Input
+                              value={editToolgateUrl}
+                              onChange={(e) => setEditToolgateUrl(e.target.value)}
+                              placeholder="http://localhost:9100"
+                              className="font-mono text-sm h-9"
+                            />
+                          </TooltipTrigger>
+                          {(() => { const d = getFieldDescription(schema, ["toolgate_url"]); return d ? <TooltipContent>{d}</TooltipContent> : null; })()}
+                        </Tooltip>
                       </div>
                       <div className="space-y-1.5">
                         <label className="font-mono text-xs text-muted-foreground">public_url</label>
-                        <Input
-                          value={editPublicUrl}
-                          onChange={(e) => setEditPublicUrl(e.target.value)}
-                          placeholder="https://example.com"
-                          className="font-mono text-sm h-9"
-                        />
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Input
+                              value={editPublicUrl}
+                              onChange={(e) => setEditPublicUrl(e.target.value)}
+                              placeholder="https://example.com"
+                              className="font-mono text-sm h-9"
+                            />
+                          </TooltipTrigger>
+                          {(() => { const d = getFieldDescription(schema, ["gateway", "public_url"]); return d ? <TooltipContent>{d}</TooltipContent> : null; })()}
+                        </Tooltip>
                       </div>
                       <div className="space-y-1.5">
                         <label className="font-mono text-xs text-muted-foreground">max_requests_per_minute</label>
-                        <Input
-                          type="number"
-                          value={editMaxReqPerMin}
-                          onChange={(e) => setEditMaxReqPerMin(e.target.value)}
-                          placeholder="60"
-                          className="font-mono text-sm h-9"
-                        />
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Input
+                              type="number"
+                              value={editMaxReqPerMin}
+                              onChange={(e) => setEditMaxReqPerMin(e.target.value)}
+                              placeholder="60"
+                              className="font-mono text-sm h-9"
+                            />
+                          </TooltipTrigger>
+                          {(() => { const d = getFieldDescription(schema, ["limits", "max_requests_per_minute"]); return d ? <TooltipContent>{d}</TooltipContent> : null; })()}
+                        </Tooltip>
                       </div>
                       <div className="space-y-1.5">
                         <label className="font-mono text-xs text-muted-foreground">max_tool_concurrency</label>
-                        <Input
-                          type="number"
-                          value={editMaxToolConcurrency}
-                          onChange={(e) => setEditMaxToolConcurrency(e.target.value)}
-                          placeholder="4"
-                          className="font-mono text-sm h-9"
-                        />
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Input
+                              type="number"
+                              value={editMaxToolConcurrency}
+                              onChange={(e) => setEditMaxToolConcurrency(e.target.value)}
+                              placeholder="4"
+                              className="font-mono text-sm h-9"
+                            />
+                          </TooltipTrigger>
+                          {(() => { const d = getFieldDescription(schema, ["limits", "max_tool_concurrency"]); return d ? <TooltipContent>{d}</TooltipContent> : null; })()}
+                        </Tooltip>
                       </div>
                       <div className="space-y-1.5">
                         <label className="font-mono text-xs text-muted-foreground">max_agent_turns</label>
-                        <Input
-                          type="number"
-                          value={editMaxAgentTurns}
-                          onChange={(e) => setEditMaxAgentTurns(e.target.value)}
-                          placeholder="5"
-                          className="font-mono text-sm h-9"
-                          min={1}
-                          max={50}
-                        />
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Input
+                              type="number"
+                              value={editMaxAgentTurns}
+                              onChange={(e) => setEditMaxAgentTurns(e.target.value)}
+                              placeholder="5"
+                              className="font-mono text-sm h-9"
+                              min={1}
+                              max={50}
+                            />
+                          </TooltipTrigger>
+                          {(() => { const d = getFieldDescription(schema, ["limits", "max_agent_turns"]); return d ? <TooltipContent>{d}</TooltipContent> : null; })()}
+                        </Tooltip>
                         <p className="text-xs text-muted-foreground/60">
                           {t("config.max_agent_turns_description")}
                         </p>

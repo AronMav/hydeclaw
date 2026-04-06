@@ -19,6 +19,8 @@ pub use handlers::agents::start_agent_from_config;
 pub use handlers::email_triggers::renew_expiring_gmail_watches;
 pub use handlers::channels::migrate_credentials_to_vault;
 pub use handlers::providers::migrate_provider_keys_to_vault;
+pub(crate) use handlers::backup::create_backup_internal;
+pub(crate) use handlers::notifications::notify;
 
 /// SSE event type constants for Vercel AI SDK v3 compatibility.
 mod sse_types {
@@ -87,6 +89,12 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
         .route("/api/secrets/{name}", delete(delete_secret))
         // Setup / onboarding
         .route("/api/setup/status", get(api_setup_status))
+        .route("/api/setup/requirements", get(api_setup_requirements))
+        .merge(
+            Router::new()
+                .route("/api/setup/complete", post(api_setup_complete))
+                .layer(axum_mw::from_fn_with_state(state.clone(), setup_guard_middleware))
+        )
         // UI monitoring endpoints
         .route("/api/status", get(api_status))
         .route("/api/agents", get(api_agents))
@@ -113,6 +121,7 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
         .route("/api/usage/daily", get(api_usage_daily))
         .route("/api/usage/sessions", get(api_usage_sessions))
         .route("/api/doctor", get(api_doctor))
+        .route("/api/network/addresses", get(api_network_addresses))
         // Sessions & messages
         .route("/api/sessions", get(api_list_sessions))
         .route("/api/sessions", delete(api_delete_all_sessions))
@@ -139,6 +148,12 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
         .route("/api/approvals/{id}/resolve", post(api_resolve_approval))
         .route("/api/approvals/allowlist", get(api_list_allowlist).post(api_add_to_allowlist))
         .route("/api/approvals/allowlist/{id}", delete(api_delete_from_allowlist))
+        // Notifications
+        // Note: /read-all must be registered BEFORE /{id} to prevent "read-all" matching as UUID path param
+        .route("/api/notifications", get(api_list_notifications))
+        .route("/api/notifications/read-all", post(api_mark_all_notifications_read))
+        .route("/api/notifications/clear", delete(api_clear_all_notifications))
+        .route("/api/notifications/{id}", patch(api_mark_notification_read))
         // Cron jobs CRUD
         .route("/api/cron", get(api_list_cron))
         .route("/api/cron", post(api_create_cron))
@@ -193,6 +208,7 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
         .route("/api/tts/voices", get(api_tts_voices))
         .route("/api/tts/synthesize", post(api_tts_synthesize))
         // Config
+        .route("/api/config/schema", get(api_get_config_schema))
         .route("/api/config", get(api_get_config))
         .route("/api/config", put(api_update_config))
         .route("/api/config/export", get(api_export_config))

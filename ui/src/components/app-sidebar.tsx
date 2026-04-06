@@ -20,11 +20,12 @@ import { useWsStore } from "@/stores/ws-store";
 import { useTranslation } from "@/hooks/use-translation";
 import { ModeToggle } from "@/components/mode-toggle";
 import { LanguageToggle } from "@/components/language-toggle";
+import { NotificationBell } from "@/components/notification-bell";
 import {
   MessageSquare, Bot, FileText, Clock, Brain,
-  Wrench, Folder, Key, Shield, Settings, LogOut, BookOpen, BarChart3,
-  ShieldAlert, Radio, Zap, Webhook, Link2,
-  ShieldCheck, Archive, HeartPulse,
+  Wrench, Folder, Key, Shield, Settings, LogOut, BookOpen,
+  Radio, Zap, Webhook, Link2,
+  Archive, Monitor,
   type LucideProps,
 } from "lucide-react";
 import type { TranslationKey } from "@/i18n/types";
@@ -60,15 +61,11 @@ const NAV: NavGroup[] = [
       { labelKey: "nav.integrations", href: "/integrations/", icon: Link2 },
     ],
   },
-  // Monitoring — from overview to actionable alerts
+  // Monitoring — single consolidated page
   {
     labelKey: "nav.monitor",
     items: [
-      { labelKey: "nav.watchdog", href: "/watchdog/", icon: HeartPulse },
-      { labelKey: "nav.statistics", href: "/statistics/", icon: BarChart3 },
-      { labelKey: "nav.approvals", href: "/approvals/", icon: ShieldCheck },
-      { labelKey: "nav.logs", href: "/logs/", icon: FileText },
-      { labelKey: "nav.audit", href: "/audit/", icon: ShieldAlert },
+      { labelKey: "nav.monitor_single", href: "/monitor/", icon: Monitor },
     ],
   },
   // System administration — infrastructure, security, data
@@ -165,6 +162,7 @@ export function AppSidebar() {
           <div className="flex items-center gap-1.5">
             <LanguageToggle />
             <ModeToggle />
+            <NotificationBell />
             <button
               onClick={() => {
                 logout();

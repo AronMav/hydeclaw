@@ -466,7 +466,7 @@ impl AgentEngine {
 
         // Only base agents can set global secrets (prevents credential substitution attacks)
         if global && !self.agent.base {
-            return "Error: only base agents can set global secrets. Use scoped secrets or ask Architect.".to_string();
+            return "Error: only base agents can set global secrets. Use scoped secrets or delegate to the base agent.".to_string();
         }
 
         let result = if global {

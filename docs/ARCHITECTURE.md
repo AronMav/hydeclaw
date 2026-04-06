@@ -10,7 +10,7 @@ HydeClaw is a self-hosted AI gateway and multi-agent platform written in Rust. T
 │                                                                          │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌────────────┐   │
 │  │  AgentEngine │  │  AgentEngine │  │  Scheduler   │  │  Gateway   │   │
-│  │  "Hyde"      │  │  "Arty"      │  │  (cron jobs) │  │  (axum)    │   │
+│  │  "Agent1"    │  │  "Agent2"    │  │  (cron jobs) │  │  (axum)    │   │
 │  └──────┬───────┘  └──────┬───────┘  └──────────────┘  └─────┬──────┘   │
 │         │                 │                                    │          │
 │  ┌──────▼─────────────────▼────────────────────────────────────▼──────┐   │
@@ -68,7 +68,7 @@ Every agent has one `AgentEngine` instance, owned by an `Arc<AgentEngine>`. Ther
 
 1. **HTTP SSE** (`POST /api/chat`): called from the UI or API. The engine streams `StreamEvent` variants over Server-Sent Events using the Vercel AI SDK UI Message Stream Protocol v1. The gateway handler calls `engine.handle_with_status()` and pipes `mpsc::Receiver<StreamEvent>` to the SSE response.
 
-2. **Internal `handle_isolated()`**: called by the Scheduler for cron jobs and heartbeats. Creates a fresh, throw-away session in the DB so cron runs never accumulate context from previous invocations. Also used by `send_to_agent` for inter-agent communication.
+2. **Internal `handle_isolated()`**: called by the Scheduler for cron jobs and heartbeats. Creates a fresh, throw-away session in the DB so cron runs never accumulate context from previous invocations. Also used by `handoff` for inter-agent communication.
 
 ### LLM Loop Flow
 
@@ -114,7 +114,7 @@ Tool calls returned by the LLM in a single turn are partitioned into two groups 
 ```
 web_fetch, memory_search, memory_get, workspace_read, workspace_list,
 tool_list, skill_list, sessions_list, sessions_history, session_search,
-session_context, session_export, canvas, rich_card, send_to_agent,
+session_context, session_export, canvas, rich_card, handoff,
 subagent_status, subagent_logs
 ```
 
@@ -192,14 +192,14 @@ Permits are held for the life of the spawned task and released on completion, ca
 
 ### Inter-Agent Communication
 
-`send_to_agent(target, message)` routes through the `AgentMap` (a `Arc<RwLock<HashMap<String, Arc<AgentEngine>>>>` shared across all agents):
+`handoff(agent, task)` routes through the `AgentMap` (a `Arc<RwLock<HashMap<String, Arc<AgentEngine>>>>` shared across all agents):
 
 1. Looks up the target agent by name.
 2. Constructs a synthetic `IncomingMessage` with `channel = "inter_agent"`.
 3. Calls `target.handle_isolated()` **in the caller's tokio task** (not a spawn) and waits for the response.
 4. Returns the response string as the tool result.
 
-`send_to_agent` is stripped from the available tool list when the incoming message is itself an inter-agent call, preventing broadcast loops.
+`handoff` is stripped from the available tool list when the incoming message is itself an inter-agent call, preventing broadcast loops.
 
 ### LLM Providers
 
@@ -471,7 +471,7 @@ IncomingMessage.tool_calls[]
 execute_tool_call(name, args)
          │
          ├── System tools ──────────────── handled in engine (Rust code)
-         │   (workspace_*, memory_*, send_to_agent, spawn_subagent, etc.)
+         │   (workspace_*, memory_*, handoff, subagent, etc.)
          │
          ├── YAML tools ─────────────────── loaded from workspace/tools/*.yaml
          │   (web APIs, external HTTP services)
@@ -721,3 +721,85 @@ The UI is built as a static export (`next build` → `out/`) for deployment as a
 - Ensures the nginx container can serve the app from any path without a Node.js runtime.
 
 The `out/` directory and an `nginx.conf` are the only artifacts deployed to the Pi — no source code, no Node.js, no build tools on the target host.
+
+---
+
+## Setup Wizard
+
+The Setup Wizard guides first-time users through instance configuration. It runs when `GET /api/setup/status` reports `setup_complete: false` (no providers configured, no agents created).
+
+```
+Browser opens http://host:18789
+         │
+         ▼
+GET /api/setup/status  →  { setup_complete: false }
+         │
+         ▼
+UI redirects to /setup
+         │
+         ├── Step 1: Prerequisites check (GET /api/setup/requirements)
+         │   ├── database connectivity
+         │   ├── master key present
+         │   └── Docker availability
+         │
+         ├── Step 2: Provider configuration
+         │   └── user enters API key + selects model
+         │
+         ├── Step 3: Create initial agent
+         │   └── name, provider, model, basic settings
+         │
+         └── Step 4: POST /api/setup/complete
+             └── marks instance as configured
+```
+
+After setup completes, the wizard is bypassed on all subsequent visits. The setup state is persisted in the database, not in a file.
+
+---
+
+## Network Discovery
+
+Core detects all non-loopback network interfaces at startup and exposes them via `GET /api/network/addresses`. This allows the UI to display clickable access URLs (e.g., `http://192.168.1.85:18789`) during setup and on the settings page.
+
+Detection uses platform-native APIs (`getifaddrs` on Linux, equivalent on other platforms). Both IPv4 and IPv6 addresses are returned, tagged with interface name and address family. The result is cached and refreshed on each API call (interfaces can change due to DHCP or VPN).
+
+---
+
+## Notifications System
+
+In-app notifications provide a persistent feed of system events that require user attention. Notifications are stored in PostgreSQL and delivered to the UI via the existing WebSocket event bus.
+
+```
+Event source (engine, watchdog, scheduler)
+         │
+         ▼
+  notification_create(type, title, body)
+         │
+         ├── INSERT into notifications table
+         └── broadcast via WS: { event: "notification", ... }
+                   │
+                   ▼
+         UI NotificationBell component
+         (badge count, dropdown list, mark-read actions)
+```
+
+**Notification types:** `agent_error` (LLM or tool failure), `watchdog_alert` (health check failure), `setup_required` (missing configuration), `update_available` (new version detected), `approval_needed` (pending tool approval).
+
+Lifecycle: notifications are created as unread, can be individually marked read via `PATCH /api/notifications/{id}`, bulk-marked via `POST /api/notifications/read-all`, and cleared (read only) via `DELETE /api/notifications/clear`.
+
+---
+
+## Base Agent Scaffold
+
+When a new base agent is created (via API or setup wizard), the scaffold system bootstraps it with a default directory structure under `workspace/`:
+
+```
+workspace/
+  └── agents/{agent-name}/
+      ├── SOUL.md          # personality and behavioral directives
+      ├── IDENTITY.md      # name, role, capabilities summary
+      └── skills/          # agent-specific skill files (initially empty)
+```
+
+The scaffold templates are embedded in the binary (not read from disk at runtime). `SOUL.md` and `IDENTITY.md` are created with sensible defaults that can be customized later. For base agents, these files are read-only via the workspace write protection in `workspace.rs:is_read_only()` -- only manual edits on disk or admin API calls can modify them.
+
+Non-base agents do not receive a scaffold; their workspace directories are created on first write.

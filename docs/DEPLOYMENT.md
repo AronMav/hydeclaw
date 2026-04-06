@@ -3,7 +3,7 @@
 ## Quick Deploy (From Release)
 
 ```bash
-tar xzf hydeclaw-v0.1.0.tar.gz
+tar xzf hydeclaw-v0.4.0.tar.gz
 cd hydeclaw
 ./setup.sh
 ```
@@ -88,10 +88,34 @@ curl -sf -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN" http://localhost:18789/
 
 All checks should show `"ok": true`.
 
+### Step 6: Setup Wizard
+
+On first launch, open the Web UI at `http://your-server:18789`. The Setup Wizard will guide you through provider configuration and initial agent creation.
+
+Alternatively, complete setup via the API:
+
+```bash
+# Check setup status
+curl -sf -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN" \
+  http://localhost:18789/api/setup/status
+
+# Check prerequisites
+curl -sf -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN" \
+  http://localhost:18789/api/setup/requirements
+
+# Complete setup (configure provider + create first agent)
+curl -X POST -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  http://localhost:18789/api/setup/complete \
+  -d '{"provider": "openai", "model": "gpt-4o-mini", "agent_name": "assistant"}'
+```
+
+The wizard only runs once. After `POST /api/setup/complete` succeeds, subsequent visits go straight to the main UI.
+
 ## Updating
 
 ```bash
-~/hydeclaw/update.sh hydeclaw-v0.2.0.tar.gz
+~/hydeclaw/update.sh hydeclaw-v0.4.0.tar.gz
 ```
 
 Preserves `.env`, `config/`, `workspace/`, and database. Restarts services automatically.
@@ -119,7 +143,7 @@ Preserves `.env`, `config/`, `workspace/`, and database. Restarts services autom
 ### Sandbox
 
 - Non-base agents execute code in Docker containers (isolated)
-- Base agents (Hyde) run on host -- grant `base = true` only to trusted agents
+- Base agents run on host -- grant `base = true` only to trusted agents
 - Credential directories (`.ssh`, `.aws`) are blocked from sandbox bind mounts
 - Sensitive env vars (`HYDECLAW_*`, `DATABASE_URL`, `PIP_INDEX_URL`) are filtered
 

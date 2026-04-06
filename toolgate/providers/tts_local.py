@@ -11,7 +11,7 @@ class Qwen3TTS:
         self.base_url = (base_url or "http://localhost:8880").rstrip("/")
         self.model = model or "tts-1-ru"
         opts = options or {}
-        self.default_voice = opts.get("voice", "clone:Arty")
+        self.default_voice = opts.get("voice", "nova")
         self.normalize = opts.get("normalize", False)
         self.llm_api_url = opts.get("llm_api_url", "")
         self.llm_api_key = opts.get("llm_api_key", "")

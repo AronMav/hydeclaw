@@ -67,3 +67,10 @@ extra_binds = []
 [memory_worker]
 enabled = true
 poll_interval_secs = 5
+
+# ═══ Automatic Backups ═══
+
+[backup]
+enabled = true
+cron = "0 3 * * *"
+retention_days = 7

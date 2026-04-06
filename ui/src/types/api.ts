@@ -413,6 +413,18 @@ export interface MediaDriverInfo {
   requires_key: boolean;
 }
 
+export interface NotificationRow {
+  id: string;
+  type: string;
+  title: string;
+  body: string;
+  data: Record<string, unknown> | null;
+  read: boolean;
+  created_at: string;
+}
 
-
-
+export interface NotificationsResponse {
+  notifications?: NotificationRow[];
+  items?: NotificationRow[];
+  unread_count: number;
+}

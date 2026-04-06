@@ -689,6 +689,21 @@ async fn channel_ws_loop(
                         let code = if let Some(guard) = access_guard {
                             let c = guard.create_pairing_code(&user_id, display_name.as_deref()).await;
                             tracing::info!(agent = %agent_name, user_id = %user_id, code = %c, "pairing code created");
+                            {
+                                let db = state.db.clone();
+                                let tx = state.ui_event_tx.clone();
+                                let uid = user_id.clone();
+                                let dname = display_name.clone();
+                                let code_val = c.clone();
+                                tokio::spawn(async move {
+                                    let display_label = dname.as_deref().map(|s| s.to_string()).unwrap_or_else(|| uid.clone());
+                                    let body = format!("User {} is requesting access (code: {})", display_label, code_val);
+                                    let data = serde_json::json!({"user_id": uid, "code": code_val, "display_name": dname});
+                                    crate::gateway::handlers::notifications::notify(
+                                        &db, &tx, "access_request", "Access Request", &body, data,
+                                    ).await.ok();
+                                });
+                            }
                             c
                         } else {
                             tracing::warn!(agent = %agent_name, user_id = %user_id, "pairing create: no access guard");

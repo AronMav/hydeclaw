@@ -428,40 +428,11 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Load agent configs (auto-create default "main" if none exist)
+    // Load agent configs — no default agent created; Setup Wizard handles first agent
     std::fs::create_dir_all("config/agents")?;
     let mut agent_configs = config::load_agent_configs("config/agents")?;
     if agent_configs.is_empty() {
-        tracing::info!("no agent configs found — creating default 'main' agent");
-        let default = config::AgentConfig {
-            agent: config::AgentSettings {
-                name: "main".into(),
-                language: "ru".into(),
-                provider: "minimax".into(),
-                model: "MiniMax-M2.5".into(),
-                provider_connection: None,
-                temperature: 1.0,
-                max_tokens: None,
-                access: None,
-                heartbeat: None,
-                tools: None,
-                compaction: Some(config::CompactionConfig::default()),
-                max_tools_in_context: None,
-                routing: vec![],
-                icon: None,
-                session: None,
-                approval: None,
-                tool_loop: None,
-                watchdog: None,
-                max_history_messages: None,
-                hooks: None,
-                daily_budget_tokens: 0,
-                max_agent_turns: None,
-                base: false,
-            },
-        };
-        std::fs::write("config/agents/main.toml", default.to_toml()?)?;
-        agent_configs = vec![default];
+        tracing::info!("no agent configs found — Setup Wizard will create the first agent");
     }
     tracing::info!(agents = agent_configs.len(), "agent configs loaded");
 
@@ -583,6 +554,7 @@ async fn main() -> Result<()> {
         ws_tickets: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         oauth: oauth_manager,
         polling_diagnostics: Arc::new(crate::gateway::state::PollingDiagnostics::new()),
+        wan_ip_cache: Arc::new(tokio::sync::RwLock::new(None)),
     };
 
     // Start managed child processes (channels, toolgate)
@@ -828,6 +800,19 @@ async fn main() -> Result<()> {
         tracing::warn!(error = %e, "failed to schedule memory decay cleanup");
     }
 
+    // Automatic backup (if enabled in config)
+    if cfg.backup.enabled
+        && let Err(e) = sched.add_backup(
+            &cfg.backup.cron,
+            cfg.backup.retention_days,
+            db_pool.clone(),
+            state.secrets.clone(),
+            state.agent_deps.clone(),
+        ).await
+    {
+        tracing::warn!(error = %e, "failed to schedule automatic backup");
+    }
+
     // Start scheduler
     sched.start().await?;
 
@@ -851,6 +836,60 @@ async fn main() -> Result<()> {
     // Start gateway (blocks until shutdown signal)
     let listener = tokio::net::TcpListener::bind(&cfg.gateway.listen).await?;
     tracing::info!(addr = %cfg.gateway.listen, "gateway listening");
+
+    // ── mDNS: advertise _hydeclaw._tcp.local. on the local network ────────────
+    let _mdns_daemon = {
+        use mdns_sd::{ServiceDaemon, ServiceInfo};
+
+        let port: u16 = cfg.gateway.listen
+            .split(':')
+            .next_back()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(18789);
+
+        let hostname = "hydeclaw";
+        let host_fqdn = "hydeclaw.local.";
+
+        match ServiceDaemon::new() {
+            Ok(daemon) => {
+                let service_type = "_hydeclaw._tcp.local.";
+                let props = {
+                    let mut m = std::collections::HashMap::new();
+                    m.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
+                    m
+                };
+
+                // Use () for addresses — mdns-sd auto-detects host IPs when () is passed
+                match ServiceInfo::new(
+                    service_type,
+                    &hostname,
+                    &host_fqdn,
+                    (),
+                    port,
+                    Some(props),
+                ) {
+                    Ok(info) => match daemon.register(info) {
+                        Ok(_) => tracing::info!(
+                            port,
+                            hostname = %hostname,
+                            "mDNS registered: {}._hydeclaw._tcp.local.",
+                            hostname
+                        ),
+                        Err(e) => tracing::warn!(error = %e, "mDNS register failed"),
+                    },
+                    Err(e) => tracing::warn!(error = %e, "mDNS ServiceInfo creation failed"),
+                }
+                Some(daemon)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "mDNS daemon startup failed — if avahi-daemon is running, it may hold port 5353 (run: ss -ulnp | grep 5353)"
+                );
+                None
+            }
+        }
+    };
 
     // Tailscale Funnel: expose gateway via `tailscale serve` or `tailscale funnel`
     if cfg.tailscale.enabled {

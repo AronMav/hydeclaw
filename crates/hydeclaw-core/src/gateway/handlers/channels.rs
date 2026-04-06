@@ -530,6 +530,7 @@ pub(crate) async fn api_channel_notify(
         .and_then(|a| a.owner_id.clone())
         .unwrap_or_default();
 
+    let channel_type_for_notify = channel_type.clone();
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     if let Err(e) = router.send(crate::agent::channel_actions::ChannelAction {
         name: "send_message".to_string(),
@@ -542,7 +543,23 @@ pub(crate) async fn api_channel_notify(
     }
 
     match reply_rx.await {
-        Ok(Ok(())) => Json(json!({"ok": true})).into_response(),
+        Ok(Ok(())) => {
+            let ok_response = Json(json!({"ok": true})).into_response();
+            {
+                let db = state.db.clone();
+                let tx = state.ui_event_tx.clone();
+                let body = text.to_string();
+                let agent = agent_name.clone();
+                let ctype = channel_type_for_notify;
+                tokio::spawn(async move {
+                    let data = serde_json::json!({"agent": agent, "channel_type": ctype});
+                    crate::gateway::handlers::notifications::notify(
+                        &db, &tx, "watchdog_alert", "Watchdog Alert", &body, data,
+                    ).await.ok();
+                });
+            }
+            ok_response
+        }
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "channel action timed out"}))).into_response(),
     }
@@ -617,7 +634,7 @@ mod tests {
 
     #[test]
     fn extract_returns_none_when_no_credentials() {
-        let config = json!({"channel_username": "arty_bot"});
+        let config = json!({"channel_username": "test_bot"});
         assert!(extract_credentials(&config).is_none());
     }
 

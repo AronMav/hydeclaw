@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
 
@@ -38,6 +38,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 toml_edit = "0.22"
+schemars = { version = "1.2", features = ["preserve_order"] }
 
 # Config hot-reload
 notify = "7"

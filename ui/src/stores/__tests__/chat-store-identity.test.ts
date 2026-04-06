@@ -24,21 +24,21 @@ function makeRow(overrides: Partial<MessageRow> & { id: string }): MessageRow {
 describe("convertHistory — message identity", () => {
   it("separates messages from different agents", () => {
     const rows: MessageRow[] = [
-      makeRow({ id: "a1", agent_id: "Arty", content: "Hello from Arty" }),
+      makeRow({ id: "a1", agent_id: "Agent1", content: "Hello from Agent1" }),
       makeRow({ id: "a2", agent_id: "Helper", content: "Hello from Helper" }),
     ];
 
     const messages = convertHistory(rows);
 
     expect(messages).toHaveLength(2);
-    expect(messages[0].agentId).toBe("Arty");
+    expect(messages[0].agentId).toBe("Agent1");
     expect(messages[1].agentId).toBe("Helper");
   });
 
   it("separates consecutive assistant messages from same agent", () => {
     const rows: MessageRow[] = [
-      makeRow({ id: "a1", agent_id: "Arty", content: "First message" }),
-      makeRow({ id: "a2", agent_id: "Arty", content: "Second message" }),
+      makeRow({ id: "a1", agent_id: "Agent1", content: "First message" }),
+      makeRow({ id: "a2", agent_id: "Agent1", content: "Second message" }),
     ];
 
     const messages = convertHistory(rows);
@@ -53,7 +53,7 @@ describe("convertHistory — message identity", () => {
     const rows: MessageRow[] = [
       makeRow({
         id: "a1",
-        agent_id: "Arty",
+        agent_id: "Agent1",
         content: "",
         tool_calls: [{ id: "tc1", name: "search", arguments: "{}" }],
       }),
@@ -66,7 +66,7 @@ describe("convertHistory — message identity", () => {
       }),
       makeRow({
         id: "a2",
-        agent_id: "Arty",
+        agent_id: "Agent1",
         content: "Based on the search...",
       }),
     ];
@@ -101,7 +101,7 @@ describe("convertHistory — message identity", () => {
     const rows: MessageRow[] = [
       makeRow({
         id: "a1",
-        agent_id: "Arty",
+        agent_id: "Agent1",
         content: " ",
         tool_calls: [{ id: "tc1", name: "search", arguments: "{}" }],
       }),
@@ -118,7 +118,7 @@ describe("convertHistory — message identity", () => {
 
     // The message should be present because it has tool parts
     expect(messages).toHaveLength(1);
-    expect(messages[0].agentId).toBe("Arty");
+    expect(messages[0].agentId).toBe("Agent1");
     const toolParts = messages[0].parts.filter((p) => p.type === "tool");
     expect(toolParts.length).toBeGreaterThan(0);
   });
@@ -141,10 +141,10 @@ describe("convertHistory — message identity", () => {
     // Full multi-agent sequence
     const rows: MessageRow[] = [
       makeRow({ id: "u1", role: "user", content: "Hello", agent_id: null }),
-      makeRow({ id: "a1", agent_id: "Arty", content: "Hi from Arty" }),
+      makeRow({ id: "a1", agent_id: "Agent1", content: "Hi from Agent1" }),
       makeRow({ id: "a2", agent_id: "Helper", content: "Hi from Helper" }),
       makeRow({ id: "u2", role: "user", content: "Thanks", agent_id: null }),
-      makeRow({ id: "a3", agent_id: "Arty", content: "You're welcome" }),
+      makeRow({ id: "a3", agent_id: "Agent1", content: "You're welcome" }),
     ];
 
     const messages = convertHistory(rows);
@@ -159,10 +159,10 @@ describe("convertHistory — message identity", () => {
     ]);
     expect(messages.map((m) => m.agentId)).toEqual([
       undefined,
-      "Arty",
+      "Agent1",
       "Helper",
       undefined,
-      "Arty",
+      "Agent1",
     ]);
   });
 
@@ -170,7 +170,7 @@ describe("convertHistory — message identity", () => {
     const rows: MessageRow[] = [
       makeRow({
         id: "a1",
-        agent_id: "Arty",
+        agent_id: "Agent1",
         content: "",
         tool_calls: [{ id: "tc1", name: "search", arguments: "{}" }],
       }),
@@ -191,8 +191,8 @@ describe("convertHistory — message identity", () => {
     const messages = convertHistory(rows);
 
     expect(messages).toHaveLength(2);
-    // First message: Arty with tool parts
-    expect(messages[0].agentId).toBe("Arty");
+    // First message: Agent1 with tool parts
+    expect(messages[0].agentId).toBe("Agent1");
     expect(messages[0].parts.some((p) => p.type === "tool")).toBe(true);
     // Second message: Helper with text parts
     expect(messages[1].agentId).toBe("Helper");

@@ -13,7 +13,7 @@ use tokio::sync::OnceCell;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, serde::Deserialize, Default)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, Default, schemars::JsonSchema)]
 pub struct MemoryConfig {
     /// Whether embedding is enabled. Defaults to true.
     #[serde(default = "default_true")]

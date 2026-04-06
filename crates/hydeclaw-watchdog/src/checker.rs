@@ -84,7 +84,7 @@ pub async fn check_docker_containers() -> Vec<ContainerInfo> {
 
 fn friendly_name(docker_name: &str) -> String {
     // Compose containers: docker-postgres-1, docker-searxng-1, docker-browser-renderer-1
-    // Bollard containers: hc-agent-arty, hc-agent-alma
+    // Bollard containers: hc-agent-{name}
     match docker_name {
         n if n.contains("postgres") => "PostgreSQL".into(),
         n if n.contains("searxng") => "SearXNG".into(),

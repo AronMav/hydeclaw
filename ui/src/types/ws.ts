@@ -63,6 +63,11 @@ export interface WsPong {
   type: "pong";
 }
 
+export interface WsNotification {
+  type: "notification";
+  data: import("./api").NotificationRow;
+}
+
 /** Union of all known WS event types. */
 export type WsEvent =
   | WsSessionUpdated
@@ -73,6 +78,7 @@ export type WsEvent =
   | WsChannelsChanged
   | WsApprovalResolved
   | WsAuditEvent
+  | WsNotification
   | WsPong;
 
 /** All valid WS event type strings. */

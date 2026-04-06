@@ -1,3 +1,4 @@
+use anyhow::Result;
 use axum::{
     extract::{Path, State},
     http::{header, StatusCode},
@@ -6,13 +7,15 @@ use axum::{
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sqlx::PgPool;
 use std::path::Path as FsPath;
+use std::sync::Arc;
 use tokio::fs;
 
 use sqlx::Row;
 
 use super::super::AppState;
-use crate::secrets::PlaintextSecret;
+use crate::secrets::{PlaintextSecret, SecretsManager};
 
 const BACKUP_DIR: &str = "backups";
 const RETENTION_DAYS: i64 = 7;
@@ -178,8 +181,14 @@ pub(crate) struct BackupGithubRepo {
 
 // ── POST /api/backup ─────────────────────────────────────────────────────────
 
-/// Create a backup: collect all data, save to disk, clean up old files.
-pub(crate) async fn api_create_backup(State(state): State<AppState>) -> impl IntoResponse {
+/// Create a backup without Axum context — callable from the scheduler or HTTP handler.
+/// Returns the filename of the created backup on success.
+pub(crate) async fn create_backup_internal(
+    db: &PgPool,
+    secrets: &Arc<SecretsManager>,
+    agent_deps: &Arc<tokio::sync::RwLock<crate::gateway::state::AgentDeps>>,
+    retention_days: i64,
+) -> Result<String> {
     let now = Utc::now();
     let date_str = now.format("%Y-%m-%d").to_string();
     let filename = format!("hydeclaw-{date_str}.json");
@@ -201,62 +210,50 @@ pub(crate) async fn api_create_backup(State(state): State<AppState>) -> impl Int
 
     // 2. Workspace files (recursive walk, text only)
     let workspace_dir = {
-        let deps = state.agent_deps.read().await;
+        let deps = agent_deps.read().await;
         deps.workspace_dir.clone()
     };
     let workspace = collect_workspace_files(&workspace_dir).await;
 
     // 3. Secrets (raw encrypted blobs)
-    let secrets = match state.secrets.export_decrypted().await {
-        Ok(rows) => rows,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
-        }
-    };
+    let backup_secrets = secrets.export_decrypted().await
+        .map_err(|e| anyhow::anyhow!("secrets export failed: {e}"))?;
 
     // 4. Memory chunks (no embeddings)
-    let memory = match collect_memory(&state).await {
-        Ok(chunks) => chunks,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
-        }
-    };
+    let memory = collect_memory_from_db(db).await
+        .map_err(|e| anyhow::anyhow!("memory collection failed: {e}"))?;
 
     // 5. Cron jobs
-    let cron = match collect_cron(&state).await {
-        Ok(jobs) => jobs,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
-        }
-    };
+    let cron = collect_cron_from_db(db).await
+        .map_err(|e| anyhow::anyhow!("cron collection failed: {e}"))?;
 
     // 6. V2 sections (non-fatal — default to empty on error)
     tracing::info!("backup: collecting V2 sections...");
-    let providers = collect_providers(&state.db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: providers failed"); vec![] });
+    let providers = collect_providers(db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: providers failed"); vec![] });
     tracing::info!(count = providers.len(), "backup: providers");
-    let provider_active = collect_provider_active(&state.db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: provider_active failed"); vec![] });
+    let provider_active = collect_provider_active(db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: provider_active failed"); vec![] });
     tracing::info!(count = provider_active.len(), "backup: provider_active");
-    let channels = collect_channels(&state.db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: channels failed"); vec![] });
+    let channels = collect_channels(db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: channels failed"); vec![] });
     tracing::info!(count = channels.len(), "backup: channels");
-    let webhooks = collect_webhooks(&state.db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: webhooks failed"); vec![] });
+    let webhooks = collect_webhooks(db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: webhooks failed"); vec![] });
     tracing::info!(count = webhooks.len(), "backup: webhooks");
-    let watchdog_settings = collect_watchdog_settings(&state.db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: watchdog failed"); vec![] });
+    let watchdog_settings = collect_watchdog_settings(db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: watchdog failed"); vec![] });
     tracing::info!(count = watchdog_settings.len(), "backup: watchdog_settings");
-    let allowed_users = collect_allowed_users(&state.db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: allowed_users failed"); vec![] });
+    let allowed_users = collect_allowed_users(db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: allowed_users failed"); vec![] });
     tracing::info!(count = allowed_users.len(), "backup: allowed_users");
-    let approval_allowlist = collect_approval_allowlist(&state.db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: approval failed"); vec![] });
+    let approval_allowlist = collect_approval_allowlist(db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: approval failed"); vec![] });
     tracing::info!(count = approval_allowlist.len(), "backup: approval_allowlist");
-    let oauth_accounts = collect_oauth_accounts(&state.db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: oauth_accounts failed"); vec![] });
-    let oauth_bindings = collect_oauth_bindings(&state.db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: oauth_bindings failed"); vec![] });
-    let gmail_triggers = collect_gmail_triggers(&state.db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: gmail_triggers failed"); vec![] });
-    let github_repos = collect_github_repos(&state.db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: github_repos failed"); vec![] });
+    let oauth_accounts = collect_oauth_accounts(db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: oauth_accounts failed"); vec![] });
+    let oauth_bindings = collect_oauth_bindings(db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: oauth_bindings failed"); vec![] });
+    let gmail_triggers = collect_gmail_triggers(db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: gmail_triggers failed"); vec![] });
+    let github_repos = collect_github_repos(db).await.unwrap_or_else(|e| { tracing::warn!(error = %e, "backup: github_repos failed"); vec![] });
 
     let backup = BackupFile {
         version: 2,
         created_at: now,
         config,
         workspace,
-        secrets,
+        secrets: backup_secrets,
         memory,
         cron,
         providers,
@@ -273,35 +270,42 @@ pub(crate) async fn api_create_backup(State(state): State<AppState>) -> impl Int
     };
 
     // Serialize to JSON
-    let json_bytes = match serde_json::to_vec_pretty(&backup) {
-        Ok(b) => b,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
-        }
-    };
+    let json_bytes = serde_json::to_vec_pretty(&backup)
+        .map_err(|e| anyhow::anyhow!("serialization failed: {e}"))?;
 
     // Save to disk
-    if let Err(e) = fs::create_dir_all(BACKUP_DIR).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("cannot create backup dir: {e}")}))).into_response();
-    }
+    fs::create_dir_all(BACKUP_DIR).await
+        .map_err(|e| anyhow::anyhow!("cannot create backup dir: {e}"))?;
     let filepath = format!("{BACKUP_DIR}/{filename}");
-    if let Err(e) = fs::write(&filepath, &json_bytes).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("cannot write backup: {e}")}))).into_response();
-    }
+    fs::write(&filepath, &json_bytes).await
+        .map_err(|e| anyhow::anyhow!("cannot write backup: {e}"))?;
 
     // Cleanup old backups
-    cleanup_old_backups(now).await;
+    cleanup_old_backups_with_retention(now, retention_days).await;
 
     let size_bytes = json_bytes.len();
     tracing::info!(filename = %filename, size_bytes = size_bytes, "backup created");
 
-    Json(json!({
-        "ok": true,
-        "filename": filename,
-        "path": filepath,
-        "size_bytes": size_bytes,
-        "created_at": now,
-    })).into_response()
+    Ok(filename)
+}
+
+/// Create a backup: collect all data, save to disk, clean up old files.
+pub(crate) async fn api_create_backup(State(state): State<AppState>) -> impl IntoResponse {
+    let now = Utc::now();
+    match create_backup_internal(&state.db, &state.secrets, &state.agent_deps, RETENTION_DAYS).await {
+        Ok(filename) => {
+            let filepath = format!("{BACKUP_DIR}/{filename}");
+            Json(json!({
+                "ok": true,
+                "filename": filename,
+                "path": filepath,
+                "created_at": now,
+            })).into_response()
+        }
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+        }
+    }
 }
 
 // ── GET /api/backup ──────────────────────────────────────────────────────────
@@ -629,9 +633,10 @@ fn collect_dir<'a>(
 
 const MEMORY_BACKUP_LIMIT: i64 = 100_000;
 
-async fn collect_memory(state: &AppState) -> sqlx::Result<Vec<MemoryChunk>> {
+/// DB-only variant of collect_memory — used by create_backup_internal (no AppState).
+async fn collect_memory_from_db(db: &PgPool) -> sqlx::Result<Vec<MemoryChunk>> {
     let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory_chunks")
-        .fetch_one(&state.db).await.unwrap_or(0);
+        .fetch_one(db).await.unwrap_or(0);
     if total > MEMORY_BACKUP_LIMIT {
         tracing::warn!(total, limit = MEMORY_BACKUP_LIMIT, "memory_chunks exceeds backup limit, truncating");
     }
@@ -643,7 +648,7 @@ async fn collect_memory(state: &AppState) -> sqlx::Result<Vec<MemoryChunk>> {
              FROM memory_chunks ORDER BY created_at LIMIT $1",
         )
         .bind(MEMORY_BACKUP_LIMIT)
-        .fetch_all(&state.db)
+        .fetch_all(db)
         .await?;
     Ok(rows
         .into_iter()
@@ -661,14 +666,15 @@ async fn collect_memory(state: &AppState) -> sqlx::Result<Vec<MemoryChunk>> {
         .collect())
 }
 
-async fn collect_cron(state: &AppState) -> sqlx::Result<Vec<CronJob>> {
+/// DB-only variant of collect_cron — used by create_backup_internal (no AppState).
+async fn collect_cron_from_db(db: &PgPool) -> sqlx::Result<Vec<CronJob>> {
     #[allow(clippy::type_complexity)]
     let rows: Vec<(String, String, String, String, String, bool, Option<Value>, bool)> =
         sqlx::query_as(
             "SELECT agent_id, name, cron_expr, timezone, task_message, enabled, announce_to, silent
              FROM scheduled_jobs ORDER BY name",
         )
-        .fetch_all(&state.db)
+        .fetch_all(db)
         .await?;
     Ok(rows
         .into_iter()
@@ -955,8 +961,8 @@ async fn restore_github_repos(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, it
     Ok(items.len())
 }
 
-async fn cleanup_old_backups(now: chrono::DateTime<Utc>) {
-    let cutoff = now - chrono::Duration::days(RETENTION_DAYS);
+async fn cleanup_old_backups_with_retention(now: chrono::DateTime<Utc>, retention_days: i64) {
+    let cutoff = now - chrono::Duration::days(retention_days);
     let Ok(mut dir) = fs::read_dir(BACKUP_DIR).await else { return };
     while let Ok(Some(entry)) = dir.next_entry().await {
         let path = entry.path();
@@ -1030,7 +1036,7 @@ async fn restore_workspace(workspace_dir: &str, files: &[WorkspaceFile]) -> usiz
 }
 
 /// Restore memory and cron jobs atomically within a single DB transaction.
-/// Preserves the `daily-backup` cron job so Architect continues working after restore.
+/// Preserves the `daily-backup` cron job so the base agent continues working after restore.
 async fn restore_memory_and_cron(
     state: &AppState,
     chunks: &[MemoryChunk],
@@ -1065,8 +1071,8 @@ async fn restore_memory_and_cron(
         .await?;
     }
 
-    // Cron: replace all jobs except daily-backup (Architect re-creates it on heartbeat anyway,
-    // but preserving it means backups keep running even if Architect hasn't heartbeated yet)
+    // Cron: replace all jobs except daily-backup (base agent re-creates it on heartbeat anyway,
+    // but preserving it means backups keep running even if base agent hasn't heartbeated yet)
     sqlx::query("DELETE FROM scheduled_jobs WHERE name != 'daily-backup'")
         .execute(&mut *tx)
         .await?;
@@ -1151,7 +1157,7 @@ mod tests {
                 category: "tts".to_string(),
                 provider_type: "custom".to_string(),
                 base_url: Some("http://192.168.1.132:8880".to_string()),
-                default_model: Some("clone:Arty".to_string()),
+                default_model: Some("clone:Agent1".to_string()),
                 enabled: true,
                 options: json!(null),
                 notes: None,
