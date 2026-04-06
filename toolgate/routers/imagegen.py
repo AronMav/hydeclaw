@@ -13,6 +13,7 @@ from typing import Optional
 import httpx
 
 from dependencies import require_provider
+from helpers import log_provider
 
 log = logging.getLogger("toolgate.imagegen")
 
@@ -41,10 +42,10 @@ async def generate_image(
 ):
     global _rate_limit_count, _rate_limit_reset_at
 
-    log.info("Using provider: %s model=%s", provider.name, getattr(provider, "model", ""))
+    log_provider(log, provider)
 
     # ── Size validation ───────────────────────────────────────────────────────
-    size = body.size or "1024x1024"
+    size = body.size
     if not _SIZE_RE.match(size):
         return JSONResponse(
             status_code=400,

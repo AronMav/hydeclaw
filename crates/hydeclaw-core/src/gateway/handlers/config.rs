@@ -80,7 +80,8 @@ pub(crate) async fn api_tts_synthesize(
         return (StatusCode::SERVICE_UNAVAILABLE, "Toolgate URL not configured").into_response();
     };
 
-    let client = reqwest::Client::new();
+    static TTS_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let client = TTS_CLIENT.get_or_init(reqwest::Client::new);
     let resp = client
         .post(format!("{}/v1/audio/speech", base.trim_end_matches('/')))
         .json(&serde_json::json!({

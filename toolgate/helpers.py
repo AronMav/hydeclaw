@@ -100,6 +100,22 @@ def resolve_content_type(image_bytes: bytes, http_content_type: str = "") -> str
     return "image/jpeg"
 
 
+def check_upload_size(data: bytes, max_bytes: int, label: str = "File"):
+    """Return a 413 JSONResponse if data exceeds max_bytes, else None."""
+    if len(data) > max_bytes:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=413,
+            content={"error": f"{label} too large ({len(data)} bytes). Max {max_bytes // 1048576} MB."},
+        )
+    return None
+
+
+def log_provider(log, provider):
+    """Log the active provider name and model."""
+    log.info("Using provider: %s model=%s", provider.name, getattr(provider, "model", ""))
+
+
 def clean_html(text: str) -> str:
     """Strip script/style tags and HTML markup from text."""
     text = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", text, flags=re.DOTALL | re.IGNORECASE)

@@ -10,6 +10,7 @@ from typing import Optional
 import httpx
 
 from dependencies import require_provider
+from helpers import download_limited, check_upload_size, log_provider
 
 log = logging.getLogger("toolgate.stt")
 
@@ -26,14 +27,12 @@ async def transcribe(
     language: str = Form(default="ru"),
     provider=Depends(require_provider("stt")),
 ):
-    log.info("Using provider: %s model=%s", provider.name, getattr(provider, "model", ""))
+    log_provider(log, provider)
     audio_bytes = await file.read()
 
-    if len(audio_bytes) > STT_MAX_BYTES:
-        return JSONResponse(
-            status_code=413,
-            content={"error": f"Audio file too large ({len(audio_bytes)} bytes). Max 25 MB."},
-        )
+    size_err = check_upload_size(audio_bytes, STT_MAX_BYTES, "Audio file")
+    if size_err:
+        return size_err
 
     try:
         text = await provider.transcribe(
@@ -60,26 +59,12 @@ async def transcribe_url(
     request: Request,
     provider=Depends(require_provider("stt")),
 ):
-    log.info("Using provider: %s model=%s", provider.name, getattr(provider, "model", ""))
+    log_provider(log, provider)
     http = request.app.state.http_client
-    from helpers import validate_url_ssrf
-    validate_url_ssrf(body.audio_url)
     try:
-        resp = await http.get(body.audio_url, follow_redirects=True)
+        audio_bytes, _ = await download_limited(http, body.audio_url, max_bytes=STT_MAX_BYTES)
     except Exception as e:
         return JSONResponse(status_code=502, content={"error": f"Failed to download audio: {e}"})
-
-    if resp.status_code != 200:
-        return JSONResponse(status_code=502,
-                            content={"error": f"Failed to download audio: HTTP {resp.status_code}"})
-
-    audio_bytes = resp.content
-
-    if len(audio_bytes) > STT_MAX_BYTES:
-        return JSONResponse(
-            status_code=413,
-            content={"error": f"Audio file too large ({len(audio_bytes)} bytes). Max 25 MB."},
-        )
 
     filename = body.audio_url.split("/")[-1].split("?")[0] or "audio.ogg"
 

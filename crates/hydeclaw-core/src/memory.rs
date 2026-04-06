@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::RwLock;
+use std::sync::{OnceLock, RwLock};
 use tokio::sync::OnceCell;
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ pub struct MemoryStore {
     http: reqwest::Client,
     enabled: bool,
     embed_url: String,
-    embed_model: RwLock<String>,
+    embed_model: OnceLock<String>,
     /// 0 = not yet detected
     embed_dim: AtomicU32,
     /// PostgreSQL FTS dictionary (e.g. "russian", "english", "simple").
@@ -90,7 +90,7 @@ impl MemoryStore {
             http,
             enabled: config.enabled,
             embed_url,
-            embed_model: RwLock::new(String::new()),
+            embed_model: OnceLock::new(),
             embed_dim: AtomicU32::new(config.embed_dim.unwrap_or(0)),
             fts_language: RwLock::new(fts_lang),
             initialized: OnceCell::new(),
@@ -104,7 +104,7 @@ impl MemoryStore {
 
     /// Returns the configured embedding model name.
     pub fn embed_model_name(&self) -> String {
-        self.embed_model.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.embed_model.get().cloned().unwrap_or_default()
     }
 
     /// Returns the detected embedding dimension (0 if not yet detected).
@@ -163,13 +163,13 @@ impl MemoryStore {
                 .trim_end_matches('/')
                 .trim_end_matches("/v1"),
         );
-        match self.http.get(&health_url).send().await {
+        match self.http.get(&health_url).timeout(std::time::Duration::from_secs(5)).send().await {
             Ok(resp) => {
                 if let Ok(body) = resp.json::<serde_json::Value>().await {
                     if let Some(name) = body["active_providers"]["embedding"].as_str() {
-                        *self.embed_model.write().unwrap_or_else(|e| e.into_inner()) =
-                            name.to_string();
-                        tracing::info!(embed_model = %name, "discovered embedding model from toolgate");
+                        if self.embed_model.set(name.to_string()).is_ok() {
+                            tracing::info!(embed_model = %name, "discovered embedding model from toolgate");
+                        }
                     }
                 }
             }
@@ -189,8 +189,9 @@ impl MemoryStore {
         }
 
         // 1. Detect dimension (from config or probe request)
-        let dim = if self.embed_dim.load(Ordering::Relaxed) > 0 {
-            self.embed_dim.load(Ordering::Relaxed)
+        let current_dim = self.embed_dim.load(Ordering::Relaxed);
+        let dim = if current_dim > 0 {
+            current_dim
         } else {
             match self.embed("dimension probe").await {
                 Ok(probe) => {

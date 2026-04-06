@@ -10,11 +10,25 @@ from typing import Optional
 import httpx
 
 from dependencies import require_provider
+from helpers import log_provider
 from normalize import normalize_text
 
 log = logging.getLogger("toolgate.tts")
 
 router = APIRouter(tags=["tts"])
+
+_AUDIO_MEDIA_TYPES = {
+    "mp3": "audio/mpeg",
+    "opus": "audio/ogg",
+    "aac": "audio/aac",
+    "flac": "audio/flac",
+    "wav": "audio/wav",
+}
+
+
+def _audio_media_type(fmt: str) -> str:
+    """Map response_format to MIME type."""
+    return _AUDIO_MEDIA_TYPES.get(fmt, "audio/mpeg")
 
 
 @router.get("/audio/voices")
@@ -59,15 +73,14 @@ async def tts(
     request: Request,
     provider=Depends(require_provider("tts")),
 ):
-    log.info("Using provider: %s model=%s", provider.name, getattr(provider, "model", ""))
+    log_provider(log, provider)
+    fmt = body.response_format or "mp3"
     try:
         audio_bytes = await provider.synthesize(
             request.app.state.http_client, body.text,
-            body.voice or "", body.model,
-            body.response_format or "mp3",
+            body.voice or "", body.model, fmt,
         )
-        media_type = "audio/mpeg" if (body.response_format or "mp3") == "mp3" else "audio/ogg"
-        return Response(content=audio_bytes, media_type=media_type)
+        return Response(content=audio_bytes, media_type=_audio_media_type(fmt))
     except httpx.HTTPStatusError as e:
         return JSONResponse(status_code=e.response.status_code,
                             content={"error": f"TTS error: {e.response.text}"})
@@ -89,7 +102,7 @@ async def openai_speech(
     provider=Depends(require_provider("tts")),
 ):
     """OpenAI-compatible TTS with full Russian text normalization."""
-    log.info("Using provider: %s model=%s", provider.name, getattr(provider, "model", ""))
+    log_provider(log, provider)
     http = request.app.state.http_client
     text = body.input
     if text:
@@ -98,14 +111,13 @@ async def openai_speech(
             log.info("Normalized TTS (%d→%d chars): %s", len(text), len(normalized), normalized[:200])
         text = normalized
 
+    fmt = body.response_format or "mp3"
     try:
         audio_bytes = await provider.synthesize(
             http, text,
-            body.voice or "", body.model,
-            body.response_format or "mp3",
+            body.voice or "", body.model, fmt,
         )
-        media_type = "audio/mpeg" if (body.response_format or "mp3") == "mp3" else "audio/ogg"
-        return Response(content=audio_bytes, media_type=media_type)
+        return Response(content=audio_bytes, media_type=_audio_media_type(fmt))
     except httpx.HTTPStatusError as e:
         return JSONResponse(status_code=e.response.status_code,
                             content={"error": f"TTS error: {e.response.text}"})
