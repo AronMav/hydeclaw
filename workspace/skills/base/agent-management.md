@@ -14,82 +14,83 @@ priority: 10
 
 # Agent Management
 
-## Create agent
+Use Python `requests` in `code_exec`. Do NOT use curl.
 
-`provider` and `model` are required. If using a named provider connection, also set `provider_connection`.
-
-```bash
-curl -sf -X POST http://localhost:18789/api/agents \
-  -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "NewAgent",
-    "language": "ru",
-    "provider": "openai",
-    "model": "gpt-4o",
-    "provider_connection": "my-openai"
-  }'
-```
-
-New agents are always non-base (sandboxed Docker container).
-
-## Update agent (GET → modify → PUT)
-
-PUT requires `name`, `provider`, `model` — they are NOT optional. Always GET first, modify, then PUT back.
+## Auth helper
 
 ```python
-import json, urllib.request, os
-tok = os.environ["HYDECLAW_AUTH_TOKEN"]
-hdrs = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
+import requests, json
+TOKEN = open("/home/aronmav/hydeclaw/.env").read().split("HYDECLAW_AUTH_TOKEN=")[1].split("\n")[0]
+H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+BASE = "http://localhost:18789"
+```
 
-# GET current config
-req = urllib.request.Request("http://localhost:18789/api/agents/AgentName", headers=hdrs)
-d = json.loads(urllib.request.urlopen(req).read())
+## Create agent
+
+**CRITICAL: Use `provider_connection` (named provider from /api/providers), NOT `provider` (legacy field).**
+
+The `provider` field is auto-filled from the named connection — you only need to set `provider_connection` and `model`.
+
+```python
+resp = requests.post(f"{BASE}/api/agents", headers=H, json={
+    "name": "NewAgent",
+    "language": "ru",
+    "provider": "",
+    "model": "kimi-k2.5:cloud",
+    "provider_connection": "ollama-default",
+    "temperature": 1.0
+})
+print(resp.status_code, resp.text)
+```
+
+**Fields:**
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | yes | Agent name (alphanumeric + underscore/hyphen) |
+| `language` | no | Default: "ru" |
+| `provider` | yes* | Leave empty string "" — auto-filled from provider_connection |
+| `model` | yes | Model name (e.g. "gpt-4.1", "llama3.3") |
+| `provider_connection` | recommended | Name of provider from /api/providers (e.g. "ollama-default") |
+| `temperature` | no | Default: 1.0 |
+
+*`provider` is required by the API schema but auto-filled from `provider_connection` when empty.
+
+## Find your provider connection
+
+```python
+providers = requests.get(f"{BASE}/api/providers", headers=H).json()["providers"]
+for p in providers:
+    if p["type"] == "text":
+        print(f"name={p['name']}  type={p['provider_type']}  model={p['default_model']}")
+```
+
+Use the `name` field as `provider_connection` value.
+
+## Update agent (GET→modify→PUT)
+
+```python
+# Get current config
+agent = requests.get(f"{BASE}/api/agents/NewAgent", headers=H).json()
 
 # Modify fields
-d["temperature"] = 0.7
-d["provider_connection"] = "my-openai"
+agent["model"] = "new-model"
+agent["provider_connection"] = "my-openai"
 
-# PUT back
-req = urllib.request.Request(
-    "http://localhost:18789/api/agents/AgentName",
-    data=json.dumps(d).encode(), method="PUT", headers=hdrs
-)
-print(urllib.request.urlopen(req).read().decode())
+# Save
+resp = requests.put(f"{BASE}/api/agents/NewAgent", headers=H, json=agent)
+print(resp.status_code)
 ```
 
-The agent is hot-restarted after update.
+## Delete agent
 
-## Available PUT fields
-
-Required: `name`, `provider`, `model`
-
-Optional: `provider_connection`, `temperature`, `max_tokens`, `language`, `heartbeat`, `tools`, `compaction`, `session`, `access`, `routing`, `tool_loop`, `hooks`, `max_history_messages`, `daily_budget_tokens`
-
-## Delete agent (non-base only)
-
-```bash
-curl -sf -X DELETE http://localhost:18789/api/agents/AgentName \
-  -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN"
+```python
+requests.delete(f"{BASE}/api/agents/NewAgent", headers=H)
 ```
 
-## List agents
+## Common Errors
 
-```bash
-curl -sf http://localhost:18789/api/agents \
-  -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN"
-```
-
-## Get agent detail
-
-```bash
-curl -sf http://localhost:18789/api/agents/AgentName \
-  -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN"
-```
-
-## Checklist
-
-1. Check if agent already exists: `GET /api/agents`
-2. If creating: `POST /api/agents` with name, provider, model
-3. If updating: GET → modify → PUT (never PUT without GET first)
-4. Verify: `GET /api/agents/Name` shows correct config
+| Error | Cause | Fix |
+|-------|-------|-----|
+| Provider shows "—" in UI | `provider` field has wrong value | Set `provider_connection` and leave `provider` empty |
+| Agent can't call LLM | No provider_connection set | Add `provider_connection` pointing to a provider from /api/providers |
+| SyntaxError (curl) | Using curl in code_exec | Use Python `requests` |
