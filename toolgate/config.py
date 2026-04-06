@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 from pydantic import BaseModel, Field
 
-CONFIG_PATH = os.environ.get("CONFIG_PATH", "/app/config/providers.json")
+CONFIG_PATH = os.environ.get("CONFIG_PATH", "providers.json")
 DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "providers.json")
 
 CORE_API_URL = os.environ.get("CORE_API_URL", "http://127.0.0.1:18789")
@@ -101,36 +101,26 @@ def _load_config_from_api() -> ProvidersConfig | None:
 
 
 def load_config() -> ProvidersConfig:
-    """Load config from Core API first, fallback to disk.
-    Retries Core API up to 5 times (toolgate may start before Core is ready)."""
-    import time
-    for attempt in range(5):
-        config = _load_config_from_api()
-        if config is not None:
-            return config
-        if attempt < 4:
-            wait = 2 * (attempt + 1)
-            _log.info("Core API not ready, retrying in %ds (attempt %d/5)...", wait, attempt + 1)
-            time.sleep(wait)
-
-    # Fallback: load from disk
+    """Load config: disk file first (written by Core before spawning toolgate),
+    then Core API fallback, then env vars."""
+    # 1. Disk file (written by Core at startup — most reliable)
     path = Path(CONFIG_PATH)
     if path.exists():
         _log.info("Loading config from disk: %s", path)
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return ProvidersConfig(**data)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            config = ProvidersConfig(**data)
+            if config.providers:
+                return config
+        except Exception as e:
+            _log.warning("Failed to parse %s: %s", path, e)
 
-    # Try baked-in default
-    default = Path(DEFAULT_CONFIG_PATH)
-    if default.exists() and str(default) != str(path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(default, path)
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return ProvidersConfig(**data)
+    # 2. Core API fallback
+    config = _load_config_from_api()
+    if config is not None:
+        return config
 
-    # Seed from env vars
+    # 3. Environment variables
     _log.info("No config source available — seeding from environment variables")
-    config = _seed_from_env()
-    return config
+    return _seed_from_env()

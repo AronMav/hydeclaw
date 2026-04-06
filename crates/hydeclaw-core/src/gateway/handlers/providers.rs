@@ -364,7 +364,8 @@ pub(crate) async fn api_set_provider_active(
 
 /// Internal endpoint for toolgate — returns full config with real api_keys.
 /// Emits `"driver"` field (mapped from `provider_type`) which toolgate matches on.
-pub(crate) async fn api_media_config_export(State(state): State<AppState>) -> Json<Value> {
+/// Build media config JSON — used by API handler and main.rs toolgate export.
+pub(crate) async fn build_media_config(state: &AppState) -> Value {
     // Collect all media-type providers
     let mut all_providers = Vec::new();
     for media_type in &["stt", "tts", "vision", "imagegen", "embedding"] {
@@ -403,11 +404,15 @@ pub(crate) async fn api_media_config_export(State(state): State<AppState>) -> Js
         }
     }
 
-    Json(json!({
+    json!({
         "version": 1,
         "active": active_map,
         "providers": provider_map,
-    }))
+    })
+}
+
+pub(crate) async fn api_media_config_export(State(state): State<AppState>) -> Json<Value> {
+    Json(build_media_config(&state).await)
 }
 
 // ── Static metadata ─────────────────────────────────────────────────────────

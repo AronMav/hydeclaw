@@ -51,6 +51,7 @@ def _build_driver_map() -> dict[tuple[str, str], type]:
 
     # Embedding providers
     from providers.embedding_ollama import OllamaEmbedding
+    from providers.embedding_openai import OpenAIEmbedding
 
     return {
         # STT
@@ -84,6 +85,7 @@ def _build_driver_map() -> dict[tuple[str, str], type]:
         ("imagegen", "pixazo"): PixazoImageGen,
         # Embedding
         ("embedding", "ollama"): OllamaEmbedding,
+        ("embedding", "openai"): OpenAIEmbedding,
     }
 
 
@@ -148,13 +150,27 @@ class ProviderRegistry:
     def __init__(self) -> None:
         self.config: ProvidersConfig = ProvidersConfig()
         self._instances: dict[str, Provider] = {}
+        self._loaded: bool = False
 
     def load(self) -> None:
         self.config = load_config()
         self._instantiate_all()
+        self._loaded = bool(self.config.providers)
 
     def reload(self) -> None:
         self.load()
+
+    def _ensure_loaded(self) -> None:
+        """Lazy-load: if startup returned empty config, retry from Core API on first use."""
+        if self._loaded:
+            return
+        from config import _load_config_from_api
+        config = _load_config_from_api()
+        if config and config.providers:
+            log.info("Lazy-load: got %d providers from Core API", len(config.providers))
+            self.config = config
+            self._instantiate_all()
+            self._loaded = True
 
     def _instantiate_all(self) -> None:
         self._instances.clear()
@@ -178,12 +194,14 @@ class ProviderRegistry:
                 log.exception("Failed to instantiate provider %s", pid)
 
     def get_active(self, capability: str) -> Provider | None:
+        self._ensure_loaded()
         active_id = self.config.active.get(capability)
         if active_id and active_id in self._instances:
             return self._instances[active_id]
         return None
 
     def get_instance(self, provider_id: str) -> Provider | None:
+        self._ensure_loaded()
         return self._instances.get(provider_id)
 
     def list_providers(self) -> dict[str, ProviderConfig]:

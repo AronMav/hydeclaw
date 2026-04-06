@@ -22,6 +22,11 @@ pub use handlers::providers::migrate_provider_keys_to_vault;
 pub(crate) use handlers::backup::create_backup_internal;
 pub(crate) use handlers::notifications::notify;
 
+/// Export media config as JSON for toolgate — called from main.rs before spawning managed processes.
+pub(crate) async fn export_media_config(state: &AppState) -> serde_json::Value {
+    handlers::providers::build_media_config(state).await
+}
+
 /// SSE event type constants for Vercel AI SDK v3 compatibility.
 mod sse_types {
     pub const DATA_SESSION_ID: &str = "data-session-id";
