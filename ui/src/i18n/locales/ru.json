@@ -803,6 +803,7 @@
   "providers.field_notes_placeholder": "Описание или заметки...",
   "providers.optional": "необязательно",
   "providers.discover": "Найти модели",
+  "providers.discover_failed": "Не удалось найти модели",
   "providers.no_model_discovery": "Этот провайдер не поддерживает автоматическое обнаружение моделей. Введите имя модели вручную.",
   "approvals.title": "Одобрения",
   "approvals.subtitle": "Запросы инструментов, ожидающие одобрения",

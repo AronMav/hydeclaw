@@ -803,6 +803,7 @@
   "providers.field_notes_placeholder": "Description or notes...",
   "providers.optional": "optional",
   "providers.discover": "Discover",
+  "providers.discover_failed": "Model discovery failed",
   "providers.no_model_discovery": "This provider does not support automatic model discovery. Enter the model name manually.",
   "approvals.title": "Approvals",
   "approvals.subtitle": "Tool requests awaiting approval",
