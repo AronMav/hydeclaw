@@ -538,4 +538,62 @@ impl AgentEngine {
             Err(e) => format!("Error writing MEMORY.md: {}", e),
         }
     }
+
+    /// Internal tool: on-demand compression of old memory chunks by topic.
+    /// Fetches compressible groups for this agent (optionally filtered by topic),
+    /// runs LLM summarization via compress_group, and returns compressed chunk count.
+    pub(super) async fn handle_memory_compress(&self, args: &serde_json::Value) -> String {
+        let topic_filter = args.get("topic").and_then(|v| v.as_str());
+        let agent_id = &self.agent.name;
+        let age_days = self.app_config.memory.compression_age_days;
+
+        if !self.memory_store.is_available() {
+            return "Memory compression is not available (embedding endpoint not configured).".to_string();
+        }
+
+        let groups = match crate::db::memory_queries::fetch_compressible_groups(&self.db, age_days).await {
+            Ok(g) => g,
+            Err(e) => return format!("{{\"error\": \"Failed to fetch compressible groups: {}\"}}", e),
+        };
+
+        // Filter to this agent's groups, optionally by topic
+        let filtered: Vec<_> = groups
+            .into_iter()
+            .filter(|g| g.agent_id == *agent_id)
+            .filter(|g| topic_filter.map_or(true, |t| g.topic == t))
+            .collect();
+
+        if filtered.is_empty() {
+            return "{\"compressed\": 0, \"topics\": []}".to_string();
+        }
+
+        let mut total_compressed = 0u64;
+        let mut topics_done: Vec<String> = Vec::new();
+
+        for group in filtered {
+            let topic_name = group.topic.clone();
+            match crate::compression_worker::compress_group(
+                &self.db,
+                &self.provider,
+                &self.memory_store,
+                group,
+            )
+            .await
+            {
+                Ok(count) => {
+                    total_compressed += count;
+                    topics_done.push(topic_name);
+                }
+                Err(e) => {
+                    tracing::warn!(topic = %topic_name, error = %e, "handle_memory_compress: compression failed for topic");
+                }
+            }
+        }
+
+        serde_json::json!({
+            "compressed": total_compressed,
+            "topics": topics_done
+        })
+        .to_string()
+    }
 }

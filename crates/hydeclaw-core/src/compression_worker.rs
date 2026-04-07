@@ -120,7 +120,7 @@ async fn worker_loop(
 /// 1. Concatenate chunk contents
 /// 2. LLM summarize (with 120s timeout)
 /// 3. Insert summary chunk + archive originals
-async fn compress_group(
+pub async fn compress_group(
     db: &PgPool,
     provider: &Arc<dyn LlmProvider>,
     memory_store: &Arc<MemoryStore>,
