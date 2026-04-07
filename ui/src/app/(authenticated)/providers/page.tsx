@@ -49,7 +49,7 @@ import {
   Network,
 } from "lucide-react";
 import type { Provider, CreateProviderInput } from "@/types/api";
-import { apiGet } from "@/lib/api";
+import { apiGet, apiPost } from "@/lib/api";
 import {
   useProviders,
   useProviderTypes,
@@ -150,6 +150,16 @@ export default function ProvidersPage() {
   const [apiKeyValue, setApiKeyValue] = useState("");
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    cli_found?: boolean;
+    cli_path?: string;
+    cli_version?: string;
+    auth_ok?: boolean;
+    response_ok?: boolean;
+    response_time_ms?: number;
+    error?: string;
+  } | null>(null);
+  const [testLoading, setTestLoading] = useState(false);
 
   // Delete state
   const [deleteTarget, setDeleteTarget] = useState<Provider | null>(null);
@@ -174,6 +184,29 @@ export default function ProvidersPage() {
   const selectedType = dialog.open && dialog.category === "text"
     ? providerTypes.find((pt) => pt.id === form.provider_type)
     : undefined;
+
+  const isCli = dialog.open && form.provider_type.endsWith("-cli");
+
+  const testConnection = async () => {
+    if (!dialog.open || !dialog.editing) return;
+    setTestLoading(true);
+    setTestResult(null);
+    try {
+      const result = await apiPost<{
+        cli_found?: boolean;
+        cli_path?: string;
+        cli_version?: string;
+        auth_ok?: boolean;
+        response_ok?: boolean;
+        response_time_ms?: number;
+        error?: string;
+      }>(`/api/providers/${dialog.editing.id}/test-cli`, {});
+      setTestResult(result);
+    } catch (e) {
+      setTestResult({ cli_found: false, error: String(e) });
+    }
+    setTestLoading(false);
+  };
 
   const discoverModels = async () => {
     if (!form.provider_type) return;
@@ -201,6 +234,8 @@ export default function ProvidersPage() {
     setForm(EMPTY_FORM);
     setApiKeyValue("");
     setDiscoveredModels([]);
+    setTestResult(null);
+    setTestLoading(false);
     setDialog({ open: true, category: "", editing: null });
   };
 
@@ -219,6 +254,8 @@ export default function ProvidersPage() {
     });
     setApiKeyValue("");
     setDiscoveredModels([]);
+    setTestResult(null);
+    setTestLoading(false);
     setDialog({ open: true, category: p.type as ProviderCategory, editing: p });
   };
 
@@ -673,22 +710,76 @@ export default function ProvidersPage() {
                   )}
                 </div>
 
-                {/* Base URL */}
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-muted-foreground">
-                    {t("providers.field_base_url")}{" "}
-                    <span className="text-muted-foreground/50 font-normal">({t("providers.optional")})</span>
-                  </label>
-                  <Input
-                    placeholder={form.provider_type ? defaultUrlFor(form.provider_type) || "https://..." : "https://..."}
-                    value={form.base_url ?? ""}
-                    onChange={(e) => setForm((f) => ({ ...f, base_url: e.target.value }))}
-                    className="font-mono text-sm"
-                  />
-                  <p className="text-[11px] text-muted-foreground/60">
-                    {t("providers.field_url_hint")}
-                  </p>
-                </div>
+                {/* Base URL — hidden for CLI providers */}
+                {!isCli && (
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-muted-foreground">
+                      {t("providers.field_base_url")}{" "}
+                      <span className="text-muted-foreground/50 font-normal">({t("providers.optional")})</span>
+                    </label>
+                    <Input
+                      placeholder={form.provider_type ? defaultUrlFor(form.provider_type) || "https://..." : "https://..."}
+                      value={form.base_url ?? ""}
+                      onChange={(e) => setForm((f) => ({ ...f, base_url: e.target.value }))}
+                      className="font-mono text-sm"
+                    />
+                    <p className="text-[11px] text-muted-foreground/60">
+                      {t("providers.field_url_hint")}
+                    </p>
+                  </div>
+                )}
+
+                {/* Test Connection for CLI providers */}
+                {isCli && isEditing && (
+                  <div className="space-y-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full gap-1.5"
+                      onClick={testConnection}
+                      disabled={testLoading}
+                    >
+                      {testLoading ? (
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Zap className="h-3.5 w-3.5" />
+                      )}
+                      {testLoading ? t("providers.test_connection_testing") : t("providers.test_connection")}
+                    </Button>
+
+                    {testResult && (
+                      <div className={`rounded-lg border p-3 text-xs space-y-1 ${
+                        testResult.response_ok
+                          ? "bg-green-500/10 border-green-500/20 text-green-600 dark:text-green-400"
+                          : "bg-destructive/10 border-destructive/20 text-destructive"
+                      }`}>
+                        {testResult.response_ok ? (
+                          <>
+                            <p className="font-medium">{t("providers.test_cli_success", { ms: String(testResult.response_time_ms ?? 0) })}</p>
+                            {testResult.cli_version && (
+                              <p className="font-mono text-[11px] opacity-70">
+                                {testResult.cli_version} — {testResult.cli_path}
+                              </p>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            <p className="font-medium">
+                              {!testResult.cli_found
+                                ? t("providers.test_cli_not_found")
+                                : testResult.auth_ok === false
+                                  ? t("providers.test_cli_no_auth")
+                                  : t("providers.test_cli_failed")}
+                            </p>
+                            {testResult.error && (
+                              <p className="font-mono text-[11px] opacity-70">{testResult.error}</p>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Notes */}
                 <div className="space-y-1.5">
