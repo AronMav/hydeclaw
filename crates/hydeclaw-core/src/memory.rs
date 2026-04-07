@@ -31,12 +31,19 @@ pub struct MemoryConfig {
     /// Approximation: content.len() / 4.
     #[serde(default = "default_pinned_budget")]
     pub pinned_budget_tokens: u32,
+    /// Age in days after which non-pinned chunks become eligible for compression. Default: 30.
+    #[serde(default = "default_compression_age_days")]
+    pub compression_age_days: u32,
 }
 
 use crate::config::default_true;
 
 fn default_pinned_budget() -> u32 {
     2000
+}
+
+fn default_compression_age_days() -> u32 {
+    30
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -1094,6 +1101,7 @@ mod tests {
             fts_language: None,
             graph_enabled: true,
             pinned_budget_tokens: 2000,
+            compression_age_days: 30,
         }
     }
 

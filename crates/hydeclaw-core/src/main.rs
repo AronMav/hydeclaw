@@ -8,6 +8,7 @@ mod gateway;
 mod memory;
 mod memory_graph;
 mod graph_worker;
+mod compression_worker;
 mod oauth;
 mod process_manager;
 mod scheduler;
