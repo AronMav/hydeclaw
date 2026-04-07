@@ -108,7 +108,7 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
         .route("/api/media-drivers", get(handlers::providers::api_list_media_drivers))
         .route("/api/media-config", get(handlers::providers::api_media_config_export))
         .route("/api/providers", get(handlers::providers::api_list_providers).post(handlers::providers::api_create_provider))
-        .route("/api/providers/{id}", get(handlers::providers::api_get_provider).put(handlers::providers::api_update_provider).delete(handlers::providers::api_delete_provider))
+        .route("/api/providers/{id}", get(handlers::providers::api_get_provider).put(handlers::providers::api_update_provider).delete(handlers::providers::api_delete_provider).patch(handlers::providers::api_patch_cli_options))
         .route("/api/providers/{id}/models", get(handlers::providers::api_unified_provider_models))
         .route("/api/providers/{id}/resolve", get(handlers::providers::api_provider_resolve))
         .route("/api/providers/{id}/test-cli", post(handlers::providers::api_test_cli))
