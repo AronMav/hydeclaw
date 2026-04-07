@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::super::AppState;
+use crate::agent::cli_backend::CLI_PRESETS;
 
 // ── Doctor check types ──────────────────────────────────────────────────────
 
@@ -102,6 +103,65 @@ pub(crate) async fn api_setup_complete(State(state): State<AppState>) -> impl In
     }
 }
 
+/// Check whether a CLI tool is installed and get its version/path.
+async fn check_cli_tool(name: &str, command: &str) -> serde_json::Value {
+    let which_cmd = if cfg!(target_os = "windows") {
+        "where.exe"
+    } else {
+        "which"
+    };
+
+    let which_result = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::process::Command::new(which_cmd)
+            .arg(command)
+            .output(),
+    )
+    .await;
+
+    let path = match which_result {
+        Ok(Ok(out)) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let first_line = stdout.lines().next().unwrap_or("").trim().to_string();
+            if first_line.is_empty() {
+                return json!({ "name": name, "status": "not_found" });
+            }
+            first_line
+        }
+        _ => return json!({ "name": name, "status": "not_found" }),
+    };
+
+    // Try to get version
+    let version = match tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::process::Command::new(command)
+            .arg("--version")
+            .output(),
+    )
+    .await
+    {
+        Ok(Ok(out)) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let raw = stdout.lines().next().unwrap_or("").trim().to_string();
+            // Strip common prefixes like "gemini version 0.36.0" → "0.36.0"
+            let version = raw
+                .rsplit(' ')
+                .next()
+                .unwrap_or(&raw)
+                .trim_start_matches('v')
+                .to_string();
+            if version.is_empty() { None } else { Some(version) }
+        }
+        _ => None,
+    };
+
+    let mut result = json!({ "name": name, "status": "ok", "path": path });
+    if let Some(v) = version {
+        result["version"] = json!(v);
+    }
+    result
+}
+
 /// GET /api/setup/requirements — pre-flight system requirements check for the setup wizard.
 /// Returns docker, postgresql, and disk_space check results. No auth required.
 pub(crate) async fn api_setup_requirements(State(state): State<AppState>) -> Json<Value> {
@@ -165,7 +225,16 @@ pub(crate) async fn api_setup_requirements(State(state): State<AppState>) -> Jso
         }
     };
 
-    let (docker_check, postgresql_check) = tokio::join!(docker_fut, pg_fut);
+    // ── CLI tool detection ─────────────────────────────────────────────────
+    let cli_fut = async {
+        let futs: Vec<_> = CLI_PRESETS
+            .iter()
+            .map(|p| check_cli_tool(p.id, p.command))
+            .collect();
+        futures_util::future::join_all(futs).await
+    };
+
+    let (docker_check, postgresql_check, cli_tools) = tokio::join!(docker_fut, pg_fut, cli_fut);
 
     // ── Disk space check (Linux only) ─────────────────────────────────────────
     #[cfg(target_os = "linux")]
@@ -239,7 +308,8 @@ pub(crate) async fn api_setup_requirements(State(state): State<AppState>) -> Jso
             "docker": docker_check,
             "postgresql": postgresql_check,
             "disk_space": disk_check,
-        }
+        },
+        "cli_tools": cli_tools,
     }))
 }
 
