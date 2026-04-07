@@ -550,7 +550,7 @@ impl CliRunner {
 
         let exec_result = if base {
             // Base agents always run CLI on host (not in Docker sandbox)
-            execute_on_host(&argv, &merged_env, workspace_dir, timeout, &self.config.clear_env, stdin_input).await
+            execute_on_host(&argv, &merged_env, workspace_dir, timeout, &self.config.clear_env, stdin_input, self.config.no_output_timeout_secs).await
         } else if let Some(sb) = sandbox {
             let base_cmd = argv.iter().map(|a| shell_escape(a)).collect::<Vec<_>>().join(" ");
             let cmd = if let Some(input) = stdin_input {
@@ -711,7 +711,9 @@ async fn execute_on_host(
     timeout: Duration,
     clear_env: &[String],
     stdin_input: Option<&str>,
+    no_output_timeout_secs: u64,
 ) -> Result<ExecResult> {
+    use tokio::io::AsyncReadExt;
     use tokio::process::Command;
 
     let mut cmd = Command::new(&argv[0]);
@@ -747,13 +749,56 @@ async fn execute_on_host(
             // Drop stdin to close the pipe (signals EOF to child)
         }
 
-    match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(Ok(output)) => Ok(ExecResult {
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-            exit_code: output.status.code().unwrap_or(-1) as i64,
-        }),
-        Ok(Err(e)) => anyhow::bail!("CLI process error: {}", e),
+    let no_output_timeout = Duration::from_secs(no_output_timeout_secs);
+
+    // Read stdout with no-output watchdog + overall timeout
+    let read_future = async {
+        // Spawn stderr reader in parallel
+        let stderr_handle = child.stderr.take();
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            if let Some(mut stderr) = stderr_handle {
+                let _ = stderr.read_to_end(&mut buf).await;
+            }
+            String::from_utf8_lossy(&buf).to_string()
+        });
+
+        // Read stdout with per-chunk no-output watchdog
+        let mut stdout_buf = Vec::new();
+        if let Some(mut stdout) = child.stdout.take() {
+            let mut chunk = [0u8; 8192];
+            loop {
+                let read_result = tokio::time::timeout(no_output_timeout, stdout.read(&mut chunk)).await;
+                match read_result {
+                    Ok(Ok(0)) => break, // EOF
+                    Ok(Ok(n)) => stdout_buf.extend_from_slice(&chunk[..n]),
+                    Ok(Err(e)) => return Err(anyhow::anyhow!("stdout read error: {}", e)),
+                    Err(_) => {
+                        // No output timeout fired -- kill the process
+                        tracing::warn!("CLI killed: no stdout output for {}s", no_output_timeout_secs);
+                        let _ = child.kill().await;
+                        anyhow::bail!("CLI killed: no stdout output for {}s", no_output_timeout_secs);
+                    }
+                }
+            }
+        }
+
+        // Wait for process to complete
+        let status = child.wait().await
+            .map_err(|e| anyhow::anyhow!("CLI process error: {}", e))?;
+        let stderr_str = stderr_task.await.unwrap_or_default();
+
+        Ok(ExecResult {
+            stdout: String::from_utf8_lossy(&stdout_buf).to_string(),
+            stderr: stderr_str,
+            exit_code: status.code().unwrap_or(-1) as i64,
+        })
+    };
+
+    // Wrap everything in the overall timeout.
+    // When the timeout fires, the future is dropped, which drops `child` and kills the process.
+    match tokio::time::timeout(timeout, read_future).await {
+        Ok(result) => result,
         Err(_) => anyhow::bail!("CLI timed out after {}s", timeout.as_secs()),
     }
 }
