@@ -171,7 +171,7 @@ describe("MentionAutocomplete (INPT-01)", () => {
   it("renders filtered agent list matching query", () => {
     render(
       <MentionAutocomplete
-        query="Ar"
+        query="Ag"
         agents={["Agent1", "Bob"]}
         onSelect={vi.fn()}
       />,
@@ -195,7 +195,7 @@ describe("MentionAutocomplete (INPT-01)", () => {
     const onSelect = vi.fn();
     render(
       <MentionAutocomplete
-        query="Ar"
+        query="Ag"
         agents={["Agent1", "Bob"]}
         onSelect={onSelect}
       />,

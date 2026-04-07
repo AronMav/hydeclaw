@@ -42,12 +42,12 @@ describe("initial state", () => {
 describe("login", () => {
   it("sets token, isAuthenticated, agents, version on valid token", async () => {
     mockFetch
-      .mockResolvedValueOnce(jsonResponse({ agents: ["Agent1"] })) // /api/agents
+      .mockResolvedValueOnce(jsonResponse({ agents: [{ name: "Agent1", icon: "robot" }] })) // /api/agents
       .mockResolvedValueOnce(
         jsonResponse({
           version: "1.2.3",
-          agents: ["Agent1"],
-          agent_icons: [{ name: "Agent1", icon: "robot" }],
+          status: "ok",
+          db: true,
         }),
       ); // /health
 
