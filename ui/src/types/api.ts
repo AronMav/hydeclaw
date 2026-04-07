@@ -163,6 +163,8 @@ export interface MemoryDocument {
   preview: string | null;
   chunks_count: number;
   total_chars: number | null;
+  category: string | null;
+  topic: string | null;
 }
 
 export interface MemoryStats {

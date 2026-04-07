@@ -15,6 +15,7 @@ import { formatDate } from "@/lib/format";
 import { Textarea } from "@/components/ui/textarea";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Brain, Plus, Search, Trash2, Pin, PinOff, ChevronLeft, ChevronRight, ChevronDown, X } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { MemoryDocument } from "@/types/api";
 
 // ── Lazy-load full document content ──
@@ -65,6 +66,10 @@ export default function MemoryPage() {
   const [createContent, setCreateContent] = useState("");
   const [createPinned, setCreatePinned] = useState(false);
   const [createSaving, setCreateSaving] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState<string>("");
+  const [topicFilter, setTopicFilter] = useState<string>("");
+  const [categories, setCategories] = useState<{ category: string; count: number }[]>([]);
+  const [topics, setTopics] = useState<{ topic: string; count: number }[]>([]);
   const limit = 20;
 
   const search = useCallback(async (q: string, off: number) => {
@@ -72,6 +77,8 @@ export default function MemoryPage() {
     try {
       const params = new URLSearchParams({ limit: String(limit), offset: String(off) });
       if (q.trim()) params.set("query", q.trim());
+      if (categoryFilter) params.set("category", categoryFilter);
+      if (topicFilter) params.set("topic", topicFilter);
       const data = await apiGet<{ documents: MemoryDocument[]; total?: number; search_mode?: string }>(`/api/memory/documents?${params}`);
       setChunks(data.documents || []);
       setSearchMode(data.search_mode || "");
@@ -81,11 +88,22 @@ export default function MemoryPage() {
       setError(`${e}`);
     }
     setLoading(false);
-  }, []);
+  }, [categoryFilter, topicFilter]);
 
   useEffect(() => {
     search("", 0);
   }, [search]);
+
+  useEffect(() => {
+    apiGet<{ category: string; count: number }[]>("/api/memory/categories").then(setCategories).catch(() => {});
+    apiGet<{ topic: string; count: number }[]>("/api/memory/topics").then(setTopics).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    setOffset(0);
+    search(query, 0);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categoryFilter, topicFilter]);
 
   const doSearch = () => { setOffset(0); search(query, 0); };
   const prev = () => { const o = Math.max(0, offset - limit); setOffset(o); search(query, o); };
@@ -222,6 +240,43 @@ export default function MemoryPage() {
         </div>
       )}
 
+      {/* Category / Topic filters */}
+      <div className="mb-4 flex flex-wrap gap-3">
+        <Select value={categoryFilter || "all"} onValueChange={(v) => setCategoryFilter(v === "all" ? "" : v)}>
+          <SelectTrigger className="w-[180px] h-9 text-sm bg-card/50 border-border">
+            <SelectValue placeholder={t("memory.filter_category")} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">{t("memory.all_categories")}</SelectItem>
+            {categories.map((c) => (
+              <SelectItem key={c.category} value={c.category}>
+                {c.category} ({c.count})
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Select value={topicFilter || "all"} onValueChange={(v) => setTopicFilter(v === "all" ? "" : v)}>
+          <SelectTrigger className="w-[180px] h-9 text-sm bg-card/50 border-border">
+            <SelectValue placeholder={t("memory.filter_topic")} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">{t("memory.all_topics")}</SelectItem>
+            {topics.map((tp) => (
+              <SelectItem key={tp.topic} value={tp.topic}>
+                {tp.topic} ({tp.count})
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        {(categoryFilter || topicFilter) && (
+          <Button variant="ghost" size="sm" className="h-9 text-xs text-muted-foreground" onClick={() => { setCategoryFilter(""); setTopicFilter(""); }}>
+            <X className="h-3.5 w-3.5 mr-1" /> {t("memory.clear_filters")}
+          </Button>
+        )}
+      </div>
+
       {searchMode && query.trim() && (
         <div className="mb-4 flex items-center gap-2">
           <Badge variant="outline" className="text-[10px] border-border text-muted-foreground">
@@ -254,6 +309,16 @@ export default function MemoryPage() {
                   {doc.similarity != null && doc.similarity > 0 && (
                     <span className="font-mono text-[10px] text-muted-foreground tabular-nums">
                       {t("memory.similarity", { value: doc.similarity.toFixed(3) })}
+                    </span>
+                  )}
+                  {doc.category && (
+                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                      {doc.category}
+                    </Badge>
+                  )}
+                  {doc.topic && (
+                    <span className="text-[10px] text-muted-foreground italic">
+                      {doc.topic}
                     </span>
                   )}
                 </div>
