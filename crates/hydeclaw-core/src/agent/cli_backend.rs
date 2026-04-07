@@ -297,11 +297,10 @@ pub fn merge_db_overrides(config: &mut CliBackendConfig, options: &Value) {
         if let Some(v) = obj.get("clear_env").and_then(|v| v.as_array()) {
             config.clear_env = v.iter().filter_map(|s| s.as_str().map(String::from)).collect();
         }
-        if let Some(v) = obj.get("system_prompt_when") {
-            if let Ok(spw) = serde_json::from_value::<SystemPromptWhen>(v.clone()) {
+        if let Some(v) = obj.get("system_prompt_when")
+            && let Ok(spw) = serde_json::from_value::<SystemPromptWhen>(v.clone()) {
                 config.system_prompt_when = spw;
             }
-        }
         if let Some(v) = obj.get("max_prompt_arg_chars").and_then(|v| v.as_u64()) {
             config.max_prompt_arg_chars = v as usize;
         }
@@ -526,7 +525,7 @@ impl CliRunner {
         let use_resume = existing_session.is_some() && !self.config.resume_args.is_empty();
 
         // Build argv
-        let argv = self.build_argv(
+        let (argv, use_stdin) = self.build_argv(
             resolved_model,
             prompt,
             system_prompt,
@@ -534,11 +533,12 @@ impl CliRunner {
             use_resume,
         );
 
+        let stdin_input = if use_stdin { Some(prompt) } else { None };
         let timeout = Duration::from_secs(self.config.timeout_secs);
 
         // Execute
         let start = std::time::Instant::now();
-        tracing::debug!(agent = %agent_name, argv = ?argv, workspace = %workspace_dir, base, "CLI executing");
+        tracing::debug!(agent = %agent_name, argv = ?argv, use_stdin, workspace = %workspace_dir, base, "CLI executing");
         // Merge config env with extra_env (vault secrets override config)
         let merged_env = if extra_env.is_empty() {
             self.config.env.clone()
@@ -550,9 +550,14 @@ impl CliRunner {
 
         let exec_result = if base {
             // Base agents always run CLI on host (not in Docker sandbox)
-            execute_on_host(&argv, &merged_env, workspace_dir, timeout).await
+            execute_on_host(&argv, &merged_env, workspace_dir, timeout, &self.config.clear_env, stdin_input).await
         } else if let Some(sb) = sandbox {
-            let cmd = argv.iter().map(|a| shell_escape(a)).collect::<Vec<_>>().join(" ");
+            let base_cmd = argv.iter().map(|a| shell_escape(a)).collect::<Vec<_>>().join(" ");
+            let cmd = if let Some(input) = stdin_input {
+                format!("echo {} | {}", shell_escape(input), base_cmd)
+            } else {
+                base_cmd
+            };
             let host_path = std::fs::canonicalize(workspace_dir)
                 .unwrap_or_default().to_string_lossy().to_string();
             sb.execute(agent_name, &cmd, "bash", &[], &host_path, base).await
@@ -621,6 +626,8 @@ impl CliRunner {
         Ok(output)
     }
 
+    /// Build CLI argument vector. Returns (argv, use_stdin) where use_stdin=true means
+    /// the prompt was excluded from argv and must be piped via stdin.
     fn build_argv(
         &self,
         model: &str,
@@ -628,8 +635,9 @@ impl CliRunner {
         system_prompt: Option<&str>,
         session_id: Option<&str>,
         use_resume: bool,
-    ) -> Vec<String> {
+    ) -> (Vec<String>, bool) {
         let mut argv = vec![self.config.command.clone()];
+        let has_session = session_id.is_some();
 
         if use_resume {
             // Use resume args, replace {session_id} template
@@ -648,8 +656,14 @@ impl CliRunner {
                     argv.push(model.to_string());
                 }
 
-            // --append-system-prompt
-            if let Some(ref sp_arg) = self.config.system_prompt_arg
+            // --append-system-prompt (controlled by system_prompt_when)
+            let should_include_system_prompt = match self.config.system_prompt_when {
+                SystemPromptWhen::Never => false,
+                SystemPromptWhen::First => !has_session,
+                SystemPromptWhen::Always => true,
+            };
+            if should_include_system_prompt
+                && let Some(ref sp_arg) = self.config.system_prompt_arg
                 && let Some(sp) = system_prompt
                     && !sp.is_empty() {
                         argv.push(sp_arg.clone());
@@ -667,15 +681,24 @@ impl CliRunner {
                 }
         }
 
-        // Add prompt
-        if self.config.input == CliInputMode::Arg {
-            if let Some(ref pa) = self.config.prompt_arg {
-                argv.push(pa.clone());
+        // Add prompt (or signal stdin mode if too large)
+        let use_stdin = if self.config.input == CliInputMode::Arg {
+            if prompt.len() > self.config.max_prompt_arg_chars {
+                // Prompt too large for CLI arg — must be piped via stdin
+                true
+            } else {
+                if let Some(ref pa) = self.config.prompt_arg {
+                    argv.push(pa.clone());
+                }
+                argv.push(prompt.to_string());
+                false
             }
-            argv.push(prompt.to_string());
-        }
+        } else {
+            // CliInputMode::Stdin — always use stdin
+            true
+        };
 
-        argv
+        (argv, use_stdin)
     }
 }
 
@@ -686,6 +709,8 @@ async fn execute_on_host(
     env: &HashMap<String, String>,
     workspace_dir: &str,
     timeout: Duration,
+    clear_env: &[String],
+    stdin_input: Option<&str>,
 ) -> Result<ExecResult> {
     use tokio::process::Command;
 
@@ -694,13 +719,33 @@ async fn execute_on_host(
         .current_dir(workspace_dir)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+
+    // Inject env vars (vault secrets)
     for (k, v) in env {
         cmd.env(k, v);
     }
 
-    let child = cmd
+    // Remove env vars listed in clear_env (security: prevent credential leakage)
+    for key in clear_env {
+        cmd.env_remove(key);
+    }
+
+    if stdin_input.is_some() {
+        cmd.stdin(std::process::Stdio::piped());
+    }
+
+    let mut child = cmd
         .spawn()
         .map_err(|e| anyhow::anyhow!("failed to spawn CLI '{}': {}", argv[0], e))?;
+
+    // If stdin_input provided, write to stdin then close it
+    if let Some(input) = stdin_input
+        && let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(input.as_bytes()).await
+                .map_err(|e| anyhow::anyhow!("failed to write to CLI stdin: {}", e))?;
+            // Drop stdin to close the pipe (signals EOF to child)
+        }
 
     match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(Ok(output)) => Ok(ExecResult {
@@ -1173,7 +1218,7 @@ mod tests {
     #[test]
     fn build_argv_fresh_with_model_and_system() {
         let runner = CliRunner::new(claude_config());
-        let argv = runner.build_argv("sonnet", "Hello world", Some("Be kind"), None, false);
+        let (argv, use_stdin) = runner.build_argv("sonnet", "Hello world", Some("Be kind"), None, false);
         assert_eq!(argv[0], "claude");
         assert!(argv.contains(&"--model".to_string()));
         assert!(argv.contains(&"sonnet".to_string()));
@@ -1181,12 +1226,13 @@ mod tests {
         assert!(argv.contains(&"Be kind".to_string()));
         // Prompt is the last element (Arg input mode)
         assert_eq!(argv.last().unwrap(), "Hello world");
+        assert!(!use_stdin);
     }
 
     #[test]
     fn build_argv_resume_with_session() {
         let runner = CliRunner::new(claude_config());
-        let argv = runner.build_argv("sonnet", "Follow up", None, Some("sess-42"), true);
+        let (argv, _) = runner.build_argv("sonnet", "Follow up", None, Some("sess-42"), true);
         assert_eq!(argv[0], "claude");
         assert!(argv.contains(&"--resume".to_string()));
         assert!(argv.contains(&"sess-42".to_string()));
@@ -1200,7 +1246,7 @@ mod tests {
         let mut cfg = gemini_config();
         cfg.model_arg = None;
         let runner = CliRunner::new(cfg);
-        let argv = runner.build_argv("gemini-pro", "Test", None, None, false);
+        let (argv, _) = runner.build_argv("gemini-pro", "Test", None, None, false);
         // Without model_arg, model should not appear in argv
         assert!(!argv.contains(&"gemini-pro".to_string()));
         assert_eq!(argv.last().unwrap(), "Test");
@@ -1209,7 +1255,7 @@ mod tests {
     #[test]
     fn build_argv_empty_model_skipped() {
         let runner = CliRunner::new(claude_config());
-        let argv = runner.build_argv("", "Prompt", None, None, false);
+        let (argv, _) = runner.build_argv("", "Prompt", None, None, false);
         // Empty model string should not produce --model flag
         assert!(!argv.contains(&"--model".to_string()));
     }
@@ -1217,7 +1263,7 @@ mod tests {
     #[test]
     fn build_argv_session_mode_none_skips_session() {
         let runner = CliRunner::new(gemini_config());
-        let argv = runner.build_argv("gemini-pro", "Hi", None, Some("s-1"), false);
+        let (argv, _) = runner.build_argv("gemini-pro", "Hi", None, Some("s-1"), false);
         // Gemini has session_mode=None, so session_id should not appear
         assert!(!argv.contains(&"s-1".to_string()));
     }
@@ -1225,7 +1271,7 @@ mod tests {
     #[test]
     fn build_argv_empty_system_prompt_skipped() {
         let runner = CliRunner::new(claude_config());
-        let argv = runner.build_argv("sonnet", "Prompt", Some(""), None, false);
+        let (argv, _) = runner.build_argv("sonnet", "Prompt", Some(""), None, false);
         // Empty system prompt should not produce the flag
         assert!(!argv.contains(&"--append-system-prompt".to_string()));
     }
@@ -1233,7 +1279,7 @@ mod tests {
     #[test]
     fn build_argv_gemini_prompt_arg() {
         let runner = CliRunner::new(gemini_config());
-        let argv = runner.build_argv("gemini-2.5-flash", "Hello world", None, None, false);
+        let (argv, _) = runner.build_argv("gemini-2.5-flash", "Hello world", None, None, false);
         // Gemini uses prompt_arg="-p", so prompt must follow "-p" at the end
         let p_idx = argv.iter().position(|a| a == "-p").expect("-p must be in argv");
         assert_eq!(argv[p_idx + 1], "Hello world");
@@ -1244,10 +1290,83 @@ mod tests {
     #[test]
     fn build_argv_claude_no_prompt_arg() {
         let runner = CliRunner::new(claude_config());
-        let argv = runner.build_argv("sonnet", "Hello", None, None, false);
+        let (argv, use_stdin) = runner.build_argv("sonnet", "Hello", None, None, false);
         // Claude has prompt_arg=None, prompt is positional (last element)
         assert_eq!(argv.last().unwrap(), "Hello");
         // -p is in base args (as flag), not as prompt_arg
         assert!(argv.contains(&"-p".to_string()));
+        assert!(!use_stdin);
+    }
+
+    // ── SystemPromptWhen tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_system_prompt_when_never() {
+        let mut cfg = claude_config();
+        cfg.system_prompt_when = SystemPromptWhen::Never;
+        let runner = CliRunner::new(cfg);
+        let (argv, _) = runner.build_argv("sonnet", "Hello", Some("Be helpful"), None, false);
+        // Never mode: system prompt arg should NOT appear even if system_prompt provided
+        assert!(!argv.contains(&"--append-system-prompt".to_string()));
+        assert!(!argv.contains(&"Be helpful".to_string()));
+    }
+
+    #[test]
+    fn test_system_prompt_when_first_no_session() {
+        let mut cfg = claude_config();
+        cfg.system_prompt_when = SystemPromptWhen::First;
+        let runner = CliRunner::new(cfg);
+        // No session (has_session=false via session_id=None) -> system prompt IS included
+        let (argv, _) = runner.build_argv("sonnet", "Hello", Some("Be helpful"), None, false);
+        assert!(argv.contains(&"--append-system-prompt".to_string()));
+        assert!(argv.contains(&"Be helpful".to_string()));
+    }
+
+    #[test]
+    fn test_system_prompt_when_first_with_session() {
+        let mut cfg = claude_config();
+        cfg.system_prompt_when = SystemPromptWhen::First;
+        let runner = CliRunner::new(cfg);
+        // Has existing session -> system prompt NOT included (First mode skips on subsequent)
+        let (argv, _) = runner.build_argv("sonnet", "Hello", Some("Be helpful"), Some("sess-1"), false);
+        assert!(!argv.contains(&"--append-system-prompt".to_string()));
+        assert!(!argv.contains(&"Be helpful".to_string()));
+    }
+
+    #[test]
+    fn test_system_prompt_when_always_with_session() {
+        let mut cfg = claude_config();
+        cfg.system_prompt_when = SystemPromptWhen::Always;
+        let runner = CliRunner::new(cfg);
+        // Always mode: system prompt IS included even with existing session
+        let (argv, _) = runner.build_argv("sonnet", "Hello", Some("Be helpful"), Some("sess-1"), false);
+        assert!(argv.contains(&"--append-system-prompt".to_string()));
+        assert!(argv.contains(&"Be helpful".to_string()));
+    }
+
+    // ── Auto-stdin tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_auto_stdin_large_prompt() {
+        let mut cfg = claude_config();
+        cfg.max_prompt_arg_chars = 10;
+        let runner = CliRunner::new(cfg);
+        let long_prompt = "a".repeat(20);
+        let (argv, use_stdin) = runner.build_argv("sonnet", &long_prompt, None, None, false);
+        // Prompt exceeds max_prompt_arg_chars -> excluded from argv, stdin flag true
+        assert!(!argv.contains(&long_prompt));
+        assert!(use_stdin);
+    }
+
+    #[test]
+    fn test_auto_stdin_small_prompt() {
+        let mut cfg = claude_config();
+        cfg.max_prompt_arg_chars = 100;
+        let runner = CliRunner::new(cfg);
+        let short_prompt = "Hello world";
+        let (argv, use_stdin) = runner.build_argv("sonnet", short_prompt, None, None, false);
+        // Prompt within limit -> included in argv, stdin flag false
+        assert!(argv.contains(&short_prompt.to_string()));
+        assert!(!use_stdin);
     }
 }
