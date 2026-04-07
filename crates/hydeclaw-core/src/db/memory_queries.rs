@@ -238,13 +238,15 @@ pub async fn insert_chunk(
     lang: &str,
     parent_id: Option<&str>,
     chunk_index: i32,
+    category: Option<&str>,
+    topic: Option<&str>,
 ) -> Result<()> {
     validate_fts_lang(lang)?;
     // SAFETY: `lang` is validated by validate_fts_lang() which only allows lowercase ASCII
     // letters. Not user input -- comes from server config.
     let sql = format!(
-        r#"INSERT INTO memory_chunks (id, user_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index)
-           VALUES ($1::uuid, '', $2, $3::halfvec, $4, $5, 1.0, to_tsvector('{lang}', $2), $6::uuid, $7)"#,
+        r#"INSERT INTO memory_chunks (id, user_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic)
+           VALUES ($1::uuid, '', $2, $3::halfvec, $4, $5, 1.0, to_tsvector('{lang}', $2), $6::uuid, $7, $8, $9)"#,
     );
 
     sqlx::query(&sql)
@@ -255,6 +257,8 @@ pub async fn insert_chunk(
         .bind(pinned)
         .bind(parent_id)
         .bind(chunk_index)
+        .bind(category)
+        .bind(topic)
         .execute(db)
         .await
         .context("failed to insert memory chunk")?;

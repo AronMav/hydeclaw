@@ -390,6 +390,7 @@ impl MemoryStore {
     /// Batch index: embed multiple texts and insert them all. Returns chunk IDs.
     /// Long texts (> DEFAULT_CHUNK_SIZE) are delegated to `index()` for auto-chunking.
     /// Short texts are batch-embedded in a single request for efficiency.
+    /// Category and topic are not supported in batch index (pass None/None per item).
     pub async fn index_batch(&self, items: &[(String, String, bool)]) -> Result<Vec<String>> {
         self.ensure_initialized().await;
         if items.is_empty() {
@@ -403,7 +404,7 @@ impl MemoryStore {
         let mut short_items: Vec<(usize, &str, &str, bool)> = Vec::new();
         for (idx, (content, source, pinned)) in items.iter().enumerate() {
             if content.len() > crate::chunker::DEFAULT_CHUNK_SIZE {
-                let id = self.index(content, source, *pinned).await
+                let id = self.index(content, source, *pinned, None, None).await
                     .context("failed to index long item in batch")?;
                 ids.push((idx, id));
             } else {
@@ -420,6 +421,7 @@ impl MemoryStore {
                 let id = uuid::Uuid::new_v4().to_string();
                 crate::db::memory_queries::insert_chunk(
                     &self.db, &id, content, &vec_str, source, pinned, &lang, None, 0,
+                    None, None,
                 ).await
                 .context("failed to insert memory chunk in batch")?;
                 ids.push((idx, id));
@@ -458,7 +460,15 @@ impl MemoryStore {
     /// When graph_enabled, appends graph-expanded results from the knowledge graph.
     /// Returns (results, search_mode) where search_mode is "hybrid", "semantic", or "fts".
     /// `exclude_ids`: chunk IDs already loaded via L0 pinned loading — excluded from results (CTX-04).
-    pub async fn search(&self, query: &str, limit: usize, exclude_ids: &[String]) -> Result<(Vec<MemoryResult>, &'static str)> {
+    /// `category` / `topic`: optional post-query filters; only chunks with matching values are returned.
+    pub async fn search(
+        &self,
+        query: &str,
+        limit: usize,
+        exclude_ids: &[String],
+        category: Option<&str>,
+        topic: Option<&str>,
+    ) -> Result<(Vec<MemoryResult>, &'static str)> {
         self.ensure_initialized().await;
         if query.trim().is_empty() {
             return Ok((vec![], "none"));
@@ -484,14 +494,20 @@ impl MemoryStore {
         };
 
         // Deduplicate: keep only the best chunk per parent document
-        let results = Self::dedup_by_parent(results);
+        let mut results = Self::dedup_by_parent(results);
 
         // L2 dedup: remove chunks already loaded via L0 pinned loading (CTX-04)
-        let results = if exclude_ids.is_empty() {
-            results
-        } else {
-            results.into_iter().filter(|r| !exclude_ids.contains(&r.id)).collect()
-        };
+        if !exclude_ids.is_empty() {
+            results.retain(|r| !exclude_ids.contains(&r.id));
+        }
+
+        // Category/topic post-query filtering (CTX-05)
+        if let Some(cat) = category {
+            results.retain(|r| r.category.as_deref() == Some(cat));
+        }
+        if let Some(top) = topic {
+            results.retain(|r| r.topic.as_deref() == Some(top));
+        }
 
         Ok((results, mode))
     }
@@ -679,7 +695,14 @@ impl MemoryStore {
     /// Generate embedding and insert a new memory chunk. Returns the new chunk UUID.
     /// If content exceeds DEFAULT_CHUNK_SIZE, splits into overlapping chunks
     /// linked by parent_id. Returns the parent chunk's UUID.
-    pub async fn index(&self, content: &str, source: &str, pinned: bool) -> Result<String> {
+    pub async fn index(
+        &self,
+        content: &str,
+        source: &str,
+        pinned: bool,
+        category: Option<&str>,
+        topic: Option<&str>,
+    ) -> Result<String> {
         self.ensure_initialized().await;
         let lang = self.validated_fts_language()?;
 
@@ -696,6 +719,7 @@ impl MemoryStore {
             let id = uuid::Uuid::new_v4().to_string();
             crate::db::memory_queries::insert_chunk(
                 &self.db, &id, &chunks[0], &vec_str, source, pinned, &lang, None, 0,
+                category, topic,
             ).await?;
             return Ok(id);
         }
@@ -715,6 +739,7 @@ impl MemoryStore {
             let parent = if i == 0 { None } else { Some(parent_id.as_str()) };
             crate::db::memory_queries::insert_chunk(
                 &self.db, &id, chunk, &vec_str, source, pinned, &lang, parent, i as i32,
+                category, topic,
             ).await?;
         }
 
@@ -864,7 +889,7 @@ pub fn spawn_workspace_watcher(
                                 if let Err(e) = mem.delete_by_source(&source).await {
                                     tracing::debug!(source = %source, error = %e, "no existing chunks to delete");
                                 }
-                                match mem.index(&content, &source, false).await {
+                                match mem.index(&content, &source, false, None, None).await {
                                     Ok(_) => indexed += 1,
                                     Err(e) => {
                                         tracing::debug!(error = %e, "embedding unavailable — skipping workspace indexing");

@@ -224,7 +224,7 @@ impl AgentEngine {
             },
             ToolDefinition {
                 name: "memory".to_string(),
-                description: "Manage long-term memory. Actions: search (find relevant info), index (save new — ALWAYS search first for duplicates), reindex (bulk import .md files), get (by ID/source), delete (by chunk_id), update (edit MEMORY.md cache). For index: use pinned=true for permanent facts. For update: edits MEMORY.md (max 8KB), action is add/update/remove within a section.".to_string(),
+                description: "Manage long-term memory. Actions: search (find relevant info, supports category/topic filters), index (save new — ALWAYS search first for duplicates, supports category/topic tags), reindex (bulk import .md files), get (by ID/source), delete (by chunk_id), update (edit MEMORY.md cache). For index: use pinned=true for permanent facts. For update: edits MEMORY.md (max 8KB), action is add/update/remove within a section.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -235,7 +235,7 @@ impl AgentEngine {
                         },
                         "query": {
                             "type": "string",
-                            "description": "Search query (for search)"
+                            "description": "Search query (for search). Supports optional category/topic filters."
                         },
                         "content": {
                             "type": "string",
@@ -250,6 +250,15 @@ impl AgentEngine {
                             "type": "boolean",
                             "description": "Pin as permanent memory, no decay (for index)",
                             "default": false
+                        },
+                        "category": {
+                            "type": "string",
+                            "enum": ["decision", "preference", "event", "discovery", "advice", "general"],
+                            "description": "Category tag for hierarchical organization (for index: tags the chunk; for search: filters results to matching category)"
+                        },
+                        "topic": {
+                            "type": "string",
+                            "description": "Topic tag for sub-categorization (for index: free-form tag stored on chunk; for search: filters results to matching topic)"
                         },
                         "clear_existing": {
                             "type": "boolean",

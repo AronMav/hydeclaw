@@ -163,7 +163,7 @@ impl AgentEngine {
                 let mut ok = 0usize;
                 let mut fail = 0usize;
                 for (content, source, pinned) in &items {
-                    match self.memory_store.index(content, source, *pinned).await {
+                    match self.memory_store.index(content, source, *pinned, None, None).await {
                         Ok(_) => ok += 1,
                         Err(ie) => {
                             fail += 1;
@@ -180,6 +180,8 @@ impl AgentEngine {
     pub(super) async fn handle_memory_search(&self, args: &serde_json::Value) -> String {
         let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+        let category = args.get("category").and_then(|v| v.as_str());
+        let topic = args.get("topic").and_then(|v| v.as_str());
 
         if query.is_empty() {
             return "Error: 'query' is required".to_string();
@@ -206,7 +208,7 @@ impl AgentEngine {
 
         // Search long-term memory (exclude L0 pinned chunks to avoid duplication)
         let exclude = self.pinned_chunk_ids.lock().await.clone();
-        match self.memory_store.search(query, limit, &exclude).await {
+        match self.memory_store.search(query, limit, &exclude, category, topic).await {
             Ok((results, _)) if results.is_empty() && parts.is_empty() => {
                 return "No relevant memories found.".to_string();
             }
@@ -237,6 +239,8 @@ impl AgentEngine {
         let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
         let source = args.get("source").and_then(|v| v.as_str()).unwrap_or("manual");
         let pinned = args.get("pinned").and_then(|v| v.as_bool()).unwrap_or(false);
+        let category = args.get("category").and_then(|v| v.as_str());
+        let topic = args.get("topic").and_then(|v| v.as_str());
 
         if content.is_empty() {
             return "Error: 'content' is required".to_string();
@@ -245,7 +249,19 @@ impl AgentEngine {
             return "Memory indexing is not available (embedding endpoint not configured).".to_string();
         }
 
-        match self.memory_store.index(content, source, pinned).await {
+        // Validate category if provided
+        const VALID_CATEGORIES: &[&str] = &["decision", "preference", "event", "discovery", "advice", "general"];
+        if let Some(cat) = category {
+            if !VALID_CATEGORIES.contains(&cat) {
+                return format!(
+                    "Error: invalid category '{}'. Valid values: {}",
+                    cat,
+                    VALID_CATEGORIES.join(", ")
+                );
+            }
+        }
+
+        match self.memory_store.index(content, source, pinned, category, topic).await {
             Ok(id) => {
                 // Build (chunk_id, chunk_content) pairs for GraphRAG.
                 // One query: parent (id match) + children (parent_id match).
