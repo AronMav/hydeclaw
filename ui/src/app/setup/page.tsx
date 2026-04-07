@@ -48,6 +48,13 @@ interface RequirementCheck {
   fix_hint?: string | null;
 }
 
+interface CliToolCheck {
+  name: string;
+  status: "ok" | "not_found";
+  version?: string;
+  path?: string;
+}
+
 interface RequirementsResult {
   ok: boolean;
   checks: {
@@ -55,6 +62,7 @@ interface RequirementsResult {
     postgresql: RequirementCheck;
     disk_space: RequirementCheck;
   };
+  cli_tools?: CliToolCheck[];
 }
 
 // ── Fallback popular models per provider_type ─────────────────────────────
@@ -122,12 +130,19 @@ export default function SetupPage() {
   // ── Step 0: Requirements ──────────────────────────────────────────────
   const [requirements, setRequirements] = useState<RequirementsResult | null>(null);
   const [requirementsLoading, setRequirementsLoading] = useState(false);
+  const [detectedClis, setDetectedClis] = useState<string[]>([]);
 
   useEffect(() => {
     if (step !== "requirements") return;
     setRequirementsLoading(true);
     apiGet<RequirementsResult>("/api/setup/requirements")
-      .then(setRequirements)
+      .then((data) => {
+        setRequirements(data);
+        const detected = (data.cli_tools ?? [])
+          .filter((t) => t.status === "ok")
+          .map((t) => t.name);
+        setDetectedClis(detected);
+      })
       .catch(() => setRequirements(null))
       .finally(() => setRequirementsLoading(false));
   }, [step]);
@@ -461,6 +476,39 @@ export default function SetupPage() {
                       {t("setup.requirements_fail")}
                     </div>
                   )}
+
+                  {/* CLI Tools detection */}
+                  {requirements?.cli_tools && requirements.cli_tools.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                        {t("setup.cli_tools_title")}
+                      </p>
+                      {requirements.cli_tools.map((tool) => (
+                        <div
+                          key={tool.name}
+                          className={`flex items-start gap-3 rounded-lg border border-border bg-muted/30 p-3 ${
+                            tool.status !== "ok" ? "opacity-50" : ""
+                          }`}
+                        >
+                          <div className="mt-0.5 shrink-0">
+                            {tool.status === "ok" ? (
+                              <CheckCircle2 className="h-4 w-4 text-green-500" />
+                            ) : (
+                              <XCircle className="h-4 w-4 text-muted-foreground" />
+                            )}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium">{tool.name}</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              {tool.status === "ok"
+                                ? `${tool.version ? `v${tool.version}` : ""} ${tool.path ? `— ${tool.path}` : ""}`.trim()
+                                : t("setup.cli_not_installed")}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -513,8 +561,21 @@ export default function SetupPage() {
                       <SelectValue placeholder="Select provider..." />
                     </SelectTrigger>
                     <SelectContent>
-                      {providerTypes.map((pt) => (
-                        <SelectItem key={pt.id} value={pt.id}>{pt.name || pt.id}</SelectItem>
+                      {[...providerTypes].sort((a, b) => {
+                        const aDetected = detectedClis.includes(a.id) ? 0 : 1;
+                        const bDetected = detectedClis.includes(b.id) ? 0 : 1;
+                        return aDetected - bDetected;
+                      }).map((pt) => (
+                        <SelectItem key={pt.id} value={pt.id}>
+                          <span className="flex items-center gap-2">
+                            {pt.name || pt.id}
+                            {detectedClis.includes(pt.id) && (
+                              <span className="text-[10px] font-semibold px-1.5 py-0 rounded bg-green-500/10 text-green-600 border border-green-500/20">
+                                {t("setup.cli_detected")}
+                              </span>
+                            )}
+                          </span>
+                        </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
