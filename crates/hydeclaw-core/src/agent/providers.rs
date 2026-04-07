@@ -483,6 +483,11 @@ pub struct ProviderTypeMeta {
     pub default_secret_name: &'static str,
     pub requires_api_key: bool,
     pub supports_model_listing: bool,
+    /// For CLI providers: delegate model listing to this provider type's API
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models_provider: Option<&'static str>,
+    /// Hardcoded fallback models when runtime fetch fails
+    pub default_models: &'static [&'static str],
 }
 
 /// Known provider types with extended metadata.
@@ -495,6 +500,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "MINIMAX_API_KEY",
         requires_api_key: true,
         supports_model_listing: false,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "openai",
@@ -504,6 +511,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "OPENAI_API_KEY",
         requires_api_key: true,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "anthropic",
@@ -513,6 +522,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "ANTHROPIC_API_KEY",
         requires_api_key: true,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "google",
@@ -522,6 +533,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "GOOGLE_API_KEY",
         requires_api_key: true,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "deepseek",
@@ -531,6 +544,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "DEEPSEEK_API_KEY",
         requires_api_key: true,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "groq",
@@ -540,6 +555,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "GROQ_API_KEY",
         requires_api_key: true,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "openrouter",
@@ -549,6 +566,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "OPENROUTER_API_KEY",
         requires_api_key: true,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "mistral",
@@ -558,6 +577,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "MISTRAL_API_KEY",
         requires_api_key: true,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "xai",
@@ -567,6 +588,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "XAI_API_KEY",
         requires_api_key: true,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "perplexity",
@@ -576,6 +599,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "PERPLEXITY_API_KEY",
         requires_api_key: true,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "together",
@@ -585,6 +610,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "TOGETHER_API_KEY",
         requires_api_key: true,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "ollama",
@@ -594,6 +621,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "",
         requires_api_key: false,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "openai_compat",
@@ -603,6 +632,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "API_KEY",
         requires_api_key: true,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "claude-cli",
@@ -611,7 +642,9 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_base_url: "",
         default_secret_name: "ANTHROPIC_API_KEY",
         requires_api_key: true,
-        supports_model_listing: false,
+        supports_model_listing: true,
+        models_provider: Some("anthropic"),
+        default_models: &["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
     },
     ProviderTypeMeta {
         id: "gemini-cli",
@@ -620,7 +653,9 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_base_url: "",
         default_secret_name: "GEMINI_API_KEY",
         requires_api_key: true,
-        supports_model_listing: false,
+        supports_model_listing: true,
+        models_provider: Some("google"),
+        default_models: &["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-pro"],
     },
     ProviderTypeMeta {
         id: "codex-cli",
@@ -629,7 +664,9 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_base_url: "",
         default_secret_name: "OPENAI_API_KEY",
         requires_api_key: true,
-        supports_model_listing: false,
+        supports_model_listing: true,
+        models_provider: Some("openai"),
+        default_models: &["codex-mini", "gpt-4.1", "o4-mini"],
     },
     // ── Additional OpenAI-compatible providers ──────────────────────────────
     ProviderTypeMeta {
@@ -640,6 +677,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "HF_API_KEY",
         requires_api_key: true,
         supports_model_listing: false,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "moonshot",
@@ -649,6 +688,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "MOONSHOT_API_KEY",
         requires_api_key: true,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "nvidia",
@@ -658,6 +699,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "NVIDIA_API_KEY",
         requires_api_key: true,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "venice",
@@ -667,6 +710,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "VENICE_API_KEY",
         requires_api_key: true,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "cloudflare",
@@ -676,6 +721,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "CF_AI_API_KEY",
         requires_api_key: true,
         supports_model_listing: false,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "litellm",
@@ -685,6 +732,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "LITELLM_API_KEY",
         requires_api_key: false,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "volcengine",
@@ -694,6 +743,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "VOLCENGINE_API_KEY",
         requires_api_key: true,
         supports_model_listing: false,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "qwen",
@@ -703,6 +754,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "DASHSCOPE_API_KEY",
         requires_api_key: true,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "glm",
@@ -712,6 +765,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "GLM_API_KEY",
         requires_api_key: true,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "sglang",
@@ -721,6 +776,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "",
         requires_api_key: false,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "vllm",
@@ -730,6 +787,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "",
         requires_api_key: false,
         supports_model_listing: true,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "qianfan",
@@ -739,6 +798,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "QIANFAN_API_KEY",
         requires_api_key: true,
         supports_model_listing: false,
+        models_provider: None,
+        default_models: &[],
     },
     ProviderTypeMeta {
         id: "xiaomi",
@@ -748,6 +809,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         default_secret_name: "XIAOMI_API_KEY",
         requires_api_key: true,
         supports_model_listing: false,
+        models_provider: None,
+        default_models: &[],
     },
 ];
 
