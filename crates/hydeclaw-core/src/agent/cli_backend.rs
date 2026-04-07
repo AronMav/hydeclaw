@@ -466,6 +466,7 @@ impl CooldownState {
 pub struct CliRunner {
     config: CliBackendConfig,
     sessions: RwLock<HashMap<String, String>>,
+    session_hashes: RwLock<HashMap<String, u64>>,
     semaphore: Semaphore,
     cooldown: Mutex<CooldownState>,
 }
@@ -476,9 +477,25 @@ impl CliRunner {
         Self {
             config,
             sessions: RwLock::new(HashMap::new()),
+            session_hashes: RwLock::new(HashMap::new()),
             semaphore: Semaphore::new(permits),
             cooldown: Mutex::new(CooldownState::new()),
         }
+    }
+
+    /// Check if context hash changed; if so, clear stored session for this agent.
+    /// Returns true if session was invalidated.
+    pub async fn check_and_invalidate_session(&self, agent_name: &str, context_hash: u64) -> bool {
+        let mut hashes = self.session_hashes.write().await;
+        let prev = hashes.insert(agent_name.to_string(), context_hash);
+        if let Some(prev_hash) = prev
+            && prev_hash != context_hash {
+                // Context changed -- invalidate session
+                self.sessions.write().await.remove(agent_name);
+                tracing::info!(agent = %agent_name, "CLI session invalidated: context hash changed");
+                return true;
+            }
+        false
     }
 
     /// Execute CLI with prompt, returning parsed response.
@@ -1413,5 +1430,57 @@ mod tests {
         // Prompt within limit -> included in argv, stdin flag false
         assert!(argv.contains(&short_prompt.to_string()));
         assert!(!use_stdin);
+    }
+
+    // ── Session invalidation tests ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_session_invalidation_same_hash() {
+        let runner = CliRunner::new(claude_config());
+        // Insert a session manually
+        runner.sessions.write().await.insert("agent-1".to_string(), "sess-abc".to_string());
+
+        // Call check_and_invalidate with hash A twice
+        let invalidated1 = runner.check_and_invalidate_session("agent-1", 12345).await;
+        assert!(!invalidated1, "first call should not invalidate (no previous hash)");
+
+        let invalidated2 = runner.check_and_invalidate_session("agent-1", 12345).await;
+        assert!(!invalidated2, "same hash should not invalidate");
+
+        // Session should still be present
+        let sessions = runner.sessions.read().await;
+        assert_eq!(sessions.get("agent-1"), Some(&"sess-abc".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_session_invalidation_changed_hash() {
+        let runner = CliRunner::new(claude_config());
+        // Insert a session manually
+        runner.sessions.write().await.insert("agent-1".to_string(), "sess-abc".to_string());
+
+        // Set initial hash
+        let invalidated1 = runner.check_and_invalidate_session("agent-1", 12345).await;
+        assert!(!invalidated1, "first call should not invalidate (no previous hash)");
+
+        // Change hash -> should invalidate
+        let invalidated2 = runner.check_and_invalidate_session("agent-1", 99999).await;
+        assert!(invalidated2, "different hash should invalidate session");
+
+        // Session should be removed
+        let sessions = runner.sessions.read().await;
+        assert!(sessions.get("agent-1").is_none(), "session should be cleared after invalidation");
+    }
+
+    #[tokio::test]
+    async fn test_session_invalidation_no_session_stored() {
+        let runner = CliRunner::new(claude_config());
+        // No session stored -- invalidation should not panic
+        let invalidated1 = runner.check_and_invalidate_session("agent-2", 111).await;
+        assert!(!invalidated1, "first call has no previous hash");
+
+        // Hash changed -- method returns true even though no session was stored
+        // (the sessions.remove is a harmless no-op)
+        let invalidated2 = runner.check_and_invalidate_session("agent-2", 222).await;
+        assert!(invalidated2, "hash mismatch detected regardless of session presence");
     }
 }

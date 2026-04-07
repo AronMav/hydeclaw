@@ -19,6 +19,7 @@ pub struct CliLlmProvider {
 }
 
 impl CliLlmProvider {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         provider_name: &str,
         config: CliBackendConfig,
@@ -51,10 +52,26 @@ impl LlmProvider for CliLlmProvider {
 
         // Resolve API key from vault at call time (hot-reloadable)
         let mut extra_env = std::collections::HashMap::new();
-        if let Some(ref key_name) = self.env_key {
-            if let Some(key_value) = self.secrets.get(key_name).await {
+        if let Some(ref key_name) = self.env_key
+            && let Some(key_value) = self.secrets.get(key_name).await {
                 extra_env.insert(key_name.clone(), key_value);
             }
+
+        // Compute context hash (system prompt + API key) for session invalidation
+        {
+            use std::hash::{Hash, Hasher};
+            use std::collections::hash_map::DefaultHasher;
+
+            let mut hasher = DefaultHasher::new();
+            if let Some(ref sp) = system {
+                sp.hash(&mut hasher);
+            }
+            if let Some(ref key_name) = self.env_key
+                && let Some(ref key_value) = extra_env.get(key_name) {
+                    key_value.hash(&mut hasher);
+                }
+            let context_hash = hasher.finish();
+            self.runner.check_and_invalidate_session(&self.agent_name, context_hash).await;
         }
 
         let result = self.runner.run(
