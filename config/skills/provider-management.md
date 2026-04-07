@@ -93,6 +93,39 @@ curl -sf -X PUT http://localhost:18789/api/providers/PROVIDER_UUID \
 
 UUID is required (not name). Get it from `GET /api/providers`.
 
+## Update CLI provider options
+
+For CLI providers (gemini-cli, claude-cli, codex-cli), use PATCH to update CLI-specific options.
+Allowed fields: `command`, `args`, `prompt_arg`, `model_arg`, `env_key`.
+
+A `command` override is validated (must exist on system). After update, a health-check runs automatically.
+
+```bash
+curl -sf -X PATCH http://localhost:18789/api/providers/PROVIDER_UUID \
+  -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "options": {
+      "args": ["--output-format", "json", "--no-color"],
+      "prompt_arg": "--prompt"
+    }
+  }'
+```
+
+Response includes `health_check` field with CLI validation result:
+
+```json
+{
+  "provider": { ... },
+  "health_check": {
+    "cli_found": true,
+    "cli_path": "/usr/bin/gemini",
+    "auth_ok": true,
+    "response_ok": true
+  }
+}
+```
+
 ## Delete provider
 
 ```bash
@@ -126,3 +159,4 @@ curl -sf http://localhost:18789/api/provider-types \
 2. For media: activate via `PUT /api/provider-active` + restart toolgate
 3. For LLM: assign to agent via `provider_connection` field
 4. Verify: `GET /api/providers` shows the new record
+5. For CLI providers: update options via `PATCH /api/providers/{id}`
