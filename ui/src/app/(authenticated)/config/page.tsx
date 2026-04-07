@@ -58,7 +58,6 @@ export default function ConfigPage() {
 
   const [restarting, setRestarting] = useState(false);
   const [subagentsToggling, setSubagentsToggling] = useState(false);
-  const [editToolgateUrl, setEditToolgateUrl] = useState("");
   const [editPublicUrl, setEditPublicUrl] = useState("");
   const [editMaxReqPerMin, setEditMaxReqPerMin] = useState("");
   const [editMaxToolConcurrency, setEditMaxToolConcurrency] = useState("");
@@ -74,7 +73,6 @@ export default function ConfigPage() {
       .then((d) => {
         setConfig(d);
         setError("");
-        setEditToolgateUrl((d.toolgate_url as string) || "");
         setEditPublicUrl((d.public_url as string) || "");
         const limits = d.limits as Record<string, unknown> | undefined;
         setEditMaxReqPerMin(String(limits?.max_requests_per_minute ?? ""));
@@ -112,7 +110,6 @@ export default function ConfigPage() {
     setSavingFields(true);
     try {
       const payload: Record<string, unknown> = {};
-      if (editToolgateUrl.trim()) payload.toolgate_url = editToolgateUrl.trim();
       if (editPublicUrl.trim()) payload.public_url = editPublicUrl.trim();
       if (editMaxReqPerMin.trim()) payload.max_requests_per_minute = Number(editMaxReqPerMin);
       if (editMaxToolConcurrency.trim()) payload.max_tool_concurrency = Number(editMaxToolConcurrency);
@@ -246,20 +243,6 @@ export default function ConfigPage() {
                       <h3 className="text-sm font-semibold text-foreground">{t("config.editable_fields")}</h3>
                     </div>
                     <div className="space-y-4">
-                      <div className="space-y-1.5">
-                        <label className="font-mono text-xs text-muted-foreground">toolgate_url</label>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Input
-                              value={editToolgateUrl}
-                              onChange={(e) => setEditToolgateUrl(e.target.value)}
-                              placeholder="http://localhost:9100"
-                              className="font-mono text-sm h-9"
-                            />
-                          </TooltipTrigger>
-                          {(() => { const d = getFieldDescription(schema, ["toolgate_url"]); return d ? <TooltipContent>{d}</TooltipContent> : null; })()}
-                        </Tooltip>
-                      </div>
                       <div className="space-y-1.5">
                         <label className="font-mono text-xs text-muted-foreground">public_url</label>
                         <Tooltip>
