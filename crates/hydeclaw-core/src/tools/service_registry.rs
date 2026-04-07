@@ -48,11 +48,11 @@ impl ServiceFileEntry {
     }
 }
 
-fn services_dir(workspace_dir: &str) -> std::path::PathBuf {
-    Path::new(workspace_dir).join("tools").join("services")
+fn services_dir(_workspace_dir: &str) -> std::path::PathBuf {
+    Path::new("config").join("services")
 }
 
-/// Load all service entries from workspace/tools/*.yaml.
+/// Load all service entries from config/services/*.yaml.
 pub async fn load_service_entries(workspace_dir: &str) -> Vec<ServiceFileEntry> {
     let dir = services_dir(workspace_dir);
     let mut entries = Vec::new();

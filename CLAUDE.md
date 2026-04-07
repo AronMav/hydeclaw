@@ -106,7 +106,7 @@ Axum HTTP API on port 18789. All routes in `mod.rs`. Key handlers:
 - **SSRF protection:** YAML tool execution uses `ssrf_http_client` with DNS-level private IP blocking. Path params are URL-encoded, body templates are JSON-escaped. Binary responses limited to 50MB.
 - **Tool name validation:** API handlers enforce `[a-zA-Z0-9_-]` on tool and MCP entry names (prevents path traversal)
 
-**Service registry:** `workspace/tools/services/*.yaml` — internal service definitions (browser-renderer, toolgate, STT, TTS, embedding, vision). These are infrastructure entries (URL, healthcheck, concurrency), NOT agent tools. Loaded by `service_registry.rs`.
+**Service registry:** `config/services/*.yaml` — internal service definitions (browser-renderer, toolgate, STT, TTS, embedding, vision). These are infrastructure entries (URL, healthcheck, concurrency), NOT agent tools. Loaded by `service_registry.rs`.
 
 **Agent skills:** `workspace/skills/*.md` — shared skills for all agents. `workspace/skills/base/*.md` — skills only available to base agents (provider-management, channel-management, etc.). Loaded by `skills/mod.rs`, base agent also sees `skills/base/` directory.
 
