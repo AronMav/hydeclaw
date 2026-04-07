@@ -133,7 +133,7 @@ pub async fn load_skills_for_base(workspace_dir: &str) -> Vec<SkillDef> {
     let mut skills = load_skills(workspace_dir).await;
 
     {
-        let base_dir = Path::new("config").join("skills").join("base");
+        let base_dir = Path::new("config").join("skills");
         if let Ok(mut read_dir) = fs::read_dir(&base_dir).await {
             while let Ok(Some(entry)) = read_dir.next_entry().await {
                 let path = entry.path();
