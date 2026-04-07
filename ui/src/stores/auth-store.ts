@@ -104,7 +104,19 @@ export const useAuthStore = create<AuthState>()(
           // Use sessionStorage so the token is cleared when the browser tab/window is closed.
           // This limits the exposure window for a stolen token compared to localStorage.
           storage: {
-            getItem: (name) => sessionStorage.getItem(name),
+            getItem: (name) => {
+              // One-time migration: move token from localStorage to sessionStorage
+              const session = sessionStorage.getItem(name);
+              if (!session) {
+                const legacy = localStorage.getItem(name);
+                if (legacy) {
+                  sessionStorage.setItem(name, legacy);
+                  localStorage.removeItem(name);
+                  return legacy;
+                }
+              }
+              return session;
+            },
             setItem: (name, value) => sessionStorage.setItem(name, value),
             removeItem: (name) => sessionStorage.removeItem(name),
           },

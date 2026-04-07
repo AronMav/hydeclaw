@@ -223,16 +223,6 @@ pub(crate) fn is_loopback(ip: &str) -> bool {
     ip == "127.0.0.1" || ip == "::1" || ip.starts_with("::ffff:127.")
 }
 
-/// Check if an IP is on a private LAN (192.168.*, 10.*, 172.16-31.*).
-/// Used to exempt LAN clients from auth rate limiting lockout.
-pub(crate) fn is_private_lan(ip: &str) -> bool {
-    ip.starts_with("192.168.") || ip.starts_with("10.")
-        || ip.starts_with("::ffff:192.168.") || ip.starts_with("::ffff:10.")
-        || (ip.starts_with("172.") && {
-            ip.split('.').nth(1).and_then(|s| s.parse::<u8>().ok()).is_some_and(|b| (16..=31).contains(&b))
-        })
-}
-
 pub(crate) async fn auth_middleware(
     req: Request<Body>,
     next: Next,
