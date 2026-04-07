@@ -148,7 +148,7 @@ pub async fn load_skills_for_base(workspace_dir: &str) -> Vec<SkillDef> {
                     }
                 };
                 if let Some(skill) = SkillDef::parse(&content) {
-                    tracing::debug!(skill = %skill.meta.name, dir = %dir_name, "loaded base-only skill");
+                    tracing::debug!(skill = %skill.meta.name, "loaded base-only skill");
                     skills.push(skill);
                 }
             }
