@@ -25,9 +25,6 @@ use google_impl::messages_to_gemini_format;
 #[path = "providers_claude_cli.rs"]
 mod claude_cli_impl;
 use claude_cli_impl::ClaudeCliProvider;
-#[path = "providers_gemini_cli.rs"]
-mod gemini_cli_impl;
-use gemini_cli_impl::GeminiCliProvider;
 
 /// Pluggable LLM provider trait.
 #[async_trait]
@@ -156,12 +153,16 @@ pub fn create_provider(
             max_tokens,
             secrets,
         )),
-        "claude-cli" => Arc::new(ClaudeCliProvider::new(
-            "claude-cli", cli_backend::default_claude_backend(), model.to_string(), sandbox, agent_name.to_string(), workspace_dir.to_string(), base, secrets,
-        )),
-        "gemini-cli" => Arc::new(ClaudeCliProvider::new(
-            "gemini-cli", cli_backend::default_gemini_backend(), model.to_string(), sandbox, agent_name.to_string(), workspace_dir.to_string(), base, secrets,
-        )),
+        "claude-cli" | "gemini-cli" | "codex-cli" => {
+            let config = cli_backend::resolve_cli_config(provider_name, &serde_json::Value::Null)
+                .unwrap_or_else(|| {
+                    tracing::error!(provider = %provider_name, "unknown CLI preset — using claude-cli defaults");
+                    cli_backend::preset_to_config(&cli_backend::CLI_PRESETS[1])
+                });
+            Arc::new(ClaudeCliProvider::new(
+                provider_name, config, model.to_string(), sandbox, agent_name.to_string(), workspace_dir.to_string(), base, secrets,
+            ))
+        }
         "openai" => {
             let base = std::env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com".to_string());
@@ -220,6 +221,25 @@ pub fn create_provider(
     }
 }
 
+/// Create a CLI provider from a preset with DB option overrides.
+/// Returns `None` if the preset ID is not recognized.
+#[allow(clippy::too_many_arguments)]
+pub fn create_cli_provider_with_options(
+    preset_id: &str,
+    model: &str,
+    db_options: &serde_json::Value,
+    secrets: Arc<SecretsManager>,
+    sandbox: Option<Arc<crate::containers::sandbox::CodeSandbox>>,
+    agent_name: &str,
+    workspace_dir: &str,
+    base: bool,
+) -> Option<Arc<dyn LlmProvider>> {
+    let config = cli_backend::resolve_cli_config(preset_id, db_options)?;
+    Some(Arc::new(ClaudeCliProvider::new(
+        preset_id, config, model.to_string(), sandbox, agent_name.to_string(), workspace_dir.to_string(), base, secrets,
+    )))
+}
+
 /// Build a provider from a routing rule entry, falling back to env-based defaults.
 pub fn create_provider_from_route(
     route: &crate::config::ProviderRouteConfig,
@@ -251,7 +271,7 @@ pub fn create_provider_from_route(
                 route.api_key_env.clone(),
             ));
         }
-        "claude-cli" | "gemini-cli" => {
+        "claude-cli" | "gemini-cli" | "codex-cli" => {
             tracing::error!(provider = %route.provider, "CLI providers cannot be used in routing rules — use as primary provider instead");
             // Return a dummy provider that always errors
             return Arc::new(OpenAiCompatibleProvider::new(
@@ -589,8 +609,8 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         name: "Claude CLI",
         chat_path: "",
         default_base_url: "",
-        default_secret_name: "",
-        requires_api_key: false,
+        default_secret_name: "ANTHROPIC_API_KEY",
+        requires_api_key: true,
         supports_model_listing: false,
     },
     ProviderTypeMeta {
@@ -598,8 +618,17 @@ pub(crate) const PROVIDER_TYPES: &[ProviderTypeMeta] = &[
         name: "Gemini CLI",
         chat_path: "",
         default_base_url: "",
-        default_secret_name: "",
-        requires_api_key: false,
+        default_secret_name: "GEMINI_API_KEY",
+        requires_api_key: true,
+        supports_model_listing: false,
+    },
+    ProviderTypeMeta {
+        id: "codex-cli",
+        name: "Codex CLI",
+        chat_path: "",
+        default_base_url: "",
+        default_secret_name: "OPENAI_API_KEY",
+        requires_api_key: true,
         supports_model_listing: false,
     },
     // ── Additional OpenAI-compatible providers ──────────────────────────────
@@ -782,12 +811,16 @@ pub fn create_provider_from_connection(
             conn.base_url.clone(),
             Some(key_env.to_string()),
         ).with_credential_scope(credential_scope)),
-        "claude-cli" => Arc::new(ClaudeCliProvider::new(
-            "claude-cli", cli_backend::default_claude_backend(), model, sandbox, agent_name.to_string(), workspace_dir.to_string(), base, secrets,
-        )),
-        "gemini-cli" => Arc::new(ClaudeCliProvider::new(
-            "gemini-cli", cli_backend::default_gemini_backend(), model, sandbox, agent_name.to_string(), workspace_dir.to_string(), base, secrets,
-        )),
+        "claude-cli" | "gemini-cli" | "codex-cli" => {
+            let config = cli_backend::resolve_cli_config(&conn.provider_type, &conn.options)
+                .unwrap_or_else(|| {
+                    tracing::error!(provider = %conn.provider_type, "unknown CLI preset — using claude-cli defaults");
+                    cli_backend::preset_to_config(&cli_backend::CLI_PRESETS[1])
+                });
+            Arc::new(ClaudeCliProvider::new(
+                &conn.provider_type, config, model, sandbox, agent_name.to_string(), workspace_dir.to_string(), base, secrets,
+            ))
+        }
         "openai" => {
             let base = conn.base_url.as_deref().unwrap_or("https://api.openai.com");
             let url = resolve_chat_url("openai", base);
