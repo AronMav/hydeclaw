@@ -127,13 +127,13 @@ pub async fn load_skills(workspace_dir: &str) -> Vec<SkillDef> {
     skills
 }
 
-/// Load skills including base-agent-only skills from workspace/skills/base/.
+/// Load skills including base-agent-only skills from config/skills/base/.
 /// Used for base agents — they see everything regular agents see plus base-only skills.
 pub async fn load_skills_for_base(workspace_dir: &str) -> Vec<SkillDef> {
     let mut skills = load_skills(workspace_dir).await;
 
-    for dir_name in &["base"] {
-        let base_dir = Path::new(workspace_dir).join("skills").join(dir_name);
+    {
+        let base_dir = Path::new("config").join("skills").join("base");
         if let Ok(mut read_dir) = fs::read_dir(&base_dir).await {
             while let Ok(Some(entry)) = read_dir.next_entry().await {
                 let path = entry.path();
