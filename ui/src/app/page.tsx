@@ -10,15 +10,14 @@ export default function RootPage() {
   const restore = useAuthStore((s) => s.restore);
 
   useEffect(() => {
+    if (isAuthenticated) {
+      router.replace("/chat");
+      return;
+    }
     restore().then((ok) => {
       router.replace(ok ? "/chat" : "/login");
     });
-  }, [restore, router]);
-
-  if (isAuthenticated) {
-    router.replace("/chat");
-    return null;
-  }
+  }, [isAuthenticated, restore, router]);
 
   return (
     <div className="flex h-dvh items-center justify-center">
