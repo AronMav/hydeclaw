@@ -1142,22 +1142,20 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
             if let Ok(mut dir) = tokio::fs::read_dir("backups").await {
                 while let Ok(Some(entry)) = dir.next_entry().await {
                     let path = entry.path();
-                    if path.extension().is_some_and(|e| e == "json") {
-                        if let Ok(meta) = entry.metadata().await {
+                    if path.extension().is_some_and(|e| e == "json")
+                        && let Ok(meta) = entry.metadata().await {
                             let modified = meta.modified().ok()
                                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                                 .and_then(|d| chrono::DateTime::<chrono::Utc>::from_timestamp(d.as_secs() as i64, 0));
-                            if let Some(ts) = modified {
-                                if latest.as_ref().is_none_or(|(_, _, prev)| ts > *prev) {
+                            if let Some(ts) = modified
+                                && latest.as_ref().is_none_or(|(_, _, prev)| ts > *prev) {
                                     latest = Some((
                                         path.file_name().unwrap_or_default().to_string_lossy().to_string(),
                                         meta.len(),
                                         ts,
                                     ));
                                 }
-                            }
                         }
-                    }
                 }
             }
 

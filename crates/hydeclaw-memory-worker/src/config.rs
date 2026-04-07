@@ -103,13 +103,11 @@ fn read_base_agent_language(config_path: &str) -> String {
             if path.extension().and_then(|e| e.to_str()) != Some("toml") {
                 continue;
             }
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                if let Ok(a) = toml::from_str::<AgentPartial>(&text) {
-                    if a.agent.base && !a.agent.language.is_empty() {
+            if let Ok(text) = std::fs::read_to_string(&path)
+                && let Ok(a) = toml::from_str::<AgentPartial>(&text)
+                    && a.agent.base && !a.agent.language.is_empty() {
                         return detect_fts_language(&a.agent.language).to_string();
                     }
-                }
-            }
         }
     }
     "simple".to_string()

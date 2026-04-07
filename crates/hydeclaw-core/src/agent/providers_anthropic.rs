@@ -263,119 +263,6 @@ pub(super) fn parse_anthropic_response(api_resp: AnthropicResponse, model: &str)
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_thinking_block() {
-        let json = serde_json::json!({
-            "content": [
-                {"type": "thinking", "thinking": "let me think", "signature": "sig_xyz"},
-                {"type": "text", "text": "The answer is 42."}
-            ],
-            "usage": {"input_tokens": 10, "output_tokens": 5}
-        });
-        let resp: AnthropicResponse = serde_json::from_value(json).unwrap();
-        let parsed = parse_anthropic_response(resp, "claude-opus-4-6");
-        assert_eq!(parsed.content, "The answer is 42.");
-        assert_eq!(parsed.thinking_blocks.len(), 1);
-        assert_eq!(parsed.thinking_blocks[0].thinking, "let me think");
-        assert_eq!(parsed.thinking_blocks[0].signature, "sig_xyz");
-    }
-
-    #[test]
-    fn thinking_block_other_not_thinking_still_dropped() {
-        let json = serde_json::json!({
-            "content": [
-                {"type": "unknown_future_type", "data": "x"},
-                {"type": "text", "text": "hi"}
-            ],
-            "usage": null
-        });
-        let resp: AnthropicResponse = serde_json::from_value(json).unwrap();
-        let parsed = parse_anthropic_response(resp, "claude-opus-4-6");
-        assert_eq!(parsed.content, "hi");
-        assert!(parsed.thinking_blocks.is_empty());
-    }
-
-    #[tokio::test]
-    async fn build_assistant_message_with_thinking_blocks() {
-        use hydeclaw_types::{Message, MessageRole, ThinkingBlock};
-
-        let msg = Message {
-            role: MessageRole::Assistant,
-            content: "The answer is 42.".to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-            thinking_blocks: vec![ThinkingBlock {
-                thinking: "I need to reason carefully".to_string(),
-                signature: "sig_abc".to_string(),
-            }],
-        };
-        let messages = vec![msg];
-
-        // Build using a minimal provider (no actual API call needed)
-        let secrets = Arc::new(SecretsManager::new_noop());
-        let provider = AnthropicProvider::new(
-            "claude-opus-4-6".to_string(),
-            1.0,
-            Some(1024),
-            secrets,
-        );
-        let (_, body) = provider.build_request_body(&messages, &[]);
-        let api_messages = body["messages"].as_array().unwrap();
-        assert_eq!(api_messages.len(), 1);
-
-        let content = api_messages[0]["content"].as_array().unwrap();
-        // Thinking block must be first
-        assert_eq!(content[0]["type"], "thinking");
-        assert_eq!(content[0]["thinking"], "I need to reason carefully");
-        assert_eq!(content[0]["signature"], "sig_abc");
-        // Text block comes after
-        assert_eq!(content[1]["type"], "text");
-        assert_eq!(content[1]["text"], "The answer is 42.");
-    }
-
-    #[tokio::test]
-    async fn build_assistant_message_thinking_before_tool_use() {
-        use hydeclaw_types::{Message, MessageRole, ThinkingBlock, ToolCall};
-
-        let msg = Message {
-            role: MessageRole::Assistant,
-            content: String::new(),
-            tool_calls: Some(vec![ToolCall {
-                id: "call_1".to_string(),
-                name: "my_tool".to_string(),
-                arguments: serde_json::json!({"key": "value"}),
-            }]),
-            tool_call_id: None,
-            thinking_blocks: vec![ThinkingBlock {
-                thinking: "Should use tool".to_string(),
-                signature: "sig_xyz".to_string(),
-            }],
-        };
-        let messages = vec![msg];
-
-        let secrets = Arc::new(SecretsManager::new_noop());
-        let provider = AnthropicProvider::new(
-            "claude-opus-4-6".to_string(),
-            1.0,
-            Some(1024),
-            secrets,
-        );
-        let (_, body) = provider.build_request_body(&messages, &[]);
-        let api_messages = body["messages"].as_array().unwrap();
-        let content = api_messages[0]["content"].as_array().unwrap();
-
-        // thinking → tool_use order
-        assert_eq!(content[0]["type"], "thinking");
-        assert_eq!(content[1]["type"], "tool_use");
-        assert_eq!(content[1]["id"], "call_1");
-        assert_eq!(content[1]["name"], "my_tool");
-    }
-}
-
 #[async_trait]
 impl LlmProvider for AnthropicProvider {
     async fn chat(
@@ -539,5 +426,118 @@ impl LlmProvider for AnthropicProvider {
 
     fn current_model(&self) -> String {
         self.model.effective()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_thinking_block() {
+        let json = serde_json::json!({
+            "content": [
+                {"type": "thinking", "thinking": "let me think", "signature": "sig_xyz"},
+                {"type": "text", "text": "The answer is 42."}
+            ],
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        });
+        let resp: AnthropicResponse = serde_json::from_value(json).unwrap();
+        let parsed = parse_anthropic_response(resp, "claude-opus-4-6");
+        assert_eq!(parsed.content, "The answer is 42.");
+        assert_eq!(parsed.thinking_blocks.len(), 1);
+        assert_eq!(parsed.thinking_blocks[0].thinking, "let me think");
+        assert_eq!(parsed.thinking_blocks[0].signature, "sig_xyz");
+    }
+
+    #[test]
+    fn thinking_block_other_not_thinking_still_dropped() {
+        let json = serde_json::json!({
+            "content": [
+                {"type": "unknown_future_type", "data": "x"},
+                {"type": "text", "text": "hi"}
+            ],
+            "usage": null
+        });
+        let resp: AnthropicResponse = serde_json::from_value(json).unwrap();
+        let parsed = parse_anthropic_response(resp, "claude-opus-4-6");
+        assert_eq!(parsed.content, "hi");
+        assert!(parsed.thinking_blocks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn build_assistant_message_with_thinking_blocks() {
+        use hydeclaw_types::{Message, MessageRole, ThinkingBlock};
+
+        let msg = Message {
+            role: MessageRole::Assistant,
+            content: "The answer is 42.".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            thinking_blocks: vec![ThinkingBlock {
+                thinking: "I need to reason carefully".to_string(),
+                signature: "sig_abc".to_string(),
+            }],
+        };
+        let messages = vec![msg];
+
+        // Build using a minimal provider (no actual API call needed)
+        let secrets = Arc::new(SecretsManager::new_noop());
+        let provider = AnthropicProvider::new(
+            "claude-opus-4-6".to_string(),
+            1.0,
+            Some(1024),
+            secrets,
+        );
+        let (_, body) = provider.build_request_body(&messages, &[]);
+        let api_messages = body["messages"].as_array().unwrap();
+        assert_eq!(api_messages.len(), 1);
+
+        let content = api_messages[0]["content"].as_array().unwrap();
+        // Thinking block must be first
+        assert_eq!(content[0]["type"], "thinking");
+        assert_eq!(content[0]["thinking"], "I need to reason carefully");
+        assert_eq!(content[0]["signature"], "sig_abc");
+        // Text block comes after
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[1]["text"], "The answer is 42.");
+    }
+
+    #[tokio::test]
+    async fn build_assistant_message_thinking_before_tool_use() {
+        use hydeclaw_types::{Message, MessageRole, ThinkingBlock, ToolCall};
+
+        let msg = Message {
+            role: MessageRole::Assistant,
+            content: String::new(),
+            tool_calls: Some(vec![ToolCall {
+                id: "call_1".to_string(),
+                name: "my_tool".to_string(),
+                arguments: serde_json::json!({"key": "value"}),
+            }]),
+            tool_call_id: None,
+            thinking_blocks: vec![ThinkingBlock {
+                thinking: "Should use tool".to_string(),
+                signature: "sig_xyz".to_string(),
+            }],
+        };
+        let messages = vec![msg];
+
+        let secrets = Arc::new(SecretsManager::new_noop());
+        let provider = AnthropicProvider::new(
+            "claude-opus-4-6".to_string(),
+            1.0,
+            Some(1024),
+            secrets,
+        );
+        let (_, body) = provider.build_request_body(&messages, &[]);
+        let api_messages = body["messages"].as_array().unwrap();
+        let content = api_messages[0]["content"].as_array().unwrap();
+
+        // thinking → tool_use order
+        assert_eq!(content[0]["type"], "thinking");
+        assert_eq!(content[1]["type"], "tool_use");
+        assert_eq!(content[1]["id"], "call_1");
+        assert_eq!(content[1]["name"], "my_tool");
     }
 }

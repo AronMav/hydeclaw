@@ -60,7 +60,7 @@ async fn detect_tailscale() -> Option<serde_json::Value> {
 
 /// Returns all non-loopback interface addresses as JSON objects.
 async fn enumerate_lan_addresses() -> Vec<serde_json::Value> {
-    let ifaces = tokio::task::spawn_blocking(|| if_addrs::get_if_addrs())
+    let ifaces = tokio::task::spawn_blocking(if_addrs::get_if_addrs)
         .await
         .ok()
         .and_then(|r| r.ok())
@@ -90,14 +90,13 @@ async fn fetch_wan_ip(state: &AppState) -> serde_json::Value {
     // Check cache
     {
         let cache = state.wan_ip_cache.read().await;
-        if let Some(ref cached) = *cache {
-            if cached.fetched_at.elapsed().as_secs() < CACHE_TTL_SECS {
+        if let Some(ref cached) = *cache
+            && cached.fetched_at.elapsed().as_secs() < CACHE_TTL_SECS {
                 return json!({
                     "ip": cached.ip,
                     "is_cgnat": cached.is_cgnat,
                 });
             }
-        }
     }
 
     // Cache miss — perform lookup (bounded to avoid indefinite hang)
@@ -166,12 +165,11 @@ pub(crate) async fn fetch_network_summary(state: &AppState) -> serde_json::Value
                 .map(|s| s.trim_end_matches('.').to_string());
 
             // Cross-check: if WAN IP appears in Tailscale IPs, it's not actually CGNAT
-            if let Some(wan_ip_str) = wan["ip"].as_str() {
-                if ts_ips.iter().any(|tip| tip == wan_ip_str) {
+            if let Some(wan_ip_str) = wan["ip"].as_str()
+                && ts_ips.iter().any(|tip| tip == wan_ip_str) {
                     wan["is_cgnat"] = json!(false);
                     wan["source"] = json!("tailscale");
                 }
-            }
 
             json!({
                 "connected": connected,

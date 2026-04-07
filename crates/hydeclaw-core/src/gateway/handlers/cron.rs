@@ -104,25 +104,23 @@ pub(crate) async fn api_create_cron(
     }
 
     // Validate tool names in policy (prevent path traversal / invalid names)
-    if let Some(ref policy_json) = req.tool_policy {
-        if let Some(obj) = policy_json.as_object() {
+    if let Some(ref policy_json) = req.tool_policy
+        && let Some(obj) = policy_json.as_object() {
             let valid_name = regex::Regex::new(r"^[a-zA-Z0-9_-]+$").unwrap();
             for key in &["allow", "deny"] {
                 if let Some(arr) = obj.get(*key).and_then(|v| v.as_array()) {
                     for item in arr {
-                        if let Some(name) = item.as_str() {
-                            if !valid_name.is_match(name) {
+                        if let Some(name) = item.as_str()
+                            && !valid_name.is_match(name) {
                                 return (
                                     StatusCode::BAD_REQUEST,
                                     Json(serde_json::json!({"error": format!("invalid tool name: {}", name)})),
                                 ).into_response();
                             }
-                        }
                     }
                 }
             }
         }
-    }
 
     let timezone = req.timezone.unwrap_or_else(|| "UTC".to_string());
 
@@ -266,25 +264,23 @@ pub(crate) async fn api_update_cron(
     };
 
     // Validate tool names in policy (prevent path traversal / invalid names)
-    if let Some(ref policy_json) = tool_policy {
-        if let Some(obj) = policy_json.as_object() {
+    if let Some(ref policy_json) = tool_policy
+        && let Some(obj) = policy_json.as_object() {
             let valid_name = regex::Regex::new(r"^[a-zA-Z0-9_-]+$").unwrap();
             for key in &["allow", "deny"] {
                 if let Some(arr) = obj.get(*key).and_then(|v| v.as_array()) {
                     for item in arr {
-                        if let Some(name) = item.as_str() {
-                            if !valid_name.is_match(name) {
+                        if let Some(name) = item.as_str()
+                            && !valid_name.is_match(name) {
                                 return (
                                     StatusCode::BAD_REQUEST,
                                     Json(serde_json::json!({"error": format!("invalid tool name: {}", name)})),
                                 ).into_response();
                             }
-                        }
                     }
                 }
             }
         }
-    }
 
     let result = sqlx::query(
         "UPDATE scheduled_jobs SET name = $2, cron_expr = $3, timezone = $4, task_message = $5, enabled = $6, \

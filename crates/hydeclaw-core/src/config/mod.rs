@@ -3,7 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub mod validation;
-pub use validation::{validate_config, ValidationError};
+pub use validation::validate_config;
 
 /// Directory for workspace-based MCP configs: workspace/mcp/*.yaml
 pub const MCP_DIR: &str = "workspace/mcp";

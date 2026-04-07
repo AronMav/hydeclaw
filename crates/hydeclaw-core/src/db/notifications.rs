@@ -86,6 +86,7 @@ pub async fn mark_all_read(db: &PgPool) -> Result<u64> {
 }
 
 /// Count unread notifications.
+#[allow(dead_code)]
 pub async fn unread_count(db: &PgPool) -> Result<i64> {
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE read = FALSE")
         .fetch_one(db)

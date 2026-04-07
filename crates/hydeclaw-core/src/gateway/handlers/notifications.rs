@@ -27,7 +27,7 @@ pub(crate) async fn api_list_notifications(
     State(state): State<AppState>,
     Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
-    let limit = q.limit.max(1).min(200);
+    let limit = q.limit.clamp(1, 200);
     let offset = q.offset.max(0);
     match crate::db::notifications::list_notifications(&state.db, limit, offset).await {
         Ok((items, unread_count)) => Json(serde_json::json!({

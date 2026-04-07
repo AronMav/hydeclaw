@@ -859,8 +859,8 @@ async fn main() -> Result<()> {
                 // Use () for addresses — mdns-sd auto-detects host IPs when () is passed
                 match ServiceInfo::new(
                     service_type,
-                    &hostname,
-                    &host_fqdn,
+                    hostname,
+                    host_fqdn,
                     (),
                     port,
                     Some(props),

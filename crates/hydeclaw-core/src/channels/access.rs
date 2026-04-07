@@ -1,4 +1,3 @@
-use chrono::{DateTime, Utc};
 use rand::Rng;
 use sqlx::PgPool;
 

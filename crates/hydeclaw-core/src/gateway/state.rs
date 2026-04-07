@@ -72,6 +72,7 @@ impl PollingDiagnostics {
         );
     }
 
+    #[allow(dead_code)]
     pub fn snapshot(&self) -> serde_json::Value {
         let last_in = self.last_inbound_at.load(Ordering::Relaxed);
         let last_out = self.last_outbound_at.load(Ordering::Relaxed);
@@ -182,6 +183,7 @@ impl AppState {
     }
 
     /// Get list of running agents with name and icon (base agents first, then alphabetical).
+    #[allow(dead_code)]
     pub async fn agent_summaries(&self) -> Vec<serde_json::Value> {
         let mut summaries: Vec<(bool, String, serde_json::Value)> = self.agents.read().await.values()
             .map(|h| (h.engine.agent.base, h.engine.agent.name.clone(), serde_json::json!({

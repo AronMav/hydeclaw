@@ -704,20 +704,17 @@ pub(crate) async fn api_create_agent(
     }
 
     // Auto-fill provider/model from provider_connection if not explicitly set
-    if let Some(ref conn_name) = cfg.agent.provider_connection {
-        if !conn_name.is_empty() {
-            if let Ok(Some(conn)) = crate::db::providers::get_provider_by_name(&state.db, conn_name).await {
+    if let Some(ref conn_name) = cfg.agent.provider_connection
+        && !conn_name.is_empty()
+            && let Ok(Some(conn)) = crate::db::providers::get_provider_by_name(&state.db, conn_name).await {
                 if cfg.agent.provider.is_empty() || cfg.agent.provider == *conn_name {
                     cfg.agent.provider = conn.provider_type.clone();
                 }
-                if cfg.agent.model.is_empty() {
-                    if let Some(ref dm) = conn.default_model {
+                if cfg.agent.model.is_empty()
+                    && let Some(ref dm) = conn.default_model {
                         cfg.agent.model = dm.clone();
                     }
-                }
             }
-        }
-    }
 
     let toml_str = match cfg.to_toml() {
         Ok(s) => s,

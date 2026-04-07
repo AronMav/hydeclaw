@@ -639,8 +639,8 @@ impl AgentEngine {
             self.build_context(msg, true, Some(session_id), false).await?;
 
         // Apply cron job tool policy override if present
-        if let Some(ref policy_json) = msg.tool_policy_override {
-            if let Ok(override_policy) = serde_json::from_value::<crate::config::AgentToolPolicy>(policy_json.clone()) {
+        if let Some(ref policy_json) = msg.tool_policy_override
+            && let Ok(override_policy) = serde_json::from_value::<crate::config::AgentToolPolicy>(policy_json.clone()) {
                 let before = available_tools.len();
                 available_tools = self.apply_tool_policy_override(available_tools, &override_policy);
                 if available_tools.len() != before {
@@ -652,7 +652,6 @@ impl AgentEngine {
                     );
                 }
             }
-        }
 
         // invite_agent removed (v3.0) — handoff is the only inter-agent tool
 
@@ -1168,7 +1167,7 @@ impl AgentEngine {
             anyhow::bail!("blocked by hook: {}", reason);
         }
 
-        let (session_id, mut messages, mut available_tools) =
+        let (session_id, mut messages, available_tools) =
             self.build_context(msg, true, None, false).await?;
 
         // Store session_id for tool handlers that need session context (e.g., handoff)
@@ -2971,11 +2970,10 @@ impl AgentEngine {
             if override_policy.deny.iter().any(|d| d == &t.name) {
                 return false;
             }
-            if let Some(bd) = base_deny {
-                if bd.iter().any(|d| d == &t.name) {
+            if let Some(bd) = base_deny
+                && bd.iter().any(|d| d == &t.name) {
                     return false;
                 }
-            }
             // If override has a non-empty allow list, restrict to those tools only
             if !override_policy.allow.is_empty() {
                 return override_policy.allow.iter().any(|a| a == &t.name);

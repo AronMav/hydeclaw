@@ -65,7 +65,7 @@ pub async fn handle(
             }
         }
 
-        if indexed % 50 == 0 && indexed > 0 {
+        if indexed.is_multiple_of(50) && indexed > 0 {
             tracing::info!(indexed, total_files, "reindex progress");
             // Ping systemd watchdog to prevent timeout during long reindex
             #[cfg(target_os = "linux")]
@@ -267,7 +267,7 @@ async fn handle_legacy_directory(
             }
         }
 
-        if indexed % 50 == 0 && indexed > 0 {
+        if indexed.is_multiple_of(50) && indexed > 0 {
             tracing::info!(indexed, total, "reindex progress");
             #[cfg(target_os = "linux")]
             let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);

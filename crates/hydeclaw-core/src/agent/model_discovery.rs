@@ -14,13 +14,11 @@ use super::providers::OPENAI_COMPAT_PROVIDERS;
 /// reaching PostgreSQL, Docker API, or other dangerous internal services.
 fn reject_dangerous_ports(url: &str) -> Result<()> {
     const BLOCKED_PORTS: &[u16] = &[5432, 2375, 2376]; // postgres, docker
-    if let Ok(parsed) = url::Url::parse(url) {
-        if let Some(port) = parsed.port() {
-            if BLOCKED_PORTS.contains(&port) {
+    if let Ok(parsed) = url::Url::parse(url)
+        && let Some(port) = parsed.port()
+            && BLOCKED_PORTS.contains(&port) {
                 anyhow::bail!("model discovery blocked: port {} is a protected service", port);
             }
-        }
-    }
     Ok(())
 }
 

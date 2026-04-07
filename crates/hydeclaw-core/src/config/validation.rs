@@ -30,14 +30,13 @@ pub fn validate_config(cfg: &AppConfig) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
     // toolgate_url: if present and non-empty, must start with http:// or https://
-    if let Some(url) = &cfg.toolgate_url {
-        if !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
+    if let Some(url) = &cfg.toolgate_url
+        && !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
             errors.push(ValidationError {
                 field: "toolgate_url".to_string(),
                 message: "must start with http:// or https://".to_string(),
             });
         }
-    }
 
     // gateway.listen: must not be empty
     if cfg.gateway.listen.trim().is_empty() {
@@ -48,14 +47,13 @@ pub fn validate_config(cfg: &AppConfig) -> Vec<ValidationError> {
     }
 
     // gateway.public_url: if present and non-empty, must start with http:// or https://
-    if let Some(url) = &cfg.gateway.public_url {
-        if !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
+    if let Some(url) = &cfg.gateway.public_url
+        && !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
             errors.push(ValidationError {
                 field: "gateway.public_url".to_string(),
                 message: "must start with http:// or https://".to_string(),
             });
         }
-    }
 
     // limits.max_agent_turns: must be at least 1 if subagents are enabled
     if cfg.subagents.enabled && cfg.limits.max_agent_turns == 0 {

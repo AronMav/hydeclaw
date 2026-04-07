@@ -319,8 +319,8 @@ pub(crate) async fn api_update_config(
     }
 
     // Update backup config in TOML
-    if payload.backup_enabled.is_some() || payload.backup_cron.is_some() || payload.backup_retention_days.is_some() {
-        if let Err(e) = crate::config::update_backup_config(
+    if (payload.backup_enabled.is_some() || payload.backup_cron.is_some() || payload.backup_retention_days.is_some())
+        && let Err(e) = crate::config::update_backup_config(
             "config/hydeclaw.toml",
             payload.backup_enabled,
             payload.backup_cron.as_deref(),
@@ -328,7 +328,6 @@ pub(crate) async fn api_update_config(
         ) {
             restore_and_fail!("failed to update backup config", e);
         }
-    }
 
     // Validate the written config can be fully deserialized before proceeding
     if let Err(e) = crate::config::AppConfig::load(config_path) {

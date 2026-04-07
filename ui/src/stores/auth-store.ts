@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { devtools, persist, subscribeWithSelector } from "zustand/middleware";
+import { devtools, persist, subscribeWithSelector, createJSONStorage } from "zustand/middleware";
 
 export type LoginResult = true | "invalid" | "rate_limited" | "error";
 
@@ -103,23 +103,18 @@ export const useAuthStore = create<AuthState>()(
           partialize: (state) => ({ token: state.token }),
           // Use sessionStorage so the token is cleared when the browser tab/window is closed.
           // This limits the exposure window for a stolen token compared to localStorage.
-          storage: {
-            getItem: (name) => {
-              // One-time migration: move token from localStorage to sessionStorage
-              const session = sessionStorage.getItem(name);
-              if (!session) {
-                const legacy = localStorage.getItem(name);
-                if (legacy) {
-                  sessionStorage.setItem(name, legacy);
-                  localStorage.removeItem(name);
-                  return legacy;
-                }
+          storage: createJSONStorage(() => {
+            // One-time migration: move token from localStorage to sessionStorage
+            const key = "hydeclaw.auth.token";
+            if (!sessionStorage.getItem(key)) {
+              const legacy = localStorage.getItem(key);
+              if (legacy) {
+                sessionStorage.setItem(key, legacy);
+                localStorage.removeItem(key);
               }
-              return session;
-            },
-            setItem: (name, value) => sessionStorage.setItem(name, value),
-            removeItem: (name) => sessionStorage.removeItem(name),
-          },
+            }
+            return sessionStorage;
+          }),
         },
       ),
     ),

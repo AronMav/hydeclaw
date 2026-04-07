@@ -184,6 +184,7 @@ pub async fn save_message(
 }
 
 /// Save a message with optional per-message agent_id (for multi-agent discuss sessions).
+#[allow(clippy::too_many_arguments)]
 pub async fn save_message_ex(
     db: &PgPool,
     session_id: Uuid,

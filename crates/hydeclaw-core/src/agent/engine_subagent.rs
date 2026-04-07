@@ -522,6 +522,7 @@ impl AgentEngine {
 
 impl AgentEngine {
     /// Internal tool: invite another agent into the current chat session.
+    #[allow(dead_code)]
     pub(super) async fn handle_invite_agent(&self, args: &serde_json::Value) -> String {
         let agent_name = match args.get("agent_name").and_then(|v| v.as_str()) {
             Some(n) if !n.is_empty() => n,

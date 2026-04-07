@@ -164,13 +164,11 @@ impl MemoryStore {
         );
         match self.http.get(&health_url).timeout(std::time::Duration::from_secs(5)).send().await {
             Ok(resp) => {
-                if let Ok(body) = resp.json::<serde_json::Value>().await {
-                    if let Some(name) = body["active_providers"]["embedding"].as_str() {
-                        if self.embed_model.set(name.to_string()).is_ok() {
+                if let Ok(body) = resp.json::<serde_json::Value>().await
+                    && let Some(name) = body["active_providers"]["embedding"].as_str()
+                        && self.embed_model.set(name.to_string()).is_ok() {
                             tracing::info!(embed_model = %name, "discovered embedding model from toolgate");
                         }
-                    }
-                }
             }
             Err(e) => {
                 tracing::debug!(error = %e, "could not query toolgate /health for model name");
