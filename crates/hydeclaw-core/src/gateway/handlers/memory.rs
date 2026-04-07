@@ -245,7 +245,7 @@ pub(crate) async fn api_memory_categories(
                 .iter()
                 .map(|(cat, count)| json!({"category": cat, "count": count}))
                 .collect();
-            Json(json!({"categories": categories})).into_response()
+            Json(json!(categories)).into_response()
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -289,7 +289,7 @@ pub(crate) async fn api_memory_topics(
                 .iter()
                 .map(|(top, count)| json!({"topic": top, "count": count}))
                 .collect();
-            Json(json!({"topics": topics})).into_response()
+            Json(json!(topics)).into_response()
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -312,6 +312,8 @@ struct DocumentRow {
     preview: Option<String>,
     chunks_count: i64,
     total_chars: Option<i64>,
+    category: Option<String>,
+    topic: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -319,6 +321,8 @@ pub(crate) struct DocumentsQuery {
     query: Option<String>,
     limit: Option<i64>,
     offset: Option<i64>,
+    category: Option<String>,
+    topic: Option<String>,
 }
 
 pub(crate) async fn api_list_documents(
@@ -381,6 +385,8 @@ pub(crate) async fn api_list_documents(
                             "preview": preview.unwrap_or_else(|| r.content.chars().take(200).collect()),
                             "chunks_count": chunks_count,
                             "total_chars": total_chars,
+                            "category": r.category,
+                            "topic": r.topic,
                         })
                     }).collect();
                     Json(json!({ "documents": documents, "total": total_found, "search_mode": mode })).into_response()
@@ -390,7 +396,18 @@ pub(crate) async fn api_list_documents(
         }
 
     // List mode: CTE to avoid correlated subqueries
-    let rows = sqlx::query_as::<_, DocumentRow>(
+    // Build dynamic WHERE clause for category/topic filters
+    let mut where_extra = String::new();
+    let mut bind_idx = 3u32; // $1=limit, $2=offset
+    if q.category.is_some() {
+        where_extra.push_str(&format!(" AND m.category = ${bind_idx}"));
+        bind_idx += 1;
+    }
+    if q.topic.is_some() {
+        where_extra.push_str(&format!(" AND m.topic = ${bind_idx}"));
+    }
+
+    let sql = format!(
         "WITH doc_stats AS ( \
            SELECT parent_id, COUNT(*) AS child_count, SUM(LENGTH(content)) AS child_chars \
            FROM memory_chunks WHERE parent_id IS NOT NULL \
@@ -402,17 +419,25 @@ pub(crate) async fn api_list_documents(
            m.created_at, COALESCE(m.accessed_at, m.created_at) AS accessed_at, \
            LEFT(m.content, 200) AS preview, \
            COALESCE(ds.child_count, 0) + 1 AS chunks_count, \
-           COALESCE(ds.child_chars, 0) + LENGTH(m.content) AS total_chars \
+           COALESCE(ds.child_chars, 0) + LENGTH(m.content) AS total_chars, \
+           m.category, m.topic \
          FROM memory_chunks m \
          LEFT JOIN doc_stats ds ON ds.parent_id = m.id \
-         WHERE m.parent_id IS NULL \
+         WHERE m.parent_id IS NULL{where_extra} \
          ORDER BY COALESCE(m.accessed_at, m.created_at) DESC \
          LIMIT $1 OFFSET $2"
-    )
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&state.db)
-    .await;
+    );
+
+    let mut query = sqlx::query_as::<_, DocumentRow>(&sql)
+        .bind(limit)
+        .bind(offset);
+    if let Some(ref cat) = q.category {
+        query = query.bind(cat);
+    }
+    if let Some(ref top) = q.topic {
+        query = query.bind(top);
+    }
+    let rows = query.fetch_all(&state.db).await;
 
     match rows {
         Ok(rows) => {
@@ -428,6 +453,8 @@ pub(crate) async fn api_list_documents(
                 "preview": r.preview,
                 "chunks_count": r.chunks_count,
                 "total_chars": r.total_chars,
+                "category": r.category,
+                "topic": r.topic,
             })).collect();
             Json(json!({ "documents": documents, "total": total })).into_response()
         }
