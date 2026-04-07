@@ -423,6 +423,7 @@ impl CliRunner {
     }
 
     /// Execute CLI with prompt, returning parsed response.
+    /// `extra_env` is merged on top of `self.config.env` (e.g. vault-resolved API keys).
     #[allow(clippy::too_many_arguments)]
     pub async fn run(
         &self,
@@ -433,6 +434,7 @@ impl CliRunner {
         sandbox: Option<&CodeSandbox>,
         workspace_dir: &str,
         base: bool,
+        extra_env: &HashMap<String, String>,
     ) -> Result<CliOutput> {
         // Check cooldown before acquiring permit
         {
@@ -477,9 +479,18 @@ impl CliRunner {
         // Execute
         let start = std::time::Instant::now();
         tracing::debug!(agent = %agent_name, argv = ?argv, workspace = %workspace_dir, base, "CLI executing");
+        // Merge config env with extra_env (vault secrets override config)
+        let merged_env = if extra_env.is_empty() {
+            self.config.env.clone()
+        } else {
+            let mut env = self.config.env.clone();
+            env.extend(extra_env.iter().map(|(k, v)| (k.clone(), v.clone())));
+            env
+        };
+
         let exec_result = if base {
             // Base agents always run CLI on host (not in Docker sandbox)
-            execute_on_host(&argv, &self.config.env, workspace_dir, timeout).await
+            execute_on_host(&argv, &merged_env, workspace_dir, timeout).await
         } else if let Some(sb) = sandbox {
             let cmd = argv.iter().map(|a| shell_escape(a)).collect::<Vec<_>>().join(" ");
             let host_path = std::fs::canonicalize(workspace_dir)

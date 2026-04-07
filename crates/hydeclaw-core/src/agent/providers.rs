@@ -157,10 +157,10 @@ pub fn create_provider(
             secrets,
         )),
         "claude-cli" => Arc::new(ClaudeCliProvider::new(
-            "claude-cli", cli_backend::default_claude_backend(), model.to_string(), sandbox, agent_name.to_string(), workspace_dir.to_string(), base,
+            "claude-cli", cli_backend::default_claude_backend(), model.to_string(), sandbox, agent_name.to_string(), workspace_dir.to_string(), base, secrets,
         )),
-        "gemini-cli" => Arc::new(GeminiCliProvider::new(
-            "gemini-cli", cli_backend::default_gemini_backend(), model.to_string(), sandbox, agent_name.to_string(), workspace_dir.to_string(), base,
+        "gemini-cli" => Arc::new(ClaudeCliProvider::new(
+            "gemini-cli", cli_backend::default_gemini_backend(), model.to_string(), sandbox, agent_name.to_string(), workspace_dir.to_string(), base, secrets,
         )),
         "openai" => {
             let base = std::env::var("OPENAI_BASE_URL")
@@ -783,10 +783,10 @@ pub fn create_provider_from_connection(
             Some(key_env.to_string()),
         ).with_credential_scope(credential_scope)),
         "claude-cli" => Arc::new(ClaudeCliProvider::new(
-            "claude-cli", cli_backend::default_claude_backend(), model, sandbox, agent_name.to_string(), workspace_dir.to_string(), base,
+            "claude-cli", cli_backend::default_claude_backend(), model, sandbox, agent_name.to_string(), workspace_dir.to_string(), base, secrets,
         )),
-        "gemini-cli" => Arc::new(GeminiCliProvider::new(
-            "gemini-cli", cli_backend::default_gemini_backend(), model, sandbox, agent_name.to_string(), workspace_dir.to_string(), base,
+        "gemini-cli" => Arc::new(ClaudeCliProvider::new(
+            "gemini-cli", cli_backend::default_gemini_backend(), model, sandbox, agent_name.to_string(), workspace_dir.to_string(), base, secrets,
         )),
         "openai" => {
             let base = conn.base_url.as_deref().unwrap_or("https://api.openai.com");
