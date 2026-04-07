@@ -27,7 +27,7 @@ pub(crate) async fn api_list_memory(
     // Search with query: semantic → FTS fallback (handled inside MemoryStore::search)
     if let Some(ref search) = q.query
         && !search.trim().is_empty() {
-            match state.memory_store.search(search, limit, &[]).await {
+            match state.memory_store.search(search, limit, &[], None, None).await {
                 Ok((results, mode)) => {
                     let chunks: Vec<Value> = results
                         .iter()
@@ -204,6 +204,101 @@ pub(crate) async fn api_memory_tasks(State(state): State<AppState>) -> Json<Valu
     Json(json!({"tasks": tasks}))
 }
 
+// ── Taxonomy API (categories and topics) ──
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct TaxonomyQuery {
+    agent_id: Option<String>,
+}
+
+/// GET /api/memory/categories — distinct categories with chunk counts
+pub(crate) async fn api_memory_categories(
+    State(state): State<AppState>,
+    Query(q): Query<TaxonomyQuery>,
+) -> impl IntoResponse {
+    let result: Result<Vec<(String, i64)>, _> = if let Some(agent_id) = q.agent_id.as_deref() {
+        sqlx::query_as(
+            "SELECT category, COUNT(*)::bigint AS count \
+             FROM memory_chunks \
+             WHERE category IS NOT NULL AND parent_id IS NULL AND agent_id = $1 \
+             GROUP BY category \
+             ORDER BY count DESC",
+        )
+        .bind(agent_id)
+        .fetch_all(&state.db)
+        .await
+    } else {
+        sqlx::query_as(
+            "SELECT category, COUNT(*)::bigint AS count \
+             FROM memory_chunks \
+             WHERE category IS NOT NULL AND parent_id IS NULL \
+             GROUP BY category \
+             ORDER BY count DESC",
+        )
+        .fetch_all(&state.db)
+        .await
+    };
+
+    match result {
+        Ok(rows) => {
+            let categories: Vec<Value> = rows
+                .iter()
+                .map(|(cat, count)| json!({"category": cat, "count": count}))
+                .collect();
+            Json(json!({"categories": categories})).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/memory/topics — distinct topics with chunk counts
+pub(crate) async fn api_memory_topics(
+    State(state): State<AppState>,
+    Query(q): Query<TaxonomyQuery>,
+) -> impl IntoResponse {
+    let result: Result<Vec<(String, i64)>, _> = if let Some(agent_id) = q.agent_id.as_deref() {
+        sqlx::query_as(
+            "SELECT topic, COUNT(*)::bigint AS count \
+             FROM memory_chunks \
+             WHERE topic IS NOT NULL AND parent_id IS NULL AND agent_id = $1 \
+             GROUP BY topic \
+             ORDER BY count DESC",
+        )
+        .bind(agent_id)
+        .fetch_all(&state.db)
+        .await
+    } else {
+        sqlx::query_as(
+            "SELECT topic, COUNT(*)::bigint AS count \
+             FROM memory_chunks \
+             WHERE topic IS NOT NULL AND parent_id IS NULL \
+             GROUP BY topic \
+             ORDER BY count DESC",
+        )
+        .fetch_all(&state.db)
+        .await
+    };
+
+    match result {
+        Ok(rows) => {
+            let topics: Vec<Value> = rows
+                .iter()
+                .map(|(top, count)| json!({"topic": top, "count": count}))
+                .collect();
+            Json(json!({"topics": topics})).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
 // ── Documents API (document-level view) ──
 
 #[derive(Debug, sqlx::FromRow)]
@@ -236,7 +331,7 @@ pub(crate) async fn api_list_documents(
     // Search mode: search at chunk level, group by document
     if let Some(ref search) = q.query
         && !search.trim().is_empty() {
-            return match state.memory_store.search(search, (limit * 5) as usize, &[]).await {
+            return match state.memory_store.search(search, (limit * 5) as usize, &[], None, None).await {
                 Ok((results, mode)) => {
                     // Group by document: COALESCE(parent_id, id), keep best similarity
                     let mut seen = std::collections::HashMap::<String, (f64, &crate::memory::MemoryResult)>::new();
@@ -425,7 +520,7 @@ pub(crate) async fn api_create_memory(
     }
     let source = req.source.as_deref().unwrap_or("ui");
     let pinned = req.pinned.unwrap_or(false);
-    match state.memory_store.index(&req.content, source, pinned).await {
+    match state.memory_store.index(&req.content, source, pinned, None, None).await {
         Ok(id) => Json(json!({"id": id, "ok": true})).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

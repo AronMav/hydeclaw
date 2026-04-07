@@ -174,6 +174,8 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
         // Memory documents (document-level view)
         .route("/api/memory/tasks", get(api_memory_tasks))
         .route("/api/memory/extraction-queue", get(api_extraction_queue))
+        .route("/api/memory/categories", get(api_memory_categories))
+        .route("/api/memory/topics", get(api_memory_topics))
         .route("/api/memory/documents", get(api_list_documents))
         .route("/api/memory/documents/{id}", get(api_get_document).patch(api_patch_document).delete(api_delete_memory))
         // Tools & MCP
