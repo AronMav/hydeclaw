@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 
 use crate::containers::sandbox::{CodeSandbox, ExecResult};
@@ -44,6 +45,9 @@ pub struct CliBackendConfig {
     /// Flag for system prompt injection
     #[serde(default)]
     pub system_prompt_arg: Option<String>,
+    /// Flag for prompt (e.g. "-p" for Gemini where prompt is a named arg, not positional)
+    #[serde(default)]
+    pub prompt_arg: Option<String>,
     /// Overall timeout in seconds
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
@@ -53,6 +57,9 @@ pub struct CliBackendConfig {
     /// Extra environment variables
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// Secret name for API key (resolved from vault at runtime)
+    #[serde(default)]
+    pub env_key: Option<String>,
 }
 
 fn default_timeout() -> u64 {
@@ -88,59 +95,188 @@ pub enum CliSessionMode {
     None,
 }
 
-// ── Default configs ──────────────────────────────────────────────────────────
+// ── CLI Presets ─────────────────────────────────────────────────────────────
 
-pub fn default_claude_backend() -> CliBackendConfig {
-    CliBackendConfig {
-        command: "claude".into(),
-        args: vec![
-            "-p".into(),
-            "--output-format".into(),
-            "json".into(),
-            "--permission-mode".into(),
-            "bypassPermissions".into(),
+/// Built-in CLI provider preset -- static defaults that work out of the box.
+pub struct CliPreset {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub command: &'static str,
+    pub args: &'static [&'static str],
+    pub resume_args: &'static [&'static str],
+    pub output: CliOutputFormat,
+    pub resume_output: Option<CliOutputFormat>,
+    pub prompt_arg: Option<&'static str>,
+    pub model_arg: Option<&'static str>,
+    pub system_prompt_arg: Option<&'static str>,
+    pub session_mode: CliSessionMode,
+    pub session_arg: Option<&'static str>,
+    pub env_key: &'static str,
+    pub models_provider: &'static str,
+    pub default_models: &'static [&'static str],
+}
+
+pub static CLI_PRESETS: &[CliPreset] = &[
+    CliPreset {
+        id: "gemini-cli",
+        name: "Gemini CLI",
+        command: "gemini",
+        args: &["--output-format", "json"],
+        resume_args: &[],
+        output: CliOutputFormat::Json,
+        resume_output: None,
+        prompt_arg: Some("-p"),
+        model_arg: Some("--model"),
+        system_prompt_arg: None,
+        session_mode: CliSessionMode::None,
+        session_arg: None,
+        env_key: "GEMINI_API_KEY",
+        models_provider: "google",
+        default_models: &[
+            "gemini-3.1-pro-preview",
+            "gemini-3-flash-preview",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
         ],
-        resume_args: vec![
-            "-p".into(),
-            "--output-format".into(),
-            "json".into(),
-            "--permission-mode".into(),
-            "bypassPermissions".into(),
-            "--resume".into(),
-            "{session_id}".into(),
+    },
+    CliPreset {
+        id: "claude-cli",
+        name: "Claude CLI",
+        command: "claude",
+        args: &[
+            "-p",
+            "--output-format",
+            "json",
+            "--permission-mode",
+            "bypassPermissions",
+        ],
+        resume_args: &[
+            "-p",
+            "--output-format",
+            "json",
+            "--permission-mode",
+            "bypassPermissions",
+            "--resume",
+            "{session_id}",
         ],
         output: CliOutputFormat::Json,
-        input: CliInputMode::Arg,
-        model_arg: Some("--model".into()),
-        model_aliases: [("opus", "opus"), ("sonnet", "sonnet"), ("haiku", "haiku")]
-            .into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
-            .collect(),
-        session_arg: Some("--session-id".into()),
+        resume_output: None,
+        prompt_arg: None,
+        model_arg: Some("--model"),
+        system_prompt_arg: Some("--append-system-prompt"),
         session_mode: CliSessionMode::Always,
-        system_prompt_arg: Some("--append-system-prompt".into()),
+        session_arg: Some("--session-id"),
+        env_key: "ANTHROPIC_API_KEY",
+        models_provider: "anthropic",
+        default_models: &["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
+    },
+    CliPreset {
+        id: "codex-cli",
+        name: "Codex CLI",
+        command: "codex",
+        args: &["--output-format", "json"],
+        resume_args: &[],
+        output: CliOutputFormat::Json,
+        resume_output: None,
+        prompt_arg: None,
+        model_arg: Some("--model"),
+        system_prompt_arg: None,
+        session_mode: CliSessionMode::None,
+        session_arg: None,
+        env_key: "OPENAI_API_KEY",
+        models_provider: "openai",
+        default_models: &["codex-mini", "gpt-4.1", "o4-mini"],
+    },
+];
+
+/// Find a built-in CLI preset by id.
+pub fn find_preset(id: &str) -> Option<&'static CliPreset> {
+    CLI_PRESETS.iter().find(|p| p.id == id)
+}
+
+/// Convert a built-in preset to a CliBackendConfig with default values.
+pub fn preset_to_config(preset: &CliPreset) -> CliBackendConfig {
+    CliBackendConfig {
+        command: preset.command.to_string(),
+        args: preset.args.iter().map(|s| s.to_string()).collect(),
+        resume_args: preset.resume_args.iter().map(|s| s.to_string()).collect(),
+        output: preset.output.clone(),
+        input: CliInputMode::Arg,
+        model_arg: preset.model_arg.map(|s| s.to_string()),
+        model_aliases: HashMap::new(),
+        session_arg: preset.session_arg.map(|s| s.to_string()),
+        session_mode: preset.session_mode.clone(),
+        system_prompt_arg: preset.system_prompt_arg.map(|s| s.to_string()),
+        prompt_arg: preset.prompt_arg.map(|s| s.to_string()),
         timeout_secs: 300,
         serialize: true,
         env: HashMap::new(),
+        env_key: Some(preset.env_key.to_string()),
     }
 }
 
-pub fn default_gemini_backend() -> CliBackendConfig {
-    CliBackendConfig {
-        command: "gemini".into(),
-        args: vec!["-p".into(), "--output-format".into(), "json".into()],
-        resume_args: vec![],
-        output: CliOutputFormat::Json,
-        input: CliInputMode::Arg,
-        model_arg: Some("--model".into()),
-        model_aliases: HashMap::new(),
-        session_arg: None,
-        session_mode: CliSessionMode::None,
-        system_prompt_arg: None,
-        timeout_secs: 300,
-        serialize: true,
-        env: HashMap::new(),
+/// Apply DB provider options (JSONB) on top of a CliBackendConfig.
+/// Only non-null fields in the JSON override the preset defaults.
+pub fn merge_db_overrides(config: &mut CliBackendConfig, options: &Value) {
+    if let Some(obj) = options.as_object() {
+        if let Some(v) = obj.get("command").and_then(|v| v.as_str()) {
+            config.command = v.to_string();
+        }
+        if let Some(v) = obj.get("args").and_then(|v| v.as_array()) {
+            config.args = v.iter().filter_map(|s| s.as_str().map(String::from)).collect();
+        }
+        if let Some(v) = obj.get("resume_args").and_then(|v| v.as_array()) {
+            config.resume_args = v.iter().filter_map(|s| s.as_str().map(String::from)).collect();
+        }
+        if let Some(v) = obj.get("prompt_arg") {
+            config.prompt_arg = v.as_str().map(String::from);
+        }
+        if let Some(v) = obj.get("model_arg") {
+            config.model_arg = v.as_str().map(String::from);
+        }
+        if let Some(v) = obj.get("system_prompt_arg") {
+            config.system_prompt_arg = v.as_str().map(String::from);
+        }
+        if let Some(v) = obj.get("session_arg") {
+            config.session_arg = v.as_str().map(String::from);
+        }
+        if let Some(v) = obj.get("env_key").and_then(|v| v.as_str()) {
+            config.env_key = Some(v.to_string());
+        }
+        if let Some(v) = obj.get("timeout_secs").and_then(|v| v.as_u64()) {
+            config.timeout_secs = v;
+        }
+        if let Some(v) = obj.get("env").and_then(|v| v.as_object()) {
+            for (ek, ev) in v {
+                if let Some(s) = ev.as_str() {
+                    config.env.insert(ek.clone(), s.to_string());
+                }
+            }
+        }
     }
+}
+
+/// Resolve a CLI provider config from preset ID + optional DB overrides.
+/// Returns None if the preset ID is not found.
+pub fn resolve_cli_config(preset_id: &str, db_options: &Value) -> Option<CliBackendConfig> {
+    let preset = find_preset(preset_id)?;
+    let mut config = preset_to_config(preset);
+    merge_db_overrides(&mut config, db_options);
+    Some(config)
+}
+
+// ── Default configs (deprecated -- use preset_to_config / resolve_cli_config) ─
+
+/// Deprecated: use `preset_to_config(find_preset("claude-cli").unwrap())` instead.
+/// Kept for backward compatibility until callers are migrated in Plan 02.
+pub fn default_claude_backend() -> CliBackendConfig {
+    preset_to_config(find_preset("claude-cli").expect("claude-cli preset must exist"))
+}
+
+/// Deprecated: use `preset_to_config(find_preset("gemini-cli").unwrap())` instead.
+/// Kept for backward compatibility until callers are migrated in Plan 02.
+pub fn default_gemini_backend() -> CliBackendConfig {
+    preset_to_config(find_preset("gemini-cli").expect("gemini-cli preset must exist"))
 }
 
 // ── CliOutput ────────────────────────────────────────────────────────────────
@@ -340,7 +476,9 @@ impl CliRunner {
 
         // Execute
         let start = std::time::Instant::now();
-        let exec_result = if base && sandbox.is_none() {
+        tracing::debug!(agent = %agent_name, argv = ?argv, workspace = %workspace_dir, base, "CLI executing");
+        let exec_result = if base {
+            // Base agents always run CLI on host (not in Docker sandbox)
             execute_on_host(&argv, &self.config.env, workspace_dir, timeout).await
         } else if let Some(sb) = sandbox {
             let cmd = argv.iter().map(|a| shell_escape(a)).collect::<Vec<_>>().join(" ");
@@ -460,6 +598,9 @@ impl CliRunner {
 
         // Add prompt
         if self.config.input == CliInputMode::Arg {
+            if let Some(ref pa) = self.config.prompt_arg {
+                argv.push(pa.clone());
+            }
             argv.push(prompt.to_string());
         }
 
@@ -1016,5 +1157,26 @@ mod tests {
         let argv = runner.build_argv("sonnet", "Prompt", Some(""), None, false);
         // Empty system prompt should not produce the flag
         assert!(!argv.contains(&"--append-system-prompt".to_string()));
+    }
+
+    #[test]
+    fn build_argv_gemini_prompt_arg() {
+        let runner = CliRunner::new(default_gemini_backend());
+        let argv = runner.build_argv("gemini-2.5-flash", "Hello world", None, None, false);
+        // Gemini uses prompt_arg="-p", so prompt must follow "-p" at the end
+        let p_idx = argv.iter().position(|a| a == "-p").expect("-p must be in argv");
+        assert_eq!(argv[p_idx + 1], "Hello world");
+        // -p should NOT be in the base args (it's added via prompt_arg)
+        assert_eq!(argv.iter().filter(|a| *a == "-p").count(), 1);
+    }
+
+    #[test]
+    fn build_argv_claude_no_prompt_arg() {
+        let runner = CliRunner::new(default_claude_backend());
+        let argv = runner.build_argv("sonnet", "Hello", None, None, false);
+        // Claude has prompt_arg=None, prompt is positional (last element)
+        assert_eq!(argv.last().unwrap(), "Hello");
+        // -p is in base args (as flag), not as prompt_arg
+        assert!(argv.contains(&"-p".to_string()));
     }
 }
