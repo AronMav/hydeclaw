@@ -60,6 +60,18 @@ pub struct CliBackendConfig {
     /// Secret name for API key (resolved from vault at runtime)
     #[serde(default)]
     pub env_key: Option<String>,
+    /// Env vars to remove from child process before spawn (security)
+    #[serde(default)]
+    pub clear_env: Vec<String>,
+    /// When to inject system prompt: first message only, always, or never
+    #[serde(default)]
+    pub system_prompt_when: SystemPromptWhen,
+    /// Auto-switch to stdin if prompt exceeds this char count
+    #[serde(default = "default_max_prompt_arg_chars")]
+    pub max_prompt_arg_chars: usize,
+    /// Kill CLI if no stdout for this many seconds
+    #[serde(default = "default_no_output_timeout")]
+    pub no_output_timeout_secs: u64,
 }
 
 fn default_timeout() -> u64 {
@@ -67,6 +79,12 @@ fn default_timeout() -> u64 {
 }
 fn default_true() -> bool {
     true
+}
+fn default_max_prompt_arg_chars() -> usize {
+    100_000
+}
+fn default_no_output_timeout() -> u64 {
+    60
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq)]
@@ -95,6 +113,15 @@ pub enum CliSessionMode {
     None,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SystemPromptWhen {
+    #[default]
+    First,
+    Always,
+    Never,
+}
+
 // ── CLI Presets ─────────────────────────────────────────────────────────────
 
 /// Built-in CLI provider preset -- static defaults that work out of the box.
@@ -115,6 +142,10 @@ pub struct CliPreset {
     pub env_key: &'static str,
     pub models_provider: &'static str,
     pub default_models: &'static [&'static str],
+    pub system_prompt_when: SystemPromptWhen,
+    pub clear_env: &'static [&'static str],
+    pub max_prompt_arg_chars: usize,
+    pub no_output_timeout_secs: u64,
 }
 
 pub static CLI_PRESETS: &[CliPreset] = &[
@@ -139,6 +170,10 @@ pub static CLI_PRESETS: &[CliPreset] = &[
             "gemini-2.5-flash",
             "gemini-2.5-pro",
         ],
+        system_prompt_when: SystemPromptWhen::First,
+        clear_env: &[],
+        max_prompt_arg_chars: 100_000,
+        no_output_timeout_secs: 60,
     },
     CliPreset {
         id: "claude-cli",
@@ -170,6 +205,10 @@ pub static CLI_PRESETS: &[CliPreset] = &[
         env_key: "ANTHROPIC_API_KEY",
         models_provider: "anthropic",
         default_models: &["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
+        system_prompt_when: SystemPromptWhen::First,
+        clear_env: &["CLAUDE_CODE_OAUTH_TOKEN"],
+        max_prompt_arg_chars: 100_000,
+        no_output_timeout_secs: 60,
     },
     CliPreset {
         id: "codex-cli",
@@ -187,6 +226,10 @@ pub static CLI_PRESETS: &[CliPreset] = &[
         env_key: "OPENAI_API_KEY",
         models_provider: "openai",
         default_models: &["codex-mini", "gpt-4.1", "o4-mini"],
+        system_prompt_when: SystemPromptWhen::First,
+        clear_env: &[],
+        max_prompt_arg_chars: 100_000,
+        no_output_timeout_secs: 60,
     },
 ];
 
@@ -213,6 +256,10 @@ pub fn preset_to_config(preset: &CliPreset) -> CliBackendConfig {
         serialize: true,
         env: HashMap::new(),
         env_key: Some(preset.env_key.to_string()),
+        clear_env: preset.clear_env.iter().map(|s| s.to_string()).collect(),
+        system_prompt_when: preset.system_prompt_when.clone(),
+        max_prompt_arg_chars: preset.max_prompt_arg_chars,
+        no_output_timeout_secs: preset.no_output_timeout_secs,
     }
 }
 
@@ -246,6 +293,20 @@ pub fn merge_db_overrides(config: &mut CliBackendConfig, options: &Value) {
         }
         if let Some(v) = obj.get("timeout_secs").and_then(|v| v.as_u64()) {
             config.timeout_secs = v;
+        }
+        if let Some(v) = obj.get("clear_env").and_then(|v| v.as_array()) {
+            config.clear_env = v.iter().filter_map(|s| s.as_str().map(String::from)).collect();
+        }
+        if let Some(v) = obj.get("system_prompt_when") {
+            if let Ok(spw) = serde_json::from_value::<SystemPromptWhen>(v.clone()) {
+                config.system_prompt_when = spw;
+            }
+        }
+        if let Some(v) = obj.get("max_prompt_arg_chars").and_then(|v| v.as_u64()) {
+            config.max_prompt_arg_chars = v as usize;
+        }
+        if let Some(v) = obj.get("no_output_timeout_secs").and_then(|v| v.as_u64()) {
+            config.no_output_timeout_secs = v;
         }
         if let Some(v) = obj.get("env").and_then(|v| v.as_object()) {
             for (ek, ev) in v {
