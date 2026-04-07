@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::agent::cli_backend::{CliBackendConfig, CliRunner, format_messages_for_cli};
 
 /// Generic CLI-based LLM provider. Wraps CliRunner with a provider name.
-/// Holds `Arc<SecretsManager>` to resolve API keys from vault at call time.
+/// API key resolution order: direct `api_key` (from provider record) → vault by `env_key` → parent env.
 pub struct CliLlmProvider {
     runner: Arc<CliRunner>,
     provider_name: String,
@@ -16,6 +16,8 @@ pub struct CliLlmProvider {
     base: bool,
     secrets: Arc<crate::secrets::SecretsManager>,
     env_key: Option<String>,
+    /// Direct API key from provider record (providers.api_key column).
+    api_key: Option<String>,
 }
 
 impl CliLlmProvider {
@@ -29,6 +31,7 @@ impl CliLlmProvider {
         workspace_dir: String,
         base: bool,
         secrets: Arc<crate::secrets::SecretsManager>,
+        api_key: Option<String>,
     ) -> Self {
         let env_key = config.env_key.clone();
         Self {
@@ -37,6 +40,7 @@ impl CliLlmProvider {
             model, sandbox, agent_name, workspace_dir, base,
             secrets,
             env_key,
+            api_key,
         }
     }
 }
@@ -50,12 +54,18 @@ impl LlmProvider for CliLlmProvider {
     ) -> Result<LlmResponse> {
         let (prompt, system) = format_messages_for_cli(messages);
 
-        // Resolve API key from vault at call time (hot-reloadable)
+        // Resolve API key: provider record → vault → parent env (inherited)
         let mut extra_env = std::collections::HashMap::new();
-        if let Some(ref key_name) = self.env_key
-            && let Some(key_value) = self.secrets.get(key_name).await {
+        if let Some(ref key_name) = self.env_key {
+            let resolved = if let Some(ref direct_key) = self.api_key {
+                Some(direct_key.clone())
+            } else {
+                self.secrets.get(key_name).await
+            };
+            if let Some(key_value) = resolved {
                 extra_env.insert(key_name.clone(), key_value);
             }
+        }
 
         // Compute context hash (system prompt + API key) for session invalidation
         {

@@ -160,7 +160,7 @@ pub fn create_provider(
                     cli_backend::preset_to_config(&cli_backend::CLI_PRESETS[1])
                 });
             Arc::new(ClaudeCliProvider::new(
-                provider_name, config, model.to_string(), sandbox, agent_name.to_string(), workspace_dir.to_string(), base, secrets,
+                provider_name, config, model.to_string(), sandbox, agent_name.to_string(), workspace_dir.to_string(), base, secrets, None,
             ))
         }
         "openai" => {
@@ -233,10 +233,11 @@ pub fn create_cli_provider_with_options(
     agent_name: &str,
     workspace_dir: &str,
     base: bool,
+    api_key: Option<String>,
 ) -> Option<Arc<dyn LlmProvider>> {
     let config = cli_backend::resolve_cli_config(preset_id, db_options)?;
     Some(Arc::new(ClaudeCliProvider::new(
-        preset_id, config, model.to_string(), sandbox, agent_name.to_string(), workspace_dir.to_string(), base, secrets,
+        preset_id, config, model.to_string(), sandbox, agent_name.to_string(), workspace_dir.to_string(), base, secrets, api_key,
     )))
 }
 
@@ -880,8 +881,19 @@ pub fn create_provider_from_connection(
                     tracing::error!(provider = %conn.provider_type, "unknown CLI preset — using claude-cli defaults");
                     cli_backend::preset_to_config(&cli_backend::CLI_PRESETS[1])
                 });
+            // Resolve API key from vault scoped by provider UUID (same as HTTP providers)
+            let api_key = {
+                let s = secrets.clone();
+                let scope = credential_scope.clone();
+                let env = key_env.to_string();
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        s.get_scoped(&env, &scope).await
+                    })
+                })
+            };
             Arc::new(ClaudeCliProvider::new(
-                &conn.provider_type, config, model, sandbox, agent_name.to_string(), workspace_dir.to_string(), base, secrets,
+                &conn.provider_type, config, model, sandbox, agent_name.to_string(), workspace_dir.to_string(), base, secrets, api_key,
             ))
         }
         "openai" => {
