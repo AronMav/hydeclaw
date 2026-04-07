@@ -27,9 +27,17 @@ pub struct MemoryConfig {
     #[serde(default = "default_true")]
     #[allow(dead_code)]
     pub graph_enabled: bool,
+    /// Maximum tokens for pinned chunks in L0 context. Default: 2000.
+    /// Approximation: content.len() / 4.
+    #[serde(default = "default_pinned_budget")]
+    pub pinned_budget_tokens: u32,
 }
 
 use crate::config::default_true;
+
+fn default_pinned_budget() -> u32 {
+    2000
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -42,6 +50,9 @@ pub struct MemoryResult {
     pub similarity: f64,
     pub parent_id: Option<String>,
     pub chunk_index: i32,
+    pub category: Option<String>,
+    pub topic: Option<String>,
+    pub archived: Option<bool>,
 }
 
 pub struct MemoryChunk {
@@ -53,6 +64,9 @@ pub struct MemoryChunk {
     pub created_at: DateTime<Utc>,
     #[allow(dead_code)]
     pub accessed_at: DateTime<Utc>,
+    pub category: Option<String>,
+    pub topic: Option<String>,
+    pub archived: Option<bool>,
 }
 
 // ── Store ─────────────────────────────────────────────────────────────────────
@@ -948,16 +962,19 @@ mod tests {
                 id: "id1".into(), content: "a".into(), source: "s".into(),
                 pinned: false, relevance_score: 1.0, similarity: 0.9,
                 parent_id: Some("parent1".into()), chunk_index: 0,
+                category: None, topic: None, archived: None,
             },
             MemoryResult {
                 id: "id2".into(), content: "b".into(), source: "s".into(),
                 pinned: false, relevance_score: 1.0, similarity: 0.8,
                 parent_id: Some("parent1".into()), chunk_index: 1,
+                category: None, topic: None, archived: None,
             },
             MemoryResult {
                 id: "id3".into(), content: "c".into(), source: "s2".into(),
                 pinned: false, relevance_score: 1.0, similarity: 0.7,
                 parent_id: None, chunk_index: 0,
+                category: None, topic: None, archived: None,
             },
         ];
         let deduped = MemoryStore::dedup_by_parent(results);
@@ -983,6 +1000,7 @@ mod tests {
             embed_dim: None,
             fts_language: None,
             graph_enabled: true,
+            pinned_budget_tokens: 2000,
         }
     }
 
@@ -1011,6 +1029,9 @@ mod tests {
             similarity,
             parent_id: parent_id.map(|s| s.to_string()),
             chunk_index: 0,
+            category: None,
+            topic: None,
+            archived: None,
         }
     }
 

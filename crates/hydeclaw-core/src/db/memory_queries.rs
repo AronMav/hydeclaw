@@ -25,6 +25,9 @@ fn row_to_memory_result(r: &sqlx::postgres::PgRow) -> MemoryResult {
         similarity: r.get("similarity"),
         parent_id: r.try_get::<Option<String>, _>("parent_id").ok().flatten(),
         chunk_index: r.try_get::<i32, _>("chunk_index").unwrap_or(0),
+        category: r.try_get::<Option<String>, _>("category").ok().flatten(),
+        topic: r.try_get::<Option<String>, _>("topic").ok().flatten(),
+        archived: r.try_get::<Option<bool>, _>("archived").ok().flatten(),
     }
 }
 
@@ -39,6 +42,9 @@ fn row_to_memory_chunk(r: &sqlx::postgres::PgRow) -> MemoryChunk {
         relevance_score: r.get("relevance_score"),
         created_at: r.get("created_at"),
         accessed_at: r.get("accessed_at"),
+        category: r.try_get::<Option<String>, _>("category").ok().flatten(),
+        topic: r.try_get::<Option<String>, _>("topic").ok().flatten(),
+        archived: r.try_get::<Option<bool>, _>("archived").ok().flatten(),
     }
 }
 
@@ -102,7 +108,10 @@ pub async fn search_semantic(
                   COALESCE(relevance_score, 1.0)::float8 AS relevance_score,
                   (1.0 - (embedding <=> $1::halfvec))::float8 AS similarity,
                   parent_id::text,
-                  chunk_index
+                  chunk_index,
+                  category,
+                  topic,
+                  archived
            FROM memory_chunks
            WHERE embedding IS NOT NULL
            ORDER BY embedding <=> $1::halfvec
@@ -135,7 +144,10 @@ pub async fn search_fts(
                   COALESCE(relevance_score, 1.0)::float8 AS relevance_score,
                   ts_rank_cd(tsv, plainto_tsquery('{lang}', $1))::float8 AS similarity,
                   parent_id::text,
-                  chunk_index
+                  chunk_index,
+                  category,
+                  topic,
+                  archived
            FROM memory_chunks
            WHERE tsv @@ plainto_tsquery('{lang}', $1)
            ORDER BY ts_rank_cd(tsv, plainto_tsquery('{lang}', $1)) DESC,
@@ -176,7 +188,10 @@ pub async fn fetch_recent(db: &PgPool, limit: i64) -> Result<Vec<MemoryResult>> 
                   COALESCE(relevance_score, 1.0)::float8 AS relevance_score,
                   1.0::float8 AS similarity,
                   parent_id::text,
-                  chunk_index
+                  chunk_index,
+                  category,
+                  topic,
+                  archived
            FROM memory_chunks
            ORDER BY pinned DESC, COALESCE(accessed_at, created_at) DESC
            LIMIT $1"#,
@@ -234,7 +249,8 @@ pub async fn get_chunk_by_id(db: &PgPool, id: &str) -> Result<Vec<MemoryChunk>> 
     let rows = sqlx::query(
         r#"SELECT id::text, content, COALESCE(source,'') AS source, pinned,
                   COALESCE(relevance_score,1.0)::float8 AS relevance_score,
-                  created_at, accessed_at
+                  created_at, accessed_at,
+                  category, topic, archived
            FROM memory_chunks WHERE id = $1::uuid"#,
     )
     .bind(id)
@@ -253,7 +269,8 @@ pub async fn get_chunks_by_source(
     let rows = sqlx::query(
         r#"SELECT id::text, content, COALESCE(source,'') AS source, pinned,
                   COALESCE(relevance_score,1.0)::float8 AS relevance_score,
-                  created_at, accessed_at
+                  created_at, accessed_at,
+                  category, topic, archived
            FROM memory_chunks WHERE source = $1
            ORDER BY created_at DESC LIMIT $2"#,
     )
@@ -270,7 +287,8 @@ pub async fn get_chunks_recent(db: &PgPool, limit: i64) -> Result<Vec<MemoryChun
     let rows = sqlx::query(
         r#"SELECT id::text, content, COALESCE(source,'') AS source, pinned,
                   COALESCE(relevance_score,1.0)::float8 AS relevance_score,
-                  created_at, accessed_at
+                  created_at, accessed_at,
+                  category, topic, archived
            FROM memory_chunks
            ORDER BY accessed_at DESC LIMIT $1"#,
     )
