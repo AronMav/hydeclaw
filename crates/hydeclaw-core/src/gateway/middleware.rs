@@ -217,9 +217,10 @@ pub(crate) fn extract_client_ip(req: &Request<Body>) -> String {
 }
 
 /// Check if an IP string represents a loopback address.
-/// Handles: "127.0.0.1", "::1", "::ffff:127.0.0.1", and "unknown" (missing ConnectInfo).
+/// Handles: "127.0.0.1", "::1", "::ffff:127.0.0.1".
+/// "unknown" (missing ConnectInfo) is NOT treated as loopback — unknown origin must authenticate.
 pub(crate) fn is_loopback(ip: &str) -> bool {
-    ip == "127.0.0.1" || ip == "::1" || ip.starts_with("::ffff:127.") || ip == "unknown"
+    ip == "127.0.0.1" || ip == "::1" || ip.starts_with("::ffff:127.")
 }
 
 /// Check if an IP is on a private LAN (192.168.*, 10.*, 172.16-31.*).
@@ -264,9 +265,11 @@ pub(crate) async fn auth_middleware(
         // All other loopback requests must still provide a valid auth token
     }
 
-    // Loopback and private LAN IPs are never locked by auth rate limiter —
-    // internal services and LAN users should not be locked out by brute-force protection.
-    let exempt_from_lockout = is_loopback(&client_ip) || is_private_lan(&client_ip);
+    // Only true loopback is exempt from auth rate-limiter lockout — internal services
+    // (toolgate, channels) call from 127.0.0.1 and must never be locked out.
+    // LAN clients are NOT exempt: a compromised or misconfigured LAN device should still
+    // be subject to brute-force protection just like any external client.
+    let exempt_from_lockout = is_loopback(&client_ip);
     if !exempt_from_lockout && rate_limiter.is_locked(&client_ip).await {
         tracing::warn!(ip = %client_ip, path = %path, "auth rate limit: locked");
         return (StatusCode::TOO_MANY_REQUESTS, "Too many failed attempts. Try again later.").into_response();
@@ -300,7 +303,7 @@ pub(crate) async fn auth_middleware(
             }
         }
 
-    // Don't lock loopback or LAN — internal services and LAN users should not be locked out
+    // Don't lock loopback — internal services must not be locked out
     if !exempt_from_lockout {
         rate_limiter.record_failure(&client_ip).await;
     }

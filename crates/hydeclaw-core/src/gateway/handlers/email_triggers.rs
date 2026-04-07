@@ -150,9 +150,22 @@ struct TriggerRow {
 
 pub(crate) async fn gmail_push_handler(
     State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
     Json(body): Json<PubsubPush>,
 ) -> impl IntoResponse {
     use base64::Engine;
+
+    // Verify push authentication token — the Pub/Sub subscription URL must include
+    // ?token=HYDECLAW_AUTH_TOKEN so only our own Google Cloud project can trigger this handler.
+    let expected_token = std::env::var("HYDECLAW_AUTH_TOKEN").unwrap_or_default();
+    let provided_token = params.get("token").map(|s| s.as_str()).unwrap_or("");
+    use subtle::ConstantTimeEq;
+    if !expected_token.is_empty()
+        && !bool::from(provided_token.as_bytes().ct_eq(expected_token.as_bytes()))
+    {
+        tracing::warn!("gmail push: rejected request with invalid token");
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
 
     let raw = match base64::engine::general_purpose::STANDARD.decode(&body.message.data) {
         Ok(r) => r,

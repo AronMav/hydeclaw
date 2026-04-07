@@ -30,29 +30,33 @@ export const useAuthStore = create<AuthState>()(
 
           login: async (token: string): Promise<LoginResult> => {
             try {
-              const resp = await fetch("/api/agents", {
-                headers: { Authorization: `Bearer ${token}` },
-              });
+              const authHeaders = { Authorization: `Bearer ${token}` };
+
+              // Fetch agent list (authenticated) — also provides icons, replaces /health agent data
+              const resp = await fetch("/api/agents", { headers: authHeaders });
               if (resp.status === 429) return "rate_limited";
               if (resp.status === 401) return "invalid";
               if (!resp.ok) return "error";
 
-              // Fetch health for version + agent icons
-              const healthResp = await fetch("/health");
-              const data = healthResp.ok ? await healthResp.json() : { agents: [], agent_icons: [], version: "" };
+              const agentsData = await resp.json();
+              const agentList: Array<{ name: string; icon?: string | null }> =
+                Array.isArray(agentsData.agents) ? agentsData.agents : [];
 
+              const agentNames = agentList.map((a) => a.name);
               const icons: Record<string, string | null> = {};
-              if (Array.isArray(data.agent_icons)) {
-                for (const a of data.agent_icons) {
-                  icons[a.name] = a.icon || null;
-                }
+              for (const a of agentList) {
+                icons[a.name] = a.icon || null;
               }
+
+              // Fetch version from /health (unauthenticated — only status/version exposed there)
+              const healthResp = await fetch("/health");
+              const healthData = healthResp.ok ? await healthResp.json() : { version: "" };
 
               set({
                 token,
                 isAuthenticated: true,
-                version: data.version || "",
-                agents: data.agents || [],
+                version: healthData.version || "",
+                agents: agentNames,
                 agentIcons: icons,
                 lastFetched: Date.now(),
               });
@@ -97,6 +101,13 @@ export const useAuthStore = create<AuthState>()(
         {
           name: "hydeclaw.auth.token",
           partialize: (state) => ({ token: state.token }),
+          // Use sessionStorage so the token is cleared when the browser tab/window is closed.
+          // This limits the exposure window for a stolen token compared to localStorage.
+          storage: {
+            getItem: (name) => sessionStorage.getItem(name),
+            setItem: (name, value) => sessionStorage.setItem(name, value),
+            removeItem: (name) => sessionStorage.removeItem(name),
+          },
         },
       ),
     ),

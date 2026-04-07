@@ -1224,16 +1224,14 @@ pub(crate) async fn health(State(state): State<AppState>) -> Json<Value> {
 
     let config = state.shared_config.read().await;
 
-    let agent_names = state.agent_names().await;
-    let agent_summaries = state.agent_summaries().await;
-
+    // Agent names and icons are intentionally omitted here — /health is unauthenticated
+    // and must not leak information about which agents are configured.
+    // Authenticated callers should use GET /api/agents instead.
     Json(json!({
         "status": if db_ok { "ok" } else { "degraded" },
         "version": env!("CARGO_PKG_VERSION"),
         "db": db_ok,
         "listen": config.gateway.listen,
-        "agents": agent_names,
-        "agent_icons": agent_summaries,
     }))
 }
 
