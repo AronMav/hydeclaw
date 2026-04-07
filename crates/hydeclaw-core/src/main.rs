@@ -731,6 +731,48 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Background memory compression worker — reuses graph provider or first agent's
+    let compression_cancel = CancellationToken::new();
+    let compression_handle: Option<tokio::task::JoinHandle<()>> = {
+        let comp_provider: Option<Arc<dyn agent::providers::LlmProvider>> =
+            match db::providers::get_provider_active(&db_pool, "graph_extraction").await {
+                Ok(Some(name)) => {
+                    match db::providers::get_provider_by_name(&db_pool, &name).await {
+                        Ok(Some(conn)) => {
+                            tracing::info!(provider = %name, "compression worker using configured provider");
+                            Some(agent::providers::create_provider_from_connection(
+                                &conn, None, 0.3, None,
+                                state.secrets.clone(), None, "__compression_worker__", "", false,
+                            ))
+                        }
+                        _ => {
+                            tracing::warn!(provider = %name, "graph_extraction provider not found, falling back for compression");
+                            None
+                        }
+                    }
+                }
+                _ => None,
+            };
+        let provider = match comp_provider {
+            Some(p) => Some(p),
+            None => state.first_engine().await.map(|e| e.provider.clone()),
+        };
+        let age_days = cfg.memory.compression_age_days;
+        match provider {
+            Some(p) => Some(compression_worker::spawn_worker(
+                db_pool.clone(),
+                p,
+                state.memory_store.clone(),
+                age_days,
+                compression_cancel.clone(),
+            )),
+            None => {
+                tracing::warn!("no provider available, compression worker not started");
+                None
+            }
+        }
+    };
+
     // Load dynamic cron jobs from database
     {
         let agents_lock = agents_map.read().await;
@@ -1007,6 +1049,16 @@ async fn main() -> Result<()> {
             Ok(Ok(())) => tracing::info!("graph worker stopped"),
             Ok(Err(e)) => tracing::warn!(error = %e, "graph worker panicked during shutdown"),
             Err(_) => tracing::warn!("graph worker did not stop within 5s"),
+        }
+    }
+
+    // Cancel compression worker and wait for it to stop
+    compression_cancel.cancel();
+    if let Some(handle) = compression_handle {
+        match tokio::time::timeout(std::time::Duration::from_secs(5), handle).await {
+            Ok(Ok(())) => tracing::info!("compression worker stopped"),
+            Ok(Err(e)) => tracing::warn!(error = %e, "compression worker panicked during shutdown"),
+            Err(_) => tracing::warn!("compression worker did not stop within 5s"),
         }
     }
 
