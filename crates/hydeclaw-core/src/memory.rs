@@ -606,6 +606,66 @@ impl MemoryStore {
         crate::db::memory_queries::fetch_recent(&self.db, limit).await
     }
 
+    /// Load L0 pinned chunks for an agent, respecting token budget.
+    /// Returns (formatted text for prompt, list of chunk IDs for L2 dedup).
+    /// Budget is in tokens, approximated as content.len() / 4.
+    /// When total exceeds budget, oldest chunks (FIFO) are dropped first.
+    pub async fn load_pinned(
+        &self,
+        agent_id: &str,
+        budget_tokens: u32,
+    ) -> Result<(String, Vec<String>)> {
+        let chunks = crate::db::memory_queries::fetch_pinned(&self.db, agent_id).await?;
+        if chunks.is_empty() {
+            return Ok((String::new(), vec![]));
+        }
+
+        // Calculate token estimates for all chunks (oldest first from SQL ORDER BY created_at ASC)
+        let chunk_tokens: Vec<u32> = chunks.iter()
+            .map(|c| (c.content.len() as u32) / 4)
+            .collect();
+        let total_tokens: u32 = chunk_tokens.iter().sum();
+
+        // Determine how many oldest chunks to skip (FIFO drop: drop oldest first)
+        let mut skip_count = 0usize;
+        let mut remaining = total_tokens;
+        if remaining > budget_tokens {
+            for &ct in &chunk_tokens {
+                if remaining <= budget_tokens {
+                    break;
+                }
+                remaining -= ct;
+                skip_count += 1;
+            }
+        }
+
+        if skip_count > 0 {
+            tracing::warn!(
+                dropped = skip_count,
+                budget = budget_tokens,
+                total = total_tokens,
+                "pinned chunks exceed token budget"
+            );
+        }
+
+        let mut text_parts: Vec<String> = Vec::new();
+        let mut ids: Vec<String> = Vec::new();
+
+        for chunk in chunks.iter().skip(skip_count) {
+            let source = if chunk.source.is_empty() { "memory" } else { &chunk.source };
+            text_parts.push(format!("- [{}] {}", source, chunk.content));
+            ids.push(chunk.id.clone());
+        }
+
+        let text = if text_parts.is_empty() {
+            String::new()
+        } else {
+            format!("\n\n## Known Facts\n{}", text_parts.join("\n"))
+        };
+
+        Ok((text, ids))
+    }
+
     // ── Index ─────────────────────────────────────────────────────────────────
 
     /// Generate embedding and insert a new memory chunk. Returns the new chunk UUID.

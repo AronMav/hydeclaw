@@ -94,6 +94,26 @@ pub async fn ensure_hnsw_index(db: &PgPool, dim: u32) -> Result<()> {
 
 // ── Search ───────────────────────────────────────────────────────────────────
 
+/// Fetch all pinned, non-archived chunks for a given agent, ordered oldest first.
+/// Used by L0 context loading — no embedding or search query needed.
+pub async fn fetch_pinned(db: &PgPool, agent_id: &str) -> Result<Vec<MemoryChunk>> {
+    let rows = sqlx::query(
+        r#"SELECT id::text, content, COALESCE(source,'') AS source, pinned,
+                  COALESCE(relevance_score, 1.0)::float8 AS relevance_score,
+                  created_at, accessed_at,
+                  category, topic, archived
+           FROM memory_chunks
+           WHERE agent_id = $1 AND pinned = true AND archived = false
+           ORDER BY created_at ASC"#,
+    )
+    .bind(agent_id)
+    .fetch_all(db)
+    .await
+    .context("failed to fetch pinned memory chunks")?;
+
+    Ok(rows.iter().map(row_to_memory_chunk).collect())
+}
+
 /// Semantic similarity search: find nearest chunks by embedding cosine distance.
 pub async fn search_semantic(
     db: &PgPool,
