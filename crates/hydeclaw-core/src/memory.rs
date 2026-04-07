@@ -457,7 +457,8 @@ impl MemoryStore {
     /// Search memory: hybrid (semantic + FTS via RRF) when embedding available, pure FTS fallback.
     /// When graph_enabled, appends graph-expanded results from the knowledge graph.
     /// Returns (results, search_mode) where search_mode is "hybrid", "semantic", or "fts".
-    pub async fn search(&self, query: &str, limit: usize) -> Result<(Vec<MemoryResult>, &'static str)> {
+    /// `exclude_ids`: chunk IDs already loaded via L0 pinned loading — excluded from results (CTX-04).
+    pub async fn search(&self, query: &str, limit: usize, exclude_ids: &[String]) -> Result<(Vec<MemoryResult>, &'static str)> {
         self.ensure_initialized().await;
         if query.trim().is_empty() {
             return Ok((vec![], "none"));
@@ -484,6 +485,13 @@ impl MemoryStore {
 
         // Deduplicate: keep only the best chunk per parent document
         let results = Self::dedup_by_parent(results);
+
+        // L2 dedup: remove chunks already loaded via L0 pinned loading (CTX-04)
+        let results = if exclude_ids.is_empty() {
+            results
+        } else {
+            results.into_iter().filter(|r| !exclude_ids.contains(&r.id)).collect()
+        };
 
         Ok((results, mode))
     }

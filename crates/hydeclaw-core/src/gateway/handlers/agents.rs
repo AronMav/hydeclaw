@@ -552,6 +552,7 @@ pub async fn start_agent_from_config(
         processing_tracker: Some(state.processing_tracker.clone()),
         default_timezone,
         memory_md_lock: tokio::sync::Mutex::new(()),
+        pinned_chunk_ids: tokio::sync::Mutex::new(vec![]),
         channel_formatting_prompt: tokio::sync::RwLock::new(None),
         channel_info_cache: tokio::sync::RwLock::new(None),
         thinking_level: std::sync::atomic::AtomicU8::new(0),

@@ -2,6 +2,16 @@
 
 use super::*;
 
+// ── L0 Memory Context ────────────────────────────────────────────────────────
+
+/// Result of L0 pinned chunk loading.
+pub(super) struct MemoryContext {
+    /// Formatted text to append to system prompt (empty if no pinned chunks).
+    pub pinned_text: String,
+    /// IDs of pinned chunks already loaded (for L2 dedup).
+    pub pinned_ids: Vec<String>,
+}
+
 /// Extract entities/relations from content via LLM and link to graph.
 /// Thin wrapper around shared function in memory_graph.rs.
 async fn extract_and_link_entities(
@@ -117,6 +127,21 @@ pub(super) async fn extract_session_to_graph(
 }
 
 impl AgentEngine {
+    /// Build L0 memory context: load pinned chunks for this agent.
+    /// Called from build_context() in engine.rs before the system prompt size log.
+    pub(super) async fn build_memory_context(&self, budget_tokens: u32) -> MemoryContext {
+        if !self.memory_store.is_available() {
+            return MemoryContext { pinned_text: String::new(), pinned_ids: vec![] };
+        }
+        match self.memory_store.load_pinned(&self.agent.name, budget_tokens).await {
+            Ok((text, ids)) => MemoryContext { pinned_text: text, pinned_ids: ids },
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load pinned memory chunks");
+                MemoryContext { pinned_text: String::new(), pinned_ids: vec![] }
+            }
+        }
+    }
+
     /// Index extracted facts into memory (called after compaction).
     /// Uses batch embedding for efficiency when multiple facts are available.
     pub(super) async fn index_facts_to_memory(&self, facts: &[String]) {
@@ -179,8 +204,9 @@ impl AgentEngine {
                 }
         }
 
-        // Search long-term memory
-        match self.memory_store.search(query, limit).await {
+        // Search long-term memory (exclude L0 pinned chunks to avoid duplication)
+        let exclude = self.pinned_chunk_ids.lock().await.clone();
+        match self.memory_store.search(query, limit, &exclude).await {
             Ok((results, _)) if results.is_empty() && parts.is_empty() => {
                 return "No relevant memories found.".to_string();
             }

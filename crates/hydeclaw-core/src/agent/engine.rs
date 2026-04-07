@@ -178,6 +178,8 @@ pub struct AgentEngine {
     pub default_timezone: String,
     /// Mutex for atomic MEMORY.md read-modify-write operations.
     pub memory_md_lock: tokio::sync::Mutex<()>,
+    /// IDs of L0 pinned chunks loaded in the current context build (for L2 dedup).
+    pub(crate) pinned_chunk_ids: tokio::sync::Mutex<Vec<String>>,
     /// Last formatting prompt received from a connected channel adapter (e.g. Telegram).
     /// Used by cron/heartbeat to format output correctly for the channel.
     pub channel_formatting_prompt: tokio::sync::RwLock<Option<String>>,
@@ -982,6 +984,15 @@ impl AgentEngine {
             system_prompt.push_str("Provide: `agent` (target name), `task` (what they should do), ");
             system_prompt.push_str("`context` (relevant facts — keep concise).\n");
         }
+
+        // L0: Always-on pinned memory chunks — injected on every build_context call (CTX-01, CTX-02)
+        let pinned_budget = self.app_config.memory.pinned_budget_tokens;
+        let memory_ctx = self.build_memory_context(pinned_budget).await;
+        if !memory_ctx.pinned_text.is_empty() {
+            system_prompt.push_str(&memory_ctx.pinned_text);
+        }
+        // Store pinned IDs for L2 dedup (CTX-04)
+        *self.pinned_chunk_ids.lock().await = memory_ctx.pinned_ids;
 
         tracing::info!(
             agent = %self.agent.name,
