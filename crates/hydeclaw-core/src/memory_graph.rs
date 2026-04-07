@@ -206,13 +206,33 @@ pub async fn upsert_relation(
 // ── Graph traversal ──────────────────────────────────────────────────────────
 
 /// Find entities connected to a given entity (multi-hop via recursive CTE).
+/// Returns only entities reachable via currently-active edges (`valid_to IS NULL`).
 pub async fn find_related(
     db: &PgPool,
     entity_name: &str,
     max_hops: u8,
 ) -> Result<Vec<GraphEntity>> {
+    find_related_with_options(db, entity_name, max_hops, false).await
+}
+
+/// Find related entities with explicit control over expired-edge inclusion.
+///
+/// - `include_expired = false` (default): traverse only active edges (`valid_to IS NULL`).
+/// - `include_expired = true`: traverse all edges regardless of validity (audit/debugging).
+pub async fn find_related_with_options(
+    db: &PgPool,
+    entity_name: &str,
+    max_hops: u8,
+    include_expired: bool,
+) -> Result<Vec<GraphEntity>> {
     let normalized = entity_name.trim().to_lowercase();
     // SAFETY: `max_hops` is u8 — numeric type, cannot inject SQL.
+    // `include_expired` is bool — no SQL injection risk.
+    let temporal_filter = if include_expired {
+        String::new()
+    } else {
+        " AND ge.valid_to IS NULL".to_string()
+    };
     let query = format!(
         "WITH RECURSIVE hops AS (
             SELECT id, name, entity_type, 0 AS depth
@@ -220,7 +240,7 @@ pub async fn find_related(
             UNION
             SELECT DISTINCT e2.id, e2.name, e2.entity_type, h.depth + 1
             FROM hops h
-            JOIN graph_edges ge ON (ge.source_id = h.id OR ge.target_id = h.id) AND ge.invalid_at IS NULL
+            JOIN graph_edges ge ON (ge.source_id = h.id OR ge.target_id = h.id){temporal_filter}
             JOIN graph_entities e2 ON e2.id = CASE WHEN ge.source_id = h.id THEN ge.target_id ELSE ge.source_id END
             WHERE h.depth < {max_hops} AND e2.id != h.id
         )
@@ -300,26 +320,43 @@ pub async fn get_chunk_entity_rows(
     Ok(rows)
 }
 
-/// Get edges between a set of entities (by name). Only active edges (invalid_at IS NULL).
+/// Get edges between a set of entities (by name). Only active edges (`valid_to IS NULL`).
 pub async fn get_entity_edges(
     db: &PgPool,
     entity_names: &[String],
+) -> Result<Vec<GraphRelation>> {
+    get_entity_edges_with_options(db, entity_names, false).await
+}
+
+/// Get edges between a set of entities with explicit control over expired-edge inclusion.
+///
+/// - `include_expired = false` (default): return only active edges (`valid_to IS NULL`).
+/// - `include_expired = true`: return all edges regardless of validity (audit/debugging).
+pub async fn get_entity_edges_with_options(
+    db: &PgPool,
+    entity_names: &[String],
+    include_expired: bool,
 ) -> Result<Vec<GraphRelation>> {
     if entity_names.is_empty() {
         return Ok(vec![]);
     }
     let normalized: Vec<String> = entity_names.iter().map(|n| n.trim().to_lowercase()).collect();
-    let rows: Vec<(String, String, String)> = sqlx::query_as(
+    let temporal_filter = if include_expired {
+        ""
+    } else {
+        " AND e.valid_to IS NULL"
+    };
+    let sql = format!(
         "SELECT s.name, t.name, e.relation_type
          FROM graph_edges e
          JOIN graph_entities s ON s.id = e.source_id
          JOIN graph_entities t ON t.id = e.target_id
-         WHERE s.name_normalized = ANY($1) AND t.name_normalized = ANY($1)
-           AND e.invalid_at IS NULL",
-    )
-    .bind(&normalized)
-    .fetch_all(db)
-    .await?;
+         WHERE s.name_normalized = ANY($1) AND t.name_normalized = ANY($1){temporal_filter}"
+    );
+    let rows: Vec<(String, String, String)> = sqlx::query_as(&sql)
+        .bind(&normalized)
+        .fetch_all(db)
+        .await?;
     Ok(rows
         .into_iter()
         .map(|(s, t, r)| GraphRelation {
@@ -553,5 +590,129 @@ mod tests {
         let json = r#"<think>first</think>some text<think>second</think>{"entities": [{"name": "A", "entity_type": "Concept"}], "relations": []}"#;
         let (ents, _) = parse_extraction_response(json);
         assert_eq!(ents.len(), 1);
+    }
+
+    /// Integration test: contradicted edges are expired non-destructively and excluded
+    /// from find_related() queries.
+    ///
+    /// Requires a live PostgreSQL database with all migrations applied.
+    /// Run with: DATABASE_URL=... cargo test test_temporal_contradiction -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore] // requires DATABASE_URL
+    async fn test_temporal_contradiction_excludes_expired_edges() {
+        let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL required");
+        let pool = sqlx::PgPool::connect(&db_url).await.unwrap();
+
+        // -- Setup: unique test entity names to avoid collision with real data --
+        let alice = "TemporalTestAlice_9f2a";
+        let acme = "TemporalTestAcme_9f2a";
+        let alice_type = "Person";
+        let acme_type = "Organization";
+        let rel = "WORKS_AT";
+
+        // Cleanup from any previous failed test run.
+        sqlx::query(
+            "DELETE FROM graph_edges WHERE source_id IN (
+                SELECT id FROM graph_entities WHERE name_normalized = ANY($1)
+             ) OR target_id IN (
+                SELECT id FROM graph_entities WHERE name_normalized = ANY($1)
+             )",
+        )
+        .bind(&vec![alice.to_lowercase(), acme.to_lowercase()])
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM graph_entities WHERE name_normalized = ANY($1)")
+            .bind(&vec![alice.to_lowercase(), acme.to_lowercase()])
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // 1. Create entities.
+        upsert_entity_resolved(&pool, alice, alice_type).await.unwrap();
+        upsert_entity_resolved(&pool, acme, acme_type).await.unwrap();
+
+        // 2. Create initial edge: Alice WORKS_AT Acme.
+        upsert_relation(&pool, alice, alice_type, acme, acme_type, rel, Some("Alice works at Acme"))
+            .await
+            .unwrap();
+
+        // 3. find_related should return Acme.
+        let related = find_related(&pool, alice, 1).await.unwrap();
+        assert!(
+            related.iter().any(|e| e.name.to_lowercase() == acme.to_lowercase()),
+            "Acme should be reachable after initial edge insert; got: {:?}",
+            related
+        );
+
+        // 4. Contradict: same triple, different fact.
+        upsert_relation(&pool, alice, alice_type, acme, acme_type, rel, Some("Alice left Acme"))
+            .await
+            .unwrap();
+
+        // 5. Old edge must still exist in DB with valid_to IS NOT NULL (non-destructive).
+        let expired_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM graph_edges
+             WHERE source_id = (SELECT id FROM graph_entities WHERE name_normalized = $1)
+               AND target_id = (SELECT id FROM graph_entities WHERE name_normalized = $2)
+               AND relation_type = $3
+               AND valid_to IS NOT NULL",
+        )
+        .bind(alice.to_lowercase())
+        .bind(acme.to_lowercase())
+        .bind(rel)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(expired_count, 1, "Old edge must be expired (valid_to IS NOT NULL), not deleted");
+
+        // 6. find_related still returns Acme (new active edge exists).
+        let related2 = find_related(&pool, alice, 1).await.unwrap();
+        assert!(
+            related2.iter().any(|e| e.name.to_lowercase() == acme.to_lowercase()),
+            "Acme should still be reachable via new active edge; got: {:?}",
+            related2
+        );
+
+        // 7. Manually expire the new (active) edge to simulate full expiration.
+        sqlx::query(
+            "UPDATE graph_edges SET valid_to = now()
+             WHERE source_id = (SELECT id FROM graph_entities WHERE name_normalized = $1)
+               AND target_id = (SELECT id FROM graph_entities WHERE name_normalized = $2)
+               AND relation_type = $3
+               AND valid_to IS NULL",
+        )
+        .bind(alice.to_lowercase())
+        .bind(acme.to_lowercase())
+        .bind(rel)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // 8. find_related must return empty — all edges are expired.
+        let related3 = find_related(&pool, alice, 1).await.unwrap();
+        assert!(
+            related3.is_empty(),
+            "No entities should be reachable when all edges are expired; got: {:?}",
+            related3
+        );
+
+        // Cleanup.
+        sqlx::query(
+            "DELETE FROM graph_edges WHERE source_id IN (
+                SELECT id FROM graph_entities WHERE name_normalized = ANY($1)
+             ) OR target_id IN (
+                SELECT id FROM graph_entities WHERE name_normalized = ANY($1)
+             )",
+        )
+        .bind(&vec![alice.to_lowercase(), acme.to_lowercase()])
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM graph_entities WHERE name_normalized = ANY($1)")
+            .bind(&vec![alice.to_lowercase(), acme.to_lowercase()])
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 }
