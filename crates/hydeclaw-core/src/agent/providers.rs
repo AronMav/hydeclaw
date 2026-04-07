@@ -223,7 +223,7 @@ pub fn create_provider(
 
 /// Create a CLI provider from a preset with DB option overrides.
 /// Returns `None` if the preset ID is not recognized.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, dead_code)]
 pub fn create_cli_provider_with_options(
     preset_id: &str,
     model: &str,

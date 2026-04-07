@@ -98,6 +98,7 @@ pub enum CliSessionMode {
 // ── CLI Presets ─────────────────────────────────────────────────────────────
 
 /// Built-in CLI provider preset -- static defaults that work out of the box.
+#[allow(dead_code)]
 pub struct CliPreset {
     pub id: &'static str,
     pub name: &'static str,
@@ -265,18 +266,16 @@ pub fn resolve_cli_config(preset_id: &str, db_options: &Value) -> Option<CliBack
     Some(config)
 }
 
-// ── Default configs (deprecated -- use preset_to_config / resolve_cli_config) ─
+// ── Convenience helpers for tests ────────────────────────────────────────────
 
-/// Deprecated: use `preset_to_config(find_preset("claude-cli").unwrap())` instead.
-/// Kept for backward compatibility until callers are migrated in Plan 02.
-pub fn default_claude_backend() -> CliBackendConfig {
-    preset_to_config(find_preset("claude-cli").expect("claude-cli preset must exist"))
+#[cfg(test)]
+fn claude_config() -> CliBackendConfig {
+    preset_to_config(find_preset("claude-cli").expect("claude-cli preset"))
 }
 
-/// Deprecated: use `preset_to_config(find_preset("gemini-cli").unwrap())` instead.
-/// Kept for backward compatibility until callers are migrated in Plan 02.
-pub fn default_gemini_backend() -> CliBackendConfig {
-    preset_to_config(find_preset("gemini-cli").expect("gemini-cli preset must exist"))
+#[cfg(test)]
+fn gemini_config() -> CliBackendConfig {
+    preset_to_config(find_preset("gemini-cli").expect("gemini-cli preset"))
 }
 
 // ── CliOutput ────────────────────────────────────────────────────────────────
@@ -992,7 +991,7 @@ mod tests {
 
     #[test]
     fn default_claude_config() {
-        let cfg = default_claude_backend();
+        let cfg = claude_config();
         assert_eq!(cfg.command, "claude");
         assert!(cfg.serialize);
         assert_eq!(cfg.session_mode, CliSessionMode::Always);
@@ -1003,7 +1002,7 @@ mod tests {
 
     #[test]
     fn default_gemini_config() {
-        let cfg = default_gemini_backend();
+        let cfg = gemini_config();
         assert_eq!(cfg.command, "gemini");
         assert_eq!(cfg.session_mode, CliSessionMode::None);
         assert!(cfg.resume_args.is_empty());
@@ -1112,7 +1111,7 @@ mod tests {
 
     #[test]
     fn build_argv_fresh_with_model_and_system() {
-        let runner = CliRunner::new(default_claude_backend());
+        let runner = CliRunner::new(claude_config());
         let argv = runner.build_argv("sonnet", "Hello world", Some("Be kind"), None, false);
         assert_eq!(argv[0], "claude");
         assert!(argv.contains(&"--model".to_string()));
@@ -1125,7 +1124,7 @@ mod tests {
 
     #[test]
     fn build_argv_resume_with_session() {
-        let runner = CliRunner::new(default_claude_backend());
+        let runner = CliRunner::new(claude_config());
         let argv = runner.build_argv("sonnet", "Follow up", None, Some("sess-42"), true);
         assert_eq!(argv[0], "claude");
         assert!(argv.contains(&"--resume".to_string()));
@@ -1137,7 +1136,7 @@ mod tests {
 
     #[test]
     fn build_argv_no_model_arg() {
-        let mut cfg = default_gemini_backend();
+        let mut cfg = gemini_config();
         cfg.model_arg = None;
         let runner = CliRunner::new(cfg);
         let argv = runner.build_argv("gemini-pro", "Test", None, None, false);
@@ -1148,7 +1147,7 @@ mod tests {
 
     #[test]
     fn build_argv_empty_model_skipped() {
-        let runner = CliRunner::new(default_claude_backend());
+        let runner = CliRunner::new(claude_config());
         let argv = runner.build_argv("", "Prompt", None, None, false);
         // Empty model string should not produce --model flag
         assert!(!argv.contains(&"--model".to_string()));
@@ -1156,7 +1155,7 @@ mod tests {
 
     #[test]
     fn build_argv_session_mode_none_skips_session() {
-        let runner = CliRunner::new(default_gemini_backend());
+        let runner = CliRunner::new(gemini_config());
         let argv = runner.build_argv("gemini-pro", "Hi", None, Some("s-1"), false);
         // Gemini has session_mode=None, so session_id should not appear
         assert!(!argv.contains(&"s-1".to_string()));
@@ -1164,7 +1163,7 @@ mod tests {
 
     #[test]
     fn build_argv_empty_system_prompt_skipped() {
-        let runner = CliRunner::new(default_claude_backend());
+        let runner = CliRunner::new(claude_config());
         let argv = runner.build_argv("sonnet", "Prompt", Some(""), None, false);
         // Empty system prompt should not produce the flag
         assert!(!argv.contains(&"--append-system-prompt".to_string()));
@@ -1172,7 +1171,7 @@ mod tests {
 
     #[test]
     fn build_argv_gemini_prompt_arg() {
-        let runner = CliRunner::new(default_gemini_backend());
+        let runner = CliRunner::new(gemini_config());
         let argv = runner.build_argv("gemini-2.5-flash", "Hello world", None, None, false);
         // Gemini uses prompt_arg="-p", so prompt must follow "-p" at the end
         let p_idx = argv.iter().position(|a| a == "-p").expect("-p must be in argv");
@@ -1183,7 +1182,7 @@ mod tests {
 
     #[test]
     fn build_argv_claude_no_prompt_arg() {
-        let runner = CliRunner::new(default_claude_backend());
+        let runner = CliRunner::new(claude_config());
         let argv = runner.build_argv("sonnet", "Hello", None, None, false);
         // Claude has prompt_arg=None, prompt is positional (last element)
         assert_eq!(argv.last().unwrap(), "Hello");
