@@ -548,6 +548,260 @@ pub async fn migrate_provider_keys_to_vault(db: &PgPool, secrets: &SecretsManage
     }
 }
 
+// ── CLI health-check ───────────────────────────────────────────────────────
+
+/// Response from the CLI provider health-check endpoint.
+#[derive(serde::Serialize)]
+struct CliTestResult {
+    cli_found: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cli_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cli_version: Option<String>,
+    auth_ok: bool,
+    response_ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_time_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+impl CliTestResult {
+    fn not_found(error: String) -> Self {
+        Self { cli_found: false, cli_path: None, cli_version: None, auth_ok: false, response_ok: false, response_time_ms: None, error: Some(error) }
+    }
+
+    fn no_key(cli_path: String, cli_version: Option<String>) -> Self {
+        Self { cli_found: true, cli_path: Some(cli_path), cli_version, auth_ok: false, response_ok: false, response_time_ms: None, error: Some("No API key configured. Add key in Provider settings.".into()) }
+    }
+}
+
+/// Install hints for CLI presets.
+fn install_hint(preset_id: &str) -> &'static str {
+    match preset_id {
+        "gemini-cli" => "npm install -g @google/gemini-cli",
+        "claude-cli" => "npm install -g @anthropic-ai/claude-code",
+        "codex-cli" => "npm install -g @openai/codex",
+        _ => "see provider documentation",
+    }
+}
+
+/// `POST /api/providers/{id}/test-cli`
+///
+/// Validates CLI installation, API key, and runs a test prompt.
+pub(crate) async fn api_test_cli(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    use std::process::Stdio;
+    use std::time::Instant;
+
+    // Load provider
+    let provider = match providers::get_provider(&state.db, id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({"error": "provider not found"}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    };
+
+    // Validate CLI type
+    let preset = match crate::agent::cli_backend::find_preset(&provider.provider_type) {
+        Some(p) => p,
+        None => return (StatusCode::BAD_REQUEST, Json(json!({"error": "Not a CLI provider"}))).into_response(),
+    };
+
+    // Resolve config with DB overrides
+    let config = match crate::agent::cli_backend::resolve_cli_config(&provider.provider_type, &provider.options) {
+        Some(c) => c,
+        None => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "failed to resolve CLI config"}))).into_response(),
+    };
+
+    // Step 1: which/where — check if CLI is installed
+    #[cfg(target_os = "windows")]
+    let which_cmd = "where.exe";
+    #[cfg(not(target_os = "windows"))]
+    let which_cmd = "which";
+
+    let which_result = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::process::Command::new(which_cmd)
+            .arg(&config.command)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output(),
+    ).await {
+        Ok(Ok(output)) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        }
+        _ => {
+            return (StatusCode::OK, Json(serde_json::to_value(
+                CliTestResult::not_found(format!("CLI not installed. Install: {}", install_hint(preset.id)))
+            ).unwrap_or_default())).into_response();
+        }
+    };
+
+    let cli_path = which_result;
+
+    // Step 2: version
+    let cli_version = match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio::process::Command::new(&config.command)
+            .arg("--version")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output(),
+    ).await {
+        Ok(Ok(output)) if output.status.success() => {
+            let raw = String::from_utf8_lossy(&output.stdout);
+            raw.lines().next().map(|l| l.trim().to_string())
+        }
+        _ => None,
+    };
+
+    // Step 3: resolve API key
+    let api_key = match resolve_key(&state.secrets, &provider).await {
+        Some(k) => k,
+        None => {
+            // Fallback: check global secret under preset env_key
+            match state.secrets.get_scoped(preset.env_key, "").await {
+                Some(k) => k,
+                None => {
+                    return (StatusCode::OK, Json(serde_json::to_value(
+                        CliTestResult::no_key(cli_path, cli_version)
+                    ).unwrap_or_default())).into_response();
+                }
+            }
+        }
+    };
+
+    // Step 4: test run
+    let mut cmd = tokio::process::Command::new(&config.command);
+
+    // Base args
+    for arg in &config.args {
+        cmd.arg(arg);
+    }
+
+    // Model arg
+    if let Some(ref model_arg) = config.model_arg {
+        let model = provider.default_model.as_deref()
+            .or_else(|| preset.default_models.first().copied())
+            .unwrap_or("default");
+        cmd.arg(model_arg);
+        cmd.arg(model);
+    }
+
+    // Prompt arg
+    if let Some(ref prompt_arg) = config.prompt_arg {
+        cmd.arg(prompt_arg);
+        cmd.arg("say hi");
+    } else {
+        cmd.arg("say hi");
+    }
+
+    // Environment: inject API key
+    cmd.env(preset.env_key, &api_key);
+
+    // Clear env vars (security)
+    for key in &config.clear_env {
+        cmd.env_remove(key);
+    }
+
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let start = Instant::now();
+
+    let output = match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        cmd.output(),
+    ).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => {
+            let elapsed = start.elapsed().as_millis() as u64;
+            return (StatusCode::OK, Json(serde_json::to_value(CliTestResult {
+                cli_found: true,
+                cli_path: Some(cli_path),
+                cli_version,
+                auth_ok: true,
+                response_ok: false,
+                response_time_ms: Some(elapsed),
+                error: Some(format!("CLI failed to start: {}", e)),
+            }).unwrap_or_default())).into_response();
+        }
+        Err(_) => {
+            let elapsed = start.elapsed().as_millis() as u64;
+            return (StatusCode::OK, Json(serde_json::to_value(CliTestResult {
+                cli_found: true,
+                cli_path: Some(cli_path),
+                cli_version,
+                auth_ok: true,
+                response_ok: false,
+                response_time_ms: Some(elapsed),
+                error: Some("CLI timed out after 30s".into()),
+            }).unwrap_or_default())).into_response();
+        }
+    };
+
+    let elapsed = start.elapsed().as_millis() as u64;
+
+    // Step 5: parse result
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+        let auth_keywords = ["401", "403", "unauthorized", "invalid key", "authentication", "invalid api key", "api key"];
+        let is_auth_error = auth_keywords.iter().any(|kw| stderr.contains(kw));
+
+        if is_auth_error {
+            return (StatusCode::OK, Json(serde_json::to_value(CliTestResult {
+                cli_found: true,
+                cli_path: Some(cli_path),
+                cli_version,
+                auth_ok: false,
+                response_ok: false,
+                response_time_ms: Some(elapsed),
+                error: Some("API key rejected".into()),
+            }).unwrap_or_default())).into_response();
+        }
+
+        let code = output.status.code().map_or("unknown".to_string(), |c| c.to_string());
+        return (StatusCode::OK, Json(serde_json::to_value(CliTestResult {
+            cli_found: true,
+            cli_path: Some(cli_path),
+            cli_version,
+            auth_ok: true,
+            response_ok: false,
+            response_time_ms: Some(elapsed),
+            error: Some(format!("CLI exited with code {}", code)),
+        }).unwrap_or_default())).into_response();
+    }
+
+    // Exit code 0 — try to parse JSON
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    match serde_json::from_str::<Value>(&stdout) {
+        Ok(_) => {
+            (StatusCode::OK, Json(serde_json::to_value(CliTestResult {
+                cli_found: true,
+                cli_path: Some(cli_path),
+                cli_version,
+                auth_ok: true,
+                response_ok: true,
+                response_time_ms: Some(elapsed),
+                error: None,
+            }).unwrap_or_default())).into_response()
+        }
+        Err(_) => {
+            (StatusCode::OK, Json(serde_json::to_value(CliTestResult {
+                cli_found: true,
+                cli_path: Some(cli_path),
+                cli_version,
+                auth_ok: true,
+                response_ok: false,
+                response_time_ms: Some(elapsed),
+                error: Some("CLI output is not valid JSON".into()),
+            }).unwrap_or_default())).into_response()
+        }
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

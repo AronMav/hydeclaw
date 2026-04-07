@@ -111,6 +111,7 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
         .route("/api/providers/{id}", get(handlers::providers::api_get_provider).put(handlers::providers::api_update_provider).delete(handlers::providers::api_delete_provider))
         .route("/api/providers/{id}/models", get(handlers::providers::api_unified_provider_models))
         .route("/api/providers/{id}/resolve", get(handlers::providers::api_provider_resolve))
+        .route("/api/providers/{id}/test-cli", post(handlers::providers::api_test_cli))
         .route("/api/provider-active", get(handlers::providers::api_list_provider_active).put(handlers::providers::api_set_provider_active))
         .route("/api/watchdog/status", get(api_watchdog_status))
         .route("/api/watchdog/config", get(api_watchdog_config).put(api_watchdog_config_update))
