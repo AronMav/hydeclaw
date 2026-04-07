@@ -225,7 +225,7 @@ pub async fn discover_models(
             fetch_ollama_models(&base).await
         }
 
-        "openai" => {
+        "openai" | "codex-cli" => {
             let base = base_url_override
                 .map(|s| s.to_string())
                 .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
@@ -285,7 +285,7 @@ async fn discover_models_with_resolved_key(
                 .unwrap_or_else(|| "http://localhost:11434".to_string());
             fetch_ollama_models(&base).await
         }
-        "openai" => {
+        "openai" | "codex-cli" => {
             let base = base_url_override
                 .map(|s| s.to_string())
                 .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
@@ -349,8 +349,8 @@ mod tests {
         // All known providers should be handled in discover_models match arms
         // (no hardcoded fallbacks — every provider has a listing API)
         let known = ["anthropic", "claude-cli", "google", "gemini", "gemini-cli",
-                      "ollama", "openai", "minimax", "deepseek", "groq", "mistral",
-                      "xai", "perplexity", "together", "openrouter"];
+                      "ollama", "openai", "codex-cli", "minimax", "deepseek", "groq",
+                      "mistral", "xai", "perplexity", "together", "openrouter"];
         // Just verify the list is non-empty (actual API calls tested in integration tests)
         assert!(known.len() > 10);
     }

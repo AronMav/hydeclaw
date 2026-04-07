@@ -305,10 +305,30 @@ pub(crate) async fn api_unified_provider_models(
         provider.base_url.as_deref(),
         api_key.as_deref(),
     )
-    .await
-    .unwrap_or_default();
+    .await;
 
-    (StatusCode::OK, Json(json!({ "models": models }))).into_response()
+    match &models {
+        Ok(m) if !m.is_empty() => {
+            (StatusCode::OK, Json(json!({ "models": m }))).into_response()
+        }
+        _ => {
+            // For CLI providers: return hardcoded fallback models from preset
+            if let Some(preset) = crate::agent::cli_backend::find_preset(&provider.provider_type) {
+                let fallback: Vec<crate::agent::model_discovery::ModelInfo> = preset.default_models
+                    .iter()
+                    .map(|id| crate::agent::model_discovery::ModelInfo {
+                        id: id.to_string(),
+                        owned_by: Some(preset.models_provider.to_string()),
+                    })
+                    .collect();
+                (StatusCode::OK, Json(json!({ "models": fallback, "fallback": true }))).into_response()
+            } else {
+                // Non-CLI providers: return whatever we got (empty list or error-default)
+                let m = models.unwrap_or_default();
+                (StatusCode::OK, Json(json!({ "models": m }))).into_response()
+            }
+        }
+    }
 }
 
 // ── Resolve (unmasked credentials for internal use) ─────────────────────────
