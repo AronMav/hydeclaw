@@ -80,7 +80,17 @@ pub async fn upsert_entity_resolved(db: &PgPool, name: &str, entity_type: &str) 
 // ── Relation operations ──────────────────────────────────────────────────────
 
 /// Create or strengthen a relation between two entities (by normalized name + type).
-/// Logs warning if source or target entity not found.
+///
+/// Temporal semantics (Phase 15):
+/// - New edges get `valid_from = now()`, `valid_to = NULL` (active).
+/// - If the same triple already has an active edge with the SAME fact (or no new fact
+///   provided): reinforce by incrementing weight.
+/// - If the triple already has an active edge but with a DIFFERENT fact: expire the old
+///   edge (`valid_to = now()`) and insert a new active edge — non-destructive contradiction.
+/// - Transaction wraps expire + insert to guarantee atomicity.
+///
+/// Signature is unchanged — existing callers in engine_memory.rs and
+/// extract_entities_for_chunk compile without modification.
 pub async fn upsert_relation(
     db: &PgPool,
     source_name: &str,
@@ -92,32 +102,104 @@ pub async fn upsert_relation(
 ) -> Result<()> {
     let src_norm = source_name.trim().to_lowercase();
     let tgt_norm = target_name.trim().to_lowercase();
-    let result = sqlx::query(
-        "INSERT INTO graph_edges (source_id, target_id, relation_type, fact)
-         SELECT s.id, t.id, $5, $6
+
+    // Resolve entity IDs from normalized names.
+    let ids: Option<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
+        "SELECT s.id, t.id
          FROM graph_entities s, graph_entities t
          WHERE s.name_normalized = $1 AND s.entity_type = $2
-           AND t.name_normalized = $3 AND t.entity_type = $4
-         ON CONFLICT (source_id, target_id, relation_type)
-         DO UPDATE SET weight = graph_edges.weight + 1, updated_at = now(),
-                       fact = COALESCE(EXCLUDED.fact, graph_edges.fact)",
+           AND t.name_normalized = $3 AND t.entity_type = $4",
     )
     .bind(&src_norm)
     .bind(source_type)
     .bind(&tgt_norm)
     .bind(target_type)
-    .bind(relation_type)
-    .bind(fact)
-    .execute(db)
+    .fetch_optional(db)
     .await?;
-    if result.rows_affected() == 0 {
-        tracing::warn!(
-            source = source_name,
-            target = target_name,
-            rel = relation_type,
-            "upsert_relation: source or target entity not found, relation skipped"
-        );
+
+    let (source_id, target_id) = match ids {
+        Some(pair) => pair,
+        None => {
+            tracing::warn!(
+                source = source_name,
+                target = target_name,
+                rel = relation_type,
+                "upsert_relation: source or target entity not found, relation skipped"
+            );
+            return Ok(());
+        }
+    };
+
+    // Check for an existing active edge (valid_to IS NULL).
+    let existing: Option<(uuid::Uuid, Option<String>)> = sqlx::query_as(
+        "SELECT id, fact FROM graph_edges
+         WHERE source_id = $1 AND target_id = $2 AND relation_type = $3
+           AND valid_to IS NULL",
+    )
+    .bind(source_id)
+    .bind(target_id)
+    .bind(relation_type)
+    .fetch_optional(db)
+    .await?;
+
+    match existing {
+        None => {
+            // No active edge — insert a new one with valid_from = now().
+            sqlx::query(
+                "INSERT INTO graph_edges (source_id, target_id, relation_type, fact, valid_from, valid_to)
+                 VALUES ($1, $2, $3, $4, now(), NULL)",
+            )
+            .bind(source_id)
+            .bind(target_id)
+            .bind(relation_type)
+            .bind(fact)
+            .execute(db)
+            .await?;
+        }
+        Some((old_id, old_fact)) => {
+            // Active edge exists — check whether fact has changed (contradiction detection).
+            let facts_differ = match (&old_fact, &fact) {
+                (Some(old), Some(new)) => old.as_str() != *new,
+                (None, Some(_)) => true, // gaining a new fact where none existed
+                _ => false,              // no new fact provided, or facts match
+            };
+
+            if facts_differ {
+                // Contradiction: expire old edge and insert new one atomically.
+                let mut tx = db.begin().await?;
+                sqlx::query(
+                    "UPDATE graph_edges SET valid_to = now(), updated_at = now() WHERE id = $1",
+                )
+                .bind(old_id)
+                .execute(&mut *tx)
+                .await?;
+                sqlx::query(
+                    "INSERT INTO graph_edges (source_id, target_id, relation_type, fact, valid_from, valid_to)
+                     VALUES ($1, $2, $3, $4, now(), NULL)",
+                )
+                .bind(source_id)
+                .bind(target_id)
+                .bind(relation_type)
+                .bind(fact)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+            } else {
+                // Same fact (or no new fact): reinforce by incrementing weight.
+                sqlx::query(
+                    "UPDATE graph_edges
+                     SET weight = weight + 1, updated_at = now(),
+                         fact = COALESCE($2, fact)
+                     WHERE id = $1",
+                )
+                .bind(old_id)
+                .bind(fact)
+                .execute(db)
+                .await?;
+            }
+        }
     }
+
     Ok(())
 }
 
