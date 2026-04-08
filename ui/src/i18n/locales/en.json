@@ -889,6 +889,8 @@
   "providers.select_model": "Select model...",
   "providers.save_first_to_discover": "Save the provider first to discover models with your API key.",
   "providers.field_base_url": "Base URL",
+  "providers.field_timeout": "Request timeout (seconds)",
+  "providers.field_timeout_hint": "0 = no timeout, empty = default (120s)",
   "providers.field_driver": "Driver",
   "providers.select_driver": "Select driver...",
   "providers.media_name_hint": "Unique name for this provider (e.g. local-whisper, openai-tts)",

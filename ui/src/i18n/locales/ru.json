@@ -889,6 +889,8 @@
   "providers.select_model": "Выберите модель...",
   "providers.save_first_to_discover": "Сначала сохраните провайдер, чтобы обнаружить модели с вашим API ключом.",
   "providers.field_base_url": "Базовый URL",
+  "providers.field_timeout": "Таймаут запроса (секунды)",
+  "providers.field_timeout_hint": "0 = без таймаута, пусто = по умолчанию (120с)",
   "providers.field_driver": "Драйвер",
   "providers.select_driver": "Выберите драйвер...",
   "providers.media_name_hint": "Уникальное имя провайдера (например, local-whisper, openai-tts)",

@@ -729,6 +729,36 @@ export default function ProvidersPage() {
                   </div>
                 )}
 
+                {/* Timeout — hidden for CLI providers */}
+                {!isCli && (
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-muted-foreground">
+                      {t("providers.field_timeout")}{" "}
+                      <span className="text-muted-foreground/50 font-normal">({t("providers.optional")})</span>
+                    </label>
+                    <Input
+                      type="number"
+                      min={0}
+                      placeholder="120"
+                      value={(form.options as Record<string, unknown> | undefined)?.timeout_secs != null ? String((form.options as Record<string, unknown>).timeout_secs) : ""}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setForm((f) => ({
+                          ...f,
+                          options: {
+                            ...(f.options as Record<string, unknown> | undefined),
+                            timeout_secs: val === "" ? undefined : Number(val),
+                          },
+                        }));
+                      }}
+                      className="font-mono text-sm w-32"
+                    />
+                    <p className="text-[11px] text-muted-foreground/60">
+                      {t("providers.field_timeout_hint")}
+                    </p>
+                  </div>
+                )}
+
                 {/* Test Connection for CLI providers */}
                 {isCli && isEditing && (
                   <div className="space-y-2">
