@@ -181,6 +181,7 @@ pub(crate) fn agent_to_detail(cfg: &AgentConfig, is_running: bool, config_dirty:
             "warn_threshold": tl.warn_threshold,
             "break_threshold": tl.break_threshold,
             "max_consecutive_failures": tl.max_consecutive_failures,
+            "max_auto_continues": tl.max_auto_continues,
         })),
         "approval": a.approval.as_ref().map(|ap| json!({
             "enabled": ap.enabled,
@@ -358,6 +359,7 @@ pub(crate) struct ToolLoopPayload {
     pub warn_threshold: Option<usize>,
     pub break_threshold: Option<usize>,
     pub max_consecutive_failures: Option<usize>,
+    pub max_auto_continues: Option<u8>,
 }
 
 #[derive(Deserialize)]
@@ -436,6 +438,7 @@ pub(crate) fn build_agent_config(name: String, p: AgentCreatePayload) -> AgentCo
                 warn_threshold: tl.warn_threshold.unwrap_or(5),
                 break_threshold: tl.break_threshold.unwrap_or(10),
                 max_consecutive_failures: tl.max_consecutive_failures.unwrap_or(3),
+                max_auto_continues: tl.max_auto_continues.unwrap_or(5),
             }),
             watchdog: p.watchdog.flatten().map(|w| crate::config::WatchdogConfig {
                 inactivity_secs: w.inactivity_secs.unwrap_or(600),
@@ -904,6 +907,7 @@ pub(crate) async fn api_update_agent(
                 warn_threshold: Some(tl.warn_threshold),
                 break_threshold: Some(tl.break_threshold),
                 max_consecutive_failures: Some(tl.max_consecutive_failures),
+                max_auto_continues: Some(tl.max_auto_continues),
             }));
         }
         if payload.icon.is_none() { payload.icon = a.icon.clone(); }

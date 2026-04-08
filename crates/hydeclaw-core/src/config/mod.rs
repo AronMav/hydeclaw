@@ -485,12 +485,16 @@ pub struct ToolLoopSettings {
     /// Consecutive LLM errors from primary before switching to fallback provider (default: 3).
     #[serde(default = "default_max_consecutive_failures")]
     pub max_consecutive_failures: usize,
+    /// Maximum auto-continue nudges per session when LLM response looks incomplete (default: 5).
+    #[serde(default = "default_max_auto_continues")]
+    pub max_auto_continues: u8,
 }
 
 fn default_tool_loop_max() -> usize { 50 }
 fn default_tool_loop_warn() -> usize { 5 }
 fn default_tool_loop_break() -> usize { 10 }
 fn default_max_consecutive_failures() -> usize { 3 }
+fn default_max_auto_continues() -> u8 { 5 }
 
 /// Approval system configuration for an agent.
 /// When enabled, certain tool calls require owner confirmation before execution.
@@ -1251,6 +1255,7 @@ model = "m2.5"
                     warn_threshold: 3,
                     break_threshold: 7,
                     max_consecutive_failures: 3,
+                    max_auto_continues: 5,
                 }),
                 base: false,
                 watchdog: None,

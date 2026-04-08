@@ -678,7 +678,7 @@ impl AgentEngine {
         let mut detector = LoopDetector::new(&loop_config);
         let mut did_reset_session = false;
         let mut empty_retry_count: u8 = 0;
-        let mut did_auto_continue = false;
+        let mut auto_continue_count: u8 = 0;
         let mut context_chars: usize = messages.iter().map(|m| m.content.chars().count()).sum();
         let mut consecutive_failures: usize = 0;
         let mut using_fallback = false;
@@ -733,9 +733,26 @@ impl AgentEngine {
                 final_response = strip_thinking(&response.content);
 
                 // Auto-continue: if LLM described remaining work, nudge it to execute
-                if !did_auto_continue && !final_response.is_empty() && looks_incomplete(&final_response) {
-                    did_auto_continue = true;
-                    tracing::info!(iteration, "auto-continue: response looks incomplete, nudging LLM");
+                if auto_continue_count < loop_config.max_auto_continues && !final_response.is_empty() && looks_incomplete(&final_response) {
+                    auto_continue_count += 1;
+                    tracing::info!(iteration, count = auto_continue_count, max = loop_config.max_auto_continues, "auto-continue: response looks incomplete, nudging LLM");
+                    {
+                        let db = self.db.clone();
+                        let agent_name = self.agent.name.clone();
+                        let cnt = auto_continue_count;
+                        let max = loop_config.max_auto_continues;
+                        if let Some(ref ui_tx) = self.ui_event_tx {
+                            let tx = ui_tx.clone();
+                            tokio::spawn(async move {
+                                crate::gateway::notify(
+                                    &db, &tx, "auto_continue",
+                                    &format!("Auto-continue: {}", agent_name),
+                                    &format!("Agent continued unfinished task (attempt {}/{})", cnt, max),
+                                    serde_json::json!({"agent": agent_name}),
+                                ).await.ok();
+                            });
+                        }
+                    }
                     messages.push(Message {
                         role: MessageRole::User,
                         content: AUTO_CONTINUE_NUDGE.to_string(),
@@ -1283,6 +1300,7 @@ impl AgentEngine {
         let mut detector = LoopDetector::new(&loop_config);
         let mut did_reset_session = false;
         let mut empty_retry_count: u8 = 0;
+        let mut auto_continue_count: u8 = 0;
         let mut context_chars: usize = messages.iter().map(|m| m.content.chars().count()).sum();
         let mut consecutive_failures: usize = 0;
         let mut using_fallback = false;
@@ -1372,6 +1390,42 @@ impl AgentEngine {
                 if final_response.is_empty() {
                     tracing::warn!(iteration, "LLM returned empty response after retry");
                 }
+
+                // Auto-continue: if LLM described remaining work, nudge it to execute
+                if auto_continue_count < loop_config.max_auto_continues && !final_response.is_empty() && looks_incomplete(&final_response) {
+                    auto_continue_count += 1;
+                    tracing::info!(iteration, count = auto_continue_count, max = loop_config.max_auto_continues, "auto-continue: response looks incomplete, nudging LLM");
+                    {
+                        let db = self.db.clone();
+                        let agent_name = self.agent.name.clone();
+                        let cnt = auto_continue_count;
+                        let max = loop_config.max_auto_continues;
+                        if let Some(ref ui_tx) = self.ui_event_tx {
+                            let tx = ui_tx.clone();
+                            tokio::spawn(async move {
+                                crate::gateway::notify(
+                                    &db, &tx, "auto_continue",
+                                    &format!("Auto-continue: {}", agent_name),
+                                    &format!("Agent continued unfinished task (attempt {}/{})", cnt, max),
+                                    serde_json::json!({"agent": agent_name}),
+                                ).await.ok();
+                            });
+                        }
+                    }
+                    if let Some(ref tx) = chunk_tx {
+                        tx.send("\n\n...".to_string()).ok();
+                    }
+                    messages.push(Message {
+                        role: MessageRole::User,
+                        content: AUTO_CONTINUE_NUDGE.to_string(),
+                        tool_calls: None,
+                        tool_call_id: None,
+                        thinking_blocks: vec![],
+                    });
+                    context_chars += AUTO_CONTINUE_NUDGE.len();
+                    continue;
+                }
+
                 if chunk_tx.is_some() {
                     streamed_via_chunk_tx = true;
                 }
@@ -1717,7 +1771,7 @@ impl AgentEngine {
         let mut detector = LoopDetector::new(&loop_config);
         let mut did_reset_session = false;
         let mut empty_retry_count: u8 = 0;
-        let mut did_auto_continue = false;
+        let mut auto_continue_count: u8 = 0;
         let mut context_chars: usize = messages.iter().map(|m| m.content.chars().count()).sum();
         let mut consecutive_failures: usize = 0;
         let mut using_fallback = false;
@@ -1830,9 +1884,26 @@ impl AgentEngine {
 
                 // Auto-continue: if LLM described remaining work, nudge it to execute.
                 // In SSE mode, the "incomplete" text was already streamed — send visible marker.
-                if !did_auto_continue && !final_response.is_empty() && looks_incomplete(&final_response) {
-                    did_auto_continue = true;
-                    tracing::info!(iteration, "auto-continue: response looks incomplete, nudging LLM");
+                if auto_continue_count < loop_config.max_auto_continues && !final_response.is_empty() && looks_incomplete(&final_response) {
+                    auto_continue_count += 1;
+                    tracing::info!(iteration, count = auto_continue_count, max = loop_config.max_auto_continues, "auto-continue: response looks incomplete, nudging LLM");
+                    {
+                        let db = self.db.clone();
+                        let agent_name = self.agent.name.clone();
+                        let cnt = auto_continue_count;
+                        let max = loop_config.max_auto_continues;
+                        if let Some(ref ui_tx) = self.ui_event_tx {
+                            let tx = ui_tx.clone();
+                            tokio::spawn(async move {
+                                crate::gateway::notify(
+                                    &db, &tx, "auto_continue",
+                                    &format!("Auto-continue: {}", agent_name),
+                                    &format!("Agent continued unfinished task (attempt {}/{})", cnt, max),
+                                    serde_json::json!({"agent": agent_name}),
+                                ).await.ok();
+                            });
+                        }
+                    }
                     let _ = event_tx.send(StreamEvent::TextDelta("\n\n...".to_string()));
                     messages.push(Message {
                         role: MessageRole::User,

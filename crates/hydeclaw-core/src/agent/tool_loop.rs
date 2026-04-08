@@ -18,6 +18,8 @@ pub struct ToolLoopConfig {
     pub break_threshold: usize,
     /// Consecutive LLM errors from primary before switching to fallback provider.
     pub max_consecutive_failures: usize,
+    /// Maximum auto-continue nudges per session when LLM response looks incomplete.
+    pub max_auto_continues: u8,
 }
 
 impl ToolLoopConfig {
@@ -36,6 +38,7 @@ impl Default for ToolLoopConfig {
             warn_threshold: 5,
             break_threshold: 10,
             max_consecutive_failures: 3,
+            max_auto_continues: 5,
         }
     }
 }
@@ -49,6 +52,7 @@ impl From<&crate::config::ToolLoopSettings> for ToolLoopConfig {
             warn_threshold: s.warn_threshold,
             break_threshold: s.break_threshold,
             max_consecutive_failures: s.max_consecutive_failures,
+            max_auto_continues: s.max_auto_continues,
         }
     }
 }
