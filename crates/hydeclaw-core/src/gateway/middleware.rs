@@ -255,17 +255,10 @@ pub(crate) async fn auth_middleware(
         // All other loopback requests must still provide a valid auth token
     }
 
-    // Only true loopback is exempt from auth rate-limiter lockout — internal services
-    // (toolgate, channels) call from 127.0.0.1 and must never be locked out.
-    // LAN clients are NOT exempt: a compromised or misconfigured LAN device should still
-    // be subject to brute-force protection just like any external client.
     let exempt_from_lockout = is_loopback(&client_ip);
-    if !exempt_from_lockout && rate_limiter.is_locked(&client_ip).await {
-        tracing::warn!(ip = %client_ip, path = %path, "auth rate limit: locked");
-        return (StatusCode::TOO_MANY_REQUESTS, "Too many failed attempts. Try again later.").into_response();
-    }
 
-    // Check Authorization header first
+    // Check Authorization header BEFORE lockout — a valid token always passes and clears lockout.
+    // This prevents locking out legitimate users who accumulated failures (e.g. during login page reload).
     let auth_header = req
         .headers()
         .get("authorization")
@@ -277,6 +270,12 @@ pub(crate) async fn auth_middleware(
             rate_limiter.record_success(&client_ip).await;
             return next.run(req).await;
         }
+
+    // Only block unauthenticated requests from locked IPs
+    if !exempt_from_lockout && rate_limiter.is_locked(&client_ip).await {
+        tracing::warn!(ip = %client_ip, path = %path, "auth rate limit: locked");
+        return (StatusCode::TOO_MANY_REQUESTS, "Too many failed attempts. Try again later.").into_response();
+    }
 
     // For WebSocket paths, also accept ?ticket= (one-time) or ?token= (legacy) query parameter
     // (browser WebSocket API cannot set custom headers)
