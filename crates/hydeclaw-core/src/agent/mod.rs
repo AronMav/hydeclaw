@@ -1,3 +1,4 @@
+pub mod memory_service;
 pub mod channel_actions;
 pub mod channel_kind;
 pub mod cli_backend;
