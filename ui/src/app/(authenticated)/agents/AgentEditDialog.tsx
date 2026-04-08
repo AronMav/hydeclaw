@@ -113,6 +113,8 @@ export interface FormState {
   accessEnabled: boolean;
   accessMode: string;
   accessOwnerId: string;
+  // Fallback provider
+  fallbackProvider: string;
 }
 
 export interface AgentEditDialogProps {
@@ -380,6 +382,30 @@ export function AgentEditDialog({
                     className="bg-background border-border font-mono text-sm h-8"
                     onChange={(e) => upd({ maxTokens: e.target.value })}
                   />
+                </Field>
+                <Field label={t("agents.field_fallback_provider")}>
+                  <Select
+                    value={form.fallbackProvider || "__none__"}
+                    onValueChange={(v) => upd({ fallbackProvider: v === "__none__" ? "" : v })}
+                  >
+                    <SelectTrigger className="w-full bg-background border-border text-sm h-8">
+                      <SelectValue placeholder={t("agents.field_fallback_provider")} />
+                    </SelectTrigger>
+                    <SelectContent className="border-border">
+                      <SelectItem value="__none__" className="text-sm text-muted-foreground">
+                        <span className="text-muted-foreground">&mdash;</span>
+                      </SelectItem>
+                      {llmProviders.map((conn) => (
+                        <SelectItem key={conn.id} value={conn.name} className="text-sm font-mono">
+                          <span className="flex items-center gap-2">
+                            <Link2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                            <span>{conn.name}</span>
+                            <span className="text-muted-foreground/60 text-[10px]">{conn.default_model}</span>
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </Field>
                 <Field label={t("agents.field_top_k_tools")}>
                   <Input

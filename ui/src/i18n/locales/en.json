@@ -243,6 +243,7 @@
   "agents.field_name": "Name",
   "agents.field_language": "Language",
   "agents.field_provider": "Provider",
+  "agents.field_fallback_provider": "Fallback Provider",
   "agents.field_model": "Model",
   "agents.loading_models": "Loading models...",
   "agents.field_temperature": "Temperature",

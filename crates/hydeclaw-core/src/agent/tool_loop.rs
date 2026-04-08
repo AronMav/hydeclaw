@@ -16,6 +16,8 @@ pub struct ToolLoopConfig {
     pub warn_threshold: usize,
     /// Number of consecutive identical tool calls before forcibly breaking the loop.
     pub break_threshold: usize,
+    /// Consecutive LLM errors from primary before switching to fallback provider.
+    pub max_consecutive_failures: usize,
 }
 
 impl ToolLoopConfig {
@@ -33,6 +35,7 @@ impl Default for ToolLoopConfig {
             detect_loops: true,
             warn_threshold: 5,
             break_threshold: 10,
+            max_consecutive_failures: 3,
         }
     }
 }
@@ -45,6 +48,7 @@ impl From<&crate::config::ToolLoopSettings> for ToolLoopConfig {
             detect_loops: s.detect_loops,
             warn_threshold: s.warn_threshold,
             break_threshold: s.break_threshold,
+            max_consecutive_failures: s.max_consecutive_failures,
         }
     }
 }

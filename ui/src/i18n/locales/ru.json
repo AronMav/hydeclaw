@@ -243,6 +243,7 @@
   "agents.field_name": "Имя",
   "agents.field_language": "Язык",
   "agents.field_provider": "Провайдер",
+  "agents.field_fallback_provider": "Резервный провайдер",
   "agents.field_model": "Модель",
   "agents.loading_models": "Загрузка моделей...",
   "agents.field_temperature": "Температура",

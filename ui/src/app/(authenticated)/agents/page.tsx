@@ -96,6 +96,7 @@ const emptyForm: FormState = {
   accessEnabled: false,
   accessMode: "open",
   accessOwnerId: "",
+  fallbackProvider: "",
 };
 
 function detailToForm(d: AgentDetail): FormState {
@@ -151,6 +152,7 @@ function detailToForm(d: AgentDetail): FormState {
     accessEnabled: !!d.access,
     accessMode: d.access?.mode ?? "open",
     accessOwnerId: d.access?.owner_id ?? "",
+    fallbackProvider: d.fallback_provider ?? "",
   };
 }
 
@@ -246,6 +248,7 @@ function formToPayload(f: FormState) {
       : null,
     max_history_messages: f.maxHistoryMessages ? parseInt(f.maxHistoryMessages) : null,
     daily_budget_tokens: parseInt(f.dailyBudgetTokens) || 0,
+    fallback_provider: f.fallbackProvider || null,
   };
 }
 

@@ -680,12 +680,22 @@ impl AgentEngine {
         let mut empty_retry_count: u8 = 0;
         let mut did_auto_continue = false;
         let mut context_chars: usize = messages.iter().map(|m| m.content.chars().count()).sum();
+        let mut consecutive_failures: usize = 0;
+        let mut using_fallback = false;
+        let mut fallback_provider: Option<Arc<dyn super::providers::LlmProvider>> = None;
 
         for iteration in 0..loop_config.effective_max_iterations() {
             self.compact_tool_results(&mut messages, &mut context_chars);
-            let llm_result = self.chat_with_transient_retry(&mut messages, &available_tools).await;
+            let llm_result = if let Some(ref fb) = fallback_provider {
+                self.chat_with_transient_retry_using(fb, &mut messages, &available_tools).await
+            } else {
+                self.chat_with_transient_retry(&mut messages, &available_tools).await
+            };
             let response = match llm_result {
-                Ok(r) => r,
+                Ok(r) => {
+                    consecutive_failures = 0;
+                    r
+                }
                 Err(e) => {
                     if error_classify::classify(&e) == error_classify::LlmErrorClass::SessionCorruption && !did_reset_session {
                         did_reset_session = true;
@@ -694,6 +704,22 @@ impl AgentEngine {
                         messages.push(Message { role: MessageRole::User, content: user_text.clone(), tool_calls: None, tool_call_id: None, thinking_blocks: vec![] });
                         context_chars = messages.iter().map(|m| m.content.chars().count()).sum();
                         continue;
+                    }
+                    consecutive_failures += 1;
+                    if !using_fallback && consecutive_failures >= loop_config.max_consecutive_failures {
+                        if fallback_provider.is_none() {
+                            fallback_provider = self.create_fallback_provider().await;
+                        }
+                        if fallback_provider.is_some() {
+                            using_fallback = true;
+                            consecutive_failures = 0;
+                            tracing::warn!(
+                                agent = %self.agent.name,
+                                iteration,
+                                "switching to fallback provider after consecutive failures"
+                            );
+                            continue;
+                        }
                     }
                     tracing::error!(error = %e, iteration, "isolated LLM call failed, returning fallback");
                     self.hooks.fire(&super::hooks::HookEvent::OnError);
@@ -1258,6 +1284,9 @@ impl AgentEngine {
         let mut did_reset_session = false;
         let mut empty_retry_count: u8 = 0;
         let mut context_chars: usize = messages.iter().map(|m| m.content.chars().count()).sum();
+        let mut consecutive_failures: usize = 0;
+        let mut using_fallback = false;
+        let mut fallback_provider: Option<Arc<dyn super::providers::LlmProvider>> = None;
 
         for iteration in 0..loop_config.effective_max_iterations() {
             if let Some(ref tx) = status_tx {
@@ -1269,15 +1298,21 @@ impl AgentEngine {
 
             // Use streaming if chunk_tx available (enables progressive display)
             let llm_result = if let Some(tx) = &chunk_tx {
-                self.chat_stream_with_transient_retry(
-                    &mut messages, &available_tools,
-                    tx.clone(),
-                ).await
+                if let Some(ref fb) = fallback_provider {
+                    self.chat_stream_with_transient_retry_using(fb, &mut messages, &available_tools, tx.clone()).await
+                } else {
+                    self.chat_stream_with_transient_retry(&mut messages, &available_tools, tx.clone()).await
+                }
+            } else if let Some(ref fb) = fallback_provider {
+                self.chat_with_transient_retry_using(fb, &mut messages, &available_tools).await
             } else {
                 self.chat_with_transient_retry(&mut messages, &available_tools).await
             };
             let response = match llm_result {
-                Ok(r) => r,
+                Ok(r) => {
+                    consecutive_failures = 0;
+                    r
+                }
                 Err(e) => {
                     let class = error_classify::classify(&e);
                     // Auto-reset on session corruption (once)
@@ -1294,6 +1329,22 @@ impl AgentEngine {
                         });
                         context_chars = messages.iter().map(|m| m.content.chars().count()).sum();
                         continue;
+                    }
+                    consecutive_failures += 1;
+                    if !using_fallback && consecutive_failures >= loop_config.max_consecutive_failures {
+                        if fallback_provider.is_none() {
+                            fallback_provider = self.create_fallback_provider().await;
+                        }
+                        if fallback_provider.is_some() {
+                            using_fallback = true;
+                            consecutive_failures = 0;
+                            tracing::warn!(
+                                agent = %self.agent.name,
+                                iteration,
+                                "switching to fallback provider after consecutive failures"
+                            );
+                            continue;
+                        }
                     }
                     tracing::error!(error = %e, iteration, "LLM call failed, returning fallback");
                     final_response = error_classify::format_user_error(&e);
@@ -1668,6 +1719,9 @@ impl AgentEngine {
         let mut empty_retry_count: u8 = 0;
         let mut did_auto_continue = false;
         let mut context_chars: usize = messages.iter().map(|m| m.content.chars().count()).sum();
+        let mut consecutive_failures: usize = 0;
+        let mut using_fallback = false;
+        let mut fallback_provider: Option<Arc<dyn super::providers::LlmProvider>> = None;
 
         for iteration in 0..loop_config.effective_max_iterations() {
             let step_id = format!("step_{}", iteration);
@@ -1692,9 +1746,16 @@ impl AgentEngine {
                     }
                 }
             });
-            let llm_result = self.chat_stream_with_transient_retry(&mut messages, &available_tools, chunk_tx).await;
+            let llm_result = if let Some(ref fb) = fallback_provider {
+                self.chat_stream_with_transient_retry_using(fb, &mut messages, &available_tools, chunk_tx).await
+            } else {
+                self.chat_stream_with_transient_retry(&mut messages, &available_tools, chunk_tx).await
+            };
             let response = match llm_result {
-                Ok(r) => r,
+                Ok(r) => {
+                    consecutive_failures = 0;
+                    r
+                }
                 Err(e) => {
                     if error_classify::classify(&e) == error_classify::LlmErrorClass::SessionCorruption && !did_reset_session {
                         did_reset_session = true;
@@ -1703,6 +1764,25 @@ impl AgentEngine {
                         messages.push(Message { role: MessageRole::User, content: user_text.clone(), tool_calls: None, tool_call_id: None, thinking_blocks: vec![] });
                         context_chars = messages.iter().map(|m| m.content.chars().count()).sum();
                         continue;
+                    }
+                    consecutive_failures += 1;
+                    if !using_fallback && consecutive_failures >= loop_config.max_consecutive_failures {
+                        if fallback_provider.is_none() {
+                            fallback_provider = self.create_fallback_provider().await;
+                        }
+                        if fallback_provider.is_some() {
+                            using_fallback = true;
+                            consecutive_failures = 0;
+                            tracing::warn!(
+                                agent = %self.agent.name,
+                                iteration,
+                                "switching to fallback provider after consecutive failures (SSE)"
+                            );
+                            if event_tx.send(StreamEvent::StepFinish { step_id, finish_reason: "fallback".into() }).is_err() {
+                                tracing::debug!("SSE event channel closed, engine continues for DB save");
+                            }
+                            continue;
+                        }
                     }
                     // AUDIT:SSE-02 (verified 2026-03-30): LLM errors mid-stream are delivered
                     // as TextDelta (not StreamEvent::Error) via format_user_error(). This is
@@ -2241,6 +2321,46 @@ impl AgentEngine {
             .unwrap_or_default()
     }
 
+    /// Create fallback LLM provider from agent config.
+    /// Returns None if fallback_provider is not configured or if provider creation fails.
+    /// Looks up the connection by name in the providers table and creates a provider from it.
+    async fn create_fallback_provider(&self) -> Option<Arc<dyn super::providers::LlmProvider>> {
+        let fb_name = self.agent.fallback_provider.as_deref()?;
+        match crate::db::providers::get_provider_by_name(&self.db, fb_name).await {
+            Ok(Some(row)) => {
+                let p = super::providers::create_provider_from_connection(
+                    &row,
+                    None,
+                    self.agent.temperature,
+                    self.agent.max_tokens,
+                    self.secrets.clone(),
+                    self.sandbox.clone(),
+                    &self.agent.name,
+                    &self.workspace_dir,
+                    self.agent.base,
+                );
+                Some(p)
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    agent = %self.agent.name,
+                    fallback_provider = %fb_name,
+                    "fallback provider not found in providers table"
+                );
+                None
+            }
+            Err(e) => {
+                tracing::warn!(
+                    agent = %self.agent.name,
+                    fallback_provider = %fb_name,
+                    error = %e,
+                    "failed to look up fallback provider"
+                );
+                None
+            }
+        }
+    }
+
     /// Check daily token budget before LLM call.
     async fn check_budget(&self) -> Result<()> {
         let budget = self.agent.daily_budget_tokens;
@@ -2370,6 +2490,104 @@ impl AgentEngine {
             }
         }
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("LLM stream call failed after retries")))
+    }
+
+    /// Variant of chat_with_transient_retry that uses an explicit provider instead of self.provider.
+    /// Used for fallback provider switching without modifying engine state.
+    async fn chat_with_transient_retry_using(
+        &self,
+        provider: &Arc<dyn super::providers::LlmProvider>,
+        messages: &mut Vec<Message>,
+        tools: &[ToolDefinition],
+    ) -> Result<hydeclaw_types::LlmResponse> {
+        self.check_budget().await?;
+        let config = error_classify::RetryConfig::default();
+        let mut last_error: Option<anyhow::Error> = None;
+
+        for attempt in 0..config.max_attempts {
+            let result = match provider.chat(messages, tools).await {
+                Ok(resp) => Ok(resp),
+                Err(e) if super::tool_loop::is_context_overflow(&e) => {
+                    tracing::warn!("context overflow on fallback provider, compacting and retrying");
+                    self.compact_messages(messages).await;
+                    provider.chat(messages, tools).await
+                }
+                Err(e) => Err(e),
+            };
+            match result {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    let class = error_classify::classify(&e);
+                    if !error_classify::is_retryable(&class) {
+                        return Err(e);
+                    }
+                    let delay = error_classify::extract_retry_after(&e.to_string())
+                        .unwrap_or_else(|| config.retry_delay_for_error(&class, attempt));
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        max_attempts = config.max_attempts,
+                        delay_ms = delay.as_millis() as u64,
+                        error_class = ?class,
+                        error = %e,
+                        "retrying LLM call (fallback provider)"
+                    );
+                    last_error = Some(e);
+                    if attempt < config.max_attempts - 1 {
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("LLM call failed after retries (fallback provider)")))
+    }
+
+    /// Streaming variant of chat_with_transient_retry_using.
+    async fn chat_stream_with_transient_retry_using(
+        &self,
+        provider: &Arc<dyn super::providers::LlmProvider>,
+        messages: &mut Vec<Message>,
+        tools: &[ToolDefinition],
+        chunk_tx: mpsc::UnboundedSender<String>,
+    ) -> Result<hydeclaw_types::LlmResponse> {
+        self.check_budget().await?;
+        let config = error_classify::RetryConfig::default();
+        let mut last_error: Option<anyhow::Error> = None;
+
+        for attempt in 0..config.max_attempts {
+            let result = match provider.chat_stream(messages, tools, chunk_tx.clone()).await {
+                Ok(resp) => Ok(resp),
+                Err(e) if super::tool_loop::is_context_overflow(&e) => {
+                    tracing::warn!("context overflow on fallback provider (stream), compacting and retrying");
+                    self.compact_messages(messages).await;
+                    provider.chat_stream(messages, tools, chunk_tx.clone()).await
+                }
+                Err(e) => Err(e),
+            };
+            match result {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    let class = error_classify::classify(&e);
+                    if !error_classify::is_retryable(&class) {
+                        return Err(e);
+                    }
+                    let delay = error_classify::extract_retry_after(&e.to_string())
+                        .unwrap_or_else(|| config.retry_delay_for_error(&class, attempt));
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        max_attempts = config.max_attempts,
+                        delay_ms = delay.as_millis() as u64,
+                        error_class = ?class,
+                        error = %e,
+                        "retrying LLM call (fallback provider, stream)"
+                    );
+                    last_error = Some(e);
+                    if attempt < config.max_attempts - 1 {
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("LLM stream call failed after retries (fallback provider)")))
     }
 
     /// Default context window size based on model name.
