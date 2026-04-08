@@ -24,12 +24,31 @@ fn is_subagent_result_retryable(result_str: &str) -> bool {
         return false;
     }
     // Explicit cancellation by parent: never retry
-    if let Some(err) = value.get("error").and_then(|v| v.as_str()) {
-        if err.contains("cancelled by parent") {
-            return false;
-        }
+    if value.get("error").and_then(|v| v.as_str()).is_some_and(|e| e.contains("cancelled by parent")) {
+        return false;
     }
     true
+}
+
+/// Inject `retry_count` field into a subagent result JSON string.
+/// If parsing fails, wraps the raw string in a new JSON object with retry_count.
+fn augment_with_retry_count(result_str: &str, retry_count: usize) -> String {
+    match serde_json::from_str::<serde_json::Value>(result_str) {
+        Ok(mut value) => {
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("retry_count".to_string(), serde_json::json!(retry_count));
+            }
+            value.to_string()
+        }
+        Err(_) => {
+            serde_json::json!({
+                "status": "error",
+                "output": "",
+                "error": result_str,
+                "retry_count": retry_count,
+            }).to_string()
+        }
+    }
 }
 
 /// Parse a duration string like "2m", "30s" for subagent timeout.
@@ -192,115 +211,161 @@ impl AgentEngine {
             return "Error: 'task' is required (or provide subagent_id to wait for existing)".to_string();
         }
 
-        // Acquire owned permit (moves into tokio::spawn)
-        let permit = match self.subagent_semaphore.clone().try_acquire_owned() {
-            Ok(p) => p,
-            Err(_) => {
-                return "Error: too many concurrent subagents. Use subagent_status to check.".to_string();
-            }
-        };
-
-        let (id, handle, cancel, completion_rx) = self.subagent_registry.register(task).await;
-
-        tracing::info!(subagent_id = %id, task_len = task.len(), "spawning async subagent");
-
-        // Get Arc<AgentEngine> from self_ref for tokio::spawn
+        // Resolve engine Arc once before the retry loop (same engine for all attempts)
         let engine = match self.self_ref.get().and_then(std::sync::Weak::upgrade) {
             Some(arc) => arc,
             None => {
                 return "Error: engine self_ref not set, cannot spawn async subagent".to_string();
             }
         };
+
         let task_owned = task.to_string();
-        let handle_clone = handle.clone();
         let loop_max = self.tool_loop_config().effective_max_iterations();
-        let allowed_tools_owned = allowed_tools;
         let timeout_dur = parse_subagent_timeout(&self.app_config.subagents.in_process_timeout);
-        let deadline = Some(std::time::Instant::now() + timeout_dur);
+        let task_preview: String = task.chars().take(80).collect();
 
-        tokio::spawn(async move {
-            let _permit = permit; // held until task completes
-            let result = tokio::time::timeout(
-                timeout_dur,
-                engine.run_subagent(
-                    &task_owned, loop_max, deadline, Some(cancel), Some(handle_clone.clone()), allowed_tools_owned,
-                ),
-            ).await;
-            let mut h = handle_clone.write().await;
-            h.finished_at = Some(chrono::Utc::now());
-            match result {
-                Err(_elapsed) => {
-                    // Hard timeout from tokio::time::timeout
-                    h.status = subagent_state::SubagentStatus::Failed;
-                    h.error = Some("timeout".to_string());
-                }
-                Ok(Ok(text)) => {
-                    h.status = subagent_state::SubagentStatus::Completed;
-                    h.result = Some(text);
-                }
-                Ok(Err(e)) if e.to_string().contains(SUBAGENT_CANCELLED) => {
-                    h.status = subagent_state::SubagentStatus::Killed;
-                    h.error = Some("cancelled by parent".to_string());
-                }
-                Ok(Err(e)) => {
-                    h.status = subagent_state::SubagentStatus::Failed;
-                    h.error = Some(e.to_string());
-                }
+        let mut last_result_str = String::new();
+        let mut last_id = String::new();
+
+        for attempt in 0..=MAX_SUBAGENT_RETRIES {
+            if attempt > 0 {
+                tracing::warn!(
+                    subagent_task_len = task.len(),
+                    attempt,
+                    max_retries = MAX_SUBAGENT_RETRIES,
+                    "retrying failed subagent"
+                );
             }
-            // Build push result and fire the oneshot — take() BEFORE drop(h) to avoid holding write lock
-            let sub_result = subagent_state::SubagentResult {
-                status: h.status,
-                result: h.result.clone(),
-                error: h.error.clone(),
+
+            // Acquire a fresh owned permit each attempt (moves into tokio::spawn).
+            // Semaphore exhaustion is not a transient error — break without retrying.
+            let permit = match self.subagent_semaphore.clone().try_acquire_owned() {
+                Ok(p) => p,
+                Err(_) => {
+                    return "Error: too many concurrent subagents. Use subagent_status to check.".to_string();
+                }
             };
-            let maybe_tx = h.completion_tx.take();
-            drop(h); // Release write lock before sending
-            if let Some(tx) = maybe_tx {
-                let _ = tx.send(sub_result);
-            }
-        });
 
-        // Block until subagent completes or times out (PUSH-01: replaces old polling model)
-        let result_str = match tokio::time::timeout(timeout_dur, completion_rx).await {
-            Ok(Ok(sub_result)) => {
-                // Emit SSE event so UI sees subagent completion (PUSH-03)
+            // Clone allowed_tools for this attempt (consumed by spawn closure)
+            let allowed_tools_attempt = allowed_tools.clone();
+
+            let (id, handle, cancel, completion_rx) = self.subagent_registry.register(task).await;
+            last_id = id.clone();
+
+            tracing::info!(subagent_id = %id, task_len = task.len(), attempt, "spawning async subagent");
+
+            let handle_clone = handle.clone();
+            let engine_clone = engine.clone();
+            let task_for_spawn = task_owned.clone();
+            let deadline = Some(std::time::Instant::now() + timeout_dur);
+
+            tokio::spawn(async move {
+                let _permit = permit; // held until task completes
+                let result = tokio::time::timeout(
+                    timeout_dur,
+                    engine_clone.run_subagent(
+                        &task_for_spawn, loop_max, deadline, Some(cancel), Some(handle_clone.clone()), allowed_tools_attempt,
+                    ),
+                ).await;
+                let mut h = handle_clone.write().await;
+                h.finished_at = Some(chrono::Utc::now());
+                match result {
+                    Err(_elapsed) => {
+                        // Hard timeout from tokio::time::timeout
+                        h.status = subagent_state::SubagentStatus::Failed;
+                        h.error = Some("timeout".to_string());
+                    }
+                    Ok(Ok(text)) => {
+                        h.status = subagent_state::SubagentStatus::Completed;
+                        h.result = Some(text);
+                    }
+                    Ok(Err(e)) if e.to_string().contains(SUBAGENT_CANCELLED) => {
+                        h.status = subagent_state::SubagentStatus::Killed;
+                        h.error = Some("cancelled by parent".to_string());
+                    }
+                    Ok(Err(e)) => {
+                        h.status = subagent_state::SubagentStatus::Failed;
+                        h.error = Some(e.to_string());
+                    }
+                }
+                // Build push result and fire the oneshot — take() BEFORE drop(h) to avoid holding write lock
+                let sub_result = subagent_state::SubagentResult {
+                    status: h.status,
+                    result: h.result.clone(),
+                    error: h.error.clone(),
+                };
+                let maybe_tx = h.completion_tx.take();
+                drop(h); // Release write lock before sending
+                if let Some(tx) = maybe_tx {
+                    let _ = tx.send(sub_result);
+                }
+            });
+
+            // Block until subagent completes or times out (PUSH-01: replaces old polling model)
+            let result_str = match tokio::time::timeout(timeout_dur, completion_rx).await {
+                Ok(Ok(sub_result)) => {
+                    match (&sub_result.status, &sub_result.result, &sub_result.error) {
+                        (subagent_state::SubagentStatus::Completed, Some(r), _) =>
+                            serde_json::json!({"status": "ok", "output": r}).to_string(),
+                        (_, _, Some(e)) =>
+                            serde_json::json!({"status": "error", "output": "", "error": e}).to_string(),
+                        _ =>
+                            serde_json::json!({"status": "error", "output": "", "error": "no result"}).to_string(),
+                    }
+                }
+                Ok(Err(_)) =>
+                    serde_json::json!({"status": "error", "output": "", "error": "subagent channel dropped"}).to_string(),
+                Err(_) =>
+                    serde_json::json!({"status": "error", "output": "", "error": "timeout"}).to_string(),
+            };
+
+            // Classify result — success and explicit cancellations do not retry
+            if !is_subagent_result_retryable(&result_str) {
+                // Augment JSON with retry_count when retries were needed (success after retry)
+                let final_str = if attempt > 0 {
+                    augment_with_retry_count(&result_str, attempt)
+                } else {
+                    result_str
+                };
+                // Emit SSE event once (PUSH-03)
                 if let Some(ref tx) = *self.sse_event_tx.lock().await {
+                    let status_str = if final_str.contains("\"ok\"") { "completed" } else { "failed" };
                     let _ = tx.send(super::StreamEvent::RichCard {
                         card_type: "subagent-complete".to_string(),
                         data: serde_json::json!({
-                            "subagent_id": id,
-                            "status": format!("{:?}", sub_result.status).to_lowercase(),
-                            "task_preview": task.chars().take(80).collect::<String>(),
+                            "subagent_id": last_id,
+                            "status": status_str,
+                            "task_preview": task_preview,
+                            "retry_count": attempt,
                         }),
                     });
                 }
-                match (&sub_result.status, &sub_result.result, &sub_result.error) {
-                    (subagent_state::SubagentStatus::Completed, Some(r), _) =>
-                        serde_json::json!({"status": "ok", "output": r}).to_string(),
-                    (_, _, Some(e)) =>
-                        serde_json::json!({"status": "error", "output": "", "error": e}).to_string(),
-                    _ =>
-                        serde_json::json!({"status": "error", "output": "", "error": "no result"}).to_string(),
-                }
+                return final_str;
             }
-            Ok(Err(_)) =>
-                serde_json::json!({"status": "error", "output": "", "error": "subagent channel dropped"}).to_string(),
-            Err(_) => {
-                // Emit SSE event for timeout too
-                if let Some(ref tx) = *self.sse_event_tx.lock().await {
-                    let _ = tx.send(super::StreamEvent::RichCard {
-                        card_type: "subagent-complete".to_string(),
-                        data: serde_json::json!({
-                            "subagent_id": id,
-                            "status": "timeout",
-                            "task_preview": task.chars().take(80).collect::<String>(),
-                        }),
-                    });
-                }
-                serde_json::json!({"status": "error", "output": "", "error": "timeout"}).to_string()
+
+            // Retryable failure — store and continue unless we've exhausted attempts
+            last_result_str = result_str;
+            if attempt == MAX_SUBAGENT_RETRIES {
+                break;
             }
-        };
-        result_str
+        }
+
+        // All retries exhausted — inject retry_count into the final error JSON
+        let final_str = augment_with_retry_count(&last_result_str, MAX_SUBAGENT_RETRIES);
+
+        // Emit SSE event once for final failure
+        if let Some(ref tx) = *self.sse_event_tx.lock().await {
+            let _ = tx.send(super::StreamEvent::RichCard {
+                card_type: "subagent-complete".to_string(),
+                data: serde_json::json!({
+                    "subagent_id": last_id,
+                    "status": "failed",
+                    "task_preview": task_preview,
+                    "retry_count": MAX_SUBAGENT_RETRIES,
+                }),
+            });
+        }
+        final_str
     }
 
     /// Check status of one or all subagents.
