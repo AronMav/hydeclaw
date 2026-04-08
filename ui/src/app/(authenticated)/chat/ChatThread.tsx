@@ -884,6 +884,16 @@ export function ChatThread({
   const streamStatus = useChatStore((s) => s.agents[s.currentAgent]?.streamStatus ?? "idle");
   const activeSessionIds = useChatStore((s) => s.agents[s.currentAgent]?.activeSessionIds ?? []);
   const engineRunning = !isActiveStream(streamStatus) && !!activeSessionId && activeSessionIds.includes(activeSessionId);
+
+  // Auto-resume SSE stream after page reload when engine is still processing
+  const resumedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (engineRunning && activeSessionId && currentAgent && resumedRef.current !== activeSessionId) {
+      resumedRef.current = activeSessionId;
+      useChatStore.getState().resumeStream(currentAgent, activeSessionId);
+    }
+  }, [engineRunning, activeSessionId, currentAgent]);
+
   const { data: sessionMessagesData, isLoading: historyLoading } = useSessionMessages(
     isActiveStream(streamStatus) ? null : activeSessionId,
     engineRunning,

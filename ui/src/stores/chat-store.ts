@@ -182,6 +182,7 @@ interface ChatStore {
   regenerate: () => void;
   regenerateFrom: (messageId: string) => void;
 
+  resumeStream: (agent: string, sessionId: string) => void;
   setThinking: (agent: string, sessionId: string | null) => void;
   setThinkingLevel: (level: number) => void;
   /** Server-driven: mark a session as actively processing. */
@@ -412,6 +413,51 @@ export const useChatStore = create<ChatStore>()(
         ui_state: { viewMode: st.viewMode, streamStatus },
       }).catch((e) => { console.warn("[chat] save failed:", e); });
     }, 500);
+  }
+
+  /**
+   * Resume an active backend stream after page reload.
+   * Connects to GET /api/chat/{sessionId}/stream and processes replay + live events.
+   */
+  function resumeStream(agent: string, sessionId: string) {
+    // Don't resume if already streaming
+    const st = get().agents[agent];
+    if (st && isActiveStream(st.streamStatus)) return;
+
+    abortActiveStream(agent);
+    streamGeneration++;
+    const myGeneration = streamGeneration;
+    const controller = new AbortController();
+    agentAbortControllers[agent] = controller;
+
+    update(agent, {
+      streamStatus: "streaming",
+      streamError: null,
+      viewMode: "live",
+    });
+
+    const token = getToken();
+
+    fetch(`/api/chat/${sessionId}/stream`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    })
+      .then((resp) => {
+        if (resp.status === 204) {
+          // No active stream — engine already finished
+          update(agent, { streamStatus: "idle" });
+          return;
+        }
+        if (!resp.ok) {
+          return resp.text().then((t) => { throw new Error(t || `HTTP ${resp.status}`); });
+        }
+        return processSSEStream(agent, resp.body!, controller.signal, myGeneration);
+      })
+      .catch((err) => {
+        if (err.name === "AbortError") return;
+        update(agent, { streamStatus: "idle" });
+      });
   }
 
   /** Abort active stream for an agent and reset status. */
@@ -1098,6 +1144,8 @@ export const useChatStore = create<ChatStore>()(
         body: JSON.stringify({ model }),
       }).catch((e) => { console.warn("[chat] save failed:", e); }); // fail silently — store already updated optimistically
     },
+
+    resumeStream: (agent: string, sessionId: string) => resumeStream(agent, sessionId),
 
     sendMessage: (text: string) => {
       const store = get();
