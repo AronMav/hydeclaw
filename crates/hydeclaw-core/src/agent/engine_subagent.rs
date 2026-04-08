@@ -175,24 +175,34 @@ impl AgentEngine {
         let handle_clone = handle.clone();
         let loop_max = self.tool_loop_config().effective_max_iterations();
         let allowed_tools_owned = allowed_tools;
+        let timeout_dur = parse_subagent_timeout(&self.app_config.subagents.in_process_timeout);
+        let deadline = Some(std::time::Instant::now() + timeout_dur);
 
         tokio::spawn(async move {
             let _permit = permit; // held until task completes
-            let result = engine.run_subagent(
-                &task_owned, loop_max, None, Some(cancel), Some(handle_clone.clone()), allowed_tools_owned,
+            let result = tokio::time::timeout(
+                timeout_dur,
+                engine.run_subagent(
+                    &task_owned, loop_max, deadline, Some(cancel), Some(handle_clone.clone()), allowed_tools_owned,
+                ),
             ).await;
             let mut h = handle_clone.write().await;
             h.finished_at = Some(chrono::Utc::now());
             match result {
-                Ok(text) => {
+                Err(_elapsed) => {
+                    // Hard timeout from tokio::time::timeout
+                    h.status = subagent_state::SubagentStatus::Failed;
+                    h.error = Some("timeout".to_string());
+                }
+                Ok(Ok(text)) => {
                     h.status = subagent_state::SubagentStatus::Completed;
                     h.result = Some(text);
                 }
-                Err(e) if e.to_string().contains(SUBAGENT_CANCELLED) => {
+                Ok(Err(e)) if e.to_string().contains(SUBAGENT_CANCELLED) => {
                     h.status = subagent_state::SubagentStatus::Killed;
                     h.error = Some("cancelled by parent".to_string());
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     h.status = subagent_state::SubagentStatus::Failed;
                     h.error = Some(e.to_string());
                 }
