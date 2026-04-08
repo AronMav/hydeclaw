@@ -5,6 +5,7 @@
 
 use regex::Regex;
 use std::sync::LazyLock;
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LlmErrorClass {
@@ -141,8 +142,74 @@ pub fn format_user_error_lang(error: &anyhow::Error, language: &str) -> String {
 pub fn is_retryable(class: &LlmErrorClass) -> bool {
     matches!(
         class,
-        LlmErrorClass::TransientHttp | LlmErrorClass::Overloaded
+        LlmErrorClass::TransientHttp | LlmErrorClass::Overloaded | LlmErrorClass::RateLimit
     )
+}
+
+// ── RetryConfig ──────────────────────────────────────────────────────────────
+
+/// Configuration for exponential backoff retry behaviour.
+#[derive(Debug, Clone)]
+pub struct RetryConfig {
+    /// Maximum number of attempts (including the first).
+    pub max_attempts: u32,
+    /// Base delay for the first retry in milliseconds.
+    pub base_delay_ms: u64,
+    /// Maximum delay cap in milliseconds.
+    pub max_delay_ms: u64,
+    /// Fraction of the computed delay to add as random jitter (0.0–1.0).
+    pub jitter_factor: f64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: 5,
+            base_delay_ms: 500,
+            max_delay_ms: 32_000,
+            jitter_factor: 0.25,
+        }
+    }
+}
+
+impl RetryConfig {
+    /// Compute the delay for a given attempt index (0-based).
+    ///
+    /// Formula: min(base * 2^attempt, max) + jitter * delay_before_jitter
+    pub fn delay(&self, attempt: u32) -> Duration {
+        use rand::Rng as _;
+        let exp = (self.base_delay_ms as f64) * (2u64.pow(attempt) as f64);
+        let capped = exp.min(self.max_delay_ms as f64) as u64;
+        let jitter_ms = (rand::rng().random_range(0.0_f64..1.0) * self.jitter_factor * capped as f64) as u64;
+        Duration::from_millis(capped + jitter_ms)
+    }
+
+    /// Return the recommended delay for a given error class and attempt.
+    ///
+    /// - RateLimit → full cooldown (60s) regardless of attempt
+    /// - TransientHttp / Overloaded → exponential backoff
+    /// - Others → exponential backoff as fallback
+    pub fn retry_delay_for_error(&self, class: &LlmErrorClass, attempt: u32) -> Duration {
+        match class {
+            LlmErrorClass::RateLimit => cooldown_duration(class),
+            _ => self.delay(attempt),
+        }
+    }
+}
+
+/// Extract a `Retry-After` value (seconds) embedded in an error message.
+///
+/// Providers embed the header value as `retry-after: N` when responding with
+/// a 429 or 503. Returns `Some(Duration)` if the pattern is found.
+pub fn extract_retry_after(error_msg: &str) -> Option<Duration> {
+    static RE_RETRY_AFTER: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)retry-after:\s*(\d+)").unwrap()
+    });
+    RE_RETRY_AFTER
+        .captures(error_msg)
+        .and_then(|c| c.get(1))
+        .and_then(|m| m.as_str().parse::<u64>().ok())
+        .map(Duration::from_secs)
 }
 
 #[cfg(test)]
@@ -230,9 +297,73 @@ mod tests {
     fn retryable_check() {
         assert!(is_retryable(&LlmErrorClass::TransientHttp));
         assert!(is_retryable(&LlmErrorClass::Overloaded));
-        assert!(!is_retryable(&LlmErrorClass::RateLimit));
+        assert!(is_retryable(&LlmErrorClass::RateLimit));
         assert!(!is_retryable(&LlmErrorClass::AuthPermanent));
         assert!(!is_retryable(&LlmErrorClass::Unknown));
+    }
+
+    #[test]
+    fn retry_config_defaults() {
+        let cfg = RetryConfig::default();
+        assert_eq!(cfg.max_attempts, 5);
+        assert_eq!(cfg.base_delay_ms, 500);
+        assert_eq!(cfg.max_delay_ms, 32_000);
+        assert_eq!(cfg.jitter_factor, 0.25);
+    }
+
+    #[test]
+    fn retry_config_delay_exponential() {
+        let cfg = RetryConfig { jitter_factor: 0.0, ..RetryConfig::default() };
+        // Without jitter the delay is deterministic.
+        assert_eq!(cfg.delay(0).as_millis(), 500);
+        assert_eq!(cfg.delay(1).as_millis(), 1000);
+        assert_eq!(cfg.delay(2).as_millis(), 2000);
+        assert_eq!(cfg.delay(3).as_millis(), 4000);
+        assert_eq!(cfg.delay(4).as_millis(), 8000);
+    }
+
+    #[test]
+    fn retry_config_delay_capped() {
+        let cfg = RetryConfig { jitter_factor: 0.0, ..RetryConfig::default() };
+        // Attempt 10 would be 512_000ms without cap — must be capped at 32_000.
+        assert_eq!(cfg.delay(10).as_millis(), 32_000);
+    }
+
+    #[test]
+    fn retry_delay_for_error_rate_limit_uses_cooldown() {
+        let cfg = RetryConfig::default();
+        // RateLimit should always return the full 60s cooldown, not exponential.
+        let delay = cfg.retry_delay_for_error(&LlmErrorClass::RateLimit, 0);
+        assert_eq!(delay.as_secs(), 60);
+        let delay2 = cfg.retry_delay_for_error(&LlmErrorClass::RateLimit, 3);
+        assert_eq!(delay2.as_secs(), 60);
+    }
+
+    #[test]
+    fn retry_delay_for_error_transient_uses_backoff() {
+        let cfg = RetryConfig { jitter_factor: 0.0, ..RetryConfig::default() };
+        let delay = cfg.retry_delay_for_error(&LlmErrorClass::TransientHttp, 0);
+        assert_eq!(delay.as_millis(), 500);
+        let delay2 = cfg.retry_delay_for_error(&LlmErrorClass::TransientHttp, 2);
+        assert_eq!(delay2.as_millis(), 2000);
+    }
+
+    #[test]
+    fn extract_retry_after_found() {
+        assert_eq!(
+            extract_retry_after("OpenAI API error (retry-after: 30): rate limit exceeded"),
+            Some(std::time::Duration::from_secs(30))
+        );
+        assert_eq!(
+            extract_retry_after("anthropic API error (Retry-After: 120): too many requests"),
+            Some(std::time::Duration::from_secs(120))
+        );
+    }
+
+    #[test]
+    fn extract_retry_after_not_found() {
+        assert_eq!(extract_retry_after("some random error without header"), None);
+        assert_eq!(extract_retry_after(""), None);
     }
 
     #[test]
