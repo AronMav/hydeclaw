@@ -71,6 +71,7 @@ const emptyForm: FormState = {
   tlDetectLoops: true,
   tlWarnThreshold: "5",
   tlBreakThreshold: "10",
+  tlMaxAutoContinues: "5",
   sessionEnabled: false,
   sessionDmScope: "per-channel-peer",
   sessionTtlDays: "30",
@@ -127,6 +128,7 @@ function detailToForm(d: AgentDetail): FormState {
     tlDetectLoops: d.tool_loop?.detect_loops ?? true,
     tlWarnThreshold: String(d.tool_loop?.warn_threshold ?? 5),
     tlBreakThreshold: String(d.tool_loop?.break_threshold ?? 10),
+    tlMaxAutoContinues: String(d.tool_loop?.max_auto_continues ?? 5),
     sessionEnabled: !!d.session,
     sessionDmScope: d.session?.dm_scope ?? "per-channel-peer",
     sessionTtlDays: String(d.session?.ttl_days ?? 30),
@@ -238,6 +240,7 @@ function formToPayload(f: FormState) {
           detect_loops: f.tlDetectLoops,
           warn_threshold: parseInt(f.tlWarnThreshold) || 5,
           break_threshold: parseInt(f.tlBreakThreshold) || 10,
+          max_auto_continues: parseInt(f.tlMaxAutoContinues) || 5,
         }
       : null,
     hooks: (f.hooksLogAll || f.hooksBlockTools.trim())

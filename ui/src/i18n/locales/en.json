@@ -266,6 +266,7 @@
   "agents.hint_tl_max_iterations": "0 = unlimited",
   "agents.field_tl_warn_threshold": "Warn threshold (N repeats)",
   "agents.field_tl_break_threshold": "Break threshold (N repeats)",
+  "agents.field_max_auto_continues": "Max Auto-Continues",
   "agents.tl_compact_on_overflow": "Compact on context overflow",
   "agents.tl_detect_loops": "Loop detection",
   "agents.section_approval": "Approval",

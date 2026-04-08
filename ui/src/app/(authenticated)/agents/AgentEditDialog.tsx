@@ -81,6 +81,7 @@ export interface FormState {
   tlDetectLoops: boolean;
   tlWarnThreshold: string;
   tlBreakThreshold: string;
+  tlMaxAutoContinues: string;
   sessionEnabled: boolean;
   sessionDmScope: string;
   sessionTtlDays: string;
@@ -601,6 +602,19 @@ export function AgentEditDialog({
                       className="bg-background border-border font-mono text-sm h-8"
                       value={form.tlBreakThreshold}
                       onChange={(e) => upd({ tlBreakThreshold: e.target.value })}
+                    />
+                  </Field>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <Field label={t("agents.field_max_auto_continues")}>
+                    <Input
+                      type="number"
+                      step="1"
+                      min="0"
+                      max="20"
+                      className="bg-background border-border font-mono text-sm h-8"
+                      value={form.tlMaxAutoContinues}
+                      onChange={(e) => upd({ tlMaxAutoContinues: e.target.value })}
                     />
                   </Field>
                 </div>

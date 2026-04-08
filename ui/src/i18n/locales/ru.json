@@ -266,6 +266,7 @@
   "agents.hint_tl_max_iterations": "0 = без ограничений",
   "agents.field_tl_warn_threshold": "Предупреждение (N повторов)",
   "agents.field_tl_break_threshold": "Прервать (N повторов)",
+  "agents.field_max_auto_continues": "Макс. автопродолжений",
   "agents.tl_compact_on_overflow": "Сжатие при переполнении контекста",
   "agents.tl_detect_loops": "Детекция зацикливания",
   "agents.section_approval": "Подтверждения",

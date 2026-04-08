@@ -80,6 +80,7 @@ export interface AgentDetail {
   tool_loop: {
     max_iterations: number; compact_on_overflow: boolean; detect_loops: boolean;
     warn_threshold: number; break_threshold: number; max_consecutive_failures?: number;
+    max_auto_continues?: number;
   } | null;
   routing: RoutingRule[];
   voice?: string;
