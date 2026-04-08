@@ -142,10 +142,25 @@ impl AgentEngine {
         let allowed_tools: Option<Vec<String>> = args.get("allowed_tools")
             .and_then(|v| serde_json::from_value(v.clone()).ok());
 
-        // Wait mode: poll existing subagent
+        // Lookup mode: return stored result from registry (subagent completed via push notification)
         if let Some(sid) = args.get("subagent_id").and_then(|v| v.as_str())
             && !sid.is_empty() {
-                return self.handle_subagent_wait(sid).await;
+                return match self.subagent_registry.get(sid).await {
+                    Some(h) => {
+                        let h = h.read().await;
+                        match (&h.status, &h.result, &h.error) {
+                            (subagent_state::SubagentStatus::Running, _, _) =>
+                                serde_json::json!({"status": "running", "output": "", "error": "still running"}).to_string(),
+                            (subagent_state::SubagentStatus::Completed, Some(r), _) =>
+                                serde_json::json!({"status": "ok", "output": r}).to_string(),
+                            (_, _, Some(e)) =>
+                                serde_json::json!({"status": "error", "output": "", "error": e}).to_string(),
+                            _ =>
+                                serde_json::json!({"status": "error", "output": "", "error": "no result"}).to_string(),
+                        }
+                    }
+                    None => format!("Error: subagent '{}' not found", sid),
+                };
             }
 
         if task.is_empty() {
@@ -160,7 +175,7 @@ impl AgentEngine {
             }
         };
 
-        let (id, handle, cancel) = self.subagent_registry.register(task).await;
+        let (id, handle, cancel, completion_rx) = self.subagent_registry.register(task).await;
 
         tracing::info!(subagent_id = %id, task_len = task.len(), "spawning async subagent");
 
@@ -207,35 +222,60 @@ impl AgentEngine {
                     h.error = Some(e.to_string());
                 }
             }
+            // Build push result and fire the oneshot — take() BEFORE drop(h) to avoid holding write lock
+            let sub_result = subagent_state::SubagentResult {
+                status: h.status,
+                result: h.result.clone(),
+                error: h.error.clone(),
+            };
+            let maybe_tx = h.completion_tx.take();
+            drop(h); // Release write lock before sending
+            if let Some(tx) = maybe_tx {
+                let _ = tx.send(sub_result);
+            }
         });
 
-        format!("Subagent spawned: id=\"{id}\". Use subagent_status(\"{id}\") to check progress, subagent_logs(\"{id}\") to see iterations, subagent_kill(\"{id}\") to stop it, or spawn_subagent(subagent_id=\"{id}\") to wait for result.")
-    }
-
-    /// Wait for an existing subagent to complete (polls up to 60s).
-    async fn handle_subagent_wait(&self, subagent_id: &str) -> String {
-        let handle = match self.subagent_registry.get(subagent_id).await {
-            Some(h) => h,
-            None => return format!("Error: subagent '{}' not found", subagent_id),
-        };
-        for _ in 0..12 {
-            let h = handle.read().await;
-            if h.status != subagent_state::SubagentStatus::Running {
-                return match (&h.status, &h.result, &h.error) {
+        // Block until subagent completes or times out (PUSH-01: replaces old polling model)
+        let result_str = match tokio::time::timeout(timeout_dur, completion_rx).await {
+            Ok(Ok(sub_result)) => {
+                // Emit SSE event so UI sees subagent completion (PUSH-03)
+                if let Some(ref tx) = *self.sse_event_tx.lock().await {
+                    let _ = tx.send(super::StreamEvent::RichCard {
+                        card_type: "subagent-complete".to_string(),
+                        data: serde_json::json!({
+                            "subagent_id": id,
+                            "status": format!("{:?}", sub_result.status).to_lowercase(),
+                            "task_preview": task.chars().take(80).collect::<String>(),
+                        }),
+                    });
+                }
+                match (&sub_result.status, &sub_result.result, &sub_result.error) {
                     (subagent_state::SubagentStatus::Completed, Some(r), _) =>
                         serde_json::json!({"status": "ok", "output": r}).to_string(),
-                    (subagent_state::SubagentStatus::Failed, _, Some(e)) =>
+                    (_, _, Some(e)) =>
                         serde_json::json!({"status": "error", "output": "", "error": e}).to_string(),
-                    (subagent_state::SubagentStatus::Killed, _, _) =>
-                        serde_json::json!({"status": "error", "output": "", "error": "timeout"}).to_string(),
                     _ =>
-                        serde_json::json!({"status": "error", "output": "", "error": "finished with no result"}).to_string(),
-                };
+                        serde_json::json!({"status": "error", "output": "", "error": "no result"}).to_string(),
+                }
             }
-            drop(h);
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        }
-        serde_json::json!({"status": "running", "output": "", "error": "poll_timeout_retry"}).to_string()
+            Ok(Err(_)) =>
+                serde_json::json!({"status": "error", "output": "", "error": "subagent channel dropped"}).to_string(),
+            Err(_) => {
+                // Emit SSE event for timeout too
+                if let Some(ref tx) = *self.sse_event_tx.lock().await {
+                    let _ = tx.send(super::StreamEvent::RichCard {
+                        card_type: "subagent-complete".to_string(),
+                        data: serde_json::json!({
+                            "subagent_id": id,
+                            "status": "timeout",
+                            "task_preview": task.chars().take(80).collect::<String>(),
+                        }),
+                    });
+                }
+                serde_json::json!({"status": "error", "output": "", "error": "timeout"}).to_string()
+            }
+        };
+        result_str
     }
 
     /// Check status of one or all subagents.

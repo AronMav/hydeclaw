@@ -154,7 +154,7 @@ impl AgentEngine {
             },
             ToolDefinition {
                 name: "subagent".to_string(),
-                description: "Manage async subagents. Actions: spawn (start new subtask), status (check progress), logs (view iterations), kill (stop). For spawn: returns subagent_id immediately. Pass subagent_id without task to wait for result.".to_string(),
+                description: "Spawn a subagent to execute a subtask. The call blocks until the subagent completes or times out, then returns {status, output, error}. Use action='spawn' with 'task' to run. Use 'status'/'logs'/'kill' with subagent_id for management.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -169,7 +169,7 @@ impl AgentEngine {
                         },
                         "subagent_id": {
                             "type": "string",
-                            "description": "Subagent ID (for status/logs/kill, or spawn to wait for existing)"
+                            "description": "Subagent ID (for status/logs/kill actions)"
                         },
                         "last_n": {
                             "type": "integer",
