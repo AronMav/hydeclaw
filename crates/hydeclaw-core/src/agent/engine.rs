@@ -41,6 +41,8 @@ mod subagent_impl;
 mod parallel_impl;
 #[path = "engine_handoff.rs"]
 mod handoff_impl;
+#[path = "engine_sandbox.rs"]
+mod sandbox_impl;
 
 /// Resolves env var names through SecretsManager (scoped to agent).
 struct SecretsEnvResolver {
