@@ -7,9 +7,10 @@ use crate::agent::subagent_state;
 /// Sentinel prefix for subagent cancellation errors — matched in spawned task.
 const SUBAGENT_CANCELLED: &str = "subagent cancelled";
 
-/// Tools denied to subagents by default (prevent recursive spawning, unsupervised writes, and dangerous operations).
+/// Tools denied to subagents by default (prevent recursive spawning, destructive operations, and dangerous ops).
+/// workspace_write and workspace_edit are allowed so subagents can write shared state files (SUB-01).
 pub(super) const SUBAGENT_DENIED_TOOLS: &[&str] = &[
-    "subagent", "workspace_write", "workspace_edit", "workspace_delete",
+    "subagent", "workspace_delete",
     "workspace_rename", "cron", "secret_set", "process",
 ];
 
@@ -1200,10 +1201,10 @@ mod tests {
 
     #[test]
     fn denied_tools_list_contains_critical_entries() {
-        // Safety: subagent, workspace_write, cron must always be denied
+        // Safety: subagent, workspace_delete, workspace_rename, cron must always be denied
         assert!(SUBAGENT_DENIED_TOOLS.contains(&"subagent"));
-        assert!(SUBAGENT_DENIED_TOOLS.contains(&"workspace_write"));
-        assert!(SUBAGENT_DENIED_TOOLS.contains(&"workspace_edit"));
+        assert!(SUBAGENT_DENIED_TOOLS.contains(&"workspace_delete"));
+        assert!(SUBAGENT_DENIED_TOOLS.contains(&"workspace_rename"));
         assert!(SUBAGENT_DENIED_TOOLS.contains(&"cron"));
         assert!(SUBAGENT_DENIED_TOOLS.contains(&"secret_set"));
         assert!(SUBAGENT_DENIED_TOOLS.contains(&"process"));
@@ -1215,6 +1216,9 @@ mod tests {
         assert!(!SUBAGENT_DENIED_TOOLS.contains(&"web_fetch"));
         assert!(!SUBAGENT_DENIED_TOOLS.contains(&"workspace_read"));
         assert!(!SUBAGENT_DENIED_TOOLS.contains(&"workspace_list"));
+        // SUB-01: workspace_write and workspace_edit unlocked for subagents
+        assert!(!SUBAGENT_DENIED_TOOLS.contains(&"workspace_write"));
+        assert!(!SUBAGENT_DENIED_TOOLS.contains(&"workspace_edit"));
     }
 }
 
