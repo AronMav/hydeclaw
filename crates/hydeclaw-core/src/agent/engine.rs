@@ -2272,23 +2272,45 @@ impl AgentEngine {
         }
     }
 
-    /// Call LLM with transient error retry (2.5s wait + single retry).
+    /// Call LLM with exponential backoff retry (up to 5 attempts, 500ms–32s).
     /// Wraps chat_with_overflow_recovery to add engine-level transient retry
-    /// when ALL providers (including fallbacks) returned a transient HTTP error.
+    /// when ALL providers (including fallbacks) returned a retryable error.
+    /// RateLimit (429) uses full 60s cooldown; Retry-After header overrides both.
     async fn chat_with_transient_retry(
         &self,
         messages: &mut Vec<Message>,
         tools: &[ToolDefinition],
     ) -> Result<hydeclaw_types::LlmResponse> {
-        let result = self.chat_with_overflow_recovery(messages, tools).await;
-        match &result {
-            Err(e) if error_classify::is_retryable(&error_classify::classify(e)) => {
-                tracing::warn!(error = %e, "transient error from all providers, retrying in 2.5s");
-                tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
-                self.chat_with_overflow_recovery(messages, tools).await
+        let config = error_classify::RetryConfig::default();
+        let mut last_error: Option<anyhow::Error> = None;
+
+        for attempt in 0..config.max_attempts {
+            let result = self.chat_with_overflow_recovery(messages, tools).await;
+            match result {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    let class = error_classify::classify(&e);
+                    if !error_classify::is_retryable(&class) {
+                        return Err(e);
+                    }
+                    let delay = error_classify::extract_retry_after(&e.to_string())
+                        .unwrap_or_else(|| config.retry_delay_for_error(&class, attempt));
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        max_attempts = config.max_attempts,
+                        delay_ms = delay.as_millis() as u64,
+                        error_class = ?class,
+                        error = %e,
+                        "retrying LLM call"
+                    );
+                    last_error = Some(e);
+                    if attempt < config.max_attempts - 1 {
+                        tokio::time::sleep(delay).await;
+                    }
+                }
             }
-            _ => result,
         }
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("LLM call failed after retries")))
     }
 
     /// Streaming variant of chat_with_overflow_recovery.
@@ -2311,21 +2333,43 @@ impl AgentEngine {
     }
 
     /// Streaming variant of chat_with_transient_retry.
+    /// Uses identical exponential backoff logic; passes a fresh clone of chunk_tx on each retry.
     async fn chat_stream_with_transient_retry(
         &self,
         messages: &mut Vec<Message>,
         tools: &[ToolDefinition],
         chunk_tx: mpsc::UnboundedSender<String>,
     ) -> Result<hydeclaw_types::LlmResponse> {
-        let result = self.chat_stream_with_overflow_recovery(messages, tools, chunk_tx.clone()).await;
-        match &result {
-            Err(e) if error_classify::is_retryable(&error_classify::classify(e)) => {
-                tracing::warn!(error = %e, "transient error from all providers, retrying in 2.5s (stream)");
-                tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
-                self.chat_stream_with_overflow_recovery(messages, tools, chunk_tx).await
+        let config = error_classify::RetryConfig::default();
+        let mut last_error: Option<anyhow::Error> = None;
+
+        for attempt in 0..config.max_attempts {
+            let result = self.chat_stream_with_overflow_recovery(messages, tools, chunk_tx.clone()).await;
+            match result {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    let class = error_classify::classify(&e);
+                    if !error_classify::is_retryable(&class) {
+                        return Err(e);
+                    }
+                    let delay = error_classify::extract_retry_after(&e.to_string())
+                        .unwrap_or_else(|| config.retry_delay_for_error(&class, attempt));
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        max_attempts = config.max_attempts,
+                        delay_ms = delay.as_millis() as u64,
+                        error_class = ?class,
+                        error = %e,
+                        "retrying LLM call (stream)"
+                    );
+                    last_error = Some(e);
+                    if attempt < config.max_attempts - 1 {
+                        tokio::time::sleep(delay).await;
+                    }
+                }
             }
-            _ => result,
         }
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("LLM stream call failed after retries")))
     }
 
     /// Default context window size based on model name.

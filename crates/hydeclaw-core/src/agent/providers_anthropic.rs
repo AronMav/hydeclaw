@@ -355,8 +355,16 @@ impl LlmProvider for AnthropicProvider {
         let resp = req.send().await?;
 
         if !resp.status().is_success() {
+            let retry_after = resp.headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.to_string());
             let err_text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("anthropic API error: {}", err_text);
+            if let Some(ra) = retry_after {
+                anyhow::bail!("anthropic API error (retry-after: {}): {}", ra, err_text);
+            } else {
+                anyhow::bail!("anthropic API error: {}", err_text);
+            }
         }
 
         let mut full_content = String::new();

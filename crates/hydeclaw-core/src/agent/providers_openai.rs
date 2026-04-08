@@ -358,6 +358,10 @@ impl LlmProvider for OpenAiCompatibleProvider {
 
         if !resp.status().is_success() {
             let status = resp.status();
+            let retry_after = resp.headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.to_string());
             let err_text = resp.text().await.unwrap_or_default();
             if status.as_u16() == 400 {
                 let body_preview = serde_json::to_string(&body).unwrap_or_default();
@@ -368,7 +372,11 @@ impl LlmProvider for OpenAiCompatibleProvider {
                     "400 Bad Request (stream) — dumping request body for diagnosis"
                 );
             }
-            anyhow::bail!("{} API error: {}", self.provider_name, err_text);
+            if let Some(ra) = retry_after {
+                anyhow::bail!("{} API error (retry-after: {}): {}", self.provider_name, ra, err_text);
+            } else {
+                anyhow::bail!("{} API error: {}", self.provider_name, err_text);
+            }
         }
 
         // Parse SSE stream: accumulate content (streamed) + tool calls (buffered)
@@ -436,7 +444,9 @@ impl LlmProvider for OpenAiCompatibleProvider {
                                     }
                                     if let Some(ref func) = tc.function {
                                         if let Some(ref name) = func.name {
-                                            tool_call_parts[idx].1.push_str(name);
+                                            // Replace, don't append — name arrives once or repeated,
+                                            // unlike arguments which stream incrementally.
+                                            tool_call_parts[idx].1 = name.clone();
                                         }
                                         if let Some(ref args) = func.arguments {
                                             tool_call_parts[idx].2.push_str(args);
