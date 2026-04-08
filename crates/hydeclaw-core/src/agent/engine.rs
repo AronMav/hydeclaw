@@ -672,6 +672,9 @@ impl AgentEngine {
         let sender_agent_id = if msg.user_id.starts_with("agent:") { Some(msg.user_id.trim_start_matches("agent:")) } else { None };
         sessions::save_message_ex(&self.db, session_id, "user", &user_text, None, None, sender_agent_id, None).await?;
 
+        // Context compaction if needed (model-aware token budget)
+        self.compact_messages(&mut messages).await;
+
         // LLM loop (with tool calls)
         let mut final_response = String::new();
         let loop_config = self.tool_loop_config();
@@ -2300,6 +2303,20 @@ impl AgentEngine {
             tracing::info!(facts = facts.len(), "extracted facts during compaction");
             self.audit(crate::db::audit::event_types::COMPACTION, None, serde_json::json!({"facts": facts.len(), "max_tokens": max_tokens}));
             self.index_facts_to_memory(&facts).await;
+            // Notify user about compaction
+            if let Some(ref ui_tx) = self.ui_event_tx {
+                let db = self.db.clone();
+                let tx = ui_tx.clone();
+                let agent_name = self.agent.name.clone();
+                tokio::spawn(async move {
+                    crate::gateway::notify(
+                        &db, &tx, "context_compaction",
+                        &format!("Context compacted: {}", agent_name),
+                        &format!("Agent {} session was compacted to stay within token budget", agent_name),
+                        serde_json::json!({"agent": agent_name}),
+                    ).await.ok();
+                });
+            }
         }
     }
 
