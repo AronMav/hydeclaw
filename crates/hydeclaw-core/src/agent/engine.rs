@@ -832,6 +832,28 @@ impl AgentEngine {
             };
 
             if loop_broken || iteration == loop_config.effective_max_iterations() - 1 {
+                // Notify if hitting iteration limit (not loop break)
+                if !loop_broken && iteration == loop_config.effective_max_iterations() - 1 {
+                    tracing::warn!(
+                        agent = %self.agent.name,
+                        max_iterations = loop_config.effective_max_iterations(),
+                        "agent reached iteration limit"
+                    );
+                    if let Some(ref ui_tx) = self.ui_event_tx {
+                        let db = self.db.clone();
+                        let tx = ui_tx.clone();
+                        let agent_name = self.agent.name.clone();
+                        let max_iter = loop_config.effective_max_iterations();
+                        tokio::spawn(async move {
+                            crate::gateway::notify(
+                                &db, &tx, "iteration_limit",
+                                &format!("Iteration limit: {}", agent_name),
+                                &format!("Agent {} reached its iteration limit ({} iterations). The task may be incomplete.", agent_name, max_iter),
+                                serde_json::json!({"agent": agent_name, "max_iterations": max_iter}),
+                            ).await.ok();
+                        });
+                    }
+                }
                 match self.provider.chat(&messages, &[]).await {
                     Ok(forced) => {
                         final_response = strip_thinking(&forced.content);
@@ -1505,6 +1527,28 @@ impl AgentEngine {
             };
 
             if loop_broken || iteration == loop_config.effective_max_iterations() - 1 {
+                // Notify if hitting iteration limit (not loop break)
+                if !loop_broken && iteration == loop_config.effective_max_iterations() - 1 {
+                    tracing::warn!(
+                        agent = %self.agent.name,
+                        max_iterations = loop_config.effective_max_iterations(),
+                        "agent reached iteration limit"
+                    );
+                    if let Some(ref ui_tx) = self.ui_event_tx {
+                        let db = self.db.clone();
+                        let tx = ui_tx.clone();
+                        let agent_name = self.agent.name.clone();
+                        let max_iter = loop_config.effective_max_iterations();
+                        tokio::spawn(async move {
+                            crate::gateway::notify(
+                                &db, &tx, "iteration_limit",
+                                &format!("Iteration limit: {}", agent_name),
+                                &format!("Agent {} reached its iteration limit ({} iterations). The task may be incomplete.", agent_name, max_iter),
+                                serde_json::json!({"agent": agent_name, "max_iterations": max_iter}),
+                            ).await.ok();
+                        });
+                    }
+                }
                 // Forced final call — use streaming if chunk_tx is available
                 let forced_result = if let Some(ref tx) = chunk_tx {
                     self.provider.chat_stream(&messages, &[], tx.clone()).await
@@ -2082,6 +2126,28 @@ impl AgentEngine {
 
             // Forced final call on last iteration or loop break
             if loop_broken || iteration == loop_config.effective_max_iterations() - 1 {
+                // Notify if hitting iteration limit (not loop break)
+                if !loop_broken && iteration == loop_config.effective_max_iterations() - 1 {
+                    tracing::warn!(
+                        agent = %self.agent.name,
+                        max_iterations = loop_config.effective_max_iterations(),
+                        "agent reached iteration limit"
+                    );
+                    if let Some(ref ui_tx) = self.ui_event_tx {
+                        let db = self.db.clone();
+                        let tx = ui_tx.clone();
+                        let agent_name = self.agent.name.clone();
+                        let max_iter = loop_config.effective_max_iterations();
+                        tokio::spawn(async move {
+                            crate::gateway::notify(
+                                &db, &tx, "iteration_limit",
+                                &format!("Iteration limit: {}", agent_name),
+                                &format!("Agent {} reached its iteration limit ({} iterations). The task may be incomplete.", agent_name, max_iter),
+                                serde_json::json!({"agent": agent_name, "max_iterations": max_iter}),
+                            ).await.ok();
+                        });
+                    }
+                }
                 let step_id = format!("step_{}", iteration + 1);
                 if event_tx
                     .send(StreamEvent::StepStart {
