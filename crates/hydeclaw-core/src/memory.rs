@@ -175,7 +175,10 @@ impl MemoryStore {
         }.to_string()
     }
 
-    /// Query toolgate /health to discover the active embedding provider/model name.
+    /// Query toolgate /health to discover the active embedding provider display name.
+    /// Note: the display name (e.g. "OpenAI Embedding") is for logging only — it is NOT
+    /// passed as the `model` field in embedding requests. Toolgate resolves the actual
+    /// model internally from its provider registry.
     async fn fetch_embed_model_from_toolgate(&self) {
         let health_url = format!(
             "{}/health",
@@ -187,12 +190,14 @@ impl MemoryStore {
             Ok(resp) => {
                 if let Ok(body) = resp.json::<serde_json::Value>().await
                     && let Some(name) = body["active_providers"]["embedding"].as_str()
-                        && self.embed_model.set(name.to_string()).is_ok() {
-                            tracing::info!(embed_model = %name, "discovered embedding model from toolgate");
-                        }
+                    {
+                        tracing::info!(embed_provider = %name, "discovered embedding provider from toolgate");
+                        // Store display name for logging/status only — do NOT use as model param
+                        let _ = self.embed_model.set(format!("({})", name));
+                    }
             }
             Err(e) => {
-                tracing::debug!(error = %e, "could not query toolgate /health for model name");
+                tracing::debug!(error = %e, "could not query toolgate /health for provider name");
             }
         }
     }
@@ -279,7 +284,8 @@ impl MemoryStore {
         let url = format!("{}/embeddings", self.embed_url.trim_end_matches('/'));
         let model = self.embed_model_name();
         let mut body = serde_json::json!({ "input": text });
-        if !model.is_empty() {
+        // Only pass model if it's a real model ID (not a display name from toolgate health)
+        if !model.is_empty() && !model.starts_with('(') {
             body["model"] = serde_json::Value::String(model);
         }
         let resp = self.http
@@ -336,7 +342,7 @@ impl MemoryStore {
         let url = format!("{}/embeddings", self.embed_url.trim_end_matches('/'));
         let model = self.embed_model_name();
         let mut body = serde_json::json!({ "input": texts });
-        if !model.is_empty() {
+        if !model.is_empty() && !model.starts_with('(') {
             body["model"] = serde_json::Value::String(model);
         }
         let resp = self.http

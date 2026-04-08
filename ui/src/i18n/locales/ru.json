@@ -331,6 +331,7 @@
   "agents.delete_agent_description": "Агент и его конфигурация будут удалены безвозвратно.",
   "agents.temperature_error": "Температура должна быть от 0 до 2",
   "agents.model_placeholder": "название модели",
+  "agents.model_custom": "Своя модель...",
   "agents.cron_every_n_min": "Каждые {{interval}} мин{{hourRange}}{{dayStr}}",
   "agents.cron_every_n_hours": "Каждые {{interval}} ч в :{{min}}{{dayStr}}",
   "agents.cron_at_min_hours": "В :{{min}} — часы {{hour}}{{dayStr}}",

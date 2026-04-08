@@ -331,6 +331,7 @@
   "agents.delete_agent_description": "The agent and its configuration will be permanently deleted.",
   "agents.temperature_error": "Temperature must be between 0 and 2",
   "agents.model_placeholder": "model name",
+  "agents.model_custom": "Custom model...",
   "agents.cron_every_n_min": "Every {{interval}} min{{hourRange}}{{dayStr}}",
   "agents.cron_every_n_hours": "Every {{interval}} h at :{{min}}{{dayStr}}",
   "agents.cron_at_min_hours": "At :{{min}} — hours {{hour}}{{dayStr}}",

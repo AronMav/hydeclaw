@@ -224,7 +224,7 @@ impl AgentEngine {
             },
             ToolDefinition {
                 name: "memory".to_string(),
-                description: "Manage long-term memory. Actions: search (find relevant info, supports category/topic filters), index (save new — ALWAYS search first for duplicates, ALWAYS set category and topic), get (by ID/source), delete (by chunk_id), update (edit MEMORY.md cache), compress (summarize old chunks by topic into compact summaries, originals archived). For index: ALWAYS classify with category (decision/preference/event/discovery/advice/general) and topic (project name, technology, person, etc.). Use pinned=true for important permanent facts. For update: edits MEMORY.md (max 8KB), action is add/update/remove within a section. For compress: optional topic parameter limits to a specific topic.".to_string(),
+                description: "Manage long-term memory. Actions: search, index, get, delete, update, compress. For index: set category and topic. Use pinned=true for permanent facts.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -235,7 +235,7 @@ impl AgentEngine {
                         },
                         "query": {
                             "type": "string",
-                            "description": "Search query (for search). Supports optional category/topic filters."
+                            "description": "Search query (for search)"
                         },
                         "content": {
                             "type": "string",
@@ -253,12 +253,11 @@ impl AgentEngine {
                         },
                         "category": {
                             "type": "string",
-                            "enum": ["decision", "preference", "event", "discovery", "advice", "general"],
-                            "description": "REQUIRED for index. Classify the memory: decision (choices made), preference (user likes/dislikes), event (things that happened), discovery (learned facts), advice (recommendations), general (other). For search: filters results to matching category."
+                            "description": "Memory category (for index/search)"
                         },
                         "topic": {
                             "type": "string",
-                            "description": "REQUIRED for index. Free-form topic tag: project name, technology, person name, domain area, etc. For search: filters results to matching topic."
+                            "description": "Topic tag (for index/search)"
                         },
                         "clear_existing": {
                             "type": "boolean",

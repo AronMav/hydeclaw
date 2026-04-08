@@ -294,31 +294,43 @@ export function AgentEditDialog({
                   )}
                   {(() => {
                     const models = providerModels;
+                    const isCustom = !models.includes(form.model);
                     if (models.length > 0) {
                       return (
-                        <div className="flex gap-2">
-                          <Select
-                            value={models.includes(form.model) ? form.model : ""}
-                            onValueChange={(v) => upd({ model: v })}
-                          >
-                            <SelectTrigger className="bg-background border-border font-mono text-sm h-8">
-                              <SelectValue placeholder={t("agents.model_placeholder")} />
-                            </SelectTrigger>
-                            <SelectContent className="border-border max-h-60">
-                              {models.map((m) => (
-                                <SelectItem key={m} value={m} className="font-mono text-sm">{m}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <Button
-                            variant="outline"
-                            size="icon"
-                            className="shrink-0 h-8 w-8"
-                            onClick={() => refetchModels()}
-                            disabled={providerModelsLoading}
-                          >
-                            <RefreshCw className={`h-3.5 w-3.5 ${providerModelsLoading ? "animate-spin" : ""}`} />
-                          </Button>
+                        <div className="space-y-1.5">
+                          <div className="flex gap-2">
+                            <Select
+                              value={isCustom ? "__custom__" : form.model}
+                              onValueChange={(v) => { upd({ model: v === "__custom__" ? "" : v }); }}
+                            >
+                              <SelectTrigger className="bg-background border-border font-mono text-sm h-8">
+                                <SelectValue placeholder={t("agents.model_placeholder")} />
+                              </SelectTrigger>
+                              <SelectContent className="border-border max-h-60">
+                                {models.map((m) => (
+                                  <SelectItem key={m} value={m} className="font-mono text-sm">{m}</SelectItem>
+                                ))}
+                                <SelectItem value="__custom__" className="font-mono text-sm italic text-muted-foreground">{t("agents.model_custom")}</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <Button
+                              variant="outline"
+                              size="icon"
+                              className="shrink-0 h-8 w-8"
+                              onClick={() => refetchModels()}
+                              disabled={providerModelsLoading}
+                            >
+                              <RefreshCw className={`h-3.5 w-3.5 ${providerModelsLoading ? "animate-spin" : ""}`} />
+                            </Button>
+                          </div>
+                          {isCustom && (
+                            <Input
+                              value={form.model}
+                              placeholder="custom-model-name"
+                              className="bg-background border-border font-mono text-sm h-8"
+                              onChange={(e) => upd({ model: e.target.value })}
+                            />
+                          )}
                         </div>
                       );
                     }
