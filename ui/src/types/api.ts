@@ -433,3 +433,22 @@ export interface NotificationsResponse {
   items?: NotificationRow[];
   unread_count: number;
 }
+
+export interface TaskStep {
+  id: string;
+  title: string;
+  status: "pending" | "in_progress" | "done" | "error";
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+}
+
+export interface AgentTask {
+  task_id: string;
+  agent: string;
+  title: string;
+  status: "planning" | "in_progress" | "done" | "error";
+  created_at: string;
+  updated_at: string;
+  steps: TaskStep[];
+}

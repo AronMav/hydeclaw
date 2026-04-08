@@ -32,6 +32,7 @@ import type {
   MediaDriverInfo,
   OAuthAccount,
   OAuthBinding,
+  AgentTask,
 } from "@/types/api"
 
 // ── Query Keys ──────────────────────────────────────────────────────────────
@@ -69,6 +70,7 @@ export const qk = {
   oauthAccounts: ["oauth", "accounts"] as const,
   oauthBindings: (agent: string) => ["oauth", "bindings", agent] as const,
   notifications: ["notifications"] as const,
+  agentTasks: (name: string) => ["agents", name, "tasks"] as const,
 }
 
 // ── Query Hooks ─────────────────────────────────────────────────────────────
@@ -201,6 +203,17 @@ export function useApprovals() {
     queryFn: () => apiGet<{ approvals: ApprovalEntry[] }>("/api/approvals"),
     select: (d) => d.approvals ?? [],
     refetchInterval: 5000,
+  })
+}
+
+export function useAgentTasks(agentName: string | null, isStreaming = false) {
+  return useQuery({
+    queryKey: qk.agentTasks(agentName ?? ""),
+    queryFn: () => apiGet<{ tasks: AgentTask[] }>(`/api/agents/${agentName}/tasks`),
+    select: (d) => d.tasks,
+    enabled: !!agentName,
+    refetchInterval: isStreaming ? 3000 : 10000,
+    staleTime: 0,
   })
 }
 
