@@ -19,11 +19,10 @@ pub trait EnvResolver: Send + Sync {
 
 /// Resolve an env var: try the resolver first, then fall back to std::env::var.
 async fn resolve_env(key: &str, resolver: Option<&dyn EnvResolver>) -> Result<String> {
-    if let Some(r) = resolver {
-        if let Some(val) = r.resolve(key).await {
+    if let Some(r) = resolver
+        && let Some(val) = r.resolve(key).await {
             return Ok(val);
         }
-    }
     std::env::var(key).with_context(|| format!("env var '{}' not set", key))
 }
 use std::path::Path;

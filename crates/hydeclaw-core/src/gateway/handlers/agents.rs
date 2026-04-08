@@ -526,7 +526,7 @@ pub async fn start_agent_from_config(
                             name,
                             &deps.workspace_dir,
                             agent_cfg.agent.base,
-                        );
+                        ).await;
                         tracing::info!(agent = %name, provider = %provider_name, "using dedicated compaction provider");
                         Some(p)
                     }

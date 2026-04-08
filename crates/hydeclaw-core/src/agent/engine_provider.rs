@@ -30,7 +30,7 @@ impl AgentEngine {
                     &self.agent.name,
                     &self.workspace_dir,
                     self.agent.base,
-                );
+                ).await;
                 Some(p)
             }
             Ok(None) => {

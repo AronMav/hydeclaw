@@ -708,7 +708,7 @@ async fn main() -> Result<()> {
                             Some(agent::providers::create_provider_from_connection(
                                 &conn, None, 0.3, None,
                                 state.secrets.clone(), None, "__graph_worker__", "", false,
-                            ))
+                            ).await)
                         }
                         _ => {
                             tracing::warn!(provider = %name, "graph_extraction provider not found, falling back");
@@ -743,7 +743,7 @@ async fn main() -> Result<()> {
                             Some(agent::providers::create_provider_from_connection(
                                 &conn, None, 0.3, None,
                                 state.secrets.clone(), None, "__compression_worker__", "", false,
-                            ))
+                            ).await)
                         }
                         _ => {
                             tracing::warn!(provider = %name, "graph_extraction provider not found, falling back for compression");
