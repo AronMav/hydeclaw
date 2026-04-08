@@ -1269,8 +1269,8 @@ impl AgentEngine {
 
             // Use streaming if chunk_tx available (enables progressive display)
             let llm_result = if let Some(tx) = &chunk_tx {
-                self.provider.chat_stream(
-                    &messages, &available_tools,
+                self.chat_stream_with_transient_retry(
+                    &mut messages, &available_tools,
                     tx.clone(),
                 ).await
             } else {
