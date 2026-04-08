@@ -102,6 +102,7 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
         .route("/api/agents/{name}", get(api_get_agent))
         .route("/api/agents/{name}", put(api_update_agent))
         .route("/api/agents/{name}", delete(api_delete_agent))
+        .route("/api/agents/{name}/tasks", get(handlers::agents::api_agent_tasks))
         .route("/api/agents/{name}/model-override", post(set_model_override))
         // Unified providers
         .route("/api/provider-types", get(handlers::providers::api_list_provider_types))

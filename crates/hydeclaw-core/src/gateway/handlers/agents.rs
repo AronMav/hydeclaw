@@ -16,6 +16,7 @@ where
     Ok(Some(Option::deserialize(deserializer)?))
 }
 use std::fs::canonicalize;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -1441,6 +1442,60 @@ pub(crate) async fn api_clear_inter_agent_messages(
         )
             .into_response(),
     }
+}
+
+/// GET /api/agents/{name}/tasks — return task plans written by this agent to workspace/tasks/
+pub(crate) async fn api_agent_tasks(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    // Check agent exists
+    if !state.agents.read().await.contains_key(&name) {
+        return (StatusCode::NOT_FOUND, Json(json!({"error": "agent not found"}))).into_response();
+    }
+
+    let workspace_dir = state.agent_deps.read().await.workspace_dir.clone();
+    let tasks_dir = PathBuf::from(&workspace_dir).join("tasks");
+
+    // If tasks directory doesn't exist, return empty list
+    let mut read_dir = match tokio::fs::read_dir(&tasks_dir).await {
+        Ok(rd) => rd,
+        Err(_) => return Json(json!({"tasks": []})).into_response(),
+    };
+
+    let mut tasks: Vec<Value> = Vec::new();
+
+    while let Ok(Some(entry)) = read_dir.next_entry().await {
+        let path = entry.path();
+        // Only process .json files
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let content = match tokio::fs::read_to_string(&path).await {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let plan: Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        // Filter by agent name
+        if plan.get("agent").and_then(|v| v.as_str()) == Some(name.as_str()) {
+            tasks.push(plan);
+        }
+    }
+
+    // Sort by created_at descending (ISO 8601 string comparison is correct for UTC timestamps)
+    tasks.sort_by(|a, b| {
+        let ca = a.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
+        let cb = b.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
+        cb.cmp(ca)
+    });
+
+    // Limit to 20 entries
+    tasks.truncate(20);
+
+    Json(json!({"tasks": tasks})).into_response()
 }
 
 #[cfg(test)]
