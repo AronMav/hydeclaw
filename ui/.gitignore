@@ -19,6 +19,7 @@
 
 # production
 /build
+!/build/adapter.cjs
 
 # misc
 .DS_Store
