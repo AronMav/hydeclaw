@@ -205,10 +205,12 @@ impl AgentEngine {
                     tracing::warn!(iteration, "LLM returned empty response after retry");
                 }
 
-                // Auto-continue: if LLM described remaining work, nudge it to execute
-                if auto_continue_count < loop_config.max_auto_continues && !final_response.is_empty() && looks_incomplete(&final_response) {
+                // Auto-continue: if LLM described remaining work or stopped due to length limit, nudge it to continue
+                let is_length_limit = response.finish_reason.as_deref() == Some("length");
+                if auto_continue_count < loop_config.max_auto_continues && !final_response.is_empty() && (is_length_limit || looks_incomplete(&final_response)) {
                     auto_continue_count += 1;
-                    tracing::info!(iteration, count = auto_continue_count, max = loop_config.max_auto_continues, "auto-continue: response looks incomplete, nudging LLM");
+                    let reason = if is_length_limit { "response truncated by length limit" } else { "response looks incomplete" };
+                    tracing::info!(iteration, count = auto_continue_count, max = loop_config.max_auto_continues, reason, "auto-continue: nudging LLM");
                     {
                         let db = self.db.clone();
                         let agent_name = self.agent.name.clone();

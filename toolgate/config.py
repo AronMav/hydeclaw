@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import asyncio
 
 import httpx
 from pydantic import BaseModel, Field
@@ -56,26 +57,26 @@ def _seed_from_env() -> ProvidersConfig:
     )
 
 
-def _load_config_from_api() -> ProvidersConfig | None:
-    """Try to load config from Core API (GET /api/media-config).
+async def _aload_config_from_api() -> ProvidersConfig | None:
+    """Try to load config from Core API (GET /api/media-config) asynchronously.
 
     Returns the parsed ProvidersConfig on success, or None if unavailable.
-    The Core endpoint returns unmasked api_keys and the data in ProvidersConfig format.
     """
     core_url = CORE_API_URL
     if not core_url:
         return None
-    # Read token at call time (not import time) — process manager sets env after module load
+    # Read token at call time (not import time)
     auth_token = os.environ.get("HYDECLAW_AUTH_TOKEN", os.environ.get("AUTH_TOKEN", ""))
     try:
         headers: dict[str, str] = {}
         if auth_token:
             headers["Authorization"] = f"Bearer {auth_token}"
-        resp = httpx.get(
-            f"{core_url}/api/media-config",
-            headers=headers,
-            timeout=5.0,
-        )
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{core_url}/api/media-config",
+                headers=headers,
+                timeout=5.0,
+            )
         if resp.status_code == 200:
             data = resp.json()
             config = ProvidersConfig(**data)
@@ -94,19 +95,41 @@ def _load_config_from_api() -> ProvidersConfig | None:
         _log.warning("Failed to load config from Core API: %s — falling back to disk", e)
     return None
 
+def load_config_from_api_sync() -> ProvidersConfig | None:
+    """Synchronous fallback for lazy loading."""
+    core_url = CORE_API_URL
+    if not core_url:
+        return None
+    auth_token = os.environ.get("HYDECLAW_AUTH_TOKEN", os.environ.get("AUTH_TOKEN", ""))
+    try:
+        headers: dict[str, str] = {}
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        with httpx.Client() as client:
+            resp = client.get(
+                f"{core_url}/api/media-config",
+                headers=headers,
+                timeout=5.0,
+            )
+        if resp.status_code == 200:
+            data = resp.json()
+            return ProvidersConfig(**data)
+    except Exception as e:
+        _log.warning("Sync load failed: %s", e)
+    return None
 
-def load_config() -> ProvidersConfig:
+
+async def aload_config() -> ProvidersConfig:
     """Load config from Core API with retry. Falls back to env vars if API unavailable.
     No disk file needed — Core API is the single source of truth."""
-    import time
     for attempt in range(5):
-        config = _load_config_from_api()
+        config = await _aload_config_from_api()
         if config is not None:
             return config
         if attempt < 4:
             wait = 2 * (attempt + 1)
             _log.info("Core API not ready, retrying in %ds (attempt %d/5)...", wait, attempt + 1)
-            time.sleep(wait)
+            await asyncio.sleep(wait)
 
     _log.warning("Core API unavailable after 5 attempts — seeding from environment variables")
     return _seed_from_env()

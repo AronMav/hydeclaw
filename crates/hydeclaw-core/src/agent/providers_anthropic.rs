@@ -177,6 +177,7 @@ impl AnthropicProvider {
 pub(super) struct AnthropicResponse {
     pub(super) content: Vec<AnthropicContentBlock>,
     pub(super) usage: Option<AnthropicUsage>,
+    pub(super) stop_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -247,6 +248,7 @@ pub(super) fn parse_anthropic_response(api_resp: AnthropicResponse, model: &str)
         content,
         tool_calls,
         usage,
+        finish_reason: api_resp.stop_reason,
         model: Some(model.to_string()),
         provider: Some("anthropic".to_string()),
         fallback_notice: None,

@@ -280,6 +280,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
             provider = %self.provider_name,
             content_len = content.len(),
             tool_calls = tool_calls.len(),
+            finish_reason = ?choice.finish_reason,
             input_tokens = usage.as_ref().map(|u| u.input_tokens).unwrap_or(0),
             output_tokens = usage.as_ref().map(|u| u.output_tokens).unwrap_or(0),
             "LLM response parsed"
@@ -292,6 +293,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
             model: Some(effective_model),
             provider: Some(self.provider_name.clone()),
             fallback_notice: None,
+            finish_reason: choice.finish_reason,
             tools_used: vec![],
             iterations: 0,
             thinking_blocks: vec![],
@@ -379,6 +381,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
         // Indexed by tool_call index: (id, name, arguments)
         let mut tool_call_parts: Vec<(String, String, String)> = Vec::new();
         let mut usage: Option<(u32, u32)> = None;
+        let mut finish_reason: Option<String> = None;
 
         use tokio_stream::StreamExt;
 
@@ -418,6 +421,10 @@ impl LlmProvider for OpenAiCompatibleProvider {
                                 usage = Some((u.prompt_tokens, u.completion_tokens));
                             }
                             if let Some(choice) = chunk_json.choices.first() {
+                                // Capture finish reason
+                                if let Some(ref fr) = choice.finish_reason {
+                                    finish_reason = Some(fr.clone());
+                                }
                                 // Stream content tokens
                                 if let Some(ref content) = choice.delta.content {
                                     full_content.push_str(content);
@@ -493,6 +500,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
             provider = %self.provider_name,
             content_len = full_content.len(),
             tool_calls = tool_calls.len(),
+            finish_reason = ?finish_reason,
             elapsed_ms = elapsed.as_millis() as u64,
             "streaming response complete"
         );
@@ -507,6 +515,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
             model: Some(effective_model),
             provider: Some(self.provider_name.clone()),
             fallback_notice: None,
+            finish_reason,
             tools_used: vec![],
             iterations: 0,
             thinking_blocks: vec![],
@@ -546,6 +555,7 @@ where
 #[derive(Debug, Deserialize)]
 struct ChatChoice {
     message: ChatMessage,
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -764,6 +774,7 @@ struct StreamChunk {
 #[derive(Debug, Deserialize)]
 struct StreamChoice {
     delta: StreamDelta,
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

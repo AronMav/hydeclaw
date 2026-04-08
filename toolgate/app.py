@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI):
     http_client = httpx.AsyncClient(timeout=120.0)
     app.state.registry = registry
     app.state.http_client = http_client
-    registry.load()
+    await registry.aload()
     yield
     if http_client:
         await http_client.aclose()
@@ -105,7 +105,7 @@ async def health():
 @app.post("/reload")
 async def reload_providers():
     """Reload provider configuration and invalidate router caches."""
-    registry.reload()
+    await registry.areload()
     # Invalidate cached credentials in workspace routers
     _invalidate_router_caches()
     active = {}

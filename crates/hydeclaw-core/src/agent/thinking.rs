@@ -181,20 +181,30 @@ pub(crate) fn safe_emit_len(text: &str) -> usize {
 /// Used for auto-continue: nudge LLM to finish the task with tools.
 pub(crate) fn looks_incomplete(text: &str) -> bool {
     let lower = text.to_lowercase();
+    let trimmed = text.trim();
+
+    // Pattern 1: Explicit "next steps" markers
     let markers = [
         "далее нужно", "следующий шаг", "осталось сделать", "затем нужно",
-        "теперь нужно", "нужно ещё", "нужно еще",
-        "next step", "remaining steps", "i'll now", "i will then",
-        "todo:", "need to also",
+        "теперь нужно", "нужно ещё", "нужно еще", "приступаю к", "перехожу к",
+        "next step", "remaining steps", "i'll now", "i will then", "starting with",
+        "todo:", "need to also", "let's begin by",
     ];
+
+    // Pattern 2: Structural incompleteness (open code blocks or dangling list markers)
+    let is_open_code_block = trimmed.contains("```") && !trimmed.ends_with("```") && !trimmed.ends_with("```\n");
+    let ends_with_list_marker = trimmed.ends_with(':') || trimmed.ends_with('-') || (!trimmed.is_empty() && trimmed.chars().last().unwrap().is_ascii_digit());
+
     let exclusions = [
         "можешь", "хочешь", "хотите", "если нужно", "при необходимости",
-        "можно также", "рекомендую", "предлагаю",
-        "would you like", "do you want", "if you need", "you can",
+        "можно также", "рекомендую", "предлагаю", "жду твоих", "жду ваших",
+        "would you like", "do you want", "if you need", "you can", "let me know",
     ];
+
     let has_marker = markers.iter().any(|m| lower.contains(m));
     let has_exclusion = exclusions.iter().any(|m| lower.contains(m));
-    has_marker && !has_exclusion
+
+    (has_marker || is_open_code_block || ends_with_list_marker) && !has_exclusion
 }
 
 #[cfg(test)]

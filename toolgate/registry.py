@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
+import threading
 
-from config import ProviderConfig, ProvidersConfig, load_config
+from config import ProviderConfig, ProvidersConfig, aload_config, load_config_from_api_sync
 from providers.base import STTProvider, VisionProvider, TTSProvider, ImageGenProvider, EmbeddingProvider
 
 Provider = STTProvider | VisionProvider | TTSProvider | ImageGenProvider | EmbeddingProvider
@@ -152,29 +153,32 @@ class ProviderRegistry:
         self.config: ProvidersConfig = ProvidersConfig()
         self._instances: dict[str, Provider] = {}
         self._loaded: bool = False
+        self._lock = threading.Lock()
 
-    def load(self) -> None:
-        self.config = load_config()
-        self._instantiate_all()
-        self._loaded = bool(self.config.providers)
+    async def aload(self) -> None:
+        config = await aload_config()
+        with self._lock:
+            self.config = config
+            self._instantiate_all()
+            self._loaded = bool(self.config.providers)
 
-    def reload(self) -> None:
-        """Reload from Core API (has latest active providers)."""
-        self.config = load_config()
-        self._instantiate_all()
-        self._loaded = bool(self.config.providers)
+    async def areload(self) -> None:
+        """Reload from Core API asynchronously."""
+        await self.aload()
 
     def _ensure_loaded(self) -> None:
         """Lazy-load: if startup returned empty config, retry from Core API on first use."""
         if self._loaded:
             return
-        from config import _load_config_from_api
-        config = _load_config_from_api()
-        if config and config.providers:
-            log.info("Lazy-load: got %d providers from Core API", len(config.providers))
-            self.config = config
-            self._instantiate_all()
-            self._loaded = True
+        with self._lock:
+            if self._loaded:
+                return
+            config = load_config_from_api_sync()
+            if config and config.providers:
+                log.info("Lazy-load: got %d providers from Core API", len(config.providers))
+                self.config = config
+                self._instantiate_all()
+                self._loaded = True
 
     def _instantiate_all(self) -> None:
         self._instances.clear()
@@ -199,14 +203,17 @@ class ProviderRegistry:
 
     def get_active(self, capability: str) -> Provider | None:
         self._ensure_loaded()
-        active_id = self.config.active.get(capability)
-        if active_id and active_id in self._instances:
-            return self._instances[active_id]
+        with self._lock:
+            active_id = self.config.active.get(capability)
+            if active_id and active_id in self._instances:
+                return self._instances[active_id]
         return None
 
     def get_instance(self, provider_id: str) -> Provider | None:
         self._ensure_loaded()
-        return self._instances.get(provider_id)
+        with self._lock:
+            return self._instances.get(provider_id)
 
     def list_providers(self) -> dict[str, ProviderConfig]:
-        return self.config.providers
+        with self._lock:
+            return self.config.providers

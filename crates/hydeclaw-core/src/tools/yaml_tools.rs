@@ -5,22 +5,25 @@
 /// Each YAML file defines one tool: endpoint, method, auth, parameters.
 /// The registry loads them, converts to JSON Schema for LLM, and executes HTTP calls.
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Trait for resolving environment variable names to values.
 /// Falls back to std::env::var if no resolver is provided.
+#[async_trait]
 pub trait EnvResolver: Send + Sync {
-    fn resolve(&self, key: &str) -> Option<String>;
+    async fn resolve(&self, key: &str) -> Option<String>;
 }
 
 /// Resolve an env var: try the resolver first, then fall back to std::env::var.
-fn resolve_env(key: &str, resolver: Option<&dyn EnvResolver>) -> Result<String> {
-    if let Some(r) = resolver
-        && let Some(val) = r.resolve(key) {
+async fn resolve_env(key: &str, resolver: Option<&dyn EnvResolver>) -> Result<String> {
+    if let Some(r) = resolver {
+        if let Some(val) = r.resolve(key).await {
             return Ok(val);
         }
+    }
     std::env::var(key).with_context(|| format!("env var '{}' not set", key))
 }
 use std::path::Path;
@@ -542,10 +545,16 @@ impl YamlToolDef {
             let val = params_map.get(name);
             if param.required && (val.is_none() || val == Some(&serde_json::Value::Null)) {
                 // Check if default_from_env or default can fill it
-                let has_env_default = param.default_from_env.as_ref().is_some_and(|env_key| {
-                    env_resolver.and_then(|r| r.resolve(env_key)).is_some()
-                        || std::env::var(env_key).is_ok()
-                });
+                let has_env_default = if let Some(env_key) = &param.default_from_env {
+                    let from_resolver = if let Some(r) = env_resolver {
+                        r.resolve(env_key).await.is_some()
+                    } else {
+                        false
+                    };
+                    from_resolver || std::env::var(env_key).is_ok()
+                } else {
+                    false
+                };
                 let has_default = param.default.is_some();
                 if !has_env_default && !has_default {
                     anyhow::bail!("required parameter '{}' is missing", name);
@@ -565,14 +574,21 @@ impl YamlToolDef {
 
         for (name, param) in &self.parameters {
             // Resolution order: LLM arg → default_from_env (scoped secret) → default
-            let value = params_map.get(name).cloned().unwrap_or_else(|| {
-                if let Some(ref env_key) = param.default_from_env
-                    && let Some(resolver) = env_resolver
-                        && let Some(val) = resolver.resolve(env_key) {
-                            return serde_json::Value::String(val);
-                        }
+            let value = if let Some(v) = params_map.get(name).cloned() {
+                v
+            } else if let Some(ref env_key) = param.default_from_env {
+                if let Some(resolver) = env_resolver {
+                    if let Some(val) = resolver.resolve(env_key).await {
+                        serde_json::Value::String(val)
+                    } else {
+                        param.default.clone().unwrap_or(serde_json::Value::Null)
+                    }
+                } else {
+                    param.default.clone().unwrap_or(serde_json::Value::Null)
+                }
+            } else {
                 param.default.clone().unwrap_or(serde_json::Value::Null)
-            });
+            };
 
             if value.is_null() {
                 continue;
@@ -607,42 +623,42 @@ impl YamlToolDef {
             match auth.auth_type.as_str() {
                 "bearer_env" => {
                     if let Some(ref key) = auth.key {
-                        let token = resolve_env(key, env_resolver)?;
+                        let token = resolve_env(key, env_resolver).await?;
                         auth_headers.push(("Authorization".into(), format!("Bearer {}", token)));
                     }
                 }
                 "basic_env" => {
                     let user = auth.username_key.as_deref().unwrap_or("");
                     let pass = auth.password_key.as_deref().unwrap_or("");
-                    let user_val = resolve_env(user, env_resolver).unwrap_or_default();
-                    let pass_val = resolve_env(pass, env_resolver).unwrap_or_default();
+                    let user_val = resolve_env(user, env_resolver).await.unwrap_or_default();
+                    let pass_val = resolve_env(pass, env_resolver).await.unwrap_or_default();
                     let encoded = base64::engine::general_purpose::STANDARD
                         .encode(format!("{}:{}", user_val, pass_val));
                     auth_headers.push(("Authorization".into(), format!("Basic {}", encoded)));
                 }
                 "api_key_header" => {
                     if let (Some(hdr), Some(key)) = (&auth.header_name, &auth.key) {
-                        let val = resolve_env(key, env_resolver)?;
+                        let val = resolve_env(key, env_resolver).await?;
                         auth_headers.push((hdr.clone(), val));
                     }
                 }
                 "api_key_query" => {
                     if let (Some(param), Some(key)) = (&auth.param_name, &auth.key) {
-                        let val = resolve_env(key, env_resolver)?;
+                        let val = resolve_env(key, env_resolver).await?;
                         auth_query.push((param.clone(), val));
                     }
                 }
                 "custom" => {
                     if let Some(ref hdrs) = auth.headers {
                         for (hdr_name, tpl) in hdrs {
-                            let resolved = resolve_env_template(tpl, env_resolver);
+                            let resolved = resolve_env_template(tpl, env_resolver).await;
                             auth_headers.push((hdr_name.clone(), resolved));
                         }
                     }
                 }
                 "oauth_refresh" => {
                     if let (Some(key), Some(token_url)) = (&auth.key, &auth.token_url) {
-                        let refresh_token = resolve_env(key, env_resolver)?;
+                        let refresh_token = resolve_env(key, env_resolver).await?;
                         let body = auth.token_body.as_deref().unwrap_or(
                             "grant_type=refresh_token&refresh_token={{bearer}}"
                         ).replace("{{bearer}}", &refresh_token);
@@ -1208,7 +1224,7 @@ fn process_conditionals(template: &str, params: &serde_json::Map<String, serde_j
 }
 
 /// Substitute ${ENV_VAR} in a template string, using EnvResolver if available.
-fn resolve_env_template(template: &str, env_resolver: Option<&dyn EnvResolver>) -> String {
+async fn resolve_env_template(template: &str, env_resolver: Option<&dyn EnvResolver>) -> String {
     let mut result = template.to_string();
     // Find all ${VAR} patterns and replace
     let mut start = 0;
@@ -1216,7 +1232,7 @@ fn resolve_env_template(template: &str, env_resolver: Option<&dyn EnvResolver>) 
         let abs_open = start + open;
         if let Some(close) = result[abs_open..].find('}') {
             let var_name = &result[abs_open + 2..abs_open + close];
-            let value = resolve_env(var_name, env_resolver).unwrap_or_default();
+            let value = resolve_env(var_name, env_resolver).await.unwrap_or_default();
             result = format!("{}{}{}", &result[..abs_open], value, &result[abs_open + close + 1..]);
             start = abs_open + value.len();
         } else {
@@ -1518,24 +1534,25 @@ mod tests {
 
     // ── resolve_env_template ─────────────────────────────────────────────────
 
-    #[test]
-    fn resolve_env_template_no_pattern() {
-        assert_eq!(resolve_env_template("plain string", None), "plain string");
+    #[tokio::test]
+    async fn resolve_env_template_no_pattern() {
+        assert_eq!(resolve_env_template("plain string", None).await, "plain string");
     }
 
-    #[test]
-    fn resolve_env_template_nonexistent_var() {
+    #[tokio::test]
+    async fn resolve_env_template_nonexistent_var() {
         // Use a var name that is extremely unlikely to exist
-        let result = resolve_env_template("prefix-${__HYDECLAW_TEST_NONEXISTENT_XYZ__}-suffix", None);
+        let result = resolve_env_template("prefix-${__HYDECLAW_TEST_NONEXISTENT_XYZ__}-suffix", None).await;
         assert_eq!(result, "prefix--suffix");
     }
 
-    #[test]
-    fn resolve_env_template_with_resolver() {
+    #[tokio::test]
+    async fn resolve_env_template_with_resolver() {
         use std::collections::HashMap;
         struct MapResolver(HashMap<String, String>);
+        #[async_trait]
         impl EnvResolver for MapResolver {
-            fn resolve(&self, key: &str) -> Option<String> {
+            async fn resolve(&self, key: &str) -> Option<String> {
                 self.0.get(key).cloned()
             }
         }
@@ -1545,7 +1562,7 @@ mod tests {
         let result = resolve_env_template(
             "Bearer ${__HYDECLAW_YAML_TOOLS_TEST_VAR__}",
             Some(&resolver),
-        );
+        ).await;
         assert_eq!(result, "Bearer resolved_value");
     }
 

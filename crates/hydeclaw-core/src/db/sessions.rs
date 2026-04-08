@@ -45,7 +45,7 @@ pub async fn get_or_create_session(
     let row = sqlx::query(
         "SELECT id FROM sessions \
          WHERE agent_id = $1 AND user_id = $2 AND channel = $3 \
-           AND last_message_at > now() - interval '24 hours' \
+           AND last_message_at > now() - interval '4 hours' \
          ORDER BY last_message_at DESC LIMIT 1",
     )
     .bind(agent_id)
@@ -527,7 +527,7 @@ pub async fn find_active_session(
     let row = sqlx::query(
         "SELECT id FROM sessions \
          WHERE agent_id = $1 AND user_id = $2 AND channel = $3 \
-           AND last_message_at > now() - interval '24 hours' \
+           AND last_message_at > now() - interval '4 hours' \
          ORDER BY last_message_at DESC LIMIT 1",
     )
     .bind(agent_id)
@@ -766,7 +766,7 @@ pub async fn get_latest_ui_session(db: &PgPool, agent_id: &str) -> Result<Option
         "SELECT id, agent_id, user_id, channel, started_at, last_message_at, title, metadata, run_status, activity_at, participants \
          FROM sessions \
          WHERE agent_id = $1 AND channel = 'ui' \
-           AND last_message_at > now() - interval '24 hours' \
+           AND last_message_at > now() - interval '4 hours' \
          ORDER BY last_message_at DESC \
          LIMIT 1",
     )

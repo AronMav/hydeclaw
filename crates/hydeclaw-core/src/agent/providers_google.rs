@@ -132,6 +132,8 @@ struct GeminiResponse {
 #[derive(Debug, Deserialize)]
 struct GeminiCandidate {
     content: Option<GeminiContent>,
+    #[serde(rename = "finishReason")]
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -233,10 +235,12 @@ impl LlmProvider for GoogleProvider {
 
         let mut content = String::new();
         let mut tool_calls = Vec::new();
+        let mut finish_reason = None;
 
         if let Some(candidates) = api_resp.candidates
-            && let Some(candidate) = candidates.into_iter().next()
-                && let Some(c) = candidate.content
+            && let Some(candidate) = candidates.into_iter().next() {
+                finish_reason = candidate.finish_reason.clone();
+                if let Some(c) = candidate.content
                     && let Some(parts) = c.parts {
                         for (i, part) in parts.into_iter().enumerate() {
                             if let Some(text) = part.text {
@@ -254,6 +258,7 @@ impl LlmProvider for GoogleProvider {
                             }
                         }
                     }
+            }
 
         let usage = api_resp.usage_metadata.map(|u| hydeclaw_types::TokenUsage {
             input_tokens: u.prompt_token_count.unwrap_or(0),
@@ -264,6 +269,7 @@ impl LlmProvider for GoogleProvider {
             provider = "google",
             content_len = content.len(),
             tool_calls = tool_calls.len(),
+            finish_reason = ?finish_reason,
             input_tokens = usage.as_ref().map(|u| u.input_tokens).unwrap_or(0),
             output_tokens = usage.as_ref().map(|u| u.output_tokens).unwrap_or(0),
             "Google response parsed"
@@ -273,6 +279,7 @@ impl LlmProvider for GoogleProvider {
             content,
             tool_calls,
             usage,
+            finish_reason,
             model: Some(effective_model),
             provider: Some("google".to_string()),
             fallback_notice: None,
@@ -347,6 +354,7 @@ impl LlmProvider for GoogleProvider {
 
         let mut full_content = String::new();
         let mut buffer = String::new();
+        let mut finish_reason: Option<String> = None;
         let mut thinking_filter = crate::agent::thinking::ThinkingFilter::new();
 
         use tokio_stream::StreamExt;
@@ -367,6 +375,9 @@ impl LlmProvider for GoogleProvider {
                     && let Ok(chunk_json) = serde_json::from_str::<GeminiResponse>(data)
                         && let Some(candidates) = chunk_json.candidates {
                             for candidate in candidates {
+                                if let Some(ref fr) = candidate.finish_reason {
+                                    finish_reason = Some(fr.clone());
+                                }
                                 if let Some(c) = candidate.content
                                     && let Some(parts) = c.parts {
                                         for part in parts {
@@ -388,6 +399,7 @@ impl LlmProvider for GoogleProvider {
         tracing::info!(
             provider = "google",
             content_len = full_content.len(),
+            finish_reason = ?finish_reason,
             elapsed_ms = elapsed.as_millis() as u64,
             "streaming response complete"
         );
@@ -396,6 +408,7 @@ impl LlmProvider for GoogleProvider {
             content: full_content,
             tool_calls: vec![],
             usage: None,
+            finish_reason,
             model: Some(effective_model),
             provider: Some("google".to_string()),
             fallback_notice: None,

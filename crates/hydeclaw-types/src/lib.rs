@@ -128,6 +128,9 @@ pub struct LlmResponse {
     #[serde(default)]
     pub tool_calls: Vec<ToolCall>,
     pub usage: Option<TokenUsage>,
+    /// Why the LLM stopped: "stop", "length", "tool_calls", "content_filter", etc.
+    #[serde(default)]
+    pub finish_reason: Option<String>,
     /// Which model actually answered (filled by provider).
     #[serde(default)]
     pub model: Option<String>,
