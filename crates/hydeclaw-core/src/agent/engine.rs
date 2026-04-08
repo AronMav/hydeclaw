@@ -2462,22 +2462,29 @@ impl AgentEngine {
     }
 
     /// Call LLM with automatic context overflow recovery.
-    /// On context overflow (400), compacts messages and retries once.
+    /// On context overflow (400), compacts messages and retries up to 3 times.
     async fn chat_with_overflow_recovery(
         &self,
         messages: &mut Vec<Message>,
         tools: &[ToolDefinition],
     ) -> Result<hydeclaw_types::LlmResponse> {
         self.check_budget().await?;
-        match self.provider.chat(messages, tools).await {
-            Ok(resp) => Ok(resp),
-            Err(e) if super::tool_loop::is_context_overflow(&e) => {
-                tracing::warn!("context overflow detected, compacting mid-loop and retrying");
-                self.compact_messages(messages).await;
-                self.provider.chat(messages, tools).await
+        let max_compact_attempts: u8 = 3;
+        let mut last_error = None;
+
+        for compact_attempt in 0..=max_compact_attempts {
+            let result = self.provider.chat(messages, tools).await;
+            match result {
+                Ok(resp) => return Ok(resp),
+                Err(e) if super::tool_loop::is_context_overflow(&e) && compact_attempt < max_compact_attempts => {
+                    tracing::warn!(attempt = compact_attempt + 1, max = max_compact_attempts, "context overflow — compacting");
+                    self.compact_messages(messages).await;
+                    last_error = Some(e);
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) => Err(e),
         }
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("context overflow after {} compaction attempts", max_compact_attempts)))
     }
 
     /// Call LLM with exponential backoff retry (up to 5 attempts, 500ms–32s).
@@ -2522,6 +2529,7 @@ impl AgentEngine {
     }
 
     /// Streaming variant of chat_with_overflow_recovery.
+    /// On context overflow (400), compacts messages and retries up to 3 times.
     async fn chat_stream_with_overflow_recovery(
         &self,
         messages: &mut Vec<Message>,
@@ -2529,15 +2537,22 @@ impl AgentEngine {
         chunk_tx: mpsc::UnboundedSender<String>,
     ) -> Result<hydeclaw_types::LlmResponse> {
         self.check_budget().await?;
-        match self.provider.chat_stream(messages, tools, chunk_tx.clone()).await {
-            Ok(resp) => Ok(resp),
-            Err(e) if super::tool_loop::is_context_overflow(&e) => {
-                tracing::warn!("context overflow detected, compacting mid-loop and retrying (stream)");
-                self.compact_messages(messages).await;
-                self.provider.chat_stream(messages, tools, chunk_tx).await
+        let max_compact_attempts: u8 = 3;
+        let mut last_error = None;
+
+        for compact_attempt in 0..=max_compact_attempts {
+            let result = self.provider.chat_stream(messages, tools, chunk_tx.clone()).await;
+            match result {
+                Ok(resp) => return Ok(resp),
+                Err(e) if super::tool_loop::is_context_overflow(&e) && compact_attempt < max_compact_attempts => {
+                    tracing::warn!(attempt = compact_attempt + 1, max = max_compact_attempts, "context overflow — compacting (stream)");
+                    self.compact_messages(messages).await;
+                    last_error = Some(e);
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) => Err(e),
         }
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("context overflow after {} compaction attempts (stream)", max_compact_attempts)))
     }
 
     /// Streaming variant of chat_with_transient_retry.
