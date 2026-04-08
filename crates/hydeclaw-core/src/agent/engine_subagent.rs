@@ -9,7 +9,7 @@ const SUBAGENT_CANCELLED: &str = "subagent cancelled";
 
 /// Parse a duration string like "2m", "30s" for subagent timeout.
 /// Defaults to 2m (120s) on invalid input — matches the config default.
-fn parse_subagent_timeout(s: &str) -> std::time::Duration {
+pub(super) fn parse_subagent_timeout(s: &str) -> std::time::Duration {
     let s = s.trim();
     if let Some(mins) = s.strip_suffix('m')
         && let Ok(n) = mins.parse::<u64>() {

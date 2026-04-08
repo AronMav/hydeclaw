@@ -113,17 +113,28 @@ impl super::AgentEngine {
                 .map(|&i| {
                     let name = tool_calls[i].name.clone();
                     let args = enriched[i].clone();
+                    // Subagent tools get their configured timeout + 10s buffer so the outer cap
+                    // does not kill a long-running subagent before its inner deadline fires.
+                    let tool_timeout = if name == "subagent" {
+                        let base = super::subagent_impl::parse_subagent_timeout(
+                            &self.app_config.subagents.in_process_timeout,
+                        );
+                        base + std::time::Duration::from_secs(10)
+                    } else {
+                        std::time::Duration::from_secs(120)
+                    };
                     async move {
                         match tokio::time::timeout(
-                            std::time::Duration::from_secs(120),
+                            tool_timeout,
                             self.execute_tool_call(&name, &args),
                         )
                         .await
                         {
                             Ok(result) => (i, self.truncate_tool_result(&result, current_context_chars)),
                             Err(_) => {
-                                tracing::warn!(tool = %name, "tool call timed out after 120s");
-                                (i, format!("Tool '{}' timed out after 120s", name))
+                                let secs = tool_timeout.as_secs();
+                                tracing::warn!(tool = %name, timeout_secs = secs, "tool call timed out");
+                                (i, format!("Tool '{}' timed out after {}s", name, secs))
                             }
                         }
                     }
@@ -141,16 +152,27 @@ impl super::AgentEngine {
             );
         } else if parallel_indices.len() == 1 {
             let i = parallel_indices[0];
+            let name = &tool_calls[i].name;
+            // Subagent tools get their configured timeout + 10s buffer.
+            let tool_timeout = if name == "subagent" {
+                let base = super::subagent_impl::parse_subagent_timeout(
+                    &self.app_config.subagents.in_process_timeout,
+                );
+                base + std::time::Duration::from_secs(10)
+            } else {
+                std::time::Duration::from_secs(120)
+            };
             let result = match tokio::time::timeout(
-                std::time::Duration::from_secs(120),
-                self.execute_tool_call(&tool_calls[i].name, &enriched[i]),
+                tool_timeout,
+                self.execute_tool_call(name, &enriched[i]),
             )
             .await
             {
                 Ok(r) => self.truncate_tool_result(&r, current_context_chars),
                 Err(_) => {
-                    tracing::warn!(tool = %tool_calls[i].name, "tool call timed out after 120s");
-                    format!("Tool '{}' timed out after 120s", tool_calls[i].name)
+                    let secs = tool_timeout.as_secs();
+                    tracing::warn!(tool = %name, timeout_secs = secs, "tool call timed out");
+                    format!("Tool '{}' timed out after {}s", name, secs)
                 }
             };
             results[i] = Some(result);
