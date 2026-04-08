@@ -45,7 +45,8 @@ deploy-binary: build-arm64
 	ssh $(PI_HOST) "chmod +x $(PI_DIR)/hydeclaw-*-aarch64; for SVC in hydeclaw-core hydeclaw-watchdog hydeclaw-memory-worker; do systemctl --user is-enabled \$$SVC 2>/dev/null && systemctl --user restart \$$SVC && echo \"  restarted \$$SVC\" || true; done"
 
 deploy-ui: ui
-	cd ui && tar cf - out | ssh $(PI_HOST) "cd $(PI_DIR)/ui && tar xf -"
+	ssh $(PI_HOST) "rm -rf $(PI_DIR)/ui/out"
+	cd ui && tar cf - out | ssh $(PI_HOST) "mkdir -p $(PI_DIR)/ui && cd $(PI_DIR)/ui && tar xf -"
 
 deploy-migrations:
 	scp -r migrations/ $(PI_HOST):$(PI_DIR)/migrations/
