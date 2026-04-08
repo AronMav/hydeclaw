@@ -558,6 +558,7 @@ pub async fn start_agent_from_config(
         approval_waiters: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         ui_event_tx: Some(state.ui_event_tx.clone()),
         processing_session_id: Arc::new(tokio::sync::Mutex::new(None)),
+        sse_event_tx: Arc::new(tokio::sync::Mutex::new(None)),
         handoff_target: Arc::new(tokio::sync::Mutex::new(None)),
         processing_tracker: Some(state.processing_tracker.clone()),
         default_timezone,

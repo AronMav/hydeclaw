@@ -3,6 +3,15 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use chrono::{DateTime, Utc};
 
+/// Result delivered to the parent agent when a subagent finishes (oneshot push notification).
+/// Not Clone/Serialize — it is a one-shot message type.
+#[derive(Debug)]
+pub struct SubagentResult {
+    pub status: SubagentStatus,
+    pub result: Option<String>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SubagentLogEntry {
     pub iteration: usize,
@@ -11,7 +20,7 @@ pub struct SubagentLogEntry {
     pub content_preview: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 pub struct SubagentHandle {
     pub id: String,
     pub task: String,
@@ -23,6 +32,9 @@ pub struct SubagentHandle {
     pub log: Vec<SubagentLogEntry>,
     #[serde(skip)]
     pub cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// Oneshot sender for push notification to parent agent when subagent finishes.
+    #[serde(skip)]
+    pub completion_tx: Option<tokio::sync::oneshot::Sender<SubagentResult>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
@@ -56,11 +68,19 @@ impl SubagentRegistry {
         Self::default()
     }
 
-    /// Register a new subagent. Returns (id, handle, cancel_token) — cancel token
-    /// is returned separately to avoid an extra read lock on the freshly created handle.
-    pub async fn register(&self, task: &str) -> (String, Arc<RwLock<SubagentHandle>>, Arc<std::sync::atomic::AtomicBool>) {
+    /// Register a new subagent. Returns (id, handle, cancel_token, completion_rx) —
+    /// cancel token and completion receiver are returned separately to avoid extra read locks.
+    /// The completion_tx is stored in the handle; the receiver is returned to the caller
+    /// so it can block until the subagent finishes (oneshot push notification).
+    pub async fn register(&self, task: &str) -> (
+        String,
+        Arc<RwLock<SubagentHandle>>,
+        Arc<std::sync::atomic::AtomicBool>,
+        tokio::sync::oneshot::Receiver<SubagentResult>,
+    ) {
         let id = format!("sa_{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (tx, rx) = tokio::sync::oneshot::channel::<SubagentResult>();
         let handle = Arc::new(RwLock::new(SubagentHandle {
             id: id.clone(),
             task: task.chars().take(200).collect(),
@@ -71,9 +91,10 @@ impl SubagentRegistry {
             error: None,
             log: Vec::new(),
             cancel: cancel.clone(),
+            completion_tx: Some(tx),
         }));
         self.inner.write().await.insert(id.clone(), handle.clone());
-        (id, handle, cancel)
+        (id, handle, cancel, rx)
     }
 
     pub async fn get(&self, id: &str) -> Option<Arc<RwLock<SubagentHandle>>> {

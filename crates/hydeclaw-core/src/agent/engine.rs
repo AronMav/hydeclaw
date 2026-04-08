@@ -170,6 +170,9 @@ pub struct AgentEngine {
     /// Current session ID being processed (set during handle_sse/handle_with_status, cleared on finish).
     /// Used by tools that need session context (e.g., handoff).
     pub processing_session_id: Arc<tokio::sync::Mutex<Option<Uuid>>>,
+    /// SSE event sender for the current streaming session. Set in handle_sse, cleared on finish.
+    /// Allows tool handlers (e.g. subagent) to emit SSE events without threading event_tx through call chains.
+    pub sse_event_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<StreamEvent>>>>,
     /// Set by handoff tool during execution; read and cleared by turn loop in chat.rs.
     pub handoff_target: Arc<tokio::sync::Mutex<Option<HandoffRequest>>>,
     /// Shared tracker for currently processing agents (for WS reconnection).
@@ -1754,6 +1757,8 @@ impl AgentEngine {
 
         // Store session_id for tool handlers that need session context (e.g., handoff)
         *self.processing_session_id.lock().await = Some(session_id);
+        // Store event_tx so subagent handlers can emit SSE events (e.g., subagent-complete RichCard)
+        *self.sse_event_tx.lock().await = Some(event_tx.clone());
 
         // Lifecycle tracking: mark running, RAII guard marks 'failed' on early exit
         if let Err(e) = crate::db::sessions::set_session_run_status(&self.db, session_id, "running").await {
@@ -2231,6 +2236,7 @@ impl AgentEngine {
 
         // Clear processing session context
         *self.processing_session_id.lock().await = None;
+        *self.sse_event_tx.lock().await = None;
 
         // Post-session graph extraction (background)
         if self.memory_store.is_available() && messages.len() >= 5 {
