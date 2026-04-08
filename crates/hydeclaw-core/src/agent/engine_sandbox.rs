@@ -430,6 +430,7 @@ impl AgentEngine {
             content: final_response,
             tool_calls: vec![],
             usage: last_usage,
+            finish_reason: None,
             model: None,
             provider: None,
             fallback_notice: None,

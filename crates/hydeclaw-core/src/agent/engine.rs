@@ -54,33 +54,10 @@ struct SecretsEnvResolver {
     agent_name: String,
 }
 
+#[async_trait::async_trait]
 impl crate::tools::yaml_tools::EnvResolver for SecretsEnvResolver {
-    fn resolve(&self, key: &str) -> Option<String> {
-        // SAFETY (REL-03): block_in_place is used here because the EnvResolver trait
-        // is synchronous (fn resolve(&self, key: &str) -> Option<String>), and making
-        // it async would propagate through the entire YAML tool execution pipeline.
-        //
-        // This is safe because:
-        // 1. HydeClaw uses the multi-thread tokio runtime (#[tokio::main]), so
-        //    block_in_place moves other tasks off this worker thread (no deadlock).
-        // 2. The cache read lock (tokio::sync::RwLock) is held for microseconds
-        //    (HashMap lookup by (String, String) key).
-        // 3. Write contention is minimal: secrets are written only via human-initiated
-        //    API calls (SecretsManager::set), which are rare.
-        // 4. Secret reads are per-tool-call (seconds apart), not in a hot loop.
-        let cache = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(self.secrets.cache_ref().read())
-        });
-        // Try agent-scoped first
-        if let Some(val) = cache.get(&(key.to_string(), self.agent_name.clone())) {
-            return Some(val.clone());
-        }
-        // Then global
-        if let Some(val) = cache.get(&(key.to_string(), String::new())) {
-            return Some(val.clone());
-        }
-        // env::var fallback is handled by resolve_env in yaml_tools
-        None
+    async fn resolve(&self, key: &str) -> Option<String> {
+        self.secrets.get_scoped(key, &self.agent_name).await
     }
 }
 

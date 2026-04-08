@@ -99,6 +99,7 @@ impl LlmProvider for CliLlmProvider {
             content: result.text,
             tool_calls: vec![],
             usage: result.usage,
+            finish_reason: None,
             model: Some(format!("{}/{}", self.provider_name, self.model)),
             provider: Some(self.provider_name.clone()),
             fallback_notice: None,

@@ -410,6 +410,7 @@ impl LlmProvider for AnthropicProvider {
             content: full_content,
             tool_calls: vec![],
             usage: None,
+            finish_reason: None,
             model: Some(self.model.effective()),
             provider: Some("anthropic".to_string()),
             fallback_notice: None,

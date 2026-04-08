@@ -1544,6 +1544,7 @@ mod tests {
         let resp = AnthropicResponse {
             content: vec![text_block("hello")],
             usage: None,
+            stop_reason: None,
         };
         let result = parse_anthropic_response(resp, "claude-3");
         assert_eq!(result.content, "hello");
@@ -1558,6 +1559,7 @@ mod tests {
         let resp = AnthropicResponse {
             content: vec![tool_block("call-1", "search", serde_json::json!({"q": "rust"}))],
             usage: None,
+            stop_reason: None,
         };
         let result = parse_anthropic_response(resp, "claude-3");
         assert_eq!(result.content, "");
@@ -1576,6 +1578,7 @@ mod tests {
                 text_block("b"),
             ],
             usage: None,
+            stop_reason: None,
         };
         let result = parse_anthropic_response(resp, "model");
         // texts are joined with \n
@@ -1588,6 +1591,7 @@ mod tests {
         let resp = AnthropicResponse {
             content: vec![text_block("hi")],
             usage: Some(AnthropicUsage { input_tokens: 10, output_tokens: 20, cache_creation_input_tokens: None, cache_read_input_tokens: None }),
+            stop_reason: None,
         };
         let result = parse_anthropic_response(resp, "model");
         let usage = result.usage.expect("usage should be Some");
@@ -1600,6 +1604,7 @@ mod tests {
         let resp = AnthropicResponse {
             content: vec![AnthropicContentBlock::Other],
             usage: None,
+            stop_reason: None,
         };
         let result = parse_anthropic_response(resp, "model");
         assert_eq!(result.content, "");
@@ -1611,6 +1616,7 @@ mod tests {
         let resp = AnthropicResponse {
             content: vec![],
             usage: None,
+            stop_reason: None,
         };
         let result = parse_anthropic_response(resp, "model");
         assert_eq!(result.content, "");
@@ -1626,6 +1632,7 @@ mod tests {
                 tool_block("c2", "tool_b", serde_json::json!({"y": 2})),
             ],
             usage: Some(AnthropicUsage { input_tokens: 5, output_tokens: 15, cache_creation_input_tokens: None, cache_read_input_tokens: None }),
+            stop_reason: None,
         };
         let result = parse_anthropic_response(resp, "m");
         assert_eq!(result.tool_calls.len(), 2);

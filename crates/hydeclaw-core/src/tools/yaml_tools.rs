@@ -1786,27 +1786,29 @@ method: GET
 
     // ── Phase 1: resolve_env_template with resolver ─────────────────────────
 
-    #[test]
-    fn resolve_env_template_uses_resolver() {
+    #[tokio::test]
+    async fn resolve_env_template_uses_resolver() {
         struct TestResolver;
+        #[async_trait]
         impl EnvResolver for TestResolver {
-            fn resolve(&self, key: &str) -> Option<String> {
+            async fn resolve(&self, key: &str) -> Option<String> {
                 if key == "MY_SCOPED_KEY" { Some("scoped_value".into()) } else { None }
             }
         }
-        let result = resolve_env_template("Bearer ${MY_SCOPED_KEY}", Some(&TestResolver));
+        let result = resolve_env_template("Bearer ${MY_SCOPED_KEY}", Some(&TestResolver)).await;
         assert_eq!(result, "Bearer scoped_value");
     }
 
-    #[test]
-    fn resolve_env_template_resolver_fallback_to_env() {
+    #[tokio::test]
+    async fn resolve_env_template_resolver_fallback_to_env() {
         // Use PATH which exists on all platforms (Windows, Linux, macOS)
         struct EmptyResolver;
+        #[async_trait]
         impl EnvResolver for EmptyResolver {
-            fn resolve(&self, _: &str) -> Option<String> { None }
+            async fn resolve(&self, _: &str) -> Option<String> { None }
         }
         // EmptyResolver returns None -> resolve_env falls back to std::env::var
-        let result = resolve_env_template("x${PATH}y", Some(&EmptyResolver));
+        let result = resolve_env_template("x${PATH}y", Some(&EmptyResolver)).await;
         // PATH always exists and is non-empty, so result should be "x<PATH_VALUE>y"
         assert!(result.starts_with("x"), "result should start with 'x': {result}");
         assert!(result.ends_with("y"), "result should end with 'y': {result}");
