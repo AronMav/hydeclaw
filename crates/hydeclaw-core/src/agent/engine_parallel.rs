@@ -24,7 +24,9 @@ fn is_system_tool_parallel_safe(name: &str) -> bool {
     )
 }
 
-pub(super) struct LoopBreak;
+/// Signals that the tool execution loop should break.
+/// Carries an optional reason string for logging and nudge messages.
+pub(super) struct LoopBreak(pub Option<String>);
 
 impl super::AgentEngine {
     /// Execute tool calls with parallel/sequential partitioning.
@@ -52,7 +54,11 @@ impl super::AgentEngine {
                     }
                     LoopStatus::Break(reason) => {
                         tracing::error!(tool = %tc.name, reason = %reason, "tool loop broken");
-                        return Err(LoopBreak);
+                        return Err(LoopBreak(Some(reason)));
+                    }
+                    LoopStatus::CycleDetected(desc) => {
+                        tracing::error!(tool = %tc.name, desc = %desc, "n-gram cycle detected");
+                        return Err(LoopBreak(Some(desc)));
                     }
                 }
             }

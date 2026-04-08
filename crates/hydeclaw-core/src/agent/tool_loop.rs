@@ -1,4 +1,5 @@
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 
@@ -20,6 +21,10 @@ pub struct ToolLoopConfig {
     pub max_consecutive_failures: usize,
     /// Maximum auto-continue nudges per session when LLM response looks incomplete.
     pub max_auto_continues: u8,
+    /// How many "you're looping" nudges before force-stop (default: 3).
+    pub max_loop_nudges: usize,
+    /// Maximum cycle length to detect in n-gram check (3..=N, default: 6).
+    pub ngram_max_cycle: usize,
 }
 
 impl ToolLoopConfig {
@@ -39,6 +44,8 @@ impl Default for ToolLoopConfig {
             break_threshold: 10,
             max_consecutive_failures: 3,
             max_auto_continues: 5,
+            max_loop_nudges: 3,
+            ngram_max_cycle: 6,
         }
     }
 }
@@ -53,6 +60,8 @@ impl From<&crate::config::ToolLoopSettings> for ToolLoopConfig {
             break_threshold: s.break_threshold,
             max_consecutive_failures: s.max_consecutive_failures,
             max_auto_continues: s.max_auto_continues,
+            max_loop_nudges: s.max_loop_nudges,
+            ngram_max_cycle: s.ngram_cycle_length,
         }
     }
 }
@@ -66,12 +75,16 @@ pub enum LoopStatus {
     Warning(usize),
     /// Threshold exceeded — caller should break the loop.
     Break(String),
+    /// N-gram cycle detected (3+ steps repeated 3 times) — caller should nudge/break.
+    CycleDetected(String),
 }
 
 /// Detects repetitive tool call patterns (same tool + same args in a row).
 pub struct LoopDetector {
     /// Ring buffer of recent call hashes.
     recent: VecDeque<u64>,
+    /// Ring buffer of recent tool names (parallel to `recent`, for descriptions).
+    recent_names: VecDeque<String>,
     /// Count of consecutive identical hashes.
     consecutive: usize,
     /// The hash of the previous call (for consecutive detection).
@@ -79,22 +92,32 @@ pub struct LoopDetector {
     /// Thresholds from config.
     warn_threshold: usize,
     break_threshold: usize,
+    /// Maximum n-gram cycle length to detect (3..=N).
+    ngram_max_cycle: usize,
+    /// Per-tool call counts (persists across reset() for progress header).
+    tool_counts: HashMap<String, usize>,
 }
 
 impl LoopDetector {
     pub fn new(config: &ToolLoopConfig) -> Self {
         Self {
-            recent: VecDeque::with_capacity(32),
+            recent: VecDeque::with_capacity(64),
+            recent_names: VecDeque::with_capacity(64),
             consecutive: 0,
             last_hash: None,
             warn_threshold: config.warn_threshold,
             break_threshold: config.break_threshold,
+            ngram_max_cycle: config.ngram_max_cycle,
+            tool_counts: HashMap::new(),
         }
     }
 
     /// Record a tool call. Returns the loop status after this call.
     pub fn record(&mut self, tool_name: &str, args: &serde_json::Value) -> LoopStatus {
         let hash = Self::hash_call(tool_name, args);
+
+        // Track per-tool call counts (persists across reset)
+        *self.tool_counts.entry(tool_name.to_string()).or_insert(0) += 1;
 
         // Track consecutive identical calls
         if self.last_hash == Some(hash) {
@@ -104,11 +127,13 @@ impl LoopDetector {
             self.last_hash = Some(hash);
         }
 
-        // Maintain ring buffer for future ping-pong detection
-        if self.recent.len() >= 32 {
+        // Maintain ring buffer (capacity 64)
+        if self.recent.len() >= 64 {
             self.recent.pop_front();
+            self.recent_names.pop_front();
         }
         self.recent.push_back(hash);
+        self.recent_names.push_back(tool_name.to_string());
 
         if self.consecutive >= self.break_threshold {
             return LoopStatus::Break(format!(
@@ -123,6 +148,13 @@ impl LoopDetector {
                 return LoopStatus::Break(reason);
             }
 
+        // Check for n-gram cycles (3..=ngram_max_cycle steps repeated)
+        if self.recent.len() >= 6 {
+            if let Some(status) = self.detect_ngram_cycle() {
+                return status;
+            }
+        }
+
         if self.consecutive >= self.warn_threshold {
             return LoopStatus::Warning(self.consecutive);
         }
@@ -133,9 +165,10 @@ impl LoopDetector {
     fn hash_call(name: &str, args: &serde_json::Value) -> u64 {
         let mut hasher = DefaultHasher::new();
         name.hash(&mut hasher);
-        // Stable JSON string for hashing (serde_json serialization is deterministic for same Value)
+        // Truncate args to first 200 chars to avoid penalizing minor arg variations.
         let args_str = args.to_string();
-        args_str.hash(&mut hasher);
+        let truncated = &args_str[..args_str.len().min(200)];
+        truncated.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -162,6 +195,68 @@ impl LoopDetector {
         } else {
             None
         }
+    }
+
+    /// Detect repeating n-gram cycles of length 3..=ngram_max_cycle.
+    /// Returns Warning at 2 repetitions, CycleDetected at 3 repetitions.
+    fn detect_ngram_cycle(&self) -> Option<LoopStatus> {
+        let len = self.recent.len();
+        let max_n = self.ngram_max_cycle.min(len / 2);
+
+        for n in 3..=max_n {
+            if len < n * 2 {
+                continue;
+            }
+
+            // The last `n` hashes form the "pattern"
+            let pattern: Vec<u64> = (0..n).map(|i| self.recent[len - n + i]).collect();
+
+            // Count how many times this pattern repeats going backward in the buffer
+            let mut repetitions = 1usize; // the pattern itself counts as 1
+            let mut offset = n;
+            while offset + n <= len {
+                let segment: Vec<u64> = (0..n).map(|i| self.recent[len - offset - n + i]).collect();
+                if segment == pattern {
+                    repetitions += 1;
+                    offset += n;
+                } else {
+                    break;
+                }
+            }
+
+            if repetitions >= 3 {
+                // Build a description using the tool names from the last `n` calls
+                let tools: Vec<&str> = (0..n)
+                    .map(|i| self.recent_names[len - n + i].as_str())
+                    .collect();
+                let desc = format!("{}-step cycle repeated {} times: [{}]", n, repetitions, tools.join(" → "));
+                return Some(LoopStatus::CycleDetected(desc));
+            } else if repetitions == 2 {
+                let count = n * 2;
+                return Some(LoopStatus::Warning(count));
+            }
+        }
+
+        None
+    }
+
+    /// Returns the per-tool call count map. Persists across reset().
+    pub fn tool_counts(&self) -> &HashMap<String, usize> {
+        &self.tool_counts
+    }
+
+    /// Total number of tool calls recorded (sum of tool_counts).
+    pub fn iteration_count(&self) -> usize {
+        self.tool_counts.values().sum()
+    }
+
+    /// Reset detection state (ring buffer + consecutive counter) without clearing tool_counts.
+    /// Call this after injecting a loop nudge to give the model a clean slate.
+    pub fn reset(&mut self) {
+        self.recent.clear();
+        self.recent_names.clear();
+        self.consecutive = 0;
+        self.last_hash = None;
     }
 }
 
@@ -435,5 +530,183 @@ mod tests {
                 msg,
             );
         }
+    }
+
+    // ── N-gram cycle detection tests ──────────────────────────────────────────
+
+    fn make_config_ngram() -> ToolLoopConfig {
+        ToolLoopConfig {
+            warn_threshold: 20,
+            break_threshold: 20,
+            ngram_max_cycle: 6,
+            ..Default::default()
+        }
+    }
+
+    fn record_seq(detector: &mut LoopDetector, seq: &[(&str, &str)]) -> LoopStatus {
+        let mut last = LoopStatus::Ok;
+        for (tool, arg) in seq {
+            last = detector.record(tool, &serde_json::json!({ "q": arg }));
+        }
+        last
+    }
+
+    #[test]
+    fn ngram_cycle_3_steps() {
+        let mut det = LoopDetector::new(&make_config_ngram());
+        // A-B-C × 3 = 9 calls; third repetition should return CycleDetected
+        let abc: Vec<(&str, &str)> = vec![("a", "1"), ("b", "2"), ("c", "3")];
+        // First 2 repetitions
+        for _ in 0..2 {
+            for (t, a) in &abc {
+                det.record(t, &serde_json::json!({ "q": a }));
+            }
+        }
+        // Third repetition — last call should fire CycleDetected
+        det.record("a", &serde_json::json!({ "q": "1" }));
+        det.record("b", &serde_json::json!({ "q": "2" }));
+        let status = det.record("c", &serde_json::json!({ "q": "3" }));
+        assert!(
+            matches!(status, LoopStatus::CycleDetected(_)),
+            "expected CycleDetected for A-B-C × 3, got {:?}",
+            status
+        );
+    }
+
+    #[test]
+    fn ngram_cycle_5_steps() {
+        let mut det = LoopDetector::new(&make_config_ngram());
+        let abcde: &[(&str, &str)] = &[("a","1"),("b","2"),("c","3"),("d","4"),("e","5")];
+        // 2 full repetitions first
+        for _ in 0..2 {
+            for (t, a) in abcde {
+                det.record(t, &serde_json::json!({ "q": a }));
+            }
+        }
+        // Third repetition
+        for (i, (t, a)) in abcde.iter().enumerate() {
+            let status = det.record(t, &serde_json::json!({ "q": a }));
+            if i == abcde.len() - 1 {
+                assert!(
+                    matches!(status, LoopStatus::CycleDetected(_)),
+                    "expected CycleDetected for A-B-C-D-E × 3, got {:?}",
+                    status
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ngram_no_false_positive() {
+        let mut det = LoopDetector::new(&make_config_ngram());
+        // Similar but not identical sequences — tool names differ on 3rd rep
+        det.record("a", &serde_json::json!({"q":"1"}));
+        det.record("b", &serde_json::json!({"q":"2"}));
+        det.record("c", &serde_json::json!({"q":"3"}));
+        det.record("a", &serde_json::json!({"q":"1"}));
+        det.record("b", &serde_json::json!({"q":"2"}));
+        det.record("c", &serde_json::json!({"q":"3"}));
+        det.record("a", &serde_json::json!({"q":"1"}));
+        det.record("b", &serde_json::json!({"q":"2"}));
+        // Last call uses different tool name → should NOT be CycleDetected
+        let status = det.record("d", &serde_json::json!({"q":"3"}));
+        assert!(
+            !matches!(status, LoopStatus::CycleDetected(_)),
+            "expected no CycleDetected for non-identical 3rd rep, got {:?}",
+            status
+        );
+    }
+
+    #[test]
+    fn ngram_resets_after_break() {
+        let mut det = LoopDetector::new(&make_config_ngram());
+        let abc: &[(&str, &str)] = &[("a","1"),("b","2"),("c","3")];
+        // Fill 3 cycles to trigger CycleDetected
+        for _ in 0..2 {
+            for (t, a) in abc {
+                det.record(t, &serde_json::json!({"q": a}));
+            }
+        }
+        for (t, a) in abc.iter() {
+            det.record(t, &serde_json::json!({"q": a}));
+        }
+        // Reset
+        det.reset();
+        // After reset, fresh calls should return Ok
+        let status = det.record("a", &serde_json::json!({"q":"1"}));
+        assert_eq!(status, LoopStatus::Ok, "expected Ok after reset");
+    }
+
+    #[test]
+    fn tool_counts_accurate() {
+        let mut det = LoopDetector::new(&make_config_ngram());
+        det.record("search", &serde_json::json!({"q":"1"}));
+        det.record("search", &serde_json::json!({"q":"2"}));
+        det.record("read", &serde_json::json!({"path":"x"}));
+        det.record("search", &serde_json::json!({"q":"3"}));
+
+        assert_eq!(det.tool_counts().get("search"), Some(&3));
+        assert_eq!(det.tool_counts().get("read"), Some(&1));
+        assert_eq!(det.iteration_count(), 4);
+    }
+
+    #[test]
+    fn ngram_warning_at_2_repeats() {
+        let mut det = LoopDetector::new(&make_config_ngram());
+        let abc: &[(&str, &str)] = &[("a","1"),("b","2"),("c","3")];
+        // 1st full rep
+        for (t, a) in abc {
+            det.record(t, &serde_json::json!({"q": a}));
+        }
+        // 2nd rep — last call should be Warning (not CycleDetected)
+        det.record("a", &serde_json::json!({"q":"1"}));
+        det.record("b", &serde_json::json!({"q":"2"}));
+        let status = det.record("c", &serde_json::json!({"q":"3"}));
+        assert!(
+            matches!(status, LoopStatus::Warning(_)),
+            "expected Warning at 2 repetitions, got {:?}",
+            status
+        );
+        assert!(
+            !matches!(status, LoopStatus::CycleDetected(_)),
+            "should NOT be CycleDetected at only 2 repetitions"
+        );
+    }
+
+    #[test]
+    fn args_truncated_to_200() {
+        // Two calls: one with a 300-char arg, one with the same 300-char arg
+        // Both should produce the same hash (same first 200 chars)
+        let long_arg = "x".repeat(300);
+        let truncated_arg = "x".repeat(300); // same string, hash_call truncates both to 200
+        let h1 = LoopDetector::hash_call("tool", &serde_json::json!({"data": long_arg}));
+        let h2 = LoopDetector::hash_call("tool", &serde_json::json!({"data": truncated_arg}));
+        assert_eq!(h1, h2, "same 300-char arg should produce identical hash (both truncated)");
+
+        // A call with a different 300-char arg (different first 200 chars) should differ
+        let different_arg = format!("y{}", "x".repeat(299));
+        let h3 = LoopDetector::hash_call("tool", &serde_json::json!({"data": different_arg}));
+        assert_ne!(h1, h3, "different first 200 chars should produce different hash");
+    }
+
+    #[test]
+    fn nudge_count_config_defaults() {
+        let cfg = ToolLoopConfig::default();
+        assert_eq!(cfg.max_loop_nudges, 3, "default max_loop_nudges should be 3");
+        assert_eq!(cfg.ngram_max_cycle, 6, "default ngram_max_cycle should be 6");
+    }
+
+    #[test]
+    fn reset_preserves_tool_counts() {
+        let mut det = LoopDetector::new(&make_config_ngram());
+        det.record("search", &serde_json::json!({"q":"1"}));
+        det.record("read", &serde_json::json!({"path":"x"}));
+        det.reset();
+        // tool_counts should still have the recorded values
+        assert_eq!(det.tool_counts().get("search"), Some(&1));
+        assert_eq!(det.tool_counts().get("read"), Some(&1));
+        // But detection state is clear
+        assert_eq!(det.consecutive, 0);
+        assert!(det.recent.is_empty());
     }
 }

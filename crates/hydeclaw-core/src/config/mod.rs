@@ -488,6 +488,12 @@ pub struct ToolLoopSettings {
     /// Maximum auto-continue nudges per session when LLM response looks incomplete (default: 5).
     #[serde(default = "default_max_auto_continues")]
     pub max_auto_continues: u8,
+    /// How many "you're looping" nudges before force-stop (default: 3).
+    #[serde(default = "default_max_loop_nudges")]
+    pub max_loop_nudges: usize,
+    /// Maximum cycle length to detect in n-gram check (3..=N, default: 6).
+    #[serde(default = "default_ngram_cycle_length")]
+    pub ngram_cycle_length: usize,
 }
 
 fn default_tool_loop_max() -> usize { 50 }
@@ -495,6 +501,8 @@ fn default_tool_loop_warn() -> usize { 5 }
 fn default_tool_loop_break() -> usize { 10 }
 fn default_max_consecutive_failures() -> usize { 3 }
 fn default_max_auto_continues() -> u8 { 5 }
+fn default_max_loop_nudges() -> usize { 3 }
+fn default_ngram_cycle_length() -> usize { 6 }
 
 /// Approval system configuration for an agent.
 /// When enabled, certain tool calls require owner confirmation before execution.
@@ -1256,6 +1264,8 @@ model = "m2.5"
                     break_threshold: 7,
                     max_consecutive_failures: 3,
                     max_auto_continues: 5,
+                    max_loop_nudges: 3,
+                    ngram_cycle_length: 6,
                 }),
                 base: false,
                 watchdog: None,

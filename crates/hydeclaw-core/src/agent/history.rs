@@ -2,6 +2,7 @@ use anyhow::Result;
 use hydeclaw_types::{Message, MessageRole, ToolDefinition};
 
 use super::providers::LlmProvider;
+use super::tool_loop::LoopDetector;
 
 /// Estimate token count from text (rough: ~4 chars per token).
 /// Accounts for tool_calls JSON size when present.
@@ -201,6 +202,56 @@ pub async fn compact_if_needed(
     }
 }
 
+/// Generate a compact progress header that survives compaction.
+/// Includes iteration count, top-5 tools by call count, and loop warning if active.
+/// The header is marked with `[Session Progress]` so subsequent compactions can
+/// replace it rather than accumulate multiple headers.
+pub fn generate_progress_header(messages: &[Message], detector: &LoopDetector) -> String {
+    let iterations = detector.iteration_count();
+    let tool_counts = detector.tool_counts();
+
+    // Sort tools by count descending, take top 5
+    let mut sorted: Vec<(&String, &usize)> = tool_counts.iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(a.1));
+    let top_tools: Vec<String> = sorted.iter()
+        .take(5)
+        .map(|(name, count)| format!("{}({})", name, count))
+        .collect();
+
+    // Count tool role messages that contain "error"
+    let error_count = messages.iter()
+        .filter(|m| m.role == MessageRole::Tool && m.content.to_lowercase().contains("error"))
+        .count();
+
+    let tools_str = if top_tools.is_empty() {
+        "none".to_string()
+    } else {
+        top_tools.join(", ")
+    };
+
+    let mut header = format!(
+        "[Session Progress] Iterations: {}. Tools called: {}.",
+        iterations, tools_str
+    );
+
+    if error_count > 0 {
+        header.push_str(&format!(" Errors encountered: {} tool failures.", error_count));
+    }
+
+    header
+}
+
+/// Remove any existing `[Session Progress]` system message from the messages list.
+/// Used before injecting a fresh progress header after compaction.
+pub fn remove_progress_header(messages: &mut Vec<Message>) {
+    messages.retain(|m| {
+        !(m.role == MessageRole::Tool
+            && m.content.starts_with("[Session Progress]")
+            || m.role == MessageRole::System
+                && m.content.starts_with("[Session Progress]"))
+    });
+}
+
 /// Format messages for compaction prompt.
 fn format_messages_for_compaction(messages: &[Message]) -> String {
     let mut formatted = String::new();
@@ -220,6 +271,7 @@ fn format_messages_for_compaction(messages: &[Message]) -> String {
 mod tests {
     use super::*;
     use hydeclaw_types::{Message, MessageRole, ToolCall};
+    use crate::agent::tool_loop::{LoopDetector, ToolLoopConfig};
 
     fn make_message(role: MessageRole, content: &str) -> Message {
         Message {
@@ -306,5 +358,79 @@ mod tests {
         let formatted = format_messages_for_compaction(&msgs);
 
         assert_eq!(formatted, "[User]: \n\n[Assistant]: \n\n");
+    }
+
+    // ── progress_header tests ─────────────────────────────────────────────────
+
+    fn make_detector_with_counts(counts: &[(&str, usize)]) -> LoopDetector {
+        let cfg = ToolLoopConfig::default();
+        let mut det = LoopDetector::new(&cfg);
+        for (tool, n) in counts {
+            for _ in 0..*n {
+                det.record(tool, &serde_json::json!({}));
+            }
+        }
+        det
+    }
+
+    #[test]
+    fn progress_header_contains_tools() {
+        let det = make_detector_with_counts(&[("search", 5), ("read", 3), ("write", 1)]);
+        let msgs = vec![];
+        let header = generate_progress_header(&msgs, &det);
+        assert!(header.starts_with("[Session Progress]"), "header must start with sentinel");
+        assert!(header.contains("search(5)"), "must list search with count 5");
+        assert!(header.contains("read(3)"), "must list read with count 3");
+        assert!(header.contains("write(1)"), "must list write with count 1");
+        assert!(header.contains("Iterations: 9"), "must show total iteration count");
+    }
+
+    #[test]
+    fn progress_header_with_error_messages() {
+        let det = make_detector_with_counts(&[("search", 2)]);
+        let msgs = vec![
+            make_message(MessageRole::Tool, "error: file not found"),
+            make_message(MessageRole::Tool, "success result"),
+            make_message(MessageRole::Tool, "Error: timeout"),
+        ];
+        let header = generate_progress_header(&msgs, &det);
+        assert!(header.contains("Errors encountered: 2"), "should count 2 error tool messages");
+    }
+
+    #[test]
+    fn progress_header_no_tools() {
+        let cfg = ToolLoopConfig::default();
+        let det = LoopDetector::new(&cfg);
+        let msgs = vec![];
+        let header = generate_progress_header(&msgs, &det);
+        assert!(header.starts_with("[Session Progress]"), "must have sentinel even with no tools");
+        assert!(header.contains("none"), "should say 'none' when no tools called");
+    }
+
+    #[test]
+    fn progress_header_top_5_tools() {
+        let det = make_detector_with_counts(&[
+            ("a", 10), ("b", 9), ("c", 8), ("d", 7), ("e", 6), ("f", 5),
+        ]);
+        let msgs = vec![];
+        let header = generate_progress_header(&msgs, &det);
+        // Should include top 5, not the 6th
+        assert!(header.contains("a(10)"));
+        assert!(header.contains("b(9)"));
+        assert!(header.contains("e(6)"));
+        // f(5) is 6th — should NOT appear
+        assert!(!header.contains("f(5)"), "should not include 6th tool beyond top 5");
+    }
+
+    #[test]
+    fn remove_progress_header_clears_existing() {
+        let mut msgs = vec![
+            make_message(MessageRole::System, "You are an assistant."),
+            make_message(MessageRole::System, "[Session Progress] Iterations: 5. Tools called: search(5)."),
+            make_message(MessageRole::User, "hello"),
+        ];
+        remove_progress_header(&mut msgs);
+        assert_eq!(msgs.len(), 2, "progress header system message should be removed");
+        assert!(!msgs.iter().any(|m| m.content.starts_with("[Session Progress]")));
     }
 }

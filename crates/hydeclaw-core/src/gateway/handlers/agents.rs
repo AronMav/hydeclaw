@@ -183,6 +183,8 @@ pub(crate) fn agent_to_detail(cfg: &AgentConfig, is_running: bool, config_dirty:
             "break_threshold": tl.break_threshold,
             "max_consecutive_failures": tl.max_consecutive_failures,
             "max_auto_continues": tl.max_auto_continues,
+            "max_loop_nudges": tl.max_loop_nudges,
+            "ngram_cycle_length": tl.ngram_cycle_length,
         })),
         "approval": a.approval.as_ref().map(|ap| json!({
             "enabled": ap.enabled,
@@ -361,6 +363,8 @@ pub(crate) struct ToolLoopPayload {
     pub break_threshold: Option<usize>,
     pub max_consecutive_failures: Option<usize>,
     pub max_auto_continues: Option<u8>,
+    pub max_loop_nudges: Option<usize>,
+    pub ngram_cycle_length: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -440,6 +444,8 @@ pub(crate) fn build_agent_config(name: String, p: AgentCreatePayload) -> AgentCo
                 break_threshold: tl.break_threshold.unwrap_or(10),
                 max_consecutive_failures: tl.max_consecutive_failures.unwrap_or(3),
                 max_auto_continues: tl.max_auto_continues.unwrap_or(5),
+                max_loop_nudges: tl.max_loop_nudges.unwrap_or(3),
+                ngram_cycle_length: tl.ngram_cycle_length.unwrap_or(6),
             }),
             watchdog: p.watchdog.flatten().map(|w| crate::config::WatchdogConfig {
                 inactivity_secs: w.inactivity_secs.unwrap_or(600),
@@ -910,6 +916,8 @@ pub(crate) async fn api_update_agent(
                 break_threshold: Some(tl.break_threshold),
                 max_consecutive_failures: Some(tl.max_consecutive_failures),
                 max_auto_continues: Some(tl.max_auto_continues),
+                max_loop_nudges: Some(tl.max_loop_nudges),
+                ngram_cycle_length: Some(tl.ngram_cycle_length),
             }));
         }
         if payload.icon.is_none() { payload.icon = a.icon.clone(); }
