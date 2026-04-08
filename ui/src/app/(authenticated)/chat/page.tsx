@@ -63,6 +63,7 @@ import { useSessions, useAgents, qk } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { inviteAgent } from "@/lib/api";
 import type { SessionRow, AgentInfo } from "@/types/api";
+import { TaskPlanPanel } from "@/components/TaskPlanPanel";
 
 const EMPTY_SESSIONS: SessionRow[] = [];
 const EMPTY_ACTIVE: string[] = [];
@@ -397,6 +398,7 @@ export default function ChatPage() {
   // ── Session sidebar ──
   const sessionList = (
     <div className="flex h-full flex-col bg-sidebar">
+      <TaskPlanPanel agentName={currentAgent} isStreaming={isStreaming} />
       <div className="flex items-center justify-between px-5 py-5 border-b border-border/50">
         <div className="flex flex-col gap-1">
           <span className="text-sm font-display font-semibold text-foreground">
