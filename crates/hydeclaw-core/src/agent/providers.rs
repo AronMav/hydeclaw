@@ -175,6 +175,7 @@ pub fn create_provider(
                 temperature,
                 max_tokens,
                 secrets,
+                None,
             ))
         }
         "ollama" => {
@@ -190,6 +191,7 @@ pub fn create_provider(
                 temperature,
                 max_tokens,
                 secrets,
+                None,
             ).with_base_url_env("OLLAMA_URL", "/v1/chat/completions"))
         }
         other => {
@@ -204,6 +206,7 @@ pub fn create_provider(
                     temperature,
                     max_tokens,
                     secrets,
+                    None,
                 ));
             }
             tracing::error!(provider = %other, "unknown provider — treating as generic OpenAI-compatible");
@@ -216,6 +219,7 @@ pub fn create_provider(
                 temperature,
                 max_tokens,
                 secrets,
+                None,
             ))
         }
     }
@@ -260,6 +264,7 @@ pub fn create_provider_from_route(
                 route.base_url.clone(),
                 route.api_key_env.clone(),
                 route.prompt_cache,
+                None,
             ));
         }
         "google" | "gemini" => {
@@ -270,13 +275,14 @@ pub fn create_provider_from_route(
                 secrets,
                 route.base_url.clone(),
                 route.api_key_env.clone(),
+                None,
             ));
         }
         "claude-cli" | "gemini-cli" | "codex-cli" => {
             tracing::error!(provider = %route.provider, "CLI providers cannot be used in routing rules — use as primary provider instead");
             // Return a dummy provider that always errors
             return Arc::new(OpenAiCompatibleProvider::new(
-                &route.provider, "http://invalid", "", route.model.clone(), 0.0, None, secrets,
+                &route.provider, "http://invalid", "", route.model.clone(), 0.0, None, secrets, None,
             ));
         }
         _ => {}
@@ -312,7 +318,7 @@ pub fn create_provider_from_route(
             } else {
                 tracing::error!(provider = %other, "unknown provider in routing rule — route will always fail; fix the agent config");
                 return Arc::new(OpenAiCompatibleProvider::new(
-                    other, "http://invalid", "", route.model.clone(), 0.0, None, secrets,
+                    other, "http://invalid", "", route.model.clone(), 0.0, None, secrets, None,
                 ));
             }
         }
@@ -326,6 +332,7 @@ pub fn create_provider_from_route(
         temperature,
         route.max_tokens,
         secrets,
+        None,
     );
 
     // Apply round-robin keys if configured
@@ -837,6 +844,11 @@ pub(crate) async fn resolve_credential(
     None
 }
 
+/// Extract `timeout_secs` from provider options JSONB. Default: 120s. 0 = no timeout.
+fn extract_timeout_secs(options: &serde_json::Value) -> Option<u64> {
+    options.get("timeout_secs").and_then(|v| v.as_u64())
+}
+
 /// Create an LLM provider from a named DB connection.
 #[allow(clippy::too_many_arguments)]
 pub fn create_provider_from_connection(
@@ -856,6 +868,7 @@ pub fn create_provider_from_connection(
         .map(|pt| pt.default_secret_name)
         .unwrap_or("");
     let credential_scope = conn.id.to_string();
+    let timeout_secs = extract_timeout_secs(&conn.options);
 
     match conn.provider_type.as_str() {
         "anthropic" => Arc::new(AnthropicProvider::with_options(
@@ -866,6 +879,7 @@ pub fn create_provider_from_connection(
             conn.base_url.clone(),
             Some(key_env.to_string()),
             false,
+            timeout_secs,
         ).with_credential_scope(credential_scope)),
         "google" | "gemini" => Arc::new(GoogleProvider::with_options(
             model,
@@ -874,6 +888,7 @@ pub fn create_provider_from_connection(
             secrets,
             conn.base_url.clone(),
             Some(key_env.to_string()),
+            timeout_secs,
         ).with_credential_scope(credential_scope)),
         "claude-cli" | "gemini-cli" | "codex-cli" => {
             let config = cli_backend::resolve_cli_config(&conn.provider_type, &conn.options)
@@ -900,14 +915,14 @@ pub fn create_provider_from_connection(
             let base = conn.base_url.as_deref().unwrap_or("https://api.openai.com");
             let url = resolve_chat_url("openai", base);
             Arc::new(OpenAiCompatibleProvider::new(
-                "openai", &url, key_env, model, temperature, max_tokens, secrets,
+                "openai", &url, key_env, model, temperature, max_tokens, secrets, timeout_secs,
             ).with_credential_scope(credential_scope))
         }
         "ollama" => {
             let base = conn.base_url.as_deref().unwrap_or("http://localhost:11434");
             let url = resolve_chat_url("ollama", base);
             Arc::new(OpenAiCompatibleProvider::new(
-                "ollama", &url, key_env, model, temperature, max_tokens, secrets,
+                "ollama", &url, key_env, model, temperature, max_tokens, secrets, timeout_secs,
             ).with_credential_scope(credential_scope))
         }
         other => {
@@ -916,7 +931,7 @@ pub fn create_provider_from_connection(
                 .unwrap_or(if default_base.is_empty() { "https://api.minimax.io" } else { default_base });
             let url = resolve_chat_url(other, base);
             Arc::new(OpenAiCompatibleProvider::new(
-                other, &url, key_env, model, temperature, max_tokens, secrets,
+                other, &url, key_env, model, temperature, max_tokens, secrets, timeout_secs,
             ).with_credential_scope(credential_scope))
         }
     }
@@ -975,7 +990,7 @@ pub async fn resolve_provider_for_agent(
     if agent.provider.is_empty() {
         tracing::error!(agent = %agent_name, "legacy provider field is empty — no usable LLM provider configured; calls will fail");
         return Arc::new(OpenAiCompatibleProvider::new(
-            "unconfigured", "http://invalid", "", agent.model.clone(), temperature, max_tokens, secrets,
+            "unconfigured", "http://invalid", "", agent.model.clone(), temperature, max_tokens, secrets, None,
         ));
     }
     create_provider(

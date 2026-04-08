@@ -37,12 +37,15 @@ impl OpenAiCompatibleProvider {
         temperature: f64,
         max_tokens: Option<u32>,
         secrets: Arc<SecretsManager>,
+        timeout_secs: Option<u64>,
     ) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .build()
-            .unwrap_or_default();
+        let timeout = timeout_secs.unwrap_or(120);
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10));
+        if timeout > 0 {
+            builder = builder.timeout(std::time::Duration::from_secs(timeout));
+        }
+        let client = builder.build().unwrap_or_default();
         let streaming_client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
             .build()

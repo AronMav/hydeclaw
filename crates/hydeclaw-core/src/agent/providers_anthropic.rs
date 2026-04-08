@@ -21,7 +21,7 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(model: String, temperature: f64, max_tokens: Option<u32>, secrets: Arc<SecretsManager>) -> Self {
-        Self::with_options(model, temperature, max_tokens, secrets, None, None, false)
+        Self::with_options(model, temperature, max_tokens, secrets, None, None, false, None)
     }
 
     pub fn with_options(
@@ -32,12 +32,15 @@ impl AnthropicProvider {
         base_url: Option<String>,
         api_key_env: Option<String>,
         prompt_cache: bool,
+        timeout_secs: Option<u64>,
     ) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .build()
-            .unwrap_or_default();
+        let timeout = timeout_secs.unwrap_or(120);
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10));
+        if timeout > 0 {
+            builder = builder.timeout(std::time::Duration::from_secs(timeout));
+        }
+        let client = builder.build().unwrap_or_default();
         let streaming_client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
             .build()
