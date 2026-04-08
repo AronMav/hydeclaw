@@ -310,63 +310,7 @@ impl Drop for ProcessingGuard {
     }
 }
 
-/// Outcome of a session lifecycle — used by `SessionLifecycleGuard`.
-#[allow(dead_code)]
-enum SessionOutcome {
-    Running,
-    Done,
-    Failed(String),
-}
-
-/// RAII guard that marks a session as 'failed' if dropped without an explicit done/fail call.
-///
-/// Usage: call `done().await` on success or `fail(reason).await` on known errors.
-/// If neither is called (e.g. early `?` return), `Drop` fires a best-effort fallback
-/// via `tokio::spawn` to mark the session as 'failed'.
-struct SessionLifecycleGuard {
-    db: PgPool,
-    session_id: Uuid,
-    outcome: SessionOutcome,
-}
-
-impl SessionLifecycleGuard {
-    fn new(db: PgPool, session_id: Uuid) -> Self {
-        Self { db, session_id, outcome: SessionOutcome::Running }
-    }
-
-    /// Mark session as done in DB. Sets outcome to `Done` only on DB success;
-    /// on failure logs a warning and leaves `Running` so `Drop` fires fallback.
-    async fn done(&mut self) {
-        match crate::db::sessions::set_session_run_status(&self.db, self.session_id, "done").await {
-            Ok(()) => self.outcome = SessionOutcome::Done,
-            Err(e) => tracing::warn!(session_id = %self.session_id, error = %e, "failed to mark session done in DB"),
-        }
-    }
-
-    /// Mark session as failed in DB with a reason. Sets outcome to `Failed` only on DB success;
-    /// on failure logs a warning and leaves `Running` so `Drop` fires fallback.
-    async fn fail(&mut self, reason: &str) {
-        match crate::db::sessions::set_session_run_status(&self.db, self.session_id, "failed").await {
-            Ok(()) => self.outcome = SessionOutcome::Failed(reason.to_string()),
-            Err(e) => tracing::warn!(session_id = %self.session_id, error = %e, reason, "failed to mark session failed in DB"),
-        }
-    }
-}
-
-impl Drop for SessionLifecycleGuard {
-    fn drop(&mut self) {
-        if matches!(self.outcome, SessionOutcome::Running) {
-            tracing::warn!(session_id = %self.session_id, "session guard dropped while still Running — spawning fallback mark-failed");
-            let db = self.db.clone();
-            let sid = self.session_id;
-            tokio::spawn(async move {
-                if let Err(e) = crate::db::sessions::set_session_run_status(&db, sid, "failed").await {
-                    tracing::warn!(error = %e, session_id = %sid, "failed to mark session as failed in Drop guard");
-                }
-            });
-        }
-    }
-}
+use crate::agent::session_manager::{SessionLifecycleGuard, SessionManager};
 
 /// Convert a DB MessageRow into a typed Message.
 /// Parses tool_calls JSON exactly once per row (ENG-02).
@@ -614,10 +558,12 @@ impl AgentEngine {
     async fn maybe_trim_session(&self, session_id: Uuid) {
         if let Some(max) = self.agent.session.as_ref().and_then(|s| {
             if s.max_messages > 0 { Some(s.max_messages) } else { None }
-        })
-            && let Err(e) = sessions::trim_session_messages(&self.db, session_id, max).await {
+        }) {
+            let sm = SessionManager::new(self.db.clone());
+            if let Err(e) = sm.trim_messages(session_id, max).await {
                 tracing::warn!(error = %e, "failed to trim session messages");
             }
+        }
     }
 
     /// Handle an incoming message: build context, call LLM, execute tools, return response.
@@ -633,13 +579,8 @@ impl AgentEngine {
             anyhow::bail!("blocked by hook: {}", reason);
         }
 
-        let session_id = sessions::create_isolated_session_with_user(
-            &self.db,
-            &self.agent.name,
-            &msg.user_id,
-            &msg.channel,
-        )
-        .await?;
+        let sm = SessionManager::new(self.db.clone());
+        let session_id = sm.create_isolated(&self.agent.name, &msg.user_id, &msg.channel).await?;
 
         let (_, mut messages, mut available_tools) =
             self.build_context(msg, true, Some(session_id), false).await?;
@@ -674,7 +615,7 @@ impl AgentEngine {
 
         // For inter-agent messages (user_id starts with "agent:"), save the sender agent_id
         let sender_agent_id = if msg.user_id.starts_with("agent:") { Some(msg.user_id.trim_start_matches("agent:")) } else { None };
-        sessions::save_message_ex(&self.db, session_id, "user", &user_text, None, None, sender_agent_id, None).await?;
+        sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None).await?;
 
         // Context compaction if needed (model-aware token budget)
         self.compact_messages(&mut messages, None).await;
@@ -803,8 +744,8 @@ impl AgentEngine {
 
             // Save assistant message with tool_calls to DB
             let tc_json = serde_json::to_value(&response.tool_calls).ok();
-            if let Err(e) = sessions::save_message(
-                &self.db, session_id, "assistant", &cleaned_content,
+            if let Err(e) = sm.save_message(
+                session_id, "assistant", &cleaned_content,
                 tc_json.as_ref(), None,
             ).await {
                 tracing::warn!(error = %e, session_id = %session_id, "failed to save assistant message to DB");
@@ -825,8 +766,8 @@ impl AgentEngine {
                             thinking_blocks: vec![],
                         });
                         context_chars += tool_result.chars().count();
-                        if let Err(e) = sessions::save_message(
-                            &self.db, session_id, "tool", tool_result, None, Some(tc_id),
+                        if let Err(e) = sm.save_message(
+                            session_id, "tool", tool_result, None, Some(tc_id),
                         ).await {
                             tracing::warn!(error = %e, session_id = %session_id, "failed to save tool result to DB");
                         }
@@ -922,7 +863,7 @@ impl AgentEngine {
             }
         }
 
-        sessions::save_message_ex(&self.db, session_id, "assistant", &final_response, None, None, Some(&self.agent.name), None)
+        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), None)
             .await?;
 
         // Hook: AfterResponse
@@ -999,35 +940,21 @@ impl AgentEngine {
         force_new_session: bool,
     ) -> Result<(Uuid, Vec<Message>, Vec<ToolDefinition>)> {
         // 1. Get or create session (or resume existing)
+        let sm = SessionManager::new(self.db.clone());
         let session_id = if let Some(sid) = resume_session_id {
-            sessions::resume_session(&self.db, sid).await?
+            sm.resume(sid).await?
         } else if force_new_session {
-            sessions::create_new_session(
-                &self.db,
-                &self.agent.name,
-                &msg.user_id,
-                &msg.channel,
-            )
-            .await?
+            sm.create_new(&self.agent.name, &msg.user_id, &msg.channel).await?
         } else {
-            {
-                let dm_scope = self.agent.session.as_ref()
-                    .map(|s| s.dm_scope.as_str())
-                    .unwrap_or("per-channel-peer");
-                sessions::get_or_create_session(
-                    &self.db,
-                    &self.agent.name,
-                    &msg.user_id,
-                    &msg.channel,
-                    dm_scope,
-                )
-                .await?
-            }
+            let dm_scope = self.agent.session.as_ref()
+                .map(|s| s.dm_scope.as_str())
+                .unwrap_or("per-channel-peer");
+            sm.get_or_create(&self.agent.name, &msg.user_id, &msg.channel, dm_scope).await?
         };
 
         // 2. Load conversation history
         let limit = self.agent.max_history_messages.unwrap_or(50) as i64;
-        let history = sessions::load_messages(&self.db, session_id, Some(limit)).await?;
+        let history = sm.load_messages(session_id, Some(limit)).await?;
 
         // 3. Build system prompt with MCP tool schemas
         let ws_prompt =
@@ -1308,7 +1235,8 @@ impl AgentEngine {
         *self.processing_session_id.lock().await = Some(session_id);
 
         // Mark session as running — watchdog and startup cleanup use this
-        if let Err(e) = crate::db::sessions::set_session_run_status(&self.db, session_id, "running").await {
+        let sm = SessionManager::new(self.db.clone());
+        if let Err(e) = sm.set_run_status(session_id, "running").await {
             tracing::warn!(session_id = %session_id, error = %e, "failed to mark session as running");
         }
         // RAII guard: if we exit early via `?` (error path), mark session as 'failed'.
@@ -1364,7 +1292,7 @@ impl AgentEngine {
         // Save user message (original, not enriched)
         // For inter-agent messages (user_id starts with "agent:"), save the sender agent_id
         let sender_agent_id = if msg.user_id.starts_with("agent:") { Some(msg.user_id.trim_start_matches("agent:")) } else { None };
-        sessions::save_message_ex(&self.db, session_id, "user", &user_text, None, None, sender_agent_id, None).await?;
+        sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None).await?;
 
         // Context compaction if needed (model-aware token budget)
         self.compact_messages(&mut messages, None).await;
@@ -1539,8 +1467,7 @@ impl AgentEngine {
 
             // Save assistant message with tool_calls to DB (thinking stripped)
             let tc_json = serde_json::to_value(&response.tool_calls).ok();
-            if let Err(e) = sessions::save_message(
-                &self.db,
+            if let Err(e) = sm.save_message(
                 session_id,
                 "assistant",
                 &cleaned_content,
@@ -1571,8 +1498,8 @@ impl AgentEngine {
                             thinking_blocks: vec![],
                         });
                         context_chars += tool_result.chars().count();
-                        if let Err(e) = sessions::save_message(
-                            &self.db, session_id, "tool", tool_result, None, Some(tc_id),
+                        if let Err(e) = sm.save_message(
+                            session_id, "tool", tool_result, None, Some(tc_id),
                         ).await {
                             tracing::warn!(error = %e, session_id = %session_id, "failed to save tool result to DB");
                         }
@@ -1704,7 +1631,7 @@ impl AgentEngine {
         } else {
             serde_json::to_value(&final_thinking_blocks).ok()
         };
-        sessions::save_message_ex(&self.db, session_id, "assistant", &final_response, None, None, Some(&self.agent.name), thinking_json.as_ref())
+        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), thinking_json.as_ref())
             .await?;
         self.maybe_trim_session(session_id).await;
 
@@ -1746,7 +1673,8 @@ impl AgentEngine {
         let (session_id, mut messages, _) = self.build_context(msg, false, None, false).await?;
 
         // Lifecycle tracking
-        if let Err(e) = crate::db::sessions::set_session_run_status(&self.db, session_id, "running").await {
+        let sm = SessionManager::new(self.db.clone());
+        if let Err(e) = sm.set_run_status(session_id, "running").await {
             tracing::warn!(session_id = %session_id, error = %e, "failed to mark streaming session as running");
         }
         let mut lifecycle_guard = SessionLifecycleGuard::new(self.db.clone(), session_id);
@@ -1762,7 +1690,7 @@ impl AgentEngine {
 
         // For inter-agent messages (user_id starts with "agent:"), save the sender agent_id
         let sender_agent_id = if msg.user_id.starts_with("agent:") { Some(msg.user_id.trim_start_matches("agent:")) } else { None };
-        sessions::save_message_ex(&self.db, session_id, "user", &user_text, None, None, sender_agent_id, None).await?;
+        sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None).await?;
 
         // Stream LLM response (no tools for streaming — simple text response)
         let (final_response, stream_thinking_json) = match self.provider.chat_stream(&messages, &[], chunk_tx).await {
@@ -1798,7 +1726,7 @@ impl AgentEngine {
             }
         };
 
-        sessions::save_message_ex(&self.db, session_id, "assistant", &final_response, None, None, Some(&self.agent.name), stream_thinking_json.as_ref())
+        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), stream_thinking_json.as_ref())
             .await?;
         self.maybe_trim_session(session_id).await;
 
@@ -1864,7 +1792,8 @@ impl AgentEngine {
         *self.sse_event_tx.lock().await = Some(event_tx.clone());
 
         // Lifecycle tracking: mark running, RAII guard marks 'failed' on early exit
-        if let Err(e) = crate::db::sessions::set_session_run_status(&self.db, session_id, "running").await {
+        let sm = SessionManager::new(self.db.clone());
+        if let Err(e) = sm.set_run_status(session_id, "running").await {
             tracing::warn!(session_id = %session_id, error = %e, "failed to mark SSE session as running");
         }
         let mut lifecycle_guard = SessionLifecycleGuard::new(self.db.clone(), session_id);
@@ -1903,7 +1832,7 @@ impl AgentEngine {
 
         // For inter-agent messages (user_id starts with "agent:"), save the sender agent_id
         let sender_agent_id = if msg.user_id.starts_with("agent:") { Some(msg.user_id.trim_start_matches("agent:")) } else { None };
-        sessions::save_message_ex(&self.db, session_id, "user", &user_text, None, None, sender_agent_id, None).await?;
+        sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None).await?;
 
         // Context compaction if needed (model-aware token budget)
         self.compact_messages(&mut messages, None).await;
@@ -2114,8 +2043,7 @@ impl AgentEngine {
             context_chars += cleaned_content.chars().count();
 
             let tc_json = serde_json::to_value(&response.tool_calls).ok();
-            if let Err(e) = sessions::save_message(
-                &self.db,
+            if let Err(e) = sm.save_message(
                 session_id,
                 "assistant",
                 &cleaned_content,
@@ -2212,8 +2140,8 @@ impl AgentEngine {
                         });
                         context_chars += display_len;
 
-                        if let Err(e) = sessions::save_message(
-                            &self.db, session_id, "tool", &db_result, None, Some(tc_id),
+                        if let Err(e) = sm.save_message(
+                            session_id, "tool", &db_result, None, Some(tc_id),
                         ).await {
                             tracing::warn!(error = %e, session_id = %session_id, "failed to save tool result to DB");
                         }
@@ -2373,7 +2301,7 @@ impl AgentEngine {
         } else {
             serde_json::to_value(&final_thinking_blocks).ok()
         };
-        sessions::save_message_ex(&self.db, session_id, "assistant", &final_response, None, None, Some(&self.agent.name), thinking_json.as_ref())
+        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), thinking_json.as_ref())
             .await?;
         self.maybe_trim_session(session_id).await;
 
@@ -3672,6 +3600,7 @@ impl AgentEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::session_manager::SessionOutcome;
 
     #[test]
     fn lifecycle_guard_outcome_defaults_to_running() {
