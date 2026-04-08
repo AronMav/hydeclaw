@@ -575,7 +575,7 @@ impl AgentEngine {
             match crate::compression_worker::compress_group(
                 &self.db,
                 &self.provider,
-                &self.memory_store,
+                self.memory_store.as_ref(),
                 group,
             )
             .await

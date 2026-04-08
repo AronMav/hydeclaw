@@ -8,6 +8,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::memory_service::MemoryService;
 use crate::agent::providers::LlmProvider;
 use crate::db::memory_queries::{fetch_compressible_groups, archive_chunks, CompressibleGroup};
 use crate::graph_worker::ACTIVE_CHATS;
@@ -97,7 +98,7 @@ async fn worker_loop(
                         _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
                     }
                 }
-                match compress_group(db, provider, memory_store, group).await {
+                match compress_group(db, provider, memory_store.as_ref(), group).await {
                     Ok(archived) => {
                         tracing::info!(archived, "compression worker: group compressed");
                     }
@@ -123,7 +124,7 @@ async fn worker_loop(
 pub async fn compress_group(
     db: &PgPool,
     provider: &Arc<dyn LlmProvider>,
-    memory_store: &Arc<MemoryStore>,
+    memory_store: &dyn MemoryService,
     group: CompressibleGroup,
 ) -> anyhow::Result<u64> {
     use hydeclaw_types::{Message, MessageRole};

@@ -22,7 +22,7 @@ impl ToolEmbeddingCache {
         &self,
         key: &str,
         text: &str,
-        store: &crate::memory::MemoryStore,
+        store: &dyn crate::agent::memory_service::MemoryService,
     ) -> anyhow::Result<Vec<f32>> {
         if let Some(v) = self.embeddings.read().await.get(key) {
             return Ok(v.clone());

@@ -297,7 +297,7 @@ impl AgentEngine {
                 let query = args.trim();
                 let (results, mode) = if query.is_empty() {
                     match self.memory_store.recent(10).await {
-                        Ok(r) => (r, "recent"),
+                        Ok(r) => (r, "recent".to_string()),
                         Err(e) => return Some(Err(e)),
                     }
                 } else {
@@ -315,7 +315,7 @@ impl AgentEngine {
                         r.content.chars().take(200).collect::<String>())
                 }).collect();
                 Some(Ok(
-                    localization::fmt(s.memory_header, &[mode, &results.len().to_string(), &lines.join("\n\n")])
+                    localization::fmt(s.memory_header, &[&mode, &results.len().to_string(), &lines.join("\n\n")])
                 ))
             }
             _ => None, // Unknown command — pass to LLM

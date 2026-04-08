@@ -938,7 +938,7 @@ impl AgentEngine {
             let cache_key = format!("tool::{}", tool.name);
             let tool_vec = self
                 .tool_embed_cache
-                .get_or_embed(&cache_key, &tool_text, &self.memory_store)
+                .get_or_embed(&cache_key, &tool_text, self.memory_store.as_ref())
                 .await?;
             let sim = crate::tools::embedding::cosine_similarity(&query_vec, &tool_vec);
             scored.push((sim, idx));

@@ -551,7 +551,7 @@ pub async fn start_agent_from_config(
         ssrf_http_client: crate::tools::ssrf::ssrf_safe_client(
             std::time::Duration::from_secs(30),
         ),
-        memory_store: state.memory_store.clone(),
+        memory_store: state.memory_store.clone() as Arc<dyn crate::agent::memory_service::MemoryService>,
         subagent_semaphore: Arc::new(tokio::sync::Semaphore::new(deps.subagent_max)),
         subagent_registry: crate::agent::subagent_state::SubagentRegistry::new(),
         channel_router: Some(channel_router.clone()),

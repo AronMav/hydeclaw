@@ -142,8 +142,9 @@ pub struct AgentEngine {
     pub http_client: reqwest::Client,
     /// SSRF-safe HTTP client for user-supplied URLs (custom DNS resolver blocks private IPs).
     pub ssrf_http_client: reqwest::Client,
-    /// Native memory store (pgvector queries + external embedding endpoint).
-    pub memory_store: Arc<crate::memory::MemoryStore>,
+    /// Memory service abstraction (pgvector queries + external embedding endpoint).
+    /// Held as a trait object so unit tests can inject a MockMemoryService.
+    pub memory_store: Arc<dyn crate::agent::memory_service::MemoryService>,
     /// Limits concurrent in-process subagents to prevent API token exhaustion.
     pub subagent_semaphore: Arc<tokio::sync::Semaphore>,
     /// Registry of async subagents for status/logs/kill management.
