@@ -403,6 +403,11 @@ pub struct AgentSettings {
     /// specified here to override the connection's default_model).
     #[serde(default)]
     pub provider_connection: Option<String>,
+    /// Optional fallback provider connection name. When set, the engine switches to this
+    /// provider after `max_consecutive_failures` consecutive LLM errors from the primary.
+    /// The switch is per-run only — the next run retries the primary first.
+    #[serde(default)]
+    pub fallback_provider: Option<String>,
     #[serde(default = "default_temperature")]
     pub temperature: f64,
     /// Maximum output tokens for LLM responses. None = provider default.
@@ -477,11 +482,15 @@ pub struct ToolLoopSettings {
     /// Consecutive identical calls before breaking (default: 10).
     #[serde(default = "default_tool_loop_break")]
     pub break_threshold: usize,
+    /// Consecutive LLM errors from primary before switching to fallback provider (default: 3).
+    #[serde(default = "default_max_consecutive_failures")]
+    pub max_consecutive_failures: usize,
 }
 
 fn default_tool_loop_max() -> usize { 50 }
 fn default_tool_loop_warn() -> usize { 5 }
 fn default_tool_loop_break() -> usize { 10 }
+fn default_max_consecutive_failures() -> usize { 3 }
 
 /// Approval system configuration for an agent.
 /// When enabled, certain tool calls require owner confirmation before execution.
@@ -1180,6 +1189,7 @@ model = "m2.5"
                 base: false,
                 watchdog: None,
                 provider_connection: None,
+                fallback_provider: None,
                 hooks: None,
                 daily_budget_tokens: 0,
                 max_agent_turns: None,
@@ -1240,10 +1250,12 @@ model = "m2.5"
                     detect_loops: true,
                     warn_threshold: 3,
                     break_threshold: 7,
+                    max_consecutive_failures: 3,
                 }),
                 base: false,
                 watchdog: None,
                 provider_connection: None,
+                fallback_provider: None,
                 hooks: None,
                 daily_budget_tokens: 0,
                 max_agent_turns: None,

@@ -38,6 +38,7 @@ export interface AgentInfo {
   pending_delete?: boolean;
   base?: boolean;
   provider_connection: string | null;
+  fallback_provider?: string | null;
 }
 
 export interface RoutingRule {
@@ -78,7 +79,7 @@ export interface AgentDetail {
   max_tools_in_context: number | null;
   tool_loop: {
     max_iterations: number; compact_on_overflow: boolean; detect_loops: boolean;
-    warn_threshold: number; break_threshold: number;
+    warn_threshold: number; break_threshold: number; max_consecutive_failures?: number;
   } | null;
   routing: RoutingRule[];
   voice?: string;
@@ -93,6 +94,7 @@ export interface AgentDetail {
   is_running: boolean;
   config_dirty: boolean;
   provider_connection: string | null;
+  fallback_provider?: string | null;
 }
 
 export interface SessionRow {

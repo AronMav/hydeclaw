@@ -135,6 +135,7 @@ pub(crate) fn agent_to_detail(cfg: &AgentConfig, is_running: bool, config_dirty:
         "provider": a.provider,
         "model": a.model,
         "provider_connection": a.provider_connection,
+        "fallback_provider": a.fallback_provider,
         "temperature": a.temperature,
         "max_tokens": a.max_tokens,
         "access": a.access.as_ref().map(|ac| json!({
@@ -179,6 +180,7 @@ pub(crate) fn agent_to_detail(cfg: &AgentConfig, is_running: bool, config_dirty:
             "detect_loops": tl.detect_loops,
             "warn_threshold": tl.warn_threshold,
             "break_threshold": tl.break_threshold,
+            "max_consecutive_failures": tl.max_consecutive_failures,
         })),
         "approval": a.approval.as_ref().map(|ap| json!({
             "enabled": ap.enabled,
@@ -248,6 +250,8 @@ pub(crate) struct AgentCreatePayload {
     pub model: String,
     /// Named LLM provider connection (overrides provider/model when set).
     pub provider_connection: Option<String>,
+    /// Optional fallback provider connection name for consecutive-failure switching.
+    pub fallback_provider: Option<String>,
     pub temperature: Option<f64>,
     pub max_tokens: Option<u32>,
     /// Nullable fields: absent = preserve existing, explicit null = clear, value = update.
@@ -353,6 +357,7 @@ pub(crate) struct ToolLoopPayload {
     pub detect_loops: Option<bool>,
     pub warn_threshold: Option<usize>,
     pub break_threshold: Option<usize>,
+    pub max_consecutive_failures: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -370,6 +375,7 @@ pub(crate) fn build_agent_config(name: String, p: AgentCreatePayload) -> AgentCo
             provider: p.provider,
             model: p.model,
             provider_connection: p.provider_connection,
+            fallback_provider: p.fallback_provider,
             temperature: p.temperature.unwrap_or(1.0),
             max_tokens: p.max_tokens,
             access: p.access.flatten().map(|a| AgentAccessConfig {
@@ -429,6 +435,7 @@ pub(crate) fn build_agent_config(name: String, p: AgentCreatePayload) -> AgentCo
                 detect_loops: tl.detect_loops.unwrap_or(true),
                 warn_threshold: tl.warn_threshold.unwrap_or(5),
                 break_threshold: tl.break_threshold.unwrap_or(10),
+                max_consecutive_failures: tl.max_consecutive_failures.unwrap_or(3),
             }),
             watchdog: p.watchdog.flatten().map(|w| crate::config::WatchdogConfig {
                 inactivity_secs: w.inactivity_secs.unwrap_or(600),
@@ -896,10 +903,12 @@ pub(crate) async fn api_update_agent(
                 detect_loops: Some(tl.detect_loops),
                 warn_threshold: Some(tl.warn_threshold),
                 break_threshold: Some(tl.break_threshold),
+                max_consecutive_failures: Some(tl.max_consecutive_failures),
             }));
         }
         if payload.icon.is_none() { payload.icon = a.icon.clone(); }
         if payload.provider_connection.is_none() { payload.provider_connection = a.provider_connection.clone(); }
+        if payload.fallback_provider.is_none() { payload.fallback_provider = a.fallback_provider.clone(); }
         if payload.approval.is_none() {
             payload.approval = Some(a.approval.as_ref().map(|ap| ApprovalPayload {
                 enabled: Some(ap.enabled),
