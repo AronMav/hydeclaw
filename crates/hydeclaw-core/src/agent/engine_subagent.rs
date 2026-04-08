@@ -7,6 +7,21 @@ use crate::agent::subagent_state;
 /// Sentinel prefix for subagent cancellation errors — matched in spawned task.
 const SUBAGENT_CANCELLED: &str = "subagent cancelled";
 
+/// Parse a duration string like "2m", "30s" for subagent timeout.
+/// Defaults to 2m (120s) on invalid input — matches the config default.
+fn parse_subagent_timeout(s: &str) -> std::time::Duration {
+    let s = s.trim();
+    if let Some(mins) = s.strip_suffix('m')
+        && let Ok(n) = mins.parse::<u64>() {
+        return std::time::Duration::from_secs(n * 60);
+    }
+    if let Some(secs) = s.strip_suffix('s')
+        && let Ok(n) = secs.parse::<u64>() {
+        return std::time::Duration::from_secs(n);
+    }
+    std::time::Duration::from_secs(120) // default 2m
+}
+
 /// Tools denied to subagents by default (prevent recursive spawning, destructive operations, and dangerous ops).
 /// workspace_write and workspace_edit are allowed so subagents can write shared state files (SUB-01).
 pub(super) const SUBAGENT_DENIED_TOOLS: &[&str] = &[
@@ -197,16 +212,20 @@ impl AgentEngine {
             let h = handle.read().await;
             if h.status != subagent_state::SubagentStatus::Running {
                 return match (&h.status, &h.result, &h.error) {
-                    (subagent_state::SubagentStatus::Completed, Some(r), _) => r.clone(),
-                    (subagent_state::SubagentStatus::Failed, _, Some(e)) => format!("Subagent failed: {}", e),
-                    (subagent_state::SubagentStatus::Killed, _, _) => "Subagent was killed.".to_string(),
-                    _ => "Subagent finished with no result.".to_string(),
+                    (subagent_state::SubagentStatus::Completed, Some(r), _) =>
+                        serde_json::json!({"status": "ok", "output": r}).to_string(),
+                    (subagent_state::SubagentStatus::Failed, _, Some(e)) =>
+                        serde_json::json!({"status": "error", "output": "", "error": e}).to_string(),
+                    (subagent_state::SubagentStatus::Killed, _, _) =>
+                        serde_json::json!({"status": "error", "output": "", "error": "timeout"}).to_string(),
+                    _ =>
+                        serde_json::json!({"status": "error", "output": "", "error": "finished with no result"}).to_string(),
                 };
             }
             drop(h);
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
-        format!("Subagent {} still running after 60s. Use subagent_status to check later.", subagent_id)
+        serde_json::json!({"status": "running", "output": "", "error": "poll_timeout_retry"}).to_string()
     }
 
     /// Check status of one or all subagents.
@@ -1219,6 +1238,28 @@ mod tests {
         // SUB-01: workspace_write and workspace_edit unlocked for subagents
         assert!(!SUBAGENT_DENIED_TOOLS.contains(&"workspace_write"));
         assert!(!SUBAGENT_DENIED_TOOLS.contains(&"workspace_edit"));
+    }
+
+    // ── parse_subagent_timeout ───────────────────────────────────────────────
+
+    #[test]
+    fn parse_subagent_timeout_minutes() {
+        assert_eq!(parse_subagent_timeout("2m"), std::time::Duration::from_secs(120));
+    }
+
+    #[test]
+    fn parse_subagent_timeout_seconds() {
+        assert_eq!(parse_subagent_timeout("30s"), std::time::Duration::from_secs(30));
+    }
+
+    #[test]
+    fn parse_subagent_timeout_invalid_defaults() {
+        assert_eq!(parse_subagent_timeout("invalid"), std::time::Duration::from_secs(120));
+    }
+
+    #[test]
+    fn parse_subagent_timeout_whitespace() {
+        assert_eq!(parse_subagent_timeout(" 5m "), std::time::Duration::from_secs(300));
     }
 }
 
