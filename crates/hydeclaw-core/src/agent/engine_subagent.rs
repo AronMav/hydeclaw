@@ -7,6 +7,31 @@ use crate::agent::subagent_state;
 /// Sentinel prefix for subagent cancellation errors — matched in spawned task.
 const SUBAGENT_CANCELLED: &str = "subagent cancelled";
 
+/// Maximum number of retry attempts for failed subagents (not counting the first attempt).
+const MAX_SUBAGENT_RETRIES: usize = 2;
+
+/// Determine whether a subagent result JSON string warrants an automatic retry.
+///
+/// Returns `true` if the result represents a transient failure (network, LLM, timeout, channel drop).
+/// Returns `false` for successes or explicit cancellations — those must not be retried.
+fn is_subagent_result_retryable(result_str: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(result_str) else {
+        // Unparseable — treat as unknown error, retry
+        return true;
+    };
+    // Success: never retry
+    if value.get("status").and_then(|v| v.as_str()) == Some("ok") {
+        return false;
+    }
+    // Explicit cancellation by parent: never retry
+    if let Some(err) = value.get("error").and_then(|v| v.as_str()) {
+        if err.contains("cancelled by parent") {
+            return false;
+        }
+    }
+    true
+}
+
 /// Parse a duration string like "2m", "30s" for subagent timeout.
 /// Defaults to 2m (120s) on invalid input — matches the config default.
 pub(super) fn parse_subagent_timeout(s: &str) -> std::time::Duration {
@@ -1288,6 +1313,44 @@ mod tests {
         // SUB-01: workspace_write and workspace_edit unlocked for subagents
         assert!(!SUBAGENT_DENIED_TOOLS.contains(&"workspace_write"));
         assert!(!SUBAGENT_DENIED_TOOLS.contains(&"workspace_edit"));
+    }
+
+    // ── is_subagent_result_retryable ─────────────────────────────────────────
+
+    #[test]
+    fn test_retryable_error_status() {
+        let s = r#"{"status":"error","output":"","error":"LLM call failed"}"#;
+        assert!(is_subagent_result_retryable(s));
+    }
+
+    #[test]
+    fn test_retryable_timeout() {
+        let s = r#"{"status":"error","output":"","error":"timeout"}"#;
+        assert!(is_subagent_result_retryable(s));
+    }
+
+    #[test]
+    fn test_not_retryable_ok_status() {
+        let s = r#"{"status":"ok","output":"done"}"#;
+        assert!(!is_subagent_result_retryable(s));
+    }
+
+    #[test]
+    fn test_not_retryable_cancelled() {
+        let s = r#"{"status":"error","output":"","error":"cancelled by parent"}"#;
+        assert!(!is_subagent_result_retryable(s));
+    }
+
+    #[test]
+    fn test_retryable_channel_dropped() {
+        let s = r#"{"status":"error","output":"","error":"subagent channel dropped"}"#;
+        assert!(is_subagent_result_retryable(s));
+    }
+
+    #[test]
+    fn test_retryable_non_json() {
+        let s = "random non-json string";
+        assert!(is_subagent_result_retryable(s));
     }
 
     // ── parse_subagent_timeout ───────────────────────────────────────────────
