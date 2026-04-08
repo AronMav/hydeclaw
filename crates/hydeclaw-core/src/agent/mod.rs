@@ -1,4 +1,5 @@
 pub mod memory_service;
+pub mod session_manager;
 pub mod channel_actions;
 pub mod channel_kind;
 pub mod cli_backend;
