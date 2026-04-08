@@ -537,12 +537,13 @@ export function AgentEditDialog({
                     <Input
                       type="number"
                       step="1"
-                      min="1"
-                      max="500"
+                      min="0"
+                      max="10000"
                       className="bg-background border-border font-mono text-sm h-8"
                       value={form.tlMaxIterations}
                       onChange={(e) => upd({ tlMaxIterations: e.target.value })}
                     />
+                    <span className="text-[10px] text-muted-foreground">{t("agents.hint_tl_max_iterations")}</span>
                   </Field>
                   <Field label={t("agents.field_tl_warn_threshold")}>
                     <Input

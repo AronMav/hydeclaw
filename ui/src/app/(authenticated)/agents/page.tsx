@@ -231,7 +231,7 @@ function formToPayload(f: FormState) {
       : null,
     tool_loop: f.tlEnabled
       ? {
-          max_iterations: parseInt(f.tlMaxIterations) || 50,
+          max_iterations: f.tlMaxIterations.trim() !== "" ? parseInt(f.tlMaxIterations) : 50,
           compact_on_overflow: f.tlCompactOnOverflow,
           detect_loops: f.tlDetectLoops,
           warn_threshold: parseInt(f.tlWarnThreshold) || 5,

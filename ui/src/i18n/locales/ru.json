@@ -262,6 +262,7 @@
   "agents.preserve_tool_calls": "Сохранять вызовы инструментов",
   "agents.section_tool_loop": "Цикл инструментов",
   "agents.field_tl_max_iterations": "Макс. итераций",
+  "agents.hint_tl_max_iterations": "0 = без ограничений",
   "agents.field_tl_warn_threshold": "Предупреждение (N повторов)",
   "agents.field_tl_break_threshold": "Прервать (N повторов)",
   "agents.tl_compact_on_overflow": "Сжатие при переполнении контекста",

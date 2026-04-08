@@ -681,7 +681,7 @@ impl AgentEngine {
         let mut did_auto_continue = false;
         let mut context_chars: usize = messages.iter().map(|m| m.content.chars().count()).sum();
 
-        for iteration in 0..loop_config.max_iterations {
+        for iteration in 0..loop_config.effective_max_iterations() {
             self.compact_tool_results(&mut messages, &mut context_chars);
             let llm_result = self.chat_with_transient_retry(&mut messages, &available_tools).await;
             let response = match llm_result {
@@ -734,7 +734,7 @@ impl AgentEngine {
 
             tracing::info!(
                 iteration,
-                max = loop_config.max_iterations,
+                max = loop_config.effective_max_iterations(),
                 tools = response.tool_calls.len(),
                 "isolated job: executing tool calls"
             );
@@ -785,7 +785,7 @@ impl AgentEngine {
                 Err(_) => true,
             };
 
-            if loop_broken || iteration == loop_config.max_iterations - 1 {
+            if loop_broken || iteration == loop_config.effective_max_iterations() - 1 {
                 match self.provider.chat(&messages, &[]).await {
                     Ok(forced) => {
                         final_response = strip_thinking(&forced.content);
@@ -1259,7 +1259,7 @@ impl AgentEngine {
         let mut empty_retry_count: u8 = 0;
         let mut context_chars: usize = messages.iter().map(|m| m.content.chars().count()).sum();
 
-        for iteration in 0..loop_config.max_iterations {
+        for iteration in 0..loop_config.effective_max_iterations() {
             if let Some(ref tx) = status_tx {
                 tx.send(ProcessingPhase::Thinking).ok();
             }
@@ -1329,7 +1329,7 @@ impl AgentEngine {
 
             tracing::info!(
                 iteration,
-                max = loop_config.max_iterations,
+                max = loop_config.effective_max_iterations(),
                 tools = response.tool_calls.len(),
                 "executing tool calls"
             );
@@ -1396,7 +1396,7 @@ impl AgentEngine {
                 Err(_) => true,
             };
 
-            if loop_broken || iteration == loop_config.max_iterations - 1 {
+            if loop_broken || iteration == loop_config.effective_max_iterations() - 1 {
                 // Forced final call — use streaming if chunk_tx is available
                 let forced_result = if let Some(ref tx) = chunk_tx {
                     self.provider.chat_stream(&messages, &[], tx.clone()).await
@@ -1669,7 +1669,7 @@ impl AgentEngine {
         let mut did_auto_continue = false;
         let mut context_chars: usize = messages.iter().map(|m| m.content.chars().count()).sum();
 
-        for iteration in 0..loop_config.max_iterations {
+        for iteration in 0..loop_config.effective_max_iterations() {
             let step_id = format!("step_{}", iteration);
             if event_tx
                 .send(StreamEvent::StepStart {
@@ -1787,7 +1787,7 @@ impl AgentEngine {
 
             tracing::info!(
                 iteration,
-                max = loop_config.max_iterations,
+                max = loop_config.effective_max_iterations(),
                 tools = response.tool_calls.len(),
                 "executing tool calls (SSE)"
             );
@@ -1927,7 +1927,7 @@ impl AgentEngine {
             }
 
             // Forced final call on last iteration or loop break
-            if loop_broken || iteration == loop_config.max_iterations - 1 {
+            if loop_broken || iteration == loop_config.effective_max_iterations() - 1 {
                 let step_id = format!("step_{}", iteration + 1);
                 if event_tx
                     .send(StreamEvent::StepStart {

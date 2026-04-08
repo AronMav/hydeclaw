@@ -262,6 +262,7 @@
   "agents.preserve_tool_calls": "Preserve tool calls",
   "agents.section_tool_loop": "Tool Loop",
   "agents.field_tl_max_iterations": "Max iterations",
+  "agents.hint_tl_max_iterations": "0 = unlimited",
   "agents.field_tl_warn_threshold": "Warn threshold (N repeats)",
   "agents.field_tl_break_threshold": "Break threshold (N repeats)",
   "agents.tl_compact_on_overflow": "Compact on context overflow",

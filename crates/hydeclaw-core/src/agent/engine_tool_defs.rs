@@ -224,13 +224,13 @@ impl AgentEngine {
             },
             ToolDefinition {
                 name: "memory".to_string(),
-                description: "Manage long-term memory. Actions: search (find relevant info, supports category/topic filters), index (save new — ALWAYS search first for duplicates, supports category/topic tags), reindex (bulk import .md files), get (by ID/source), delete (by chunk_id), update (edit MEMORY.md cache), compress (summarize old chunks by topic into compact summaries, originals archived). For index: use pinned=true for permanent facts. For update: edits MEMORY.md (max 8KB), action is add/update/remove within a section. For compress: optional topic parameter limits to a specific topic.".to_string(),
+                description: "Manage long-term memory. Actions: search (find relevant info, supports category/topic filters), index (save new — ALWAYS search first for duplicates, ALWAYS set category and topic), get (by ID/source), delete (by chunk_id), update (edit MEMORY.md cache), compress (summarize old chunks by topic into compact summaries, originals archived). For index: ALWAYS classify with category (decision/preference/event/discovery/advice/general) and topic (project name, technology, person, etc.). Use pinned=true for important permanent facts. For update: edits MEMORY.md (max 8KB), action is add/update/remove within a section. For compress: optional topic parameter limits to a specific topic.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["search", "index", "reindex", "get", "delete", "update", "compress"],
+                            "enum": ["search", "index", "get", "delete", "update", "compress"],
                             "description": "Memory action to perform"
                         },
                         "query": {
@@ -254,11 +254,11 @@ impl AgentEngine {
                         "category": {
                             "type": "string",
                             "enum": ["decision", "preference", "event", "discovery", "advice", "general"],
-                            "description": "Category tag for hierarchical organization (for index: tags the chunk; for search: filters results to matching category)"
+                            "description": "REQUIRED for index. Classify the memory: decision (choices made), preference (user likes/dislikes), event (things that happened), discovery (learned facts), advice (recommendations), general (other). For search: filters results to matching category."
                         },
                         "topic": {
                             "type": "string",
-                            "description": "Topic tag for sub-categorization (for index: free-form tag stored on chunk; for search: filters results to matching topic)"
+                            "description": "REQUIRED for index. Free-form topic tag: project name, technology, person name, domain area, etc. For search: filters results to matching topic."
                         },
                         "clear_existing": {
                             "type": "boolean",

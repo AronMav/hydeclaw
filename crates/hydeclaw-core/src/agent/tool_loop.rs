@@ -18,6 +18,13 @@ pub struct ToolLoopConfig {
     pub break_threshold: usize,
 }
 
+impl ToolLoopConfig {
+    /// Returns effective max iterations: 0 means unlimited (usize::MAX).
+    pub fn effective_max_iterations(&self) -> usize {
+        if self.max_iterations == 0 { usize::MAX } else { self.max_iterations }
+    }
+}
+
 impl Default for ToolLoopConfig {
     fn default() -> Self {
         Self {

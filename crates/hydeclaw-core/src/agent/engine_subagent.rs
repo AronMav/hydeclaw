@@ -157,7 +157,7 @@ impl AgentEngine {
         };
         let task_owned = task.to_string();
         let handle_clone = handle.clone();
-        let loop_max = self.tool_loop_config().max_iterations;
+        let loop_max = self.tool_loop_config().effective_max_iterations();
         let allowed_tools_owned = allowed_tools;
 
         tokio::spawn(async move {
@@ -432,7 +432,7 @@ impl AgentEngine {
         available_tools = self.filter_tools_by_policy(available_tools);
 
         let loop_config = self.tool_loop_config();
-        let effective_max = max_iterations.min(loop_config.max_iterations);
+        let effective_max = max_iterations.min(loop_config.effective_max_iterations());
         let mut detector = LoopDetector::new(&loop_config);
 
         for iteration in 0..effective_max {
@@ -875,7 +875,7 @@ impl AgentEngine {
         let mut tools_used_acc: Vec<String> = Vec::new();
         let mut final_iteration: u32 = 0;
 
-        for iteration in 0..loop_config.max_iterations {
+        for iteration in 0..loop_config.effective_max_iterations() {
             let response = if loop_config.compact_on_overflow {
                 self.chat_with_overflow_recovery(&mut messages, &available_tools).await?
             } else {
@@ -898,7 +898,7 @@ impl AgentEngine {
 
             tracing::info!(
                 iteration,
-                max = loop_config.max_iterations,
+                max = loop_config.effective_max_iterations(),
                 tools = response.tool_calls.len(),
                 "openai api: executing tool calls"
             );
@@ -931,7 +931,7 @@ impl AgentEngine {
                 Err(_) => true,
             };
 
-            if loop_broken || iteration == loop_config.max_iterations - 1 {
+            if loop_broken || iteration == loop_config.effective_max_iterations() - 1 {
                 let forced = self.provider.chat(&messages, &[]).await?;
                 last_usage = forced.usage.clone();
                 final_response = forced.content.clone();
