@@ -595,6 +595,7 @@ impl AgentEngine {
         let loop_config = self.tool_loop_config();
         let effective_max = max_iterations.min(loop_config.effective_max_iterations());
         let mut detector = LoopDetector::new(&loop_config);
+        let mut loop_nudge_count: usize = 0;
 
         for iteration in 0..effective_max {
             // Cancel check
@@ -653,7 +654,38 @@ impl AgentEngine {
                     }
                     false
                 }
-                Err(_) => true,
+                Err(super::parallel_impl::LoopBreak(reason)) => {
+                    if loop_nudge_count < loop_config.max_loop_nudges {
+                        let nudge_desc = reason.as_deref().unwrap_or("repeating pattern");
+                        let nudge_msg = format!(
+                            "LOOP DETECTED: You have repeated the same sequence of actions ({desc}). \
+                             Change your approach entirely. If the task is too large for a single session, \
+                             tell the user and suggest breaking it into smaller steps. Do NOT retry the same approach.",
+                            desc = nudge_desc
+                        );
+                        messages.push(Message {
+                            role: MessageRole::System,
+                            content: nudge_msg,
+                            tool_calls: None,
+                            tool_call_id: None,
+                            thinking_blocks: vec![],
+                        });
+                        loop_nudge_count += 1;
+                        detector.reset();
+                        tracing::warn!(
+                            nudge_count = loop_nudge_count,
+                            reason = ?reason,
+                            "subagent loop nudge injected"
+                        );
+                        false // continue loop
+                    } else {
+                        tracing::error!(
+                            nudge_count = loop_nudge_count,
+                            "subagent max loop nudges reached, force-stopping"
+                        );
+                        true // broken
+                    }
+                }
             };
 
             // Log iteration to handle (if managed)

@@ -676,12 +676,13 @@ impl AgentEngine {
         sessions::save_message_ex(&self.db, session_id, "user", &user_text, None, None, sender_agent_id, None).await?;
 
         // Context compaction if needed (model-aware token budget)
-        self.compact_messages(&mut messages).await;
+        self.compact_messages(&mut messages, None).await;
 
         // LLM loop (with tool calls)
         let mut final_response = String::new();
         let loop_config = self.tool_loop_config();
         let mut detector = LoopDetector::new(&loop_config);
+        let mut loop_nudge_count: usize = 0;
         let mut did_reset_session = false;
         let mut empty_retry_count: u8 = 0;
         let mut auto_continue_count: u8 = 0;
@@ -831,7 +832,40 @@ impl AgentEngine {
                     }
                     false
                 }
-                Err(_) => true,
+                Err(parallel_impl::LoopBreak(reason)) => {
+                    if loop_nudge_count < loop_config.max_loop_nudges {
+                        let nudge_desc = reason.as_deref().unwrap_or("repeating pattern");
+                        let nudge_msg = format!(
+                            "LOOP DETECTED: You have repeated the same sequence of actions ({desc}). \
+                             Change your approach entirely. If the task is too large for a single session, \
+                             tell the user and suggest breaking it into smaller steps. Do NOT retry the same approach.",
+                            desc = nudge_desc
+                        );
+                        messages.push(Message {
+                            role: MessageRole::System,
+                            content: nudge_msg,
+                            tool_calls: None,
+                            tool_call_id: None,
+                            thinking_blocks: vec![],
+                        });
+                        loop_nudge_count += 1;
+                        detector.reset();
+                        tracing::warn!(
+                            agent = %self.agent.name,
+                            nudge_count = loop_nudge_count,
+                            reason = ?reason,
+                            "loop nudge injected, giving model another chance"
+                        );
+                        false // continue loop
+                    } else {
+                        tracing::error!(
+                            agent = %self.agent.name,
+                            nudge_count = loop_nudge_count,
+                            "max loop nudges reached, force-stopping agent"
+                        );
+                        true // broken
+                    }
+                }
             };
 
             if loop_broken || iteration == loop_config.effective_max_iterations() - 1 {
@@ -853,6 +887,23 @@ impl AgentEngine {
                                 &format!("Iteration limit: {}", agent_name),
                                 &format!("Agent {} reached its iteration limit ({} iterations). The task may be incomplete.", agent_name, max_iter),
                                 serde_json::json!({"agent": agent_name, "max_iterations": max_iter}),
+                            ).await.ok();
+                        });
+                    }
+                }
+                // Notify if loop was broken after max nudges
+                if loop_broken && loop_nudge_count >= loop_config.max_loop_nudges {
+                    if let Some(ref ui_tx) = self.ui_event_tx {
+                        let db = self.db.clone();
+                        let tx = ui_tx.clone();
+                        let agent_name = self.agent.name.clone();
+                        let sid = session_id;
+                        tokio::spawn(async move {
+                            crate::gateway::notify(
+                                &db, &tx, "agent_loop_detected",
+                                &format!("Agent stuck in loop: {}", agent_name),
+                                &format!("Agent {} was stopped after detecting a repeating pattern. Session: {}", agent_name, sid),
+                                serde_json::json!({"agent": agent_name, "session_id": sid.to_string()}),
                             ).await.ok();
                         });
                     }
@@ -1315,7 +1366,7 @@ impl AgentEngine {
         sessions::save_message_ex(&self.db, session_id, "user", &user_text, None, None, sender_agent_id, None).await?;
 
         // Context compaction if needed (model-aware token budget)
-        self.compact_messages(&mut messages).await;
+        self.compact_messages(&mut messages, None).await;
 
         // LLM loop (with tool calls)
         let mut final_response = String::new();
@@ -1326,6 +1377,7 @@ impl AgentEngine {
         let mut tool_iterations: u32 = 0;
         let loop_config = self.tool_loop_config();
         let mut detector = LoopDetector::new(&loop_config);
+        let mut loop_nudge_count: usize = 0;
         let mut did_reset_session = false;
         let mut empty_retry_count: u8 = 0;
         let mut auto_continue_count: u8 = 0;
@@ -1526,7 +1578,40 @@ impl AgentEngine {
                     }
                     false
                 }
-                Err(_) => true,
+                Err(parallel_impl::LoopBreak(reason)) => {
+                    if loop_nudge_count < loop_config.max_loop_nudges {
+                        let nudge_desc = reason.as_deref().unwrap_or("repeating pattern");
+                        let nudge_msg = format!(
+                            "LOOP DETECTED: You have repeated the same sequence of actions ({desc}). \
+                             Change your approach entirely. If the task is too large for a single session, \
+                             tell the user and suggest breaking it into smaller steps. Do NOT retry the same approach.",
+                            desc = nudge_desc
+                        );
+                        messages.push(Message {
+                            role: MessageRole::System,
+                            content: nudge_msg,
+                            tool_calls: None,
+                            tool_call_id: None,
+                            thinking_blocks: vec![],
+                        });
+                        loop_nudge_count += 1;
+                        detector.reset();
+                        tracing::warn!(
+                            agent = %self.agent.name,
+                            nudge_count = loop_nudge_count,
+                            reason = ?reason,
+                            "loop nudge injected (channel/session path)"
+                        );
+                        false // continue loop
+                    } else {
+                        tracing::error!(
+                            agent = %self.agent.name,
+                            nudge_count = loop_nudge_count,
+                            "max loop nudges reached, force-stopping agent (channel/session path)"
+                        );
+                        true // broken
+                    }
+                }
             };
 
             if loop_broken || iteration == loop_config.effective_max_iterations() - 1 {
@@ -1548,6 +1633,23 @@ impl AgentEngine {
                                 &format!("Iteration limit: {}", agent_name),
                                 &format!("Agent {} reached its iteration limit ({} iterations). The task may be incomplete.", agent_name, max_iter),
                                 serde_json::json!({"agent": agent_name, "max_iterations": max_iter}),
+                            ).await.ok();
+                        });
+                    }
+                }
+                // Notify if loop was broken after max nudges
+                if loop_broken && loop_nudge_count >= loop_config.max_loop_nudges {
+                    if let Some(ref ui_tx) = self.ui_event_tx {
+                        let db = self.db.clone();
+                        let tx = ui_tx.clone();
+                        let agent_name = self.agent.name.clone();
+                        let sid = session_id;
+                        tokio::spawn(async move {
+                            crate::gateway::notify(
+                                &db, &tx, "agent_loop_detected",
+                                &format!("Agent stuck in loop: {}", agent_name),
+                                &format!("Agent {} was stopped after detecting a repeating pattern. Session: {}", agent_name, sid),
+                                serde_json::json!({"agent": agent_name, "session_id": sid.to_string()}),
                             ).await.ok();
                         });
                     }
@@ -1803,7 +1905,7 @@ impl AgentEngine {
         sessions::save_message_ex(&self.db, session_id, "user", &user_text, None, None, sender_agent_id, None).await?;
 
         // Context compaction if needed (model-aware token budget)
-        self.compact_messages(&mut messages).await;
+        self.compact_messages(&mut messages, None).await;
 
         // Emit message start
         let message_id = format!("msg_{}", Uuid::new_v4());
@@ -1821,6 +1923,7 @@ impl AgentEngine {
         let mut final_thinking_blocks: Vec<hydeclaw_types::ThinkingBlock> = vec![];
         let loop_config = self.tool_loop_config();
         let mut detector = LoopDetector::new(&loop_config);
+        let mut loop_nudge_count: usize = 0;
         let mut did_reset_session = false;
         let mut empty_retry_count: u8 = 0;
         let mut auto_continue_count: u8 = 0;
@@ -2116,7 +2219,40 @@ impl AgentEngine {
                     }
                     false
                 }
-                Err(_) => true,
+                Err(parallel_impl::LoopBreak(reason)) => {
+                    if loop_nudge_count < loop_config.max_loop_nudges {
+                        let nudge_desc = reason.as_deref().unwrap_or("repeating pattern");
+                        let nudge_msg = format!(
+                            "LOOP DETECTED: You have repeated the same sequence of actions ({desc}). \
+                             Change your approach entirely. If the task is too large for a single session, \
+                             tell the user and suggest breaking it into smaller steps. Do NOT retry the same approach.",
+                            desc = nudge_desc
+                        );
+                        messages.push(Message {
+                            role: MessageRole::System,
+                            content: nudge_msg,
+                            tool_calls: None,
+                            tool_call_id: None,
+                            thinking_blocks: vec![],
+                        });
+                        loop_nudge_count += 1;
+                        detector.reset();
+                        tracing::warn!(
+                            agent = %self.agent.name,
+                            nudge_count = loop_nudge_count,
+                            reason = ?reason,
+                            "loop nudge injected (SSE path)"
+                        );
+                        false // continue loop
+                    } else {
+                        tracing::error!(
+                            agent = %self.agent.name,
+                            nudge_count = loop_nudge_count,
+                            "max loop nudges reached, force-stopping agent (SSE path)"
+                        );
+                        true // broken
+                    }
+                }
             };
 
             if event_tx
@@ -2149,6 +2285,23 @@ impl AgentEngine {
                                 &format!("Iteration limit: {}", agent_name),
                                 &format!("Agent {} reached its iteration limit ({} iterations). The task may be incomplete.", agent_name, max_iter),
                                 serde_json::json!({"agent": agent_name, "max_iterations": max_iter}),
+                            ).await.ok();
+                        });
+                    }
+                }
+                // Notify if loop was broken after max nudges
+                if loop_broken && loop_nudge_count >= loop_config.max_loop_nudges {
+                    if let Some(ref ui_tx) = self.ui_event_tx {
+                        let db = self.db.clone();
+                        let tx = ui_tx.clone();
+                        let agent_name = self.agent.name.clone();
+                        let sid = session_id;
+                        tokio::spawn(async move {
+                            crate::gateway::notify(
+                                &db, &tx, "agent_loop_detected",
+                                &format!("Agent stuck in loop: {}", agent_name),
+                                &format!("Agent {} was stopped after detecting a repeating pattern. Session: {}", agent_name, sid),
+                                serde_json::json!({"agent": agent_name, "session_id": sid.to_string()}),
                             ).await.ok();
                         });
                     }
@@ -2360,7 +2513,8 @@ impl AgentEngine {
     }
 
     /// Run compaction on messages if token budget exceeded, indexing extracted facts to memory.
-    async fn compact_messages(&self, messages: &mut Vec<Message>) {
+    /// Pass `Some(detector)` when inside the LLM loop to inject a progress header after compaction.
+    async fn compact_messages(&self, messages: &mut Vec<Message>, detector: Option<&LoopDetector>) {
         let (max_tokens, preserve_last_n) = self.compaction_params();
         if let Ok(Some(facts)) = history::compact_if_needed(
             messages,
@@ -2375,6 +2529,22 @@ impl AgentEngine {
             tracing::info!(facts = facts.len(), "extracted facts during compaction");
             self.audit(crate::db::audit::event_types::COMPACTION, None, serde_json::json!({"facts": facts.len(), "max_tokens": max_tokens}));
             self.index_facts_to_memory(&facts).await;
+
+            // Inject / replace progress header after compaction
+            if let Some(det) = detector {
+                history::remove_progress_header(messages);
+                let header = history::generate_progress_header(messages, det);
+                // Insert at position 1 (after the system prompt at index 0), if present
+                let insert_pos = if messages.first().map(|m| m.role == MessageRole::System).unwrap_or(false) { 1 } else { 0 };
+                messages.insert(insert_pos, Message {
+                    role: MessageRole::System,
+                    content: header,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    thinking_blocks: vec![],
+                });
+            }
+
             // Notify user about compaction
             if let Some(ref ui_tx) = self.ui_event_tx {
                 let db = self.db.clone();
@@ -2550,7 +2720,7 @@ impl AgentEngine {
                 Ok(resp) => return Ok(resp),
                 Err(e) if super::tool_loop::is_context_overflow(&e) && compact_attempt < max_compact_attempts => {
                     tracing::warn!(attempt = compact_attempt + 1, max = max_compact_attempts, "context overflow — compacting");
-                    self.compact_messages(messages).await;
+                    self.compact_messages(messages, None).await;
                     last_error = Some(e);
                 }
                 Err(e) => return Err(e),
@@ -2618,7 +2788,7 @@ impl AgentEngine {
                 Ok(resp) => return Ok(resp),
                 Err(e) if super::tool_loop::is_context_overflow(&e) && compact_attempt < max_compact_attempts => {
                     tracing::warn!(attempt = compact_attempt + 1, max = max_compact_attempts, "context overflow — compacting (stream)");
-                    self.compact_messages(messages).await;
+                    self.compact_messages(messages, None).await;
                     last_error = Some(e);
                 }
                 Err(e) => return Err(e),
@@ -2684,7 +2854,7 @@ impl AgentEngine {
                 Ok(resp) => Ok(resp),
                 Err(e) if super::tool_loop::is_context_overflow(&e) => {
                     tracing::warn!("context overflow on fallback provider, compacting and retrying");
-                    self.compact_messages(messages).await;
+                    self.compact_messages(messages, None).await;
                     provider.chat(messages, tools).await
                 }
                 Err(e) => Err(e),
@@ -2733,7 +2903,7 @@ impl AgentEngine {
                 Ok(resp) => Ok(resp),
                 Err(e) if super::tool_loop::is_context_overflow(&e) => {
                     tracing::warn!("context overflow on fallback provider (stream), compacting and retrying");
-                    self.compact_messages(messages).await;
+                    self.compact_messages(messages, None).await;
                     provider.chat_stream(messages, tools, chunk_tx.clone()).await
                 }
                 Err(e) => Err(e),
