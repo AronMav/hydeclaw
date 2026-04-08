@@ -301,22 +301,24 @@ impl AgentEngine {
                 }
             });
 
-            // Block until subagent completes or times out (PUSH-01: replaces old polling model)
-            let result_str = match tokio::time::timeout(timeout_dur, completion_rx).await {
+            // Block until subagent completes or times out
+            let (result_str, succeeded) = match tokio::time::timeout(timeout_dur, completion_rx).await {
                 Ok(Ok(sub_result)) => {
-                    match (&sub_result.status, &sub_result.result, &sub_result.error) {
+                    let ok = sub_result.status == subagent_state::SubagentStatus::Completed;
+                    let s = match (&sub_result.status, &sub_result.result, &sub_result.error) {
                         (subagent_state::SubagentStatus::Completed, Some(r), _) =>
                             serde_json::json!({"status": "ok", "output": r}).to_string(),
                         (_, _, Some(e)) =>
                             serde_json::json!({"status": "error", "output": "", "error": e}).to_string(),
                         _ =>
                             serde_json::json!({"status": "error", "output": "", "error": "no result"}).to_string(),
-                    }
+                    };
+                    (s, ok)
                 }
                 Ok(Err(_)) =>
-                    serde_json::json!({"status": "error", "output": "", "error": "subagent channel dropped"}).to_string(),
+                    (serde_json::json!({"status": "error", "output": "", "error": "subagent channel dropped"}).to_string(), false),
                 Err(_) =>
-                    serde_json::json!({"status": "error", "output": "", "error": "timeout"}).to_string(),
+                    (serde_json::json!({"status": "error", "output": "", "error": "timeout"}).to_string(), false),
             };
 
             // Classify result — success and explicit cancellations do not retry
@@ -327,9 +329,8 @@ impl AgentEngine {
                 } else {
                     result_str
                 };
-                // Emit SSE event once (PUSH-03)
                 if let Some(ref tx) = *self.sse_event_tx.lock().await {
-                    let status_str = if final_str.contains("\"ok\"") { "completed" } else { "failed" };
+                    let status_str = if succeeded { "completed" } else { "failed" };
                     let _ = tx.send(super::StreamEvent::RichCard {
                         card_type: "subagent-complete".to_string(),
                         data: serde_json::json!({

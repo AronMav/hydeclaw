@@ -32,17 +32,7 @@ impl GoogleProvider {
         api_key_env: Option<String>,
         timeout_secs: Option<u64>,
     ) -> Self {
-        let timeout = timeout_secs.unwrap_or(120);
-        let mut builder = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(10));
-        if timeout > 0 {
-            builder = builder.timeout(std::time::Duration::from_secs(timeout));
-        }
-        let client = builder.build().unwrap_or_default();
-        let streaming_client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .build()
-            .unwrap_or_default();
+        let (client, streaming_client) = super::build_provider_clients(timeout_secs);
         Self {
             client,
             streaming_client,

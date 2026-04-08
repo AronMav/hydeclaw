@@ -106,6 +106,15 @@ impl super::AgentEngine {
         // 5. Execute
         let mut results: Vec<Option<String>> = vec![None; n];
 
+        // Pre-compute subagent timeout once (configured timeout + 10s buffer)
+        let subagent_timeout = {
+            let base = super::subagent_impl::parse_subagent_timeout(
+                &self.app_config.subagents.in_process_timeout,
+            );
+            base + std::time::Duration::from_secs(10)
+        };
+        let default_timeout = std::time::Duration::from_secs(120);
+
         // 5a. Parallel batch (only if >1 parallel tool)
         if parallel_indices.len() > 1 {
             let futs: Vec<_> = parallel_indices
@@ -113,16 +122,7 @@ impl super::AgentEngine {
                 .map(|&i| {
                     let name = tool_calls[i].name.clone();
                     let args = enriched[i].clone();
-                    // Subagent tools get their configured timeout + 10s buffer so the outer cap
-                    // does not kill a long-running subagent before its inner deadline fires.
-                    let tool_timeout = if name == "subagent" {
-                        let base = super::subagent_impl::parse_subagent_timeout(
-                            &self.app_config.subagents.in_process_timeout,
-                        );
-                        base + std::time::Duration::from_secs(10)
-                    } else {
-                        std::time::Duration::from_secs(120)
-                    };
+                    let tool_timeout = if name == "subagent" { subagent_timeout } else { default_timeout };
                     async move {
                         match tokio::time::timeout(
                             tool_timeout,
@@ -153,15 +153,7 @@ impl super::AgentEngine {
         } else if parallel_indices.len() == 1 {
             let i = parallel_indices[0];
             let name = &tool_calls[i].name;
-            // Subagent tools get their configured timeout + 10s buffer.
-            let tool_timeout = if name == "subagent" {
-                let base = super::subagent_impl::parse_subagent_timeout(
-                    &self.app_config.subagents.in_process_timeout,
-                );
-                base + std::time::Duration::from_secs(10)
-            } else {
-                std::time::Duration::from_secs(120)
-            };
+            let tool_timeout = if name == "subagent" { subagent_timeout } else { default_timeout };
             let result = match tokio::time::timeout(
                 tool_timeout,
                 self.execute_tool_call(name, &enriched[i]),

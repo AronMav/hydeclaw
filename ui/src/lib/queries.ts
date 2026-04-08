@@ -208,12 +208,12 @@ export function useApprovals() {
 
 export function useAgentTasks(agentName: string | null, isStreaming = false) {
   return useQuery({
-    queryKey: qk.agentTasks(agentName ?? ""),
+    queryKey: qk.agentTasks(agentName!),
     queryFn: () => apiGet<{ tasks: AgentTask[] }>(`/api/agents/${agentName}/tasks`),
     select: (d) => d.tasks,
     enabled: !!agentName,
     refetchInterval: isStreaming ? 3000 : 10000,
-    staleTime: 0,
+    staleTime: 2500,
   })
 }
 

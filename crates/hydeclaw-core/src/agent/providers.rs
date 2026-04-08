@@ -849,6 +849,24 @@ fn extract_timeout_secs(options: &serde_json::Value) -> Option<u64> {
     options.get("timeout_secs").and_then(|v| v.as_u64())
 }
 
+/// Build HTTP clients (request + streaming) with configurable timeout.
+/// `None` → 120s default, `Some(0)` → no timeout, `Some(n)` → n seconds.
+/// Streaming client never has a request timeout (only connect_timeout) — chunks arrive over time.
+pub(crate) fn build_provider_clients(timeout_secs: Option<u64>) -> (reqwest::Client, reqwest::Client) {
+    let timeout = timeout_secs.unwrap_or(120);
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10));
+    if timeout > 0 {
+        builder = builder.timeout(std::time::Duration::from_secs(timeout));
+    }
+    let client = builder.build().unwrap_or_default();
+    let streaming_client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+    (client, streaming_client)
+}
+
 /// Create an LLM provider from a named DB connection.
 #[allow(clippy::too_many_arguments)]
 pub fn create_provider_from_connection(
