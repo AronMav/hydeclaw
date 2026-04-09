@@ -2,7 +2,6 @@
 
 import { memo, useState } from "react";
 import { useTranslation } from "@/hooks/use-translation";
-import { useToolProgress } from "@/hooks/use-tool-progress";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { ChevronRight } from "lucide-react";
 import { truncateOutput } from "@/lib/format";
@@ -17,10 +16,21 @@ export const ToolCallPartView = memo(function ToolCallPartView({ toolName, args,
   const isComplete = status.type === "complete";
   const hasError = status.type === "error";
   const isDenied = status.type === "denied";
-  const isRunning = status.type === "running" || status.type === "requires-action";
+  const isCalling = status.type === "calling";
+  const isRunning = status.type === "running" || status.type === "calling" || status.type === "requires-action";
   const hasContent = isComplete || hasError || isDenied;
 
-  const progress = useToolProgress(isRunning);
+  const statusLabel = isCalling
+    ? t("chat.tool_calling")
+    : isRunning
+      ? t("chat.tool_running")
+      : isComplete
+        ? "OK"
+        : hasError
+          ? "ERR"
+          : isDenied
+            ? "DENY"
+            : "...";
 
   const inputDisplay = args && Object.keys(args).length > 0
     ? JSON.stringify(args, null, 2)
@@ -59,16 +69,6 @@ export const ToolCallPartView = memo(function ToolCallPartView({ toolName, args,
             {toolName}
           </span>
           <div className="ml-auto flex items-center gap-2 shrink-0">
-            {isRunning && (
-              <div className="w-[60px]">
-                <div className="h-0.5 w-full rounded-full bg-border/40 overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-warning/60 transition-all duration-200 ease-out"
-                    style={{ width: `${progress * 100}%` }}
-                  />
-                </div>
-              </div>
-            )}
             <span className={`font-mono text-[10px] font-bold uppercase tracking-widest ${
               hasError || isDenied
                 ? "text-destructive"
@@ -76,7 +76,7 @@ export const ToolCallPartView = memo(function ToolCallPartView({ toolName, args,
                   ? "text-success"
                   : "text-muted-foreground/50"
             }`}>
-              {hasError ? "ERR" : isDenied ? "DENY" : isComplete ? "OK" : "..."}
+              {statusLabel}
             </span>
             {(hasContent || inputDisplay) && (
               <ChevronRight

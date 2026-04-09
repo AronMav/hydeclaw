@@ -29,11 +29,16 @@ import {
 // objects leave scope.
 const _partsRenderCache = new WeakMap<ChatMessage, (React.ReactElement | null)[]>();
 
+// ── Tool grouping threshold ─────────────────────────────────────────────────
+// Minimum consecutive tool calls required to collapse into a ToolCallGroup.
+export const TOOL_GROUP_THRESHOLD = 3;
+
 // ── Tool status mapping ─────────────────────────────────────────────────────
 
-function mapToolPartState(state: ToolPartState): string {
+export function mapToolPartState(state: ToolPartState): "calling" | "running" | "complete" | "error" | "denied" {
   switch (state) {
     case "input-streaming":
+      return "calling";
     case "input-available":
       return "running";
     case "output-available":
@@ -152,7 +157,7 @@ function renderPartsWithGrouping(parts: MessagePart[]) {
         i++;
       }
 
-      if (toolRun.length >= 3) {
+      if (toolRun.length >= TOOL_GROUP_THRESHOLD) {
         // Group 3+ consecutive tool calls
         result.push(<ToolCallGroup key={`tool-group-${i}`} parts={toolRun} />);
       } else {

@@ -43,12 +43,6 @@ vi.mock("@/hooks/use-translation", () => ({
   }),
 }));
 
-// ── Mock: use-tool-progress ────────────────────────────────────────────────
-
-vi.mock("@/hooks/use-tool-progress", () => ({
-  useToolProgress: () => 0,
-}));
-
 // ── Mock: stores ───────────────────────────────────────────────────────────
 
 vi.mock("@/stores/auth-store", () => ({
