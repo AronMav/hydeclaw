@@ -246,8 +246,9 @@ describe("STATE-01: history to live transition", () => {
     // Static analysis: the three early `update(agent, { viewMode: "live" })` calls
     // in sendMessage/regenerate/regenerateFrom must be removed.
     const fs = await import("node:fs");
+    const path = await import("node:path");
     const src = fs.readFileSync(
-      new URL("../../stores/chat-store.ts", import.meta.url).pathname,
+      path.resolve(__dirname, "../stores/chat-store.ts"),
       "utf8"
     );
 
@@ -265,9 +266,9 @@ describe("STATE-01: history to live transition", () => {
     );
     expect(regenerateBlock).not.toMatch(/update\(agent,\s*\{\s*viewMode:\s*["']live["']\s*\}/);
 
-    // regenerateFrom block — find the block after regenerate
+    // regenerateFrom block — from "regenerateFrom: " to "renameSession:"
     const regenerateFromStart = src.indexOf("regenerateFrom: (messageId");
-    const regenerateFromEnd = src.indexOf("stopStream:", regenerateFromStart);
+    const regenerateFromEnd = src.indexOf("renameSession:", regenerateFromStart);
     const regenerateFromBlock = src.slice(regenerateFromStart, regenerateFromEnd);
     expect(regenerateFromBlock).not.toMatch(/update\(agent,\s*\{\s*viewMode:\s*["']live["']\s*\}/);
   });
@@ -278,8 +279,9 @@ describe("STATE-01: history to live transition", () => {
 describe("STATE-02: beforeunload flush", () => {
   it("chat-store.ts registers beforeunload on window", async () => {
     const fs = await import("node:fs");
+    const path = await import("node:path");
     const src = fs.readFileSync(
-      new URL("../../stores/chat-store.ts", import.meta.url).pathname,
+      path.resolve(__dirname, "../stores/chat-store.ts"),
       "utf8"
     );
     expect(src).toContain("beforeunload");

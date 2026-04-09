@@ -375,6 +375,31 @@ export const useChatStore = create<ChatStore>()(
     }, 500);
   }
 
+  // ── Guaranteed UI state flush on tab close ──────────────────────────────
+  if (typeof window !== "undefined") {
+    window.addEventListener("beforeunload", () => {
+      const state = get();
+      const agent = state.currentAgent;
+      const st = state.agents[agent];
+      if (!st?.activeSessionId) return;
+      // Cancel pending debounced save — we flush immediately
+      clearTimeout(uiStateSaveTimers[agent]);
+      const streamStatus = st.streamStatus === "submitted" ? "streaming" : st.streamStatus;
+      const token = getToken();
+      fetch(`/api/sessions/${st.activeSessionId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          ui_state: { viewMode: st.viewMode, streamStatus },
+        }),
+        keepalive: true,
+      });
+    });
+  }
+
   /**
    * Resume an active backend stream after page reload.
    * Connects to GET /api/chat/{sessionId}/stream and processes replay + live events.
@@ -1135,9 +1160,9 @@ export const useChatStore = create<ChatStore>()(
       let seedMessages: ChatMessage[] = [];
 
       if (st.viewMode === "history") {
-        // Continue from history — get messages from React Query cache
+        // Continue from history — get messages from React Query cache.
+        // Do NOT flip viewMode here; startStream sets viewMode + liveMessages atomically.
         seedMessages = getCachedHistoryMessages(sessionId);
-        update(agent, { viewMode: "live" });
       } else if (st.liveMessages.length > 0) {
         seedMessages = st.liveMessages;
       }
@@ -1168,8 +1193,8 @@ export const useChatStore = create<ChatStore>()(
       let messages: ChatMessage[];
 
       if (st.viewMode === "history") {
+        // Do NOT flip viewMode here; startStream sets viewMode + liveMessages atomically.
         messages = getCachedHistoryMessages(sessionId);
-        update(agent, { viewMode: "live" });
       } else {
         messages = st.liveMessages;
       }
@@ -1208,8 +1233,8 @@ export const useChatStore = create<ChatStore>()(
       let messages: ChatMessage[];
 
       if (st.viewMode === "history") {
+        // Do NOT flip viewMode here; startStream sets viewMode + liveMessages atomically.
         messages = getCachedHistoryMessages(sessionId);
-        update(agent, { viewMode: "live" });
       } else {
         messages = st.liveMessages;
       }
