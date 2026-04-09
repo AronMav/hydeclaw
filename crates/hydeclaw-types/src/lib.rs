@@ -845,6 +845,7 @@ mod tests {
             model: Some("minimax-m2.5".into()),
             provider: Some("minimax".into()),
             fallback_notice: None,
+            finish_reason: None,
             tools_used: vec![],
             iterations: 0,
             thinking_blocks: vec![],
