@@ -1083,6 +1083,7 @@ export const useChatStore = create<ChatStore>()(
       // Page-load initialization (prev is empty) — just set the agent,
       // DON'T wipe session state. The restore effect in page.tsx will handle it.
       if (!prev) {
+        console.log("[setCurrentAgent] INIT path, name:", name);
         ensure(name);
         set({ currentAgent: name });
         queryClient.invalidateQueries({ queryKey: qk.sessions(name) });
@@ -1176,6 +1177,7 @@ export const useChatStore = create<ChatStore>()(
 
     newChat: () => {
       const agent = get().currentAgent;
+      console.log("[newChat] called for agent:", agent, new Error().stack?.split("\n").slice(1,4).join(" | "));
       getAbortCtrl(agent)?.abort();
       setAbortCtrl(agent, null);
       update(agent, {
