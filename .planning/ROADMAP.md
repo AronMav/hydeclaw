@@ -37,7 +37,7 @@ Covered: core platform stability, providers, channels, memory, tools, orchestrat
 - [x] **Phase 48: Optimistic & Responsive UI** - Instant thinking indicator, agent-switch skeletons, live-to-history hash sync, reference stability (completed 2026-04-09)
 - [x] **Phase 49: Network Resilience** - Last-Event-ID resume on reconnect, reconnecting phase UI (completed 2026-04-09)
 - [x] **Phase 50: SSE Protocol Extensions** - Automatic continuations, step grouping events, agent handoff mid-stream (completed 2026-04-09)
-- [ ] **Phase 51: Human-in-the-Loop** - Inline approve/reject with SSE heartbeat, tool args editor
+- [x] **Phase 51: Human-in-the-Loop** - Inline approve/reject with SSE heartbeat, tool args editor (completed 2026-04-09)
 - [ ] **Phase 52: Citations & Generative UI** - Source footnote tooltips, CARD_REGISTRY, first registered components
 - [ ] **Phase 53: Message Branching** - DB migration, fork endpoint, MessageTree store, branch navigation UI
 
@@ -238,9 +238,9 @@ Plans:
   4. At least two existing tool types (e.g., image result, search result) render as registered card components instead of raw text output
 **Plans**: 3 plans
 Plans:
-- [ ] 49-01-PLAN.md — Backend: StreamRegistry event IDs, replay_from, 410 expired, 30s heartbeat
-- [ ] 49-02-PLAN.md — Frontend: lastEventId tracking, Last-Event-ID header, dedup, 410 handling
-- [ ] 49-03-PLAN.md — ReconnectingIndicator component + ChatThread wiring + human verify
+- [ ] 52-01-PLAN.md — CARD_REGISTRY + GenerativeUISlot with ErrorBoundary + refactor table/metric into registry
+- [ ] 52-02-PLAN.md — Citation footnote tooltip component + markdown footnote overrides
+- [ ] 52-03-PLAN.md — Human verification of citations and generative UI in browser
 **UI hint**: yes
 
 ### Phase 53: Message Branching
@@ -275,5 +275,5 @@ Plans:
 | 49. Network Resilience | v0.13.0 | 3/3 | Complete    | 2026-04-09 |
 | 50. SSE Protocol Extensions | v0.13.0 | 3/1 | Complete    | 2026-04-09 |
 | 51. Human-in-the-Loop | v0.13.0 | 3/3 | Complete    | 2026-04-09 |
-| 52. Citations & Generative UI | v0.13.0 | 0/? | Not started | - |
+| 52. Citations & Generative UI | v0.13.0 | 0/3 | Not started | - |
 | 53. Message Branching | v0.13.0 | 0/? | Not started | - |
