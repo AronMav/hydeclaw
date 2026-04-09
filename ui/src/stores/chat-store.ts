@@ -674,22 +674,28 @@ export const useChatStore = create<ChatStore>()(
       // Guard: don't update store after abort (prevents race with stopStream)
       if (signal.aborted) return;
 
-      // Get trailing text that hasn't been flushed yet (current typing)
-      const trailingContent = incrementalParser.processDelta("");
+      // Get parser's current text/reasoning parts (emitted so far + buffered accum).
+      // Use flush() to get complete snapshot including buffered chars.
+      // We DON'T reset the parser here — flush() returns normalized copy.
+      const textParts = incrementalParser.snapshot();
+      // Non-text parts (tools, files, rich-cards) are in `parts` local array.
+      const nonTextParts = parts.filter(p => p.type !== "text" && p.type !== "reasoning");
 
       set((draft) => {
         const st = draft.agents[agent];
         if (!st) return;
-        // Ensure messageSource is in live mode (it should be from startStream)
         if (st.messageSource.mode !== "live") {
           st.messageSource = { mode: "live", messages: [] };
         }
         const liveMessages = st.messageSource.messages;
         const existing = liveMessages.findIndex((m: ChatMessage) => m.id === assistantId);
 
-        // Parts array has flushed text + tools in correct order.
-        // Append trailing (unflushed) text at the end.
-        const allParts = [...parts, ...trailingContent];
+        // Merge: text/reasoning from parser + tools/files from parts array.
+        // Text comes first, then tools — this matches SSE event order for simple responses.
+        // For interleaved text-tool-text, flushText() snapshots text into `parts` before
+        // tool insertion, so nonTextParts includes tools at correct positions relative to
+        // the flushed text parts that are also in `parts`.
+        const allParts = [...textParts, ...nonTextParts] as MessagePart[];
 
         if (existing >= 0) {
           const msg = liveMessages[existing];
