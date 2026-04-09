@@ -5,7 +5,9 @@ import { useChatStore } from "@/stores/chat-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useTranslation } from "@/hooks/use-translation";
 import type { ChatMessage, MessagePart, ToolPart, ToolPartState } from "@/stores/chat-store";
+import { findSiblings, getCachedRawMessages } from "@/stores/chat-store";
 import { formatMessageTime } from "@/lib/format";
+import { BranchNavigator } from "./BranchNavigator";
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronRight } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
@@ -195,6 +197,17 @@ function renderPartsWithGrouping(parts: MessagePart[]) {
 function UserMessage({ message, sessionChannel, sessionUserId }: { message: ChatMessage; sessionChannel?: string; sessionUserId?: string }) {
   const { t, locale } = useTranslation();
   const agentIcons = useAuthStore((s) => s.agentIcons);
+  const activeSessionId = useChatStore((s) => s.agents[s.currentAgent]?.activeSessionId ?? null);
+
+  // Compute branch siblings for this user message (only when branching data exists)
+  const branchInfo = React.useMemo(() => {
+    if (!message.parentMessageId || !activeSessionId) return null;
+    const allRows = getCachedRawMessages(activeSessionId);
+    if (allRows.length === 0) return null;
+    const { siblings, index } = findSiblings(allRows, message.id);
+    if (siblings.length <= 1) return null;
+    return { parentMessageId: message.parentMessageId, siblings, index };
+  }, [message.id, message.parentMessageId, activeSessionId]);
 
   const isReadOnly = sessionChannel === "heartbeat" || sessionChannel === "cron" || sessionChannel === "inter-agent";
 
@@ -237,7 +250,16 @@ function UserMessage({ message, sessionChannel, sessionUserId }: { message: Chat
               </span>
             )}
           </div>
-          <MessageActions message={message} showReload={false} />
+          <div className="flex items-center gap-1">
+            {branchInfo && (
+              <BranchNavigator
+                parentMessageId={branchInfo.parentMessageId}
+                siblings={branchInfo.siblings}
+                currentIndex={branchInfo.index}
+              />
+            )}
+            <MessageActions message={message} showReload={false} />
+          </div>
         </div>
         <div className={cn("min-w-0 space-y-3", isSending && "opacity-70")}>
           {message.parts.map((part, i) => renderPart(part, i))}
