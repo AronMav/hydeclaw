@@ -384,7 +384,7 @@ export function MessageActions({
   showReload?: boolean;
 }) {
   const { t } = useTranslation();
-  const viewMode = useChatStore((s) => s.agents[s.currentAgent]?.viewMode ?? "live");
+  const messageSource = useChatStore((s) => s.agents[s.currentAgent]?.messageSource ?? { mode: "new-chat" as const });
 
   return (
     <div className="flex items-center gap-0.5 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
@@ -420,7 +420,7 @@ export function MessageActions({
       )}
       {!showReload && <EditButton message={message} />}
       {!showReload && <ExportMarkdownButton message={message} />}
-      {viewMode === "history" && <DeleteMessageButton messageId={message.id} />}
+      {messageSource.mode === "history" && <DeleteMessageButton messageId={message.id} />}
     </div>
   );
 }

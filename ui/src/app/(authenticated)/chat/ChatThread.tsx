@@ -278,11 +278,10 @@ function ChatComposer() {
   const { t } = useTranslation();
   const currentAgent = useChatStore((s) => s.currentAgent);
   const agents = useAuthStore((s) => s.agents);
-  const viewMode = useChatStore((s) => s.agents[s.currentAgent]?.viewMode ?? "live");
+  const messageSource = useChatStore((s) => s.agents[s.currentAgent]?.messageSource ?? { mode: "new-chat" as const });
   const connectionPhase = useChatStore((s) => s.agents[s.currentAgent]?.connectionPhase ?? "idle");
-  const liveMessages = useChatStore((s) => s.agents[s.currentAgent]?.liveMessages ?? EMPTY_LIVE_MESSAGES);
   const isStreaming = isActivePhase(connectionPhase);
-  const hasMessages = viewMode === "live" ? liveMessages.length > 0 : true;
+  const hasMessages = messageSource.mode !== "new-chat";
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [resolvedMention, setResolvedMention] = useState<string | null>(null);
@@ -526,7 +525,7 @@ function ChatComposer() {
             autoCorrect="off"
             autoCapitalize="sentences"
             placeholder={
-              viewMode === "history"
+              messageSource.mode === "history"
                 ? t("chat.continue_dialog")
                 : t("chat.message_placeholder")
             }
@@ -730,7 +729,7 @@ export function ChatThread({
   onRetry,
 }: ChatThreadProps) {
   const keyboardHeight = useVisualViewport();
-  const viewMode = useChatStore((s) => s.agents[s.currentAgent]?.viewMode ?? "live");
+  const messageSource = useChatStore((s) => s.agents[s.currentAgent]?.messageSource ?? { mode: "new-chat" as const });
   const currentAgent = useChatStore((s) => s.currentAgent);
   const activeSessionId = useChatStore((s) => s.agents[s.currentAgent]?.activeSessionId ?? null);
   const connectionPhase = useChatStore((s) => s.agents[s.currentAgent]?.connectionPhase ?? "idle");
@@ -752,7 +751,7 @@ export function ChatThread({
   );
   const renderLimit = useChatStore((s) => s.agents[s.currentAgent]?.renderLimit ?? 100);
 
-  const liveMessages = useChatStore((s) => s.agents[s.currentAgent]?.liveMessages ?? EMPTY_LIVE_MESSAGES);
+  const liveMessages = messageSource.mode === "live" ? messageSource.messages : EMPTY_LIVE_MESSAGES;
   const loadEarlierMessages = useChatStore((s) => s.loadEarlierMessages);
 
   // Build the resolved message array for rendering
@@ -815,7 +814,7 @@ export function ChatThread({
       />
 
       {/* Error banner */}
-      {streamError && !isReadOnly && viewMode !== "history" && (
+      {streamError && !isReadOnly && messageSource.mode !== "history" && (
         <ErrorBanner
           error={streamError}
           hasMessages={hasMessages}
