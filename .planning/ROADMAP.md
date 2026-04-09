@@ -206,7 +206,7 @@ Plans:
 **Plans**: 3 plans
 Plans:
 - [x] 50-01-PLAN.md — Backend: continuation field on Finish, forward StepStart/StepFinish as SSE events
-- [ ] 50-02-PLAN.md — Frontend: SSE event parsing, continuation stitching, step group collection
+- [x] 50-02-PLAN.md — Frontend: SSE event parsing, continuation stitching, step group collection
 - [ ] 50-03-PLAN.md — UI components (ContinuationSeparator, StepGroup, HandoffDivider) + human verify
 
 **UI hint**: yes
@@ -273,7 +273,7 @@ Plans:
 | 47. Scroll & Virtualization | v0.13.0 | 4/4 | Complete    | 2026-04-09 |
 | 48. Optimistic & Responsive UI | v0.13.0 | 3/3 | Complete    | 2026-04-09 |
 | 49. Network Resilience | v0.13.0 | 3/3 | Complete    | 2026-04-09 |
-| 50. SSE Protocol Extensions | v0.13.0 | 1/3 | In Progress|  |
+| 50. SSE Protocol Extensions | v0.13.0 | 2/3 | In Progress|  |
 | 51. Human-in-the-Loop | v0.13.0 | 0/? | Not started | - |
 | 52. Citations & Generative UI | v0.13.0 | 0/? | Not started | - |
 | 53. Message Branching | v0.13.0 | 0/? | Not started | - |

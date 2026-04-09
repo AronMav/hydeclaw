@@ -43,7 +43,7 @@ Requirements for Chat UX Evolution milestone. Stability, responsiveness, advance
 
 ### Agent UX
 
-- [ ] **AGNT-01**: Agent Handoff UI — HandoffMetadata SSE event + avatar/label switch mid-stream
+- [x] **AGNT-01**: Agent Handoff UI — HandoffMetadata SSE event + avatar/label switch mid-stream
 
 ### Human-in-the-Loop
 
@@ -101,7 +101,7 @@ Requirements for Chat UX Evolution milestone. Stability, responsiveness, advance
 | NET-02 | Phase 49 | Complete |
 | SSE-01 | Phase 50 | Complete |
 | SSE-02 | Phase 50 | Complete |
-| AGNT-01 | Phase 50 | Pending |
+| AGNT-01 | Phase 50 | Complete |
 | HITL-01 | Phase 51 | Pending |
 | HITL-02 | Phase 51 | Pending |
 | CITE-01 | Phase 52 | Pending |
