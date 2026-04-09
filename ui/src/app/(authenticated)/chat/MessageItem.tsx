@@ -21,6 +21,14 @@ import {
 } from "./ChatThread";
 
 
+// ── Parts render cache (PERF-03) ───────────────────────────────────────────
+// Module-scope WeakMap: keys are ChatMessage object references.
+// With PERF-02 in-place Immer mutation, only the currently-streaming message
+// gets its parts updated — all other messages keep stable object references,
+// so cache entries survive across renders. Entries are GC'd when ChatMessage
+// objects leave scope.
+const _partsRenderCache = new WeakMap<ChatMessage, (React.ReactElement | null)[]>();
+
 // ── Tool status mapping ─────────────────────────────────────────────────────
 
 function mapToolPartState(state: ToolPartState): string {
@@ -230,6 +238,18 @@ function AssistantMessage({ message }: { message: ChatMessage }) {
 
   const hasParts = message.parts.length > 0;
 
+  // PERF-03: WeakMap cache for rendered parts — only re-render if message object changed.
+  // Cache key is the ChatMessage object reference; PERF-02 in-place mutation ensures
+  // non-streaming messages keep stable refs so they get cache hits across re-renders.
+  let renderedParts: (React.ReactElement | null)[] | undefined;
+  if (hasParts) {
+    renderedParts = _partsRenderCache.get(message);
+    if (!renderedParts) {
+      renderedParts = renderPartsWithGrouping(message.parts);
+      _partsRenderCache.set(message, renderedParts);
+    }
+  }
+
   return (
     <div data-role="assistant" className="group flex gap-3 py-5 md:py-6 border-t border-border/30 dark:border-border/20 first:border-t-0">
       <span className="message-avatar">
@@ -250,7 +270,7 @@ function AssistantMessage({ message }: { message: ChatMessage }) {
           <MessageActions message={message} showReload />
         </div>
         <div className="min-w-0 space-y-3">
-          {hasParts ? renderPartsWithGrouping(message.parts) : <EmptyPartView />}
+          {hasParts ? renderedParts : <EmptyPartView />}
         </div>
       </div>
     </div>
