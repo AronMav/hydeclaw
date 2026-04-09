@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.12.0
-milestone_name: Chat Redesign
-status: verifying
-stopped_at: Completed 45-01-PLAN.md
-last_updated: "2026-04-09T13:08:13.883Z"
+milestone: v0.13.0
+milestone_name: Chat UX Evolution
+status: defining
+stopped_at: null
+last_updated: "2026-04-09"
 last_activity: 2026-04-09
 progress:
-  total_phases: 6
-  completed_phases: 3
-  total_plans: 10
-  completed_plans: 7
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
   percent: 0
 ---
 
@@ -21,32 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-09)
 
 **Core value:** Стабильная и безопасная AI-платформа с self-hosted фокусом
-**Current focus:** Phase 45 — Cleanup
+**Current focus:** Defining requirements
 
 ## Current Position
 
-Phase: 45
-Plan: Not started
-Status: Phase complete — ready for verification
-Last activity: 2026-04-09
-
-Progress: ░░░░░░░░░░ 0% (0/6 phases)
-
-## Performance Metrics
-
-| Metric               | Value |
-| -------------------- | ----- |
-| Phases total         | 6     |
-| Phases complete      | 0     |
-| Requirements mapped  | 15/15 |
-| Coverage             | 100%  |
-| Phase 40-sseconnection-extraction P01 | 8 | 2 tasks | 3 files |
-| Phase 41-connectionphase-fsm P01 | 25 | 2 tasks | 3 files |
-| Phase 41-connectionphase-fsm P02 | 8 | 2 tasks | 4 files |
-| Phase 42-history-messagesource P01 | 25 | 2 tasks | 11 files |
-| Phase 43-reconnect-optimistic-ui P01 | 4 | 2 tasks | 3 files |
-| Phase 44-ux-polish P01 | 3 | 2 tasks | 3 files |
-| Phase 45-cleanup P01 | 25 | 2 tasks | 9 files |
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-04-09 — Milestone v0.13.0 started
 
 ## Accumulated Context
 
