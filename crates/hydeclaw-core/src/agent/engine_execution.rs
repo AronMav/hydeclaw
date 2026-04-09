@@ -33,7 +33,7 @@ impl AgentEngine {
             anyhow::bail!("blocked by hook: {}", reason);
         }
 
-        let (session_id, mut messages, available_tools) =
+        let crate::agent::context_builder::ContextSnapshot { session_id, mut messages, tools: available_tools } =
             self.build_context(msg, true, None, false).await?;
 
         // Store session_id for tool handlers that need session context (e.g., handoff)
@@ -477,7 +477,8 @@ impl AgentEngine {
         chunk_tx: mpsc::UnboundedSender<String>,
     ) -> Result<String> {
         let thinking_level = self.thinking_level.load(std::sync::atomic::Ordering::Relaxed);
-        let (session_id, mut messages, _) = self.build_context(msg, false, None, false).await?;
+        let crate::agent::context_builder::ContextSnapshot { session_id, mut messages, tools: _ } =
+            self.build_context(msg, false, None, false).await?;
 
         // Lifecycle tracking
         let sm = SessionManager::new(self.db.clone());

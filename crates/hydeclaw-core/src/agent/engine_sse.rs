@@ -39,7 +39,7 @@ impl AgentEngine {
 
         let thinking_level = self.thinking_level.load(std::sync::atomic::Ordering::Relaxed);
 
-        let (session_id, mut messages, available_tools) =
+        let crate::agent::context_builder::ContextSnapshot { session_id, mut messages, tools: available_tools } =
             self.build_context(msg, true, resume_session_id, force_new_session).await?;
 
         // Store session_id for tool handlers that need session context (e.g., handoff)

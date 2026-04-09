@@ -223,6 +223,10 @@ pub struct AgentEngine {
     pub app_config: std::sync::Arc<crate::config::AppConfig>,
     /// Dedicated LLM provider for context compaction (cheap model). None = use primary provider.
     pub compaction_provider: Option<Arc<dyn LlmProvider>>,
+    /// Context builder — builds session/messages/tools for each LLM call.
+    /// Initialized via `set_context_builder` after engine Arc creation (mirrors self_ref pattern).
+    /// Holds `Arc<dyn ContextBuilder>` for testability (MockContextBuilder in plan 02).
+    pub context_builder: OnceLock<Arc<dyn crate::agent::context_builder::ContextBuilder>>,
 }
 
 /// Snapshot of what's currently displayed on the canvas.
@@ -486,6 +490,16 @@ impl AgentEngine {
         let _ = self.self_ref.set(Arc::downgrade(arc));
     }
 
+    /// Initialize the context builder after engine Arc creation.
+    /// Must be called once, mirrors `set_self_ref` pattern.
+    pub fn set_context_builder(&self, arc: &Arc<AgentEngine>) {
+        use crate::agent::context_builder::{ContextBuilderDeps, DefaultContextBuilder};
+        let deps = arc.clone() as Arc<dyn ContextBuilderDeps>;
+        let builder = Arc::new(DefaultContextBuilder::new(deps))
+            as Arc<dyn crate::agent::context_builder::ContextBuilder>;
+        let _ = self.context_builder.set(builder);
+    }
+
     /// Invalidate the cached YAML tool definitions so the next request reloads from disk.
     pub(crate) async fn invalidate_yaml_tools_cache(&self) {
         *self.yaml_tools_cache.write().await = (
@@ -654,8 +668,10 @@ impl AgentEngine {
         let sm = SessionManager::new(self.db.clone());
         let session_id = sm.create_isolated(&self.agent.name, &msg.user_id, &msg.channel).await?;
 
-        let (_, mut messages, mut available_tools) =
-            self.build_context(msg, true, Some(session_id), false).await?;
+        let ctx = self.build_context(msg, true, Some(session_id), false).await?;
+        let mut messages = ctx.messages;
+        let mut available_tools = ctx.tools;
+        // session_id already bound above (create_isolated result)
 
         // Apply cron job tool policy override if present
         if let Some(ref policy_json) = msg.tool_policy_override
