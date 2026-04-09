@@ -41,20 +41,9 @@ export const TOOL_GROUP_THRESHOLD = 3;
 
 // ── Tool status mapping ─────────────────────────────────────────────────────
 
-export function mapToolPartState(state: ToolPartState): "calling" | "running" | "complete" | "error" | "denied" {
-  switch (state) {
-    case "input-streaming":
-      return "calling";
-    case "input-available":
-      return "running";
-    case "output-available":
-      return "complete";
-    case "output-error":
-      return "error";
-    case "output-denied":
-      return "denied";
-  }
-}
+import { mapToolPartState } from "@/lib/tool-state";
+// Re-export for backward compatibility
+export { mapToolPartState } from "@/lib/tool-state";
 
 // ── Empty part view (loading indicator for empty assistant messages) ─────────
 

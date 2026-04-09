@@ -2,7 +2,7 @@
 
 import { ChevronRight } from "lucide-react";
 import { ToolCallPartView } from "@/components/chat/ToolCallPartView";
-import { mapToolPartState } from "@/app/(authenticated)/chat/MessageItem";
+import { mapToolPartState } from "@/lib/tool-state";
 import type { StepGroupPart } from "@/stores/chat-store";
 
 // ── Step label formatting ──────────────────────────────────────────────────
