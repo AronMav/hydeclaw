@@ -393,7 +393,8 @@ export function resolveActivePath(
   selectedBranches: Record<string, string>,
 ): MessageRow[] {
   // If no rows have parent_message_id set, this is a trunk session -- return rows sorted by created_at
-  const hasBranching = rows.some(r => r.parent_message_id !== null);
+  // Use != null (loose) to treat both null AND undefined (missing field) as "no parent"
+  const hasBranching = rows.some(r => r.parent_message_id != null);
   if (!hasBranching) {
     return [...rows].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
   }
@@ -403,7 +404,7 @@ export function resolveActivePath(
   const roots: MessageRow[] = [];
 
   for (const r of rows) {
-    if (r.parent_message_id === null) {
+    if (r.parent_message_id == null) {
       roots.push(r);
     } else {
       const siblings = childrenOf.get(r.parent_message_id) ?? [];
@@ -465,7 +466,7 @@ export function convertHistory(
   selectedBranches?: Record<string, string>,
 ): ChatMessage[] {
   // When branching data exists and selectedBranches provided, resolve active path first
-  const resolved = selectedBranches && rows.some(r => r.parent_message_id !== null)
+  const resolved = selectedBranches && rows.some(r => r.parent_message_id != null)
     ? resolveActivePath(rows, selectedBranches)
     : rows;
 
