@@ -35,7 +35,7 @@ Covered: core platform stability, providers, channels, memory, tools, orchestrat
  (completed 2026-04-09)
 - [x] **Phase 47: Scroll & Virtualization** - CSS overflow-anchor, smart sticky logic, floating scroll button, viewport-aware DOM capping (completed 2026-04-09)
 - [x] **Phase 48: Optimistic & Responsive UI** - Instant thinking indicator, agent-switch skeletons, live-to-history hash sync, reference stability (completed 2026-04-09)
-- [ ] **Phase 49: Network Resilience** - Last-Event-ID resume on reconnect, reconnecting phase UI
+- [x] **Phase 49: Network Resilience** - Last-Event-ID resume on reconnect, reconnecting phase UI (completed 2026-04-09)
 - [ ] **Phase 50: SSE Protocol Extensions** - Automatic continuations, step grouping events, agent handoff mid-stream
 - [ ] **Phase 51: Human-in-the-Loop** - Inline approve/reject with SSE heartbeat, tool args editor
 - [ ] **Phase 52: Citations & Generative UI** - Source footnote tooltips, CARD_REGISTRY, first registered components
@@ -190,9 +190,9 @@ Plans:
   3. After a successful reconnect mid-stream, the conversation continues exactly where it left off — no duplicate content, no missing tokens
 **Plans**: 3 plans
 Plans:
-- [ ] 49-01-PLAN.md — Backend: StreamRegistry event IDs, replay_from, 410 expired, 30s heartbeat
-- [ ] 49-02-PLAN.md — Frontend: lastEventId tracking, Last-Event-ID header, dedup, 410 handling
-- [ ] 49-03-PLAN.md — ReconnectingIndicator component + ChatThread wiring + human verify
+- [x] 49-01-PLAN.md — Backend: StreamRegistry event IDs, replay_from, 410 expired, 30s heartbeat
+- [x] 49-02-PLAN.md — Frontend: lastEventId tracking, Last-Event-ID header, dedup, 410 handling
+- [x] 49-03-PLAN.md — ReconnectingIndicator component + ChatThread wiring + human verify
 **UI hint**: yes
 
 ### Phase 50: SSE Protocol Extensions
@@ -271,7 +271,7 @@ Plans:
 | 46. Streaming Performance | v0.13.0 | 3/3 | Complete    | 2026-04-09 |
 | 47. Scroll & Virtualization | v0.13.0 | 4/4 | Complete    | 2026-04-09 |
 | 48. Optimistic & Responsive UI | v0.13.0 | 3/3 | Complete    | 2026-04-09 |
-| 49. Network Resilience | v0.13.0 | 0/3 | Planning | - |
+| 49. Network Resilience | v0.13.0 | 3/3 | Complete   | 2026-04-09 |
 | 50. SSE Protocol Extensions | v0.13.0 | 0/? | Not started | - |
 | 51. Human-in-the-Loop | v0.13.0 | 0/? | Not started | - |
 | 52. Citations & Generative UI | v0.13.0 | 0/? | Not started | - |

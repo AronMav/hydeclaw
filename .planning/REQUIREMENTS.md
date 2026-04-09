@@ -34,7 +34,7 @@ Requirements for Chat UX Evolution milestone. Stability, responsiveness, advance
 ### Network Resilience
 
 - [ ] **NET-01**: Last-Event-ID resume при reconnect — продолжение с последней полученной позиции
-- [ ] **NET-02**: Reconnecting phase с pulsating анимацией и статусом
+- [x] **NET-02**: Reconnecting phase с pulsating анимацией и статусом
 
 ### SSE Protocol
 
@@ -98,7 +98,7 @@ Requirements for Chat UX Evolution milestone. Stability, responsiveness, advance
 | OPTI-03 | Phase 48 | Pending |
 | OPTI-04 | Phase 48 | Pending |
 | NET-01 | Phase 49 | Pending |
-| NET-02 | Phase 49 | Pending |
+| NET-02 | Phase 49 | Complete |
 | SSE-01 | Phase 50 | Pending |
 | SSE-02 | Phase 50 | Pending |
 | AGNT-01 | Phase 50 | Pending |
