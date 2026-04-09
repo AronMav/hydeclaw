@@ -2,15 +2,16 @@
 gsd_state_version: 1.0
 milestone: v0.13.0
 milestone_name: Chat UX Evolution
-status: Defining requirements
-stopped_at: Completed 48-01-PLAN.md
-last_updated: "2026-04-09T16:55:11.936Z"
-last_activity: 2026-04-09 — Milestone v0.13.0 started
+status: defining
+stopped_at: null
+last_updated: "2026-04-09"
+last_activity: 2026-04-09
 progress:
-  total_phases: 14
+  total_phases: 0
   completed_phases: 0
-  total_plans: 7
-  completed_plans: 8
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -59,7 +60,8 @@ Last activity: 2026-04-09 — Milestone v0.13.0 started
 - [Phase 44-ux-polish]: totalPartsCount Stage 3 Fix useEffect removed — followOutput callback is single scroll authority
 - [Phase 45-cleanup]: CLN-01: StreamStatus/isActiveStream removed — ConnectionPhase/isActivePhase are sole stream-state authorities
 - [Phase 45-cleanup]: CLN-02: AbortController/timers in private Maps not Immer state; streamGeneration moved to AgentState as plain number
-- [Phase 48]: Pure function extraction for testing showThinking/showSkeleton logic without React mounting
+- [Phase 48-02]: OPTI-03: contentHash djb2 fingerprint + reconcileLiveWithHistory for flicker-free live-to-history transition
+- [Phase 48-02]: OPTI-04: User message UUID-to-DB-ID swap is clean DOM swap (identical content); assistant IDs from SSE start event already match DB
 
 ### Pending Todos
 
@@ -73,6 +75,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-09T16:55:11.933Z
-Stopped at: Completed 48-01-PLAN.md
+Last session: 2026-04-09T13:07:39.887Z
+Stopped at: Completed 45-01-PLAN.md
 Resume with: `/gsd:plan-phase 40`

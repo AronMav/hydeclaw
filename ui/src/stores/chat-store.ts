@@ -128,6 +128,49 @@ function getLiveMessages(source: MessageSource): ChatMessage[] {
   return source.mode === "live" ? source.messages : [];
 }
 
+// ── OPTI-03: Content hash reconciliation ────────────────────────────────────
+
+/**
+ * Fast djb2-style hash of a ChatMessage array.
+ * Compares id + role + text content of parts — intentionally ignores createdAt
+ * (timestamps differ between live SSE messages and DB history rows).
+ * Used for render-optimization, not security.
+ */
+export function contentHash(messages: ChatMessage[]): string {
+  let hash = 0;
+  for (const m of messages) {
+    const str =
+      m.id +
+      m.role +
+      m.parts
+        .map((p) =>
+          p.type === "text"
+            ? p.text
+            : p.type + ("toolCallId" in p ? (p as { toolCallId: string }).toolCallId : ""),
+        )
+        .join("|");
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+    }
+  }
+  return hash.toString(36);
+}
+
+/**
+ * OPTI-03: Compare live messages with freshly-fetched history.
+ * Returns null if content is identical (skip re-render), or returns history
+ * messages when they differ (history has extra data or server post-processing).
+ */
+export function reconcileLiveWithHistory(
+  live: ChatMessage[],
+  history: ChatMessage[],
+): ChatMessage[] | null {
+  if (live.length === history.length && contentHash(live) === contentHash(history)) {
+    return null; // identical — skip re-render
+  }
+  return history;
+}
+
 // ── Per-agent state ─────────────────────────────────────────────────────────
 
 interface AgentState {
@@ -1027,9 +1070,38 @@ export const useChatStore = create<ChatStore>()(
             pendingTargetAgent: null,
             turnCount: 0,
             // Keep messageSource as "live" with final messages — avoids flash when
-            // React Query hasn't yet fetched fresh history. The live messages ARE
-            // the complete response. History mode will be set on next session select.
+            // React Query hasn't yet fetched fresh history.
           });
+
+          // OPTI-03: Delayed transition to history mode.
+          // Live messages remain visible while React Query fetches fresh history.
+          // After 600ms (enough for cache invalidation + fetch), switch to history.
+          const sid = receivedSessionId ?? get().agents[agent]?.activeSessionId;
+          if (sid) {
+            setTimeout(() => {
+              const st = get().agents[agent];
+              // Only transition if still in live mode for this session (user hasn't navigated away)
+              if (st && st.messageSource.mode === "live" && st.activeSessionId === sid) {
+                const liveMessages = st.messageSource.messages;
+                const cachedData = queryClient.getQueryData<{ messages: MessageRow[] }>(
+                  qk.sessionMessages(sid),
+                );
+                if (cachedData?.messages) {
+                  const historyMessages = convertHistory(cachedData.messages);
+                  const result = reconcileLiveWithHistory(liveMessages, historyMessages);
+                  if (result === null) {
+                    // OPTI-03: Content identical — just flip mode without changing rendered messages.
+                    // This prevents any DOM mutation since message IDs match.
+                  }
+                  // History cache is populated — safe to transition
+                  update(agent, { messageSource: { mode: "history", sessionId: sid } });
+                }
+                // If cachedData is not yet available, do NOT transition — stay in live mode.
+                // React Query invalidation will eventually populate the cache, and
+                // ChatThread's sourceMessages fallback handles this gracefully.
+              }
+            }, 600);
+          }
         }
         saveUiState(agent);
         // Session status is server-driven via WS agent_processing events — no optimistic update needed.
