@@ -10,8 +10,8 @@ Requirements for Chat UX Evolution milestone. Stability, responsiveness, advance
 ### Streaming Performance
 
 - [x] **PERF-01**: rAF-throttled rendering — токены буферизуются и сбрасываются в UI синхронно с requestAnimationFrame
-- [ ] **PERF-02**: Incremental markdown parsing — stream-friendly парсер достраивает DOM, а не перестраивает заново
-- [ ] **PERF-03**: Deferred syntax highlighting — подсветка кода применяется после завершения блока или через Web Worker
+- [x] **PERF-02**: Incremental markdown parsing — stream-friendly парсер достраивает DOM, а не перестраивает заново
+- [x] **PERF-03**: Deferred syntax highlighting — подсветка кода применяется после завершения блока или через Web Worker
 
 ### Scroll & Navigation
 
@@ -86,8 +86,8 @@ Requirements for Chat UX Evolution milestone. Stability, responsiveness, advance
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | PERF-01 | Phase 46 | Complete |
-| PERF-02 | Phase 46 | Pending |
-| PERF-03 | Phase 46 | Pending |
+| PERF-02 | Phase 46 | Complete |
+| PERF-03 | Phase 46 | Complete |
 | SCRL-01 | Phase 47 | Pending |
 | SCRL-02 | Phase 47 | Pending |
 | SCRL-03 | Phase 47 | Pending |

@@ -141,7 +141,7 @@ Plans:
 **Plans**: 3 plans
 Plans:
 - [x] 46-01-PLAN.md — Test scaffold: PERF-01 regression tests (green) + PERF-02/03 stubs (red until plan 02)
-- [ ] 46-02-PLAN.md — Stable block keys (PERF-02) + deferred syntax highlighting via isStreaming prop thread (PERF-03)
+- [x] 46-02-PLAN.md — Stable block keys (PERF-02) + deferred syntax highlighting via isStreaming prop thread (PERF-03)
 - [ ] 46-03-PLAN.md — Human verify: browser streaming UX check
 **UI hint**: yes
 
@@ -238,7 +238,7 @@ Plans:
 | 43. Reconnect & Optimistic UI | v0.12.0 | 1/2 | Complete | 2026-04-09 |
 | 44. UX Polish | v0.12.0 | 1/2 | Complete | 2026-04-09 |
 | 45. Cleanup | v0.12.0 | 1/1 | Complete | 2026-04-09 |
-| 46. Streaming Performance | v0.13.0 | 1/3 | In Progress|  |
+| 46. Streaming Performance | v0.13.0 | 2/3 | In Progress|  |
 | 47. Scroll & Virtualization | v0.13.0 | 0/? | Not started | - |
 | 48. Optimistic & Responsive UI | v0.13.0 | 0/? | Not started | - |
 | 49. Network Resilience | v0.13.0 | 0/? | Not started | - |
