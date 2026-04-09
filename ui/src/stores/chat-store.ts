@@ -530,10 +530,13 @@ export const useChatStore = create<ChatStore>()(
    */
   function scheduleReconnect(agent: string, sessionId: string, attempt: number) {
     if (attempt >= MAX_RECONNECT_ATTEMPTS) {
+      const sid = sessionId ?? get().agents[agent]?.activeSessionId;
       update(agent, {
         streamError: "Connection lost after retries",
         connectionPhase: "error",
         connectionError: "Connection lost after retries",
+        // Fall back to history mode so stale live messages don't stick
+        messageSource: sid ? { mode: "history", sessionId: sid } : { mode: "new-chat" },
       });
       return;
     }
@@ -657,7 +660,12 @@ export const useChatStore = create<ChatStore>()(
     let currentRespondingAgent: string | null = get().agents[agent]?.pendingTargetAgent ?? agent;
 
     function flushText() {
-      // Logic handled by incrementalParser.flush()
+      // Snapshot accumulated text/reasoning into parts array at current position.
+      // This preserves text-tool-text ordering during streaming.
+      const flushed = incrementalParser.flush();
+      if (flushed.length > 0) {
+        parts.push(...flushed);
+      }
     }
 
     function pushUpdate() {
@@ -666,7 +674,8 @@ export const useChatStore = create<ChatStore>()(
       // Guard: don't update store after abort (prevents race with stopStream)
       if (signal.aborted) return;
 
-      const contentParts = incrementalParser.processDelta(""); // trigger emit of what's ready
+      // Get trailing text that hasn't been flushed yet (current typing)
+      const trailingContent = incrementalParser.processDelta("");
 
       set((draft) => {
         const st = draft.agents[agent];
@@ -678,8 +687,9 @@ export const useChatStore = create<ChatStore>()(
         const liveMessages = st.messageSource.messages;
         const existing = liveMessages.findIndex((m: ChatMessage) => m.id === assistantId);
 
-        // Merge incremental text/reasoning parts with other parts (tools, files)
-        const allParts = [...contentParts, ...parts.filter(p => p.type !== "text" && p.type !== "reasoning")];
+        // Parts array has flushed text + tools in correct order.
+        // Append trailing (unflushed) text at the end.
+        const allParts = [...parts, ...trailingContent];
 
         if (existing >= 0) {
           const msg = liveMessages[existing];
@@ -1016,11 +1026,16 @@ export const useChatStore = create<ChatStore>()(
 
         // Preserve error status if error event was already received
         if (!isError) {
+          const completedSessionId = receivedSessionId ?? get().agents[agent]?.activeSessionId;
           update(agent, {
             connectionPhase: "idle",
             connectionError: null,
             pendingTargetAgent: null,
             turnCount: 0,
+            // Transition to history mode so showThinking doesn't trigger on stale "live" mode
+            messageSource: completedSessionId
+              ? { mode: "history", sessionId: completedSessionId }
+              : { mode: "new-chat" },
           });
         }
         saveUiState(agent);
@@ -1078,6 +1093,15 @@ export const useChatStore = create<ChatStore>()(
       const prev = get().currentAgent;
       if (prev === name) return;
 
+      // Page-load initialization (prev is empty) — just set the agent,
+      // DON'T wipe session state. The restore effect in page.tsx will handle it.
+      if (!prev) {
+        ensure(name);
+        set({ currentAgent: name });
+        queryClient.invalidateQueries({ queryKey: qk.sessions(name) });
+        return;
+      }
+
       // Check if current session is multi-agent and includes the new agent
       const prevState = get().agents[prev];
       const activeSessionId = prevState?.activeSessionId;
@@ -1085,7 +1109,6 @@ export const useChatStore = create<ChatStore>()(
       if (activeSessionId) {
         const participants = get().sessionParticipants[activeSessionId];
         if (participants && participants.includes(name)) {
-          // Carry over the session — the new agent is already a participant
           ensure(name);
           update(name, {
             activeSessionId,
@@ -1098,7 +1121,7 @@ export const useChatStore = create<ChatStore>()(
         }
       }
 
-      // Abort stream for the agent being left
+      // User-initiated agent switch — abort stream, reset state
       const prevCtrl = getAbortCtrl(prev);
       if (prevCtrl) {
         prevCtrl.abort();
@@ -1106,8 +1129,6 @@ export const useChatStore = create<ChatStore>()(
         update(prev, { connectionPhase: "idle" });
       }
       ensure(name);
-      // Immediately reset to new-chat state so no stale session is shown during render.
-      // The restore effect in page.tsx may later select a server-active session.
       update(name, {
         activeSessionId: null,
         messageSource: { mode: "new-chat" },
@@ -1117,11 +1138,8 @@ export const useChatStore = create<ChatStore>()(
         forceNewSession: true,
       });
       set({ currentAgent: name });
-      // Save agent to localStorage and clear any stale session ID for this agent
-      // (prevents cross-agent contamination when switching)
       clearLastSessionId(name);
       saveLastSession(name);
-      // Sessions list is managed by React Query (useSessions hook)
       queryClient.invalidateQueries({ queryKey: qk.sessions(name) });
     },
 
