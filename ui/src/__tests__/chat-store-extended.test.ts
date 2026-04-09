@@ -264,6 +264,7 @@ describe("STATE-01: history to live transition", () => {
           agentTurns: [],
           turnCount: 0,
           turnLimitMessage: null,
+          streamGeneration: 0,
         };
       } else {
         s.agents["TestAgent"].messageSource = { mode: "history", sessionId: "sess-history" };
