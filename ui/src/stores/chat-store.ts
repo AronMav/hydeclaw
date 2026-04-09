@@ -3,7 +3,9 @@ import { devtools } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 
 import { apiGet, apiDelete, apiPatch, getToken } from "@/lib/api";
-import { parseSSELines, parseSseEvent, parseContentParts } from "@/stores/sse-events";
+import { parseContentParts } from "@/stores/sse-events";
+import { SseConnection } from "@/lib/sse-connection";
+import type { SseEvent } from "@/lib/sse-connection";
 import { IncrementalParser } from "@/lib/message-parser";
 import type { SessionRow, MessageRow } from "@/types/api";
 import { queryClient } from "@/lib/query-client";
@@ -156,8 +158,8 @@ function emptyAgentState(): AgentState {
 
 const LAST_SESSION_KEY = "hydeclaw.chat.lastSession";
 
-// Per-agent abort controllers (keyed by agent name, not module-scoped)
-const agentAbortControllers: Record<string, AbortController | null> = {};
+// Per-agent SSE connection instances (keyed by agent name, not module-scoped)
+const agentConnections: Record<string, SseConnection | null> = {};
 
 // Stream generation counter — prevents stale SSE deltas from writing to wrong session
 // after session switch. Incremented on each startStream(), checked in pushUpdate().
@@ -410,8 +412,6 @@ export const useChatStore = create<ChatStore>()(
     abortActiveStream(agent);
     streamGeneration++;
     const myGeneration = streamGeneration;
-    const controller = new AbortController();
-    agentAbortControllers[agent] = controller;
 
     // Stage 4: Set persistence flag so UI shows thinking indicator instantly after reload
     sessionStorage.setItem(`hydeclaw.streaming.${agent}`, "true");
@@ -423,34 +423,29 @@ export const useChatStore = create<ChatStore>()(
     });
 
     const token = getToken();
+    const ctx = createStreamContext(agent, myGeneration);
 
-    fetch(`/api/chat/${sessionId}/stream`, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${token}` },
-      signal: controller.signal,
-    })
-      .then((resp) => {
-        if (resp.status === 204) {
-          // No active stream — engine already finished
+    const connection = new SseConnection(
+      { url: `/api/chat/${sessionId}/stream`, method: "GET", token },
+      {
+        onEvent: (event) => handleSseEvent(agent, event, ctx),
+        onError: () => {
           update(agent, { streamStatus: "idle" });
-          return;
-        }
-        if (!resp.ok) {
-          return resp.text().then((t) => { throw new Error(t || `HTTP ${resp.status}`); });
-        }
-        return processSSEStream(agent, resp.body!, controller.signal, myGeneration);
-      })
-      .catch((err) => {
-        if (err.name === "AbortError") return;
-        update(agent, { streamStatus: "idle" });
-      });
+        },
+        onDone: () => {
+          finalizeStream(agent, ctx);
+        },
+      },
+    );
+    agentConnections[agent] = connection;
+    connection.connect();
   }
 
   /** Abort active stream for an agent and reset status. */
   function abortActiveStream(agent: string) {
-    if (agentAbortControllers[agent]) {
-      agentAbortControllers[agent].abort();
-      agentAbortControllers[agent] = null;
+    if (agentConnections[agent]) {
+      agentConnections[agent]!.stop();
+      agentConnections[agent] = null;
       update(agent, { streamStatus: "idle" });
     }
   }
@@ -460,8 +455,6 @@ export const useChatStore = create<ChatStore>()(
     abortActiveStream(agent);
     streamGeneration++;
     const myGeneration = streamGeneration;
-    const controller = new AbortController();
-    agentAbortControllers[agent] = controller;
 
     // Build user message
     const userMsg: ChatMessage = {
@@ -497,410 +490,394 @@ export const useChatStore = create<ChatStore>()(
     }
 
     const token = getToken();
+    const ctx = createStreamContext(agent, myGeneration);
 
-    fetch("/api/chat", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    })
-      .then((resp) => {
-        if (!resp.ok) {
-          return resp.text().then((t) => {
-            throw new Error(t || `HTTP ${resp.status}`);
+    const connection = new SseConnection(
+      { url: "/api/chat", method: "POST", body, token },
+      {
+        onEvent: (event) => handleSseEvent(agent, event, ctx),
+        onError: (errMsg) => {
+          update(agent, {
+            streamStatus: "error",
+            streamError: errMsg || "Stream failed",
           });
-        }
-        return processSSEStream(agent, resp.body!, controller.signal, myGeneration);
-      })
-      .catch((err) => {
-        if (err.name === "AbortError") return;
-        update(agent, {
-          streamStatus: "error",
-          streamError: err.message || "Stream failed",
-        });
-        saveUiState(agent);
-      });
+          saveUiState(agent);
+        },
+        onDone: () => {
+          finalizeStream(agent, ctx);
+        },
+      },
+    );
+    agentConnections[agent] = connection;
+    connection.connect();
   }
 
-  async function processSSEStream(
-    agent: string,
-    body: ReadableStream<Uint8Array>,
-    signal: AbortSignal,
-    generation: number,
-  ) {
-    const reader = body.getReader();
-    const decoder = new TextDecoder();
-    const buffer = { current: "" };
+  // ── Stream context ─────────────────────────────────────────────────────────
 
-    // Mutable assistant message being built
-    let assistantId = uuid();
-    let assistantCreatedAt = new Date().toISOString();
-    let parts: MessagePart[] = [];
-    const incrementalParser = new IncrementalParser();
-    const toolInputChunks = new Map<string, string[]>();
-    let receivedSessionId: string | null = null;
-    // Initialize from pendingTargetAgent so first render shows correct avatar.
-    // Fall back to primary agent name so single-agent sessions never produce undefined agentId.
-    let currentRespondingAgent: string | null = get().agents[agent]?.pendingTargetAgent ?? agent;
+  interface StreamContext {
+    assistantId: string;
+    assistantCreatedAt: string;
+    parts: MessagePart[];
+    incrementalParser: IncrementalParser;
+    toolInputChunks: Map<string, string[]>;
+    receivedSessionId: string | null;
+    currentRespondingAgent: string | null;
+    generation: number;
+    updateScheduled: boolean;
+    updateTimer: ReturnType<typeof setTimeout> | null;
+    scheduleUpdate: () => void;
+    cancelScheduledUpdate: () => void;
+    pushUpdate: () => void;
+    flushText: () => void;
+  }
 
-    function flushText() {
-      // Logic handled by incrementalParser.flush()
-    }
+  function createStreamContext(agent: string, generation: number): StreamContext {
+    const ctx: StreamContext = {
+      assistantId: uuid(),
+      assistantCreatedAt: new Date().toISOString(),
+      parts: [],
+      incrementalParser: new IncrementalParser(),
+      toolInputChunks: new Map(),
+      receivedSessionId: null,
+      // Initialize from pendingTargetAgent so first render shows correct avatar.
+      // Fall back to primary agent name so single-agent sessions never produce undefined agentId.
+      currentRespondingAgent: get().agents[agent]?.pendingTargetAgent ?? agent,
+      generation,
+      updateScheduled: false,
+      updateTimer: null,
+      scheduleUpdate: () => {},
+      cancelScheduledUpdate: () => {},
+      pushUpdate: () => {},
+      flushText: () => {},
+    };
 
-    function pushUpdate() {
+    ctx.pushUpdate = function pushUpdate() {
       // Guard: stale stream — a newer stream has started, discard updates
-      if (generation !== streamGeneration) return;
-      // Guard: don't update store after abort (prevents race with stopStream)
-      if (signal.aborted) return;
-      
-      const contentParts = incrementalParser.processDelta(""); // trigger emit of what's ready
-      
+      if (ctx.generation !== streamGeneration) return;
+      // Guard: don't update store after connection is stopped
+      if (!agentConnections[agent]?.isActive && agentConnections[agent] !== undefined) {
+        // Connection was stopped — still allow final flush (connection may already be null after stop)
+      }
+
+      const contentParts = ctx.incrementalParser.processDelta(""); // trigger emit of what's ready
+
       set((draft) => {
         const st = draft.agents[agent];
         if (!st) return;
-        const existing = st.liveMessages.findIndex((m: ChatMessage) => m.id === assistantId);
-        
+        const existing = st.liveMessages.findIndex((m: ChatMessage) => m.id === ctx.assistantId);
+
         // Merge incremental text/reasoning parts with other parts (tools, files)
-        const allParts = [...contentParts, ...parts.filter(p => p.type !== "text" && p.type !== "reasoning")];
+        const allParts = [...contentParts, ...ctx.parts.filter(p => p.type !== "text" && p.type !== "reasoning")];
 
         if (existing >= 0) {
           const msg = st.liveMessages[existing];
           msg.parts = allParts;
-          msg.agentId = currentRespondingAgent ?? undefined;
+          msg.agentId = ctx.currentRespondingAgent ?? undefined;
         } else {
           st.liveMessages.push({
-            id: assistantId,
+            id: ctx.assistantId,
             role: "assistant",
             parts: allParts,
-            createdAt: assistantCreatedAt,
-            agentId: currentRespondingAgent ?? undefined,
+            createdAt: ctx.assistantCreatedAt,
+            agentId: ctx.currentRespondingAgent ?? undefined,
           });
         }
         if (st.streamStatus !== "error") st.streamStatus = "streaming";
       });
-    }
+    };
 
     // Throttle UI updates to ~20fps (50ms) — reduces renders from 60/sec to 20/sec.
     // setTimeout coalesces rapid SSE events, then rAF syncs with browser paint cycle.
-    let updateScheduled = false;
-    let updateTimer: ReturnType<typeof setTimeout> | null = null;
-    function scheduleUpdate() {
-      if (updateScheduled) return;
-      updateScheduled = true;
-      updateTimer = setTimeout(() => {
-        updateTimer = null;
+    ctx.scheduleUpdate = function scheduleUpdate() {
+      if (ctx.updateScheduled) return;
+      ctx.updateScheduled = true;
+      ctx.updateTimer = setTimeout(() => {
+        ctx.updateTimer = null;
         requestAnimationFrame(() => {
-          updateScheduled = false;
-          pushUpdate();
+          ctx.updateScheduled = false;
+          ctx.pushUpdate();
         });
       }, STREAM_THROTTLE_MS);
-    }
-    function cancelScheduledUpdate() {
-      if (updateTimer) { clearTimeout(updateTimer); updateTimer = null; }
-      updateScheduled = false;
-    }
+    };
 
-    try {
-      while (true) {
-        if (signal.aborted) break;
-        const { done, value } = await reader.read();
-        if (done) break;
+    ctx.cancelScheduledUpdate = function cancelScheduledUpdate() {
+      if (ctx.updateTimer) { clearTimeout(ctx.updateTimer); ctx.updateTimer = null; }
+      ctx.updateScheduled = false;
+    };
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = parseSSELines(chunk, buffer);
+    ctx.flushText = function flushText() {
+      // Logic handled by incrementalParser.flush()
+    };
 
-        for (const line of lines) {
-          if (!line.startsWith("data:")) continue;
-          const raw = line.slice(5).trim();
-          if (raw === "[DONE]") continue;
+    return ctx;
+  }
 
-          const event = parseSseEvent(raw);
-          if (!event) continue;
+  // ── SSE event handler (dispatches to store state mutations via callbacks) ───
 
-          switch (event.type) {
-            case "data-session-id": {
-              const sid = event.data.sessionId;
-              if (sid && generation === streamGeneration) {
-                receivedSessionId = sid;
-                update(agent, { activeSessionId: sid });
-                saveLastSession(agent, sid);
-                // Session status is now server-driven via WS agent_processing events.
-                // No optimistic updates needed — WS event arrives ~simultaneously.
+  function handleSseEvent(agent: string, event: SseEvent, ctx: StreamContext) {
+    switch (event.type) {
+      case "data-session-id": {
+        const sid = event.data.sessionId;
+        if (sid && ctx.generation === streamGeneration) {
+          ctx.receivedSessionId = sid;
+          update(agent, { activeSessionId: sid });
+          saveLastSession(agent, sid);
+          // Session status is now server-driven via WS agent_processing events.
+          // No optimistic updates needed — WS event arrives ~simultaneously.
 
-                // Populate sessionParticipants cache from React Query session data
-                const sessionsData = queryClient.getQueryData<{ sessions: SessionRow[] }>(
-                  qk.sessions(agent)
-                );
-                const session = sessionsData?.sessions.find(s => s.id === sid);
-                if (session?.participants) {
-                  get().updateSessionParticipants(sid, session.participants);
-                }
-              }
-              break;
-            }
-
-            case "start": {
-              const newId = event.messageId || assistantId;
-              assistantId = newId;
-              assistantCreatedAt = new Date().toISOString();
-              parts = [];
-              if (event.agentName) currentRespondingAgent = event.agentName;
-              // Dedup: remove resume placeholder (id starts with "resume-") and any
-              // seeded message with same ID to prevent duplicates on stream resume
-              const stNow = get().agents[agent];
-              if (stNow) {
-                const deduped = stNow.liveMessages.filter(
-                  (m) => m.id !== newId && !m.id.startsWith("resume-")
-                );
-                if (deduped.length !== stNow.liveMessages.length) {
-                  update(agent, { liveMessages: deduped });
-                }
-              }
-              break;
-            }
-
-            case "text-start": {
-              if (event.agentName) currentRespondingAgent = event.agentName;
-              break;
-            }
-
-            case "text-delta": {
-              incrementalParser.processDelta(event.delta);
-              scheduleUpdate();
-              break;
-            }
-
-            case "text-end": {
-              // Incremental parser accumulates state across text blocks
-              scheduleUpdate();
-              break;
-            }
-
-            case "tool-input-start": {
-              flushText();
-              const { toolCallId: tcId, toolName: tcName } = event;
-              toolInputChunks.set(tcId, []);
-              parts.push({
-                type: "tool",
-                toolCallId: tcId,
-                toolName: tcName,
-                state: "input-streaming",
-                input: {},
-              });
-              scheduleUpdate();
-              break;
-            }
-
-            case "tool-input-delta": {
-              const { toolCallId: tcId, inputTextDelta: delta } = event;
-              if (delta) toolInputChunks.get(tcId)?.push(delta);
-              break;
-            }
-
-            case "tool-input-available": {
-              const { toolCallId: tcId, input } = event;
-              // Chunks were only needed for streaming display; actual input is now available — free memory
-              toolInputChunks.delete(tcId);
-              const idx = parts.findIndex(
-                (p) => p.type === "tool" && p.toolCallId === tcId,
-              );
-              if (idx >= 0) {
-                parts[idx] = { ...(parts[idx] as ToolPart), state: "input-available", input: (input as Record<string, unknown>) ?? {} };
-              }
-              scheduleUpdate();
-              break;
-            }
-
-            case "tool-output-available": {
-              const { toolCallId: tcId, output } = event;
-              const idx = parts.findIndex(
-                (p) => p.type === "tool" && p.toolCallId === tcId,
-              );
-              if (idx >= 0) {
-                parts[idx] = { ...(parts[idx] as ToolPart), state: "output-available", output };
-              }
-              scheduleUpdate();
-              break;
-            }
-
-            case "file": {
-              flushText();
-              parts.push({
-                type: "file",
-                url: event.url,
-                mediaType: event.mediaType || "application/octet-stream",
-              });
-              scheduleUpdate();
-              break;
-            }
-
-            case "rich-card": {
-              flushText();
-              if (event.cardType === "agent-turn" && event.data?.agentName) {
-                // Agent turn separator: update tracking state but DON'T push to parts
-                // or scheduleUpdate — this is a control event, not message content.
-                // Pushing would create a phantom assistant message after finish reset.
-                currentRespondingAgent = event.data.agentName as string;
-                const currentTurnCount = get().agents[agent]?.turnCount ?? 0;
-                update(agent, { pendingTargetAgent: currentRespondingAgent, turnCount: currentTurnCount + 1 });
-                break;
-              }
-              parts.push({
-                type: "rich-card",
-                cardType: event.cardType,
-                data: event.data,
-              });
-              scheduleUpdate();
-              break;
-            }
-
-            case "sync": {
-              // Stage 3: Differential Sync. Instead of replacing all liveMessages,
-              // we only update the assistant message if it matches our current assistantId.
-              const { content: syncContent, toolCalls: syncToolCalls, status: syncStatus } = event;
-              const normalizedParts = parseContentParts(syncContent || "");
-              
-              const syncParts: MessagePart[] = [...normalizedParts];
-              for (const tc of syncToolCalls as Array<Record<string, unknown>>) {
-                syncParts.push({
-                  type: "tool",
-                  toolCallId: (tc.toolCallId as string) ?? "",
-                  toolName: (tc.toolName as string) ?? "tool",
-                  state: "output-available",
-                  input: {},
-                  output: tc.output,
-                });
-              }
-
-              set((draft) => {
-                const st = draft.agents[agent];
-                if (!st) return;
-                
-                const existingIdx = st.liveMessages.findIndex(m => m.id === assistantId);
-                if (existingIdx >= 0) {
-                  // Differential update: preserves user messages and other assistant messages
-                  st.liveMessages[existingIdx].parts = syncParts;
-                } else {
-                  // Fallback: if not found, it might be a clean resume, so we seed
-                  const userMsgs = st.liveMessages.filter(m => m.role === "user");
-                  st.liveMessages = [...userMsgs, {
-                    id: assistantId,
-                    role: "assistant",
-                    parts: syncParts,
-                    createdAt: assistantCreatedAt,
-                    agentId: currentRespondingAgent ?? undefined,
-                  }];
-                }
-              });
-
-              if (syncStatus === "finished" || syncStatus === "error" || syncStatus === "interrupted") {
-                const errorText = syncStatus === "error" ? (event.error ?? null) : null;
-                const inTurnLoop = !!get().agents[agent]?.pendingTargetAgent;
-                if (syncStatus === "error" || !inTurnLoop) {
-                  update(agent, {
-                    streamStatus: syncStatus === "error" ? "error" : "idle",
-                    streamError: errorText,
-                  });
-                  sessionStorage.removeItem(`hydeclaw.streaming.${agent}`);
-                }
-              }
-              break;
-            }
-
-            case "finish": {
-              // Cancel any pending update and do synchronous update
-              cancelScheduledUpdate();
-              flushText();
-              // SSE-02: Normalize parts through parseContentParts for live/history parity
-              const textContent = parts
-                .filter((p): p is TextPart | ReasoningPart => p.type === "text" || p.type === "reasoning")
-                .map(p => p.type === "reasoning" ? `<think>${p.text}</think>` : p.text)
-                .join("");
-              if (textContent) {
-                const nonTextParts = parts.filter(p => p.type !== "text" && p.type !== "reasoning");
-                const normalizedTextParts = parseContentParts(textContent);
-                parts.length = 0;
-                parts.push(...normalizedTextParts, ...nonTextParts);
-              }
-              pushUpdate();
-              // CRITICAL for multi-agent turn loop: reset state for next agent turn.
-              // Without this, events between finish and next start (e.g. agent-turn rich card)
-              // would overwrite the finalized message with wrong agentId.
-              assistantId = uuid();
-              assistantCreatedAt = new Date().toISOString();
-              parts = [];
-              break;
-            }
-
-            case "error": {
-              const errText = event.errorText;
-              if (errText.includes("turn limit") || errText.includes("cycle detected")) {
-                // Turn management message — show inline as info card, not as error banner
-                update(agent, { turnLimitMessage: errText, turnCount: 0 });
-              } else {
-                update(agent, { streamStatus: "error", streamError: errText });
-              }
-              break;
-            }
+          // Populate sessionParticipants cache from React Query session data
+          const sessionsData = queryClient.getQueryData<{ sessions: SessionRow[] }>(
+            qk.sessions(agent)
+          );
+          const session = sessionsData?.sessions.find(s => s.id === sid);
+          if (session?.participants) {
+            get().updateSessionParticipants(sid, session.participants);
           }
         }
+        break;
       }
-    } finally {
-      reader.releaseLock();
-      // Execute any pending update synchronously instead of cancelling it
-      // (prevents losing the final text-delta that was scheduled but not yet rendered)
-      if (updateScheduled) {
-        cancelScheduledUpdate();
-        pushUpdate(); // Execute the update that setTimeout+rAF would have done
+
+      case "start": {
+        const newId = event.messageId || ctx.assistantId;
+        ctx.assistantId = newId;
+        ctx.assistantCreatedAt = new Date().toISOString();
+        ctx.parts = [];
+        if (event.agentName) ctx.currentRespondingAgent = event.agentName;
+        // Dedup: remove resume placeholder (id starts with "resume-") and any
+        // seeded message with same ID to prevent duplicates on stream resume
+        const stNow = get().agents[agent];
+        if (stNow) {
+          const deduped = stNow.liveMessages.filter(
+            (m) => m.id !== newId && !m.id.startsWith("resume-")
+          );
+          if (deduped.length !== stNow.liveMessages.length) {
+            update(agent, { liveMessages: deduped });
+          }
+        }
+        break;
       }
-      // Always flush remaining text (including on abort — preserves partial response)
-      flushText();
-      if (!signal.aborted) {
-        // Only push if there's content — avoids phantom empty message after finish reset
-        if (parts.length > 0) pushUpdate();
-        // Preserve error status if error event was already received
-        const isError = get().agents[agent]?.streamStatus === "error";
-        if (!isError) {
-          update(agent, { streamStatus: "idle", pendingTargetAgent: null, turnCount: 0 });
+
+      case "text-start": {
+        if (event.agentName) ctx.currentRespondingAgent = event.agentName;
+        break;
+      }
+
+      case "text-delta": {
+        ctx.incrementalParser.processDelta(event.delta);
+        ctx.scheduleUpdate();
+        break;
+      }
+
+      case "text-end": {
+        // Incremental parser accumulates state across text blocks
+        ctx.scheduleUpdate();
+        break;
+      }
+
+      case "tool-input-start": {
+        ctx.flushText();
+        const { toolCallId: tcId, toolName: tcName } = event;
+        ctx.toolInputChunks.set(tcId, []);
+        ctx.parts.push({
+          type: "tool",
+          toolCallId: tcId,
+          toolName: tcName,
+          state: "input-streaming",
+          input: {},
+        });
+        ctx.scheduleUpdate();
+        break;
+      }
+
+      case "tool-input-delta": {
+        const { toolCallId: tcId, inputTextDelta: delta } = event;
+        if (delta) ctx.toolInputChunks.get(tcId)?.push(delta);
+        break;
+      }
+
+      case "tool-input-available": {
+        const { toolCallId: tcId, input } = event;
+        // Chunks were only needed for streaming display; actual input is now available — free memory
+        ctx.toolInputChunks.delete(tcId);
+        const idx = ctx.parts.findIndex(
+          (p) => p.type === "tool" && p.toolCallId === tcId,
+        );
+        if (idx >= 0) {
+          ctx.parts[idx] = { ...(ctx.parts[idx] as ToolPart), state: "input-available", input: (input as Record<string, unknown>) ?? {} };
         }
-        saveUiState(agent);
-        // Session status is server-driven via WS agent_processing events — no optimistic update needed.
-      } else if (parts.length > 0) {
-        // On abort: save partial response to liveMessages but keep idle status
-        // (stopStream already set streamStatus to "idle")
-        const st = get().agents[agent];
-        if (st) {
-          const assistantMsg: ChatMessage = {
-            id: assistantId,
-            role: "assistant",
-            parts: [...parts],
-            createdAt: assistantCreatedAt,
-            agentId: currentRespondingAgent ?? undefined,
-          };
-          const existing = st.liveMessages.findIndex((m) => m.id === assistantId);
-          const updated =
-            existing >= 0
-              ? st.liveMessages.map((m, i) => (i === existing ? assistantMsg : m))
-              : [...st.liveMessages, assistantMsg];
-          update(agent, { liveMessages: updated });
+        ctx.scheduleUpdate();
+        break;
+      }
+
+      case "tool-output-available": {
+        const { toolCallId: tcId, output } = event;
+        const idx = ctx.parts.findIndex(
+          (p) => p.type === "tool" && p.toolCallId === tcId,
+        );
+        if (idx >= 0) {
+          ctx.parts[idx] = { ...(ctx.parts[idx] as ToolPart), state: "output-available", output };
         }
+        ctx.scheduleUpdate();
+        break;
+      }
+
+      case "file": {
+        ctx.flushText();
+        ctx.parts.push({
+          type: "file",
+          url: event.url,
+          mediaType: event.mediaType || "application/octet-stream",
+        });
+        ctx.scheduleUpdate();
+        break;
+      }
+
+      case "rich-card": {
+        ctx.flushText();
+        if (event.cardType === "agent-turn" && event.data?.agentName) {
+          // Agent turn separator: update tracking state but DON'T push to parts
+          // or scheduleUpdate — this is a control event, not message content.
+          // Pushing would create a phantom assistant message after finish reset.
+          ctx.currentRespondingAgent = event.data.agentName as string;
+          const currentTurnCount = get().agents[agent]?.turnCount ?? 0;
+          update(agent, { pendingTargetAgent: ctx.currentRespondingAgent, turnCount: currentTurnCount + 1 });
+          break;
+        }
+        ctx.parts.push({
+          type: "rich-card",
+          cardType: event.cardType,
+          data: event.data,
+        });
+        ctx.scheduleUpdate();
+        break;
+      }
+
+      case "sync": {
+        // Stage 3: Differential Sync. Instead of replacing all liveMessages,
+        // we only update the assistant message if it matches our current assistantId.
+        const { content: syncContent, toolCalls: syncToolCalls, status: syncStatus } = event;
+        const normalizedParts = parseContentParts(syncContent || "");
+
+        const syncParts: MessagePart[] = [...normalizedParts];
+        for (const tc of syncToolCalls as Array<Record<string, unknown>>) {
+          syncParts.push({
+            type: "tool",
+            toolCallId: (tc.toolCallId as string) ?? "",
+            toolName: (tc.toolName as string) ?? "tool",
+            state: "output-available",
+            input: {},
+            output: tc.output,
+          });
+        }
+
+        set((draft) => {
+          const st = draft.agents[agent];
+          if (!st) return;
+
+          const existingIdx = st.liveMessages.findIndex(m => m.id === ctx.assistantId);
+          if (existingIdx >= 0) {
+            // Differential update: preserves user messages and other assistant messages
+            st.liveMessages[existingIdx].parts = syncParts;
+          } else {
+            // Fallback: if not found, it might be a clean resume, so we seed
+            const userMsgs = st.liveMessages.filter(m => m.role === "user");
+            st.liveMessages = [...userMsgs, {
+              id: ctx.assistantId,
+              role: "assistant",
+              parts: syncParts,
+              createdAt: ctx.assistantCreatedAt,
+              agentId: ctx.currentRespondingAgent ?? undefined,
+            }];
+          }
+        });
+
+        if (syncStatus === "finished" || syncStatus === "error" || syncStatus === "interrupted") {
+          const errorText = syncStatus === "error" ? (event.error ?? null) : null;
+          const inTurnLoop = !!get().agents[agent]?.pendingTargetAgent;
+          if (syncStatus === "error" || !inTurnLoop) {
+            update(agent, {
+              streamStatus: syncStatus === "error" ? "error" : "idle",
+              streamError: errorText,
+            });
+            sessionStorage.removeItem(`hydeclaw.streaming.${agent}`);
+          }
+        }
+        break;
+      }
+
+      case "finish": {
+        // Cancel any pending update and do synchronous update
+        ctx.cancelScheduledUpdate();
+        ctx.flushText();
+        // SSE-02: Normalize parts through parseContentParts for live/history parity
+        const textContent = ctx.parts
+          .filter((p): p is TextPart | ReasoningPart => p.type === "text" || p.type === "reasoning")
+          .map(p => p.type === "reasoning" ? `<think>${p.text}</think>` : p.text)
+          .join("");
+        if (textContent) {
+          const nonTextParts = ctx.parts.filter(p => p.type !== "text" && p.type !== "reasoning");
+          const normalizedTextParts = parseContentParts(textContent);
+          ctx.parts.length = 0;
+          ctx.parts.push(...normalizedTextParts, ...nonTextParts);
+        }
+        ctx.pushUpdate();
+        // CRITICAL for multi-agent turn loop: reset state for next agent turn.
+        // Without this, events between finish and next start (e.g. agent-turn rich card)
+        // would overwrite the finalized message with wrong agentId.
+        ctx.assistantId = uuid();
+        ctx.assistantCreatedAt = new Date().toISOString();
+        ctx.parts = [];
+        break;
+      }
+
+      case "error": {
+        const errText = event.errorText;
+        if (errText.includes("turn limit") || errText.includes("cycle detected")) {
+          // Turn management message — show inline as info card, not as error banner
+          update(agent, { turnLimitMessage: errText, turnCount: 0 });
+        } else {
+          update(agent, { streamStatus: "error", streamError: errText });
+        }
+        break;
       }
     }
+  }
 
-    // Save and invalidate React Query caches (skip on abort — stream was cancelled intentionally)
-    if (!signal.aborted) {
-      if (receivedSessionId) {
-        saveLastSession(agent, receivedSessionId);
-      }
-      // Refresh session list and session messages in React Query cache
-      queryClient.invalidateQueries({ queryKey: qk.sessions(agent) });
-      const completedSessionId = receivedSessionId ?? get().agents[agent]?.activeSessionId;
-      if (completedSessionId) {
-        queryClient.invalidateQueries({ queryKey: qk.sessionMessages(completedSessionId) });
-      }
+  // ── Stream finalization (SseConnection.onDone callback) ─────────────────────
+
+  function finalizeStream(agent: string, ctx: StreamContext) {
+    // onDone is only called by SseConnection on natural completion (not on abort).
+    // When stop() is called, onDone is never invoked — so this function always handles
+    // the natural end of a stream.
+
+    // Execute any pending update synchronously instead of cancelling it
+    // (prevents losing the final text-delta that was scheduled but not yet rendered)
+    if (ctx.updateScheduled) {
+      ctx.cancelScheduledUpdate();
+      ctx.pushUpdate(); // Execute the update that setTimeout+rAF would have done
+    }
+    // Flush any remaining text
+    ctx.flushText();
+
+    // Only push if there's content — avoids phantom empty message after finish reset
+    if (ctx.parts.length > 0) ctx.pushUpdate();
+    // Preserve error status if error event was already received
+    const isError = get().agents[agent]?.streamStatus === "error";
+    if (!isError) {
+      update(agent, { streamStatus: "idle", pendingTargetAgent: null, turnCount: 0 });
+    }
+    saveUiState(agent);
+    // Session status is server-driven via WS agent_processing events — no optimistic update needed.
+
+    // Save and invalidate React Query caches
+    if (ctx.receivedSessionId) {
+      saveLastSession(agent, ctx.receivedSessionId);
+    }
+    // Refresh session list and session messages in React Query cache
+    queryClient.invalidateQueries({ queryKey: qk.sessions(agent) });
+    const completedSessionId = ctx.receivedSessionId ?? get().agents[agent]?.activeSessionId;
+    if (completedSessionId) {
+      queryClient.invalidateQueries({ queryKey: qk.sessionMessages(completedSessionId) });
     }
   }
 
@@ -942,9 +919,9 @@ export const useChatStore = create<ChatStore>()(
       }
 
       // Abort stream for the agent being left
-      if (agentAbortControllers[prev]) {
-        agentAbortControllers[prev].abort();
-        agentAbortControllers[prev] = null;
+      if (agentConnections[prev]) {
+        agentConnections[prev]!.stop();
+        agentConnections[prev] = null;
         update(prev, { streamStatus: "idle" });
       }
       ensure(name);
@@ -997,9 +974,9 @@ export const useChatStore = create<ChatStore>()(
       set({ currentAgent: agent });
       ensure(agent);
       // Abort any active stream for this agent
-      if (agentAbortControllers[agent]) {
-        agentAbortControllers[agent].abort();
-        agentAbortControllers[agent] = null;
+      if (agentConnections[agent]) {
+        agentConnections[agent]!.stop();
+        agentConnections[agent] = null;
       }
       update(agent, {
         activeSessionId: sessionId,
@@ -1014,8 +991,8 @@ export const useChatStore = create<ChatStore>()(
 
     newChat: () => {
       const agent = get().currentAgent;
-      agentAbortControllers[agent]?.abort();
-      agentAbortControllers[agent] = null;
+      agentConnections[agent]?.stop();
+      agentConnections[agent] = null;
       update(agent, {
         activeSessionId: null,
         viewMode: "live",
@@ -1116,8 +1093,8 @@ export const useChatStore = create<ChatStore>()(
 
     stopStream: () => {
       const agent = get().currentAgent;
-      agentAbortControllers[agent]?.abort();
-      agentAbortControllers[agent] = null;
+      agentConnections[agent]?.stop();
+      agentConnections[agent] = null;
       update(agent, { streamStatus: "idle" });
     },
 
@@ -1128,8 +1105,8 @@ export const useChatStore = create<ChatStore>()(
 
       // Abort any active stream first
       if (isActiveStream(st.streamStatus)) {
-        agentAbortControllers[agent]?.abort();
-        agentAbortControllers[agent] = null;
+        agentConnections[agent]?.stop();
+        agentConnections[agent] = null;
         update(agent, { streamStatus: "idle" });
       }
 
@@ -1168,8 +1145,8 @@ export const useChatStore = create<ChatStore>()(
       const st = store.agents[agent] ?? emptyAgentState();
 
       if (isActiveStream(st.streamStatus)) {
-        agentAbortControllers[agent]?.abort();
-        agentAbortControllers[agent] = null;
+        agentConnections[agent]?.stop();
+        agentConnections[agent] = null;
         update(agent, { streamStatus: "idle" });
       }
 
@@ -1220,8 +1197,8 @@ export const useChatStore = create<ChatStore>()(
       const st = get().agents[agent];
       if (st?.activeSessionId === sessionId) {
         // Use captured `agent` — currentAgent may have changed during await
-        agentAbortControllers[agent]?.abort();
-        agentAbortControllers[agent] = null;
+        agentConnections[agent]?.stop();
+        agentConnections[agent] = null;
         update(agent, {
           activeSessionId: null, viewMode: "live", liveMessages: [],
           streamStatus: "idle", streamError: null, forceNewSession: true,
@@ -1235,8 +1212,8 @@ export const useChatStore = create<ChatStore>()(
       const agent = get().currentAgent;
       await apiDelete(`/api/sessions?agent=${encodeURIComponent(agent)}`);
       // Use captured `agent` — currentAgent may have changed during await
-      agentAbortControllers[agent]?.abort();
-      agentAbortControllers[agent] = null;
+      agentConnections[agent]?.stop();
+      agentConnections[agent] = null;
       update(agent, {
         activeSessionId: null, viewMode: "live", liveMessages: [],
         streamStatus: "idle", streamError: null, forceNewSession: true,
