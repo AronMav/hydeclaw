@@ -391,6 +391,65 @@ fn prune_old_tool_outputs(messages: &[Message], keep_turns: usize) -> Vec<Messag
 }
 
 impl AgentEngine {
+    // ── Public accessors (sealed API) ──────────────────────────────
+
+    /// Agent name (from config).
+    pub fn name(&self) -> &str {
+        &self.agent.name
+    }
+
+    /// Primary model name (from config).
+    pub fn model_name(&self) -> String {
+        self.agent.model.clone()
+    }
+
+    /// Per-agent override for maximum agent turns in multi-agent handoff chains.
+    pub fn max_agent_turns(&self) -> Option<usize> {
+        self.agent.max_agent_turns
+    }
+
+    /// Borrow the database pool.
+    pub fn db_pool(&self) -> &PgPool {
+        &self.db
+    }
+
+    /// Clone the LLM provider Arc for use outside the engine.
+    pub fn provider_arc(&self) -> Arc<dyn LlmProvider> {
+        self.provider.clone()
+    }
+
+    /// Take the pending handoff request, if any (clears the stored value).
+    pub async fn take_handoff(&self) -> Option<HandoffRequest> {
+        self.handoff_target.lock().await.take()
+    }
+
+    /// Read the current channel formatting prompt.
+    pub async fn formatting_prompt(&self) -> Option<String> {
+        self.channel_formatting_prompt.read().await.clone()
+    }
+
+    /// Borrow the channel action router, if configured.
+    pub fn channel_router_ref(&self) -> Option<&ChannelActionRouter> {
+        self.channel_router.as_ref()
+    }
+
+    /// Borrow the agent access config, if set.
+    pub fn agent_access(&self) -> Option<&crate::config::AgentAccessConfig> {
+        self.agent.access.as_ref()
+    }
+
+    /// Delegate model override to the underlying provider.
+    pub fn set_model_override(&self, model: Option<String>) {
+        self.provider.set_model_override(model);
+    }
+
+    /// Return the current active model name from the provider.
+    pub fn current_model(&self) -> String {
+        self.provider.current_model()
+    }
+
+    // ── Lifecycle ──────────────────────────────────────────────────
+
     /// Store a weak self-reference after the engine is wrapped in Arc.
     /// Used by cron tool to hot-schedule jobs without restart.
     pub fn set_self_ref(&self, arc: &Arc<AgentEngine>) {
