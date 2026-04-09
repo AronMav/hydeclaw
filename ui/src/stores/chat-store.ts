@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { devtools } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 
-import { apiGet, apiDelete, apiPatch, getToken } from "@/lib/api";
+import { apiGet, apiPost, apiDelete, apiPatch, getToken } from "@/lib/api";
 import { parseSSELines, parseSseEvent, parseContentParts, extractSseEventId } from "@/stores/sse-events";
 import { IncrementalParser } from "@/lib/message-parser";
 import type { SessionRow, MessageRow } from "@/types/api";
@@ -120,6 +120,10 @@ export interface ChatMessage {
   agentId?: string;
   /** Optimistic send status (SSE-03). Undefined means confirmed (from history/sync). */
   status?: "sending" | "confirmed" | "failed";
+  /** Parent message ID in the tree (null for root/trunk messages). */
+  parentMessageId?: string;
+  /** The message this branch was forked from (set on fork-created user messages). */
+  branchFromMessageId?: string;
 }
 
 // ── Connection phase FSM (FSM-01) ────────────────────────────────────────────
@@ -228,10 +232,13 @@ interface AgentState {
   turnLimitMessage: string | null;
   /** Per-agent stream generation counter (CLN-02 HIST-03) — detects stale SSE deltas. */
   streamGeneration: number;
+<<<<<<< HEAD
   /** NET-02: Current reconnect attempt count (0 when not reconnecting). */
   reconnectAttempt: number;
   /** NET-02: Max reconnect attempts (exposed for UI indicator). */
   maxReconnectAttempts: number;
+  /** Branch selection state: parentMessageId -> selectedChildId. */
+  selectedBranches: Record<string, string>;
 }
 
 function emptyAgentState(): AgentState {
@@ -252,6 +259,7 @@ function emptyAgentState(): AgentState {
     streamGeneration: 0,
     reconnectAttempt: 0,
     maxReconnectAttempts: MAX_RECONNECT_ATTEMPTS,
+    selectedBranches: {},
   };
 }
 
@@ -313,6 +321,10 @@ interface ChatStore {
   stopStream: () => void;
   regenerate: () => void;
   regenerateFrom: (messageId: string) => void;
+  /** Switch branch at a fork point (client-side only, no server roundtrip). */
+  switchBranch: (parentMessageId: string, selectedChildId: string) => void;
+  /** Fork a user message and start a new stream with the edited content. */
+  forkAndRegenerate: (messageId: string, newContent: string) => void;
 
   resumeStream: (agent: string, sessionId: string) => void;
   setThinking: (agent: string, sessionId: string | null) => void;
@@ -363,6 +375,83 @@ function loadLastSession(): { agent?: string; sessions?: Record<string, string>;
 }
 
 
+// ── Tree-aware path resolution (BRNC-03) ────────────────────────────────────
+
+/**
+ * Given all messages (including all branches) and the user's branch selections,
+ * returns the linear path of messages to display.
+ *
+ * Algorithm:
+ * 1. Find root messages (parent_message_id === null). For trunk sessions, all
+ *    messages are roots -- fall back to created_at order.
+ * 2. Build a children map: parentId -> children sorted by created_at.
+ * 3. Walk from root: at each node, if multiple children exist, pick the selected
+ *    one (from selectedBranches) or default to the latest.
+ * 4. Continue until no more children.
+ */
+export function resolveActivePath(
+  rows: MessageRow[],
+  selectedBranches: Record<string, string>,
+): MessageRow[] {
+  // If no rows have parent_message_id set, this is a trunk session -- return rows sorted by created_at
+  const hasBranching = rows.some(r => r.parent_message_id !== null);
+  if (!hasBranching) {
+    return [...rows].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  }
+
+  // Build children map
+  const childrenOf = new Map<string, MessageRow[]>();
+  const roots: MessageRow[] = [];
+
+  for (const r of rows) {
+    if (r.parent_message_id === null) {
+      roots.push(r);
+    } else {
+      const siblings = childrenOf.get(r.parent_message_id) ?? [];
+      siblings.push(r);
+      childrenOf.set(r.parent_message_id, siblings);
+    }
+  }
+
+  // Sort children by created_at within each group
+  for (const [, children] of childrenOf) {
+    children.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  }
+
+  // There should be exactly one root for a well-formed session; pick first by created_at
+  roots.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  if (roots.length === 0) return [];
+
+  const path: MessageRow[] = [];
+  let current: MessageRow | undefined = roots[0];
+
+  while (current) {
+    path.push(current);
+    const children = childrenOf.get(current.id);
+    if (!children || children.length === 0) break;
+
+    // Pick selected child or default to latest
+    const selectedId: string | undefined = selectedBranches[current.id];
+    current = selectedId
+      ? children.find(c => c.id === selectedId) ?? children[children.length - 1]
+      : children[children.length - 1];
+  }
+
+  return path;
+}
+
+/** Find all sibling messages (sharing the same parent, same role). */
+export function findSiblings(rows: MessageRow[], messageId: string): { siblings: MessageRow[]; index: number } {
+  const msg = rows.find(r => r.id === messageId);
+  if (!msg || !msg.parent_message_id) return { siblings: msg ? [msg] : [], index: 0 };
+
+  const siblings = rows
+    .filter(r => r.parent_message_id === msg.parent_message_id && r.role === msg.role)
+    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+  return { siblings, index: siblings.findIndex(s => s.id === messageId) };
+}
+
 // ── History conversion (MessageRow[] → ChatMessage[]) ───────────────────────
 
 /**
@@ -371,10 +460,19 @@ function loadLastSession(): { agent?: string; sessions?: Record<string, string>;
  * from the same agent are merged into a single visual message to ensure
  * stable tool grouping and consistent identity.
  */
-export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean): ChatMessage[] {
+export function convertHistory(
+  rows: MessageRow[],
+  isAgentStreaming?: boolean,
+  selectedBranches?: Record<string, string>,
+): ChatMessage[] {
+  // When branching data exists and selectedBranches provided, resolve active path first
+  const resolved = selectedBranches && rows.some(r => r.parent_message_id !== null)
+    ? resolveActivePath(rows, selectedBranches)
+    : rows;
+
   // Filter out streaming placeholder messages ONLY if we have an active live stream
   // that will provide the same content. If not, show them as fallback (history).
-  const filtered = rows.filter(m => {
+  const filtered = resolved.filter(m => {
     if (m.status === "streaming" && isAgentStreaming) return false;
     return true;
   });
@@ -410,6 +508,8 @@ export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean): 
         parts: [{ type: "text", text: m.content || "" }],
         createdAt: m.created_at,
         agentId: m.agent_id ?? undefined,
+        parentMessageId: m.parent_message_id ?? undefined,
+        branchFromMessageId: m.branch_from_message_id ?? undefined,
       });
     } else if (m.role === "assistant" && !m.tool_call_id) {
       // Assistant text block
@@ -428,6 +528,8 @@ export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean): 
         parts: newParts,
         createdAt: m.created_at,
         agentId: assistantAgentId,
+        parentMessageId: m.parent_message_id ?? undefined,
+        branchFromMessageId: m.branch_from_message_id ?? undefined,
       };
     } else if (m.role === "tool" && m.tool_call_id) {
       // Tool result block — always attach to the latest assistant message
@@ -478,10 +580,17 @@ export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean): 
  * See ARCH-02 audit (phase 34): queryClient.getQueryData is intentional here and
  * in sendMessage(); no React component calls getQueryData directly.
  */
-function getCachedHistoryMessages(sessionId: string | null): ChatMessage[] {
+function getCachedHistoryMessages(sessionId: string | null, selectedBranches?: Record<string, string>): ChatMessage[] {
   if (!sessionId) return [];
   const cached = queryClient.getQueryData<{ messages: MessageRow[] }>(qk.sessionMessages(sessionId));
-  return cached ? convertHistory(cached.messages) : [];
+  return cached ? convertHistory(cached.messages, false, selectedBranches) : [];
+}
+
+/** Get all raw MessageRow[] from React Query cache for a session (for sibling discovery). */
+export function getCachedRawMessages(sessionId: string | null): MessageRow[] {
+  if (!sessionId) return [];
+  const cached = queryClient.getQueryData<{ messages: MessageRow[] }>(qk.sessionMessages(sessionId));
+  return cached?.messages ?? [];
 }
 
 // ── Store implementation ────────────────────────────────────────────────────
@@ -549,7 +658,7 @@ export const useChatStore = create<ChatStore>()(
     const existingSt = get().agents[agent];
     const seedMessages = existingSt?.messageSource.mode === "live"
       ? existingSt.messageSource.messages
-      : getCachedHistoryMessages(sessionId);
+      : getCachedHistoryMessages(sessionId, existingSt?.selectedBranches);
 
     update(agent, {
       streamError: null,
@@ -1491,7 +1600,7 @@ export const useChatStore = create<ChatStore>()(
       if (st.messageSource.mode === "history") {
         // Continue from history — get messages from React Query cache.
         // Do NOT flip messageSource here; startStream sets messageSource atomically.
-        seedMessages = getCachedHistoryMessages(sessionId);
+        seedMessages = getCachedHistoryMessages(sessionId, st.selectedBranches);
       } else if (st.messageSource.mode === "live" && st.messageSource.messages.length > 0) {
         seedMessages = st.messageSource.messages;
       }
@@ -1529,7 +1638,7 @@ export const useChatStore = create<ChatStore>()(
 
       if (st.messageSource.mode === "history") {
         // Do NOT flip messageSource here; startStream sets messageSource atomically.
-        messages = getCachedHistoryMessages(sessionId);
+        messages = getCachedHistoryMessages(sessionId, st.selectedBranches);
       } else {
         messages = getLiveMessages(st.messageSource);
       }
@@ -1569,7 +1678,7 @@ export const useChatStore = create<ChatStore>()(
 
       if (st.messageSource.mode === "history") {
         // Do NOT flip messageSource here; startStream sets messageSource atomically.
-        messages = getCachedHistoryMessages(sessionId);
+        messages = getCachedHistoryMessages(sessionId, st.selectedBranches);
       } else {
         messages = getLiveMessages(st.messageSource);
       }
@@ -1597,6 +1706,67 @@ export const useChatStore = create<ChatStore>()(
       const seedMessages = messages.slice(0, targetIdx);
 
       startStream(agent, sessionId, seedMessages, userText);
+    },
+
+    switchBranch: (parentMessageId: string, selectedChildId: string) => {
+      const agent = get().currentAgent;
+      const st = get().agents[agent];
+      if (!st) return;
+
+      set((draft) => {
+        const s = draft.agents[agent];
+        if (s) s.selectedBranches[parentMessageId] = selectedChildId;
+      });
+
+      // Re-resolve display messages from cached history rows
+      if (st.messageSource.mode === "history" && st.activeSessionId) {
+        // Invalidate React Query cache to trigger re-render with new branch selection
+        // The component useMemo will re-run convertHistory with updated selectedBranches
+        queryClient.invalidateQueries({ queryKey: qk.sessionMessages(st.activeSessionId) });
+      }
+    },
+
+    forkAndRegenerate: async (messageId: string, newContent: string) => {
+      const store = get();
+      const agent = store.currentAgent;
+      const st = store.agents[agent] ?? emptyAgentState();
+      const sessionId = st.activeSessionId;
+      if (!sessionId) return;
+
+      try {
+        const resp = await apiPost<{
+          message_id: string;
+          parent_message_id: string;
+          branch_from_message_id: string;
+        }>(`/api/sessions/${sessionId}/fork`, {
+          branch_from_message_id: messageId,
+          content: newContent,
+        });
+
+        // Build seed: active path up to (but not including) the forked message, then new user msg
+        const currentSt = get().agents[agent] ?? emptyAgentState();
+        let messages: ChatMessage[];
+        if (currentSt.messageSource.mode === "history") {
+          messages = getCachedHistoryMessages(sessionId, currentSt.selectedBranches);
+        } else {
+          messages = getLiveMessages(currentSt.messageSource);
+        }
+
+        const forkIdx = messages.findIndex((m) => m.id === messageId);
+        const seedMessages = forkIdx >= 0 ? messages.slice(0, forkIdx) : messages;
+
+        // Update selectedBranches to select the new branch
+        set((draft) => {
+          const s = draft.agents[agent];
+          if (s && resp.parent_message_id) {
+            s.selectedBranches[resp.parent_message_id] = resp.message_id;
+          }
+        });
+
+        startStream(agent, sessionId, seedMessages, newContent);
+      } catch (e) {
+        console.error("[fork] failed:", e);
+      }
     },
 
     renameSession: async (sessionId: string, title: string) => {
@@ -1671,7 +1841,7 @@ export const useChatStore = create<ChatStore>()(
 
       const messages = st.messageSource.mode === "live"
         ? st.messageSource.messages
-        : getCachedHistoryMessages(st.activeSessionId);
+        : getCachedHistoryMessages(st.activeSessionId, st.selectedBranches);
       if (messages.length === 0) return;
 
       const session = {

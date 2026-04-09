@@ -851,11 +851,13 @@ export function ChatThread({
   const liveMessages = messageSource.mode === "live" ? messageSource.messages : EMPTY_LIVE_MESSAGES;
   const loadEarlierMessages = useChatStore((s) => s.loadEarlierMessages);
 
+  const selectedBranches = useChatStore((s) => s.agents[s.currentAgent]?.selectedBranches ?? {});
+
   // Build the resolved message array for rendering
   const historyMessages = useMemo(() => {
     if (!activeSessionId || !sessionMessagesData?.messages) return [];
-    return convertHistory(sessionMessagesData.messages);
-  }, [activeSessionId, sessionMessagesData]);
+    return convertHistory(sessionMessagesData.messages, false, selectedBranches);
+  }, [activeSessionId, sessionMessagesData, selectedBranches]);
 
   // messageSource.mode is the single authority for message source selection (Fix C).
   // "live" mode: use live stream messages (may be seeded with history for F5 resume).
