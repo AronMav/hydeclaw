@@ -4,7 +4,7 @@ import React, { Component, useState, useCallback, useRef, useEffect, useMemo } f
 import type { ErrorInfo, ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { getToken } from "@/lib/api";
-import { useChatStore, isActiveStream, convertHistory } from "@/stores/chat-store";
+import { useChatStore, isActivePhase, convertHistory } from "@/stores/chat-store";
 import { sanitizeUrl } from "@/lib/sanitize-url";
 import { useVisualViewport } from "@/hooks/use-visual-viewport";
 import type { ChatMessage } from "@/stores/chat-store";
@@ -279,9 +279,9 @@ function ChatComposer() {
   const currentAgent = useChatStore((s) => s.currentAgent);
   const agents = useAuthStore((s) => s.agents);
   const viewMode = useChatStore((s) => s.agents[s.currentAgent]?.viewMode ?? "live");
-  const streamStatus = useChatStore((s) => s.agents[s.currentAgent]?.streamStatus ?? "idle");
+  const connectionPhase = useChatStore((s) => s.agents[s.currentAgent]?.connectionPhase ?? "idle");
   const liveMessages = useChatStore((s) => s.agents[s.currentAgent]?.liveMessages ?? EMPTY_LIVE_MESSAGES);
-  const isStreaming = streamStatus === "submitted" || streamStatus === "streaming";
+  const isStreaming = isActivePhase(connectionPhase);
   const hasMessages = viewMode === "live" ? liveMessages.length > 0 : true;
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
@@ -733,9 +733,9 @@ export function ChatThread({
   const viewMode = useChatStore((s) => s.agents[s.currentAgent]?.viewMode ?? "live");
   const currentAgent = useChatStore((s) => s.currentAgent);
   const activeSessionId = useChatStore((s) => s.agents[s.currentAgent]?.activeSessionId ?? null);
-  const streamStatus = useChatStore((s) => s.agents[s.currentAgent]?.streamStatus ?? "idle");
+  const connectionPhase = useChatStore((s) => s.agents[s.currentAgent]?.connectionPhase ?? "idle");
   const activeSessionIds = useChatStore((s) => s.agents[s.currentAgent]?.activeSessionIds ?? []);
-  const engineRunning = !isActiveStream(streamStatus) && !!activeSessionId && activeSessionIds.includes(activeSessionId);
+  const engineRunning = !isActivePhase(connectionPhase) && !!activeSessionId && activeSessionIds.includes(activeSessionId);
 
   // Auto-resume SSE stream after page reload when engine is still processing
   const resumedRef = useRef<string | null>(null);
@@ -747,7 +747,7 @@ export function ChatThread({
   }, [engineRunning, activeSessionId, currentAgent]);
 
   const { data: sessionMessagesData, isLoading: historyLoading } = useSessionMessages(
-    isActiveStream(streamStatus) ? null : activeSessionId,
+    isActivePhase(connectionPhase) ? null : activeSessionId,
     engineRunning,
   );
   const renderLimit = useChatStore((s) => s.agents[s.currentAgent]?.renderLimit ?? 100);
@@ -777,20 +777,9 @@ export function ChatThread({
   const hiddenCount = useMemo(() => Math.max(0, msgCount - renderLimit), [msgCount, renderLimit]);
   const hasMessages = msgCount > 0;
 
-  const isStreaming = streamStatus === "submitted" || streamStatus === "streaming";
+  const isStreaming = isActivePhase(connectionPhase);
 
-  // Stage 4: Robust Thinking Indicator.
-  // We check Zustand state (isStreaming), WS state (engineRunning), and a persistence fallback (sessionStorage).
-  // This ensures the loader appears instantly after F5, even before WS reconnects.
-  const [isPersistedStreaming, setIsPersistedStreaming] = useState(false);
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      setIsPersistedStreaming(!!sessionStorage.getItem(`hydeclaw.streaming.${currentAgent}`));
-    }
-  }, [currentAgent]);
-
-  const pendingTarget = useChatStore((s) => s.agents[s.currentAgent]?.pendingTargetAgent ?? null);
-  const showThinking = streamStatus === "submitted" || engineRunning || (isStreaming && !!pendingTarget) || (isPersistedStreaming && !historyLoading);
+  const showThinking = connectionPhase === "submitted" || engineRunning;
 
   if (historyLoading) {
     return (
