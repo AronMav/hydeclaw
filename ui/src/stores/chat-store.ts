@@ -24,6 +24,7 @@ function uuid(): string {
 const SESSIONS_PAGE_SIZE = 40;
 const MESSAGES_HISTORY_LIMIT = 100;
 export const MAX_INPUT_LENGTH = 32_000;
+export const STREAM_THROTTLE_MS = 50;
 // ── Message types (replaces AI SDK UIMessage dependency) ────────────────────
 
 export interface TextPart {
@@ -591,23 +592,24 @@ export const useChatStore = create<ChatStore>()(
       if (generation !== streamGeneration) return;
       // Guard: don't update store after abort (prevents race with stopStream)
       if (signal.aborted) return;
-      const assistantMsg: ChatMessage = {
-        id: assistantId,
-        role: "assistant",
-        parts: [...parts],
-        createdAt: assistantCreatedAt,
-        agentId: currentRespondingAgent ?? undefined,
-      };
-      // Immer in-place mutation: only assistantMsg gets a new object reference.
-      // All other liveMessages keep their refs → WeakMap cache hits in convertMessage.
       set((draft) => {
         const st = draft.agents[agent];
         if (!st) return;
         const existing = st.liveMessages.findIndex((m: ChatMessage) => m.id === assistantId);
         if (existing >= 0) {
-          st.liveMessages[existing] = assistantMsg;
+          // PERF-02: In-place mutation preserves message object identity for WeakMap caches.
+          // Immer tracks which paths changed — only parts array gets a new reference.
+          const msg = st.liveMessages[existing];
+          msg.parts = [...parts];
+          msg.agentId = currentRespondingAgent ?? undefined;
         } else {
-          st.liveMessages.push(assistantMsg);
+          st.liveMessages.push({
+            id: assistantId,
+            role: "assistant",
+            parts: [...parts],
+            createdAt: assistantCreatedAt,
+            agentId: currentRespondingAgent ?? undefined,
+          });
         }
         if (st.streamStatus !== "error") st.streamStatus = "streaming";
       });
@@ -626,7 +628,7 @@ export const useChatStore = create<ChatStore>()(
           updateScheduled = false;
           pushUpdate();
         });
-      }, 50);
+      }, STREAM_THROTTLE_MS);
     }
     function cancelScheduledUpdate() {
       if (updateTimer) { clearTimeout(updateTimer); updateTimer = null; }
