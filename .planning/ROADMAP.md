@@ -3,7 +3,8 @@
 ## Milestones
 
 - ✅ **v0.2.0–v0.11.0** — Core platform, Chat UI Polish, Engine Dispatcher (Phases 1–39, shipped)
-- 🚧 **v0.12.0 Chat Redesign** — Phases 40–45 (in progress)
+- ✅ **v0.12.0 Chat Redesign** — Phases 40–45 (completed)
+- 🚧 **v0.13.0 Chat UX Evolution** — Phase 52 (in progress)
 
 ## Phases
 
@@ -114,6 +115,21 @@ Plans:
 - [x] 45-01-PLAN.md — Remove deprecated fields (CLN-01) and module-scope globals (CLN-02)
 **UI hint**: yes
 
+### Phase 52: Citations & Generative UI
+**Goal**: Rich-card rendering via extensible CARD_REGISTRY with ErrorBoundary isolation and citation footnotes
+**Depends on**: Phase 45
+**Requirements**: GENUI-01, GENUI-02
+**Success Criteria** (what must be TRUE):
+  1. CARD_REGISTRY maps card type strings to React components; new types added by registering, not editing conditionals
+  2. Unknown card types render as formatted JSON without crashing
+  3. CardErrorBoundary wraps each GenerativeUISlot -- broken cards show fallback
+**Plans:** 1/3 plans complete
+Plans:
+- [x] 52-01-PLAN.md -- CARD_REGISTRY, GenerativeUISlot, CardErrorBoundary + wiring
+- [ ] 52-02-PLAN.md
+- [ ] 52-03-PLAN.md
+**UI hint**: yes
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -124,3 +140,4 @@ Plans:
 | 43. Reconnect & Optimistic UI | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
 | 44. UX Polish | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
 | 45. Cleanup | v0.12.0 | 1/1 | Complete    | 2026-04-09 |
+| 52. Citations & Generative UI | v0.13.0 | 1/3 | In Progress | — |

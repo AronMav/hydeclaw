@@ -2,16 +2,15 @@
 gsd_state_version: 1.0
 milestone: v0.13.0
 milestone_name: Chat UX Evolution
-status: defining
-stopped_at: null
-last_updated: "2026-04-09"
-last_activity: 2026-04-09
+status: executing
+stopped_at: Completed 52-01-PLAN.md
+last_updated: "2026-04-09T19:46:00Z"
+last_activity: 2026-04-09 — Completed 52-01 card-registry
 progress:
-  total_phases: 0
+  total_phases: 1
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  total_plans: 3
+  completed_plans: 1
 ---
 
 # Project State
@@ -21,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-09)
 
 **Core value:** Стабильная и безопасная AI-платформа с self-hosted фокусом
-**Current focus:** Defining requirements
+**Current focus:** Phase 52 - Citations & Generative UI
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-04-09 — Milestone v0.13.0 started
+Phase: 52-citations-generative-ui (Plan 2 of 3)
+Plan: 52-02
+Status: Executing
+Last activity: 2026-04-09 — Completed 52-01 card-registry
 
 ## Accumulated Context
 
@@ -60,6 +59,8 @@ Last activity: 2026-04-09 — Milestone v0.13.0 started
 - [Phase 44-ux-polish]: totalPartsCount Stage 3 Fix useEffect removed — followOutput callback is single scroll authority
 - [Phase 45-cleanup]: CLN-01: StreamStatus/isActiveStream removed — ConnectionPhase/isActivePhase are sole stream-state authorities
 - [Phase 45-cleanup]: CLN-02: AbortController/timers in private Maps not Immer state; streamGeneration moved to AgentState as plain number
+- [Phase 52-01]: CARD_REGISTRY Map pattern for rich-card type dispatch; GenerativeUISlot with ErrorBoundary wraps each card
+- [Phase 52-01]: cardType widened from union to string -- backend can send any card type, frontend handles gracefully
 
 ### Pending Todos
 
@@ -73,6 +74,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-09T13:07:39.887Z
-Stopped at: Completed 45-01-PLAN.md
-Resume with: `/gsd:plan-phase 40`
+Last session: 2026-04-09T19:46:00Z
+Stopped at: Completed 52-01-PLAN.md
+Resume with: `/gsd:execute-phase 52-02`
