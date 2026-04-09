@@ -239,7 +239,9 @@ pub(crate) async fn chat_completions(
         });
 
         return Sse::new(UnboundedReceiverStream::new(sse_rx))
-            .keep_alive(KeepAlive::default())
+            .keep_alive(KeepAlive::new()
+                .interval(std::time::Duration::from_secs(30))
+                .text("heartbeat"))
             .into_response();
     }
 
@@ -761,12 +763,18 @@ pub(crate) async fn api_chat_sse(
         // Helper: send SSE event to client (if connected) and always buffer in registry
         macro_rules! send_and_buffer {
             ($json_str:expr) => {{
-                if let Some(ref sid) = session_id_str {
-                    registry.push_event(sid, &$json_str).await;
-                }
+                let event_id: Option<u64> = if let Some(ref sid) = session_id_str {
+                    Some(registry.push_event(sid, &$json_str).await)
+                } else {
+                    None
+                };
                 if !sse_tx.is_closed() {
                     client_gone_since = None;
-                    sse_tx.send(Ok(Event::default().data($json_str))).is_ok()
+                    let mut evt = Event::default().data($json_str);
+                    if let Some(eid) = event_id {
+                        evt = evt.id(eid.to_string());
+                    }
+                    sse_tx.send(Ok(evt)).is_ok()
                 } else {
                     // Client disconnected — keep buffering for DB save + resume.
                     // Do NOT abort the engine: let it finish naturally so the result
@@ -1074,7 +1082,9 @@ pub(crate) async fn api_chat_sse(
             axum::http::header::HeaderName::from_static("x-vercel-ai-ui-message-stream"),
             "v1",
         )],
-        Sse::new(stream).keep_alive(KeepAlive::default()),
+        Sse::new(stream).keep_alive(KeepAlive::new()
+                .interval(std::time::Duration::from_secs(30))
+                .text("heartbeat")),
     )
         .into_response()
 }
@@ -1086,12 +1096,25 @@ pub(crate) async fn api_chat_sse(
 /// Returns 204 if no active stream, or SSE with replay + live events.
 pub(crate) async fn api_chat_resume_stream(
     Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use async_stream::stream;
     use tokio::sync::broadcast;
 
-    match state.stream_registry.subscribe(&id).await {
+    let last_event_id: Option<u64> = headers
+        .get("Last-Event-ID")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok());
+
+    // Choose subscribe or replay_from based on Last-Event-ID presence
+    let subscription = if let Some(lei) = last_event_id {
+        state.stream_registry.replay_from(&id, lei).await
+    } else {
+        state.stream_registry.subscribe(&id).await
+    };
+
+    match subscription {
         None => {
             // No in-memory stream — check DB for recently finished/interrupted job
             let session_uuid = uuid::Uuid::parse_str(&id).ok();
@@ -1121,24 +1144,35 @@ pub(crate) async fn api_chat_resume_stream(
                         "error": job.error_text,
                     });
                     let sync_str = sync.to_string();
+                    let keepalive = KeepAlive::new()
+                        .interval(std::time::Duration::from_secs(30))
+                        .text("heartbeat");
                     let sse_stream = async_stream::stream! {
                         yield Ok::<_, std::convert::Infallible>(Event::default().data(sync_str));
                         yield Ok(Event::default().data("[DONE]"));
                     };
                     return Sse::new(sse_stream)
-                        .keep_alive(KeepAlive::default())
+                        .keep_alive(keepalive)
                         .into_response();
                 }
+            // No DB job either — if client expected resume, signal expiry
+            if last_event_id.is_some() {
+                return (
+                    StatusCode::GONE,
+                    [(axum::http::header::HeaderName::from_static("x-stream-expired"), "true")],
+                ).into_response();
+            }
             StatusCode::NO_CONTENT.into_response()
         }
         Some((buffered_events, mut broadcast_rx, already_finished)) => {
-            let replay_count = buffered_events.len();
+            // Track the last replayed event ID for dedup in the live phase
+            let last_replayed_id = buffered_events.last().map(|(eid, _)| *eid).unwrap_or(0);
 
             let sse_stream = stream! {
-                // Phase 1: Replay buffered events
-                for event_json in buffered_events {
+                // Phase 1: Replay buffered events (with event IDs)
+                for (eid, event_json) in buffered_events {
                     yield Ok::<_, std::convert::Infallible>(
-                        Event::default().data(event_json)
+                        Event::default().id(eid.to_string()).data(event_json)
                     );
                 }
 
@@ -1148,19 +1182,17 @@ pub(crate) async fn api_chat_resume_stream(
                 }
 
                 // Phase 2: Live events via broadcast subscription
-                // Events between subscribe() and here may overlap with buffer — skip them
-                let mut skip_remaining = replay_count;
+                // Skip events already covered by the replay snapshot
                 loop {
                     match broadcast_rx.recv().await {
-                        Ok(event_json) => {
-                            if skip_remaining > 0 {
-                                skip_remaining -= 1;
+                        Ok((eid, event_json)) => {
+                            if eid <= last_replayed_id {
                                 continue;
                             }
                             let is_terminal =
                                 event_json.contains("\"type\":\"finish\"")
                                 || event_json.contains("\"type\":\"error\"");
-                            yield Ok(Event::default().data(event_json));
+                            yield Ok(Event::default().id(eid.to_string()).data(event_json));
                             if is_terminal {
                                 yield Ok(Event::default().data("[DONE]"));
                                 break;
@@ -1172,7 +1204,6 @@ pub(crate) async fn api_chat_resume_stream(
                                 session = %id,
                                 "Resume stream lagged"
                             );
-                            skip_remaining = skip_remaining.saturating_sub(n as usize);
                             continue;
                         }
                         Err(broadcast::error::RecvError::Closed) => {
@@ -1189,7 +1220,11 @@ pub(crate) async fn api_chat_resume_stream(
                     ),
                     "v1",
                 )],
-                Sse::new(sse_stream).keep_alive(KeepAlive::default()),
+                Sse::new(sse_stream).keep_alive(
+                    KeepAlive::new()
+                        .interval(std::time::Duration::from_secs(30))
+                        .text("heartbeat")
+                ),
             )
                 .into_response()
         }
