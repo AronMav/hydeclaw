@@ -221,6 +221,10 @@ export function MessageList({
     const scroller = container.querySelector("[data-virtuoso-scroller]") as HTMLElement | null;
     if (!scroller) return;
 
+    // SCRL-01: Enable CSS overflow-anchor so the browser pins the viewport
+    // to the bottom item while new tokens append during streaming.
+    scroller.style.overflowAnchor = "auto";
+
     let prevHeight = scroller.scrollHeight;
 
     const ro = new ResizeObserver(() => {
@@ -322,9 +326,9 @@ export function MessageList({
             userScrolledUpRef.current = true;
           }
         }}
-        atBottomThreshold={150}
+        atBottomThreshold={100}
         initialTopMostItemIndex={messages.length > 0 ? messages.length - 1 : 0}
-        increaseViewportBy={200}
+        increaseViewportBy={{ top: 500, bottom: 200 }}
         components={virtuosoComponents}
         itemContent={(index, msg) => {
           // Virtual thinking item — render the thinking indicator as a data item
