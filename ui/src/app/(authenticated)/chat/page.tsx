@@ -115,80 +115,46 @@ export default function ChatPage() {
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const isReadOnly = activeSession?.channel === "heartbeat" || activeSession?.channel === "cron" || activeSession?.channel === "inter-agent";
 
-  // Session restore on mount — single unified effect
+  // Session restore on mount or agent switch
   useEffect(() => {
-    if (!currentAgent || restoredAgents.current.has(currentAgent)) return;
+    if (!currentAgent) return;
 
     const agentState = useChatStore.getState().agents[currentAgent];
 
-    // CRITICAL: If there's an active stream, DON'T touch anything — just show live view
-    if (isActivePhase(agentState?.connectionPhase)) {
+    // If already viewing something (live stream or selected session) — don't override
+    if (agentState?.messageSource?.mode === "live" || agentState?.activeSessionId) {
       restoredAgents.current.add(currentAgent);
-      if (agentState?.messageSource?.mode !== "live") {
-        useChatStore.setState((draft) => {
-          if (draft.agents[currentAgent]) {
-            const current = draft.agents[currentAgent].messageSource;
-            if (current.mode !== "live") {
-              draft.agents[currentAgent].messageSource = { mode: "live", messages: [] };
-            }
-          }
-        });
-      }
       return;
     }
 
-    // Wait for sessions to load before any restore decision
+    // Already restored this agent — skip
+    if (restoredAgents.current.has(currentAgent)) return;
+
+    // Wait for sessions to load
     if (sessionsLoading) return;
 
-    // URL session: only use if it belongs to THIS agent (not stale from previous agent)
+    restoredAgents.current.add(currentAgent);
+
+    // Priority 1: URL ?s= param
     if (urlSessionId && sessions.some((s) => s.id === urlSessionId)) {
-      restoredAgents.current.add(currentAgent);
       useChatStore.getState().selectSession(urlSessionId, currentAgent);
       return;
     }
 
-    restoredAgents.current.add(currentAgent);
-
-    // If agent has an interactive active session (not heartbeat/cron), jump to it
-    const serverActive = agentState?.activeSessionIds ?? [];
-    if (serverActive.length > 0 && sessions.length > 0) {
-      const NON_INTERACTIVE = ["heartbeat", "cron", "system"];
-      const interactive = sessions.find(
-        (s) => serverActive.includes(s.id) && !NON_INTERACTIVE.includes(s.channel),
-      );
-      if (interactive) {
-        useChatStore.getState().selectSession(interactive.id, currentAgent);
-        return;
-      }
-    }
-
-    // Check if any other agent's active session includes this agent as participant
-    const chatStore = useChatStore.getState();
-    const allAgentStates = chatStore.agents;
-    for (const [otherAgent, otherState] of Object.entries(allAgentStates)) {
-      if (otherAgent === currentAgent) continue;
-      const sid = otherState.activeSessionId;
-      if (sid && chatStore.sessionParticipants[sid]?.includes(currentAgent)) {
-        // This agent is a participant in another agent's active session
-        chatStore.selectSession(sid, currentAgent);
-        return;
-      }
-    }
-
-    // Try to restore last session for this agent
+    // Priority 2: Last session from localStorage
     const lastSid = getLastSessionId(currentAgent);
     if (lastSid && sessions.some((s) => s.id === lastSid)) {
       useChatStore.getState().selectSession(lastSid, currentAgent);
       return;
     }
 
-    // Fallback: open most recent session if available
+    // Priority 3: Most recent session
     if (sessions.length > 0) {
       useChatStore.getState().selectSession(sessions[0].id, currentAgent);
       return;
     }
 
-    // No sessions at all — open new chat
+    // No sessions — new chat
     useChatStore.getState().newChat();
   }, [sessionsLoading, sessions, currentAgent, urlSessionId]);
 
