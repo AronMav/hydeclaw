@@ -177,6 +177,16 @@ export class IncrementalParser {
   }
 
   /**
+   * Resets all incremental parser state. Call between agent turns to prevent
+   * reasoning context from leaking into the next agent's text output.
+   */
+  reset(): void {
+    this.parts = [];
+    this.insideThink = false;
+    this.accum = "";
+  }
+
+  /**
    * Flushes remaining accumulator into parts.
    */
   flush(): ParsedContentPart[] {
