@@ -760,11 +760,20 @@ export function ChatThread({
     return convertHistory(sessionMessagesData.messages);
   }, [activeSessionId, sessionMessagesData]);
 
-  // Use liveMessages while they exist (streaming + just finished).
-  // Only fall back to historyMessages when liveMessages are empty (fresh page load, session switch).
-  // This prevents the flash of missing agentId when switching from live→history
-  // (DB may not have agent_id on intermediate tool/text message splits).
-  const sourceMessages = liveMessages.length > 0 ? liveMessages : historyMessages;
+  // messageSource.mode is the single authority for message source selection (Fix C).
+  // "live" mode: use live stream messages (may be seeded with history for F5 resume).
+  // "history" mode: use React Query data.
+  // "new-chat" or empty live: fall back to historyMessages (handles cases where live seed is empty).
+  const sourceMessages = useMemo(() => {
+    if (messageSource.mode === "live" && messageSource.messages.length > 0) {
+      return messageSource.messages;
+    }
+    if (messageSource.mode === "history") {
+      return historyMessages;
+    }
+    // new-chat or empty live — use historyMessages if available (e.g. WS-driven session restore)
+    return historyMessages;
+  }, [messageSource, historyMessages]);
 
   // Filter out inter-agent turn loop messages (internal routing artifacts)
   const allMessages = useMemo(() => {
@@ -780,7 +789,9 @@ export function ChatThread({
 
   const showThinking = connectionPhase === "submitted" || engineRunning;
 
-  if (historyLoading) {
+  // Only show loading skeleton when there is truly no data to display (Fix D).
+  // If we have seeded live messages (F5 resume) or cached history, skip the skeleton.
+  if (historyLoading && !sessionMessagesData && messageSource.mode !== "live") {
     return (
       <div className="flex flex-1 flex-col gap-6 p-6 max-w-4xl mx-auto">
         {[1, 2, 3].map((i) => (
