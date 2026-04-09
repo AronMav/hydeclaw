@@ -357,7 +357,7 @@ async fn channel_ws_loop(
                                 }
                                 if let Ok(approval_id) = uuid::Uuid::parse_str(approval_id_str) {
                                     let status = if approved { "approved" } else { "rejected" };
-                                    match engine.resolve_approval(approval_id, approved, &user_id).await {
+                                    match engine.resolve_approval(approval_id, approved, &user_id, None).await {
                                         Ok(()) => {
                                             tracing::info!(approval_id = %approval_id, status, user = %user_id, "approval resolved via Telegram callback");
                                             let reply = ChannelOutbound::Done {

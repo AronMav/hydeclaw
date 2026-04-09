@@ -196,13 +196,34 @@ impl AgentEngine {
                     .map(|a| a.timeout_seconds)
                     .unwrap_or(300);
 
-                match tokio::time::timeout(
+                // Emit SSE event for inline approval in chat UI
+                if let Some(tx) = self.sse_event_tx().lock().await.as_ref() {
+                    let clean_input = {
+                        let mut args_clone = arguments.clone();
+                        if let Some(obj) = args_clone.as_object_mut() {
+                            obj.remove("_context");
+                        }
+                        args_clone
+                    };
+                    tx.send(StreamEvent::ApprovalNeeded {
+                        approval_id: approval_id.to_string(),
+                        tool_name: name.to_string(),
+                        tool_input: clean_input,
+                        timeout_ms: timeout_secs * 1000,
+                    }).ok();
+                }
+
+                let effective_args: Option<serde_json::Value> = match tokio::time::timeout(
                     std::time::Duration::from_secs(timeout_secs),
                     result_rx,
                 ).await {
                     Ok(Ok(ApprovalResult::Approved)) => {
                         tracing::info!(tool = %name, approval_id = %approval_id, "tool approved");
-                        // Fall through to normal execution
+                        None // Fall through to normal execution with original args
+                    }
+                    Ok(Ok(ApprovalResult::ApprovedWithModifiedArgs(modified_args))) => {
+                        tracing::info!(tool = %name, approval_id = %approval_id, "tool approved with modified args");
+                        Some(modified_args) // Use modified args for execution
                     }
                     Ok(Ok(ApprovalResult::Rejected(reason))) => {
                         return format!("Tool `{}` was rejected: {}", name, reason);
@@ -223,6 +244,15 @@ impl AgentEngine {
                         let mut waiters = self.approval_waiters().write().await;
                         waiters.remove(&approval_id);
 
+                        // Emit SSE event for timeout
+                        if let Some(tx) = self.sse_event_tx().lock().await.as_ref() {
+                            tx.send(StreamEvent::ApprovalResolved {
+                                approval_id: approval_id.to_string(),
+                                action: "timeout_rejected".to_string(),
+                                modified_input: None,
+                            }).ok();
+                        }
+
                         if !was_pending {
                             tracing::warn!(
                                 tool = %name,
@@ -232,6 +262,17 @@ impl AgentEngine {
                         }
                         return format!("Tool `{}` approval timed out after {}s.", name, timeout_secs);
                     }
+                };
+
+                // If approved with modified args, re-inject _context and recurse into execute_tool_call
+                if let Some(mut modified) = effective_args {
+                    // Preserve internal _context from original arguments
+                    if let Some(ctx) = arguments.get("_context")
+                        && let Some(obj) = modified.as_object_mut()
+                    {
+                        obj.insert("_context".to_string(), ctx.clone());
+                    }
+                    return self.execute_tool_call(name, &modified).await;
                 }
             } // else: allowlist
             }
