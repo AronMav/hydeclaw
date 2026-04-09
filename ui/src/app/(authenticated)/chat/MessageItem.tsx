@@ -4,7 +4,7 @@ import React, { memo, type ReactNode } from "react";
 import { useChatStore } from "@/stores/chat-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useTranslation } from "@/hooks/use-translation";
-import type { ChatMessage, MessagePart, ToolPart, ToolPartState } from "@/stores/chat-store";
+import type { ChatMessage, MessagePart, ToolPart, ToolPartState, ApprovalPart } from "@/stores/chat-store";
 import { formatMessageTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronRight } from "lucide-react";
@@ -22,6 +22,7 @@ import {
 } from "./ChatThread";
 import { ContinuationSeparator } from "@/components/chat/ContinuationSeparator";
 import { StepGroup } from "@/components/chat/StepGroup";
+import { ApprovalCard } from "@/components/chat/ApprovalCard";
 
 
 // ── Parts render cache (PERF-03) ───────────────────────────────────────────
@@ -98,6 +99,8 @@ function renderPart(part: MessagePart, index: number, _meta?: { stepGroupToolIds
           isLastGroup={!_meta?.parts?.slice(index + 1).some(p => p.type === "step-group")}
         />
       );
+    case "approval":
+      return <ApprovalCard key={`approval-${part.approvalId}`} part={part} />;
     default:
       return null;
   }
