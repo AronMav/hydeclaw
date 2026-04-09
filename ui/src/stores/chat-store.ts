@@ -91,6 +91,8 @@ export interface ChatMessage {
   createdAt?: string;
   /** Per-message agent identity (for multi-agent sessions). */
   agentId?: string;
+  /** Optimistic send status (SSE-03). Undefined means confirmed (from history/sync). */
+  status?: "sending" | "confirmed" | "failed";
 }
 
 // ── Stream status ───────────────────────────────────────────────────────────
@@ -558,12 +560,13 @@ export const useChatStore = create<ChatStore>()(
     const controller = new AbortController();
     agentAbortControllers[agent] = controller;
 
-    // Build user message
+    // Build user message — optimistic status: "sending" until data-session-id confirms receipt
     const userMsg: ChatMessage = {
       id: uuid(),
       role: "user",
       parts: [{ type: "text", text: userText }],
       createdAt: new Date().toISOString(),
+      status: "sending",
     };
     const allMessages = [...messages, userMsg];
     update(agent, {
@@ -614,6 +617,18 @@ export const useChatStore = create<ChatStore>()(
       .catch((err) => {
         if (err.name === "AbortError") return;
         const errMsg = err.message || "Stream failed";
+        // SSE-03: Mark the optimistic user message as failed so the UI shows an error indicator.
+        set((draft) => {
+          const st = draft.agents[agent];
+          if (!st || st.messageSource.mode !== "live") return;
+          const msgs = st.messageSource.messages;
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].role === "user" && msgs[i].status === "sending") {
+              msgs[i].status = "failed";
+              break;
+            }
+          }
+        });
         update(agent, {
           streamStatus: "error",
           streamError: errMsg,
@@ -734,6 +749,19 @@ export const useChatStore = create<ChatStore>()(
               const sid = event.data.sessionId;
               if (sid && generation === streamGenerations[agent]) {
                 receivedSessionId = sid;
+                // SSE-03: Confirm the optimistic user message — server has accepted it.
+                // Find the last "sending" user message and mark it confirmed.
+                set((draft) => {
+                  const st = draft.agents[agent];
+                  if (!st || st.messageSource.mode !== "live") return;
+                  const msgs = st.messageSource.messages;
+                  for (let i = msgs.length - 1; i >= 0; i--) {
+                    if (msgs[i].role === "user" && msgs[i].status === "sending") {
+                      msgs[i].status = "confirmed";
+                      break;
+                    }
+                  }
+                });
                 update(agent, { activeSessionId: sid });
                 saveLastSession(agent, sid);
                 // Session status is now server-driven via WS agent_processing events.
