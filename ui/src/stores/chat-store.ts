@@ -262,6 +262,7 @@ export function convertHistory(rows: MessageRow[]): ChatMessage[] {
 
   const messages: ChatMessage[] = [];
   let currentAssistant: ChatMessage | null = null;
+  let lastAgentId: string | undefined = undefined;
 
   for (const m of filtered) {
     if (m.role === "user") {
@@ -269,12 +270,14 @@ export function convertHistory(rows: MessageRow[]): ChatMessage[] {
         messages.push(currentAssistant);
         currentAssistant = null;
       }
+      const userAgentId = m.agent_id ?? lastAgentId;
+      if (m.agent_id) lastAgentId = m.agent_id;
       messages.push({
         id: m.id,
         role: "user",
         parts: [{ type: "text", text: m.content }],
         createdAt: m.created_at,
-        agentId: m.agent_id ?? undefined,
+        agentId: userAgentId,
       });
     } else if (m.role === "assistant" && !m.tool_call_id) {
       // D-01: No merging. Each assistant DB row becomes its own ChatMessage.
@@ -282,12 +285,14 @@ export function convertHistory(rows: MessageRow[]): ChatMessage[] {
       if (currentAssistant) {
         messages.push(currentAssistant);
       }
+      const assistantAgentId = m.agent_id ?? lastAgentId;
+      if (m.agent_id) lastAgentId = m.agent_id;
       currentAssistant = {
         id: m.id,
         role: "assistant",
         parts: newParts,
         createdAt: m.created_at,
-        agentId: m.agent_id ?? undefined,
+        agentId: assistantAgentId,
       };
     } else if (m.role === "tool" && m.tool_call_id) {
       if (currentAssistant) {
