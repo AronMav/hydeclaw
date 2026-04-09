@@ -33,7 +33,7 @@ Covered: core platform stability, providers, channels, memory, tools, orchestrat
 
 - [x] **Phase 46: Streaming Performance** - rAF-throttled rendering, incremental markdown, deferred syntax highlighting
  (completed 2026-04-09)
-- [ ] **Phase 47: Scroll & Virtualization** - CSS overflow-anchor, smart sticky logic, floating scroll button, viewport-aware DOM capping
+- [x] **Phase 47: Scroll & Virtualization** - CSS overflow-anchor, smart sticky logic, floating scroll button, viewport-aware DOM capping (completed 2026-04-09)
 - [ ] **Phase 48: Optimistic & Responsive UI** - Instant thinking indicator, agent-switch skeletons, live-to-history hash sync, reference stability
 - [ ] **Phase 49: Network Resilience** - Last-Event-ID resume on reconnect, reconnecting phase UI
 - [ ] **Phase 50: SSE Protocol Extensions** - Automatic continuations, step grouping events, agent handoff mid-stream
@@ -156,12 +156,12 @@ Plans:
   3. A floating "scroll to bottom" button appears when the user is not at the bottom and shows a badge with the count of new tokens received while scrolled away
   4. Media-heavy messages (images, rich cards) outside the visible viewport load lazily without triggering layout shifts for on-screen content
   5. Rich cards and iframes that scroll out of view are replaced with lightweight placeholders — DOM node count stays bounded for conversations exceeding 200 messages
-**Plans:** 2/4 plans executed
+**Plans:** 3/4 plans complete
 Plans:
 - [x] 47-01-PLAN.md — CSS overflow-anchor + atBottomThreshold 100 + increaseViewportBy VIRT-01
-- [ ] 47-02-PLAN.md — New-token badge counter on ScrollToBottomButton
+- [x] 47-02-PLAN.md — New-token badge counter on ScrollToBottomButton
 - [x] 47-03-PLAN.md — content-visibility on RichCard + loading=lazy on images
-- [ ] 47-04-PLAN.md — Human verify: browser scroll UX check
+- [x] 47-04-PLAN.md — Human verify: browser scroll UX check
 **UI hint**: yes
 
 ### Phase 48: Optimistic & Responsive UI
@@ -173,7 +173,11 @@ Plans:
   2. Switching agents shows a shape-matched skeleton preview for the expected message layout before history loads
   3. When the stream ends and history replaces live messages, no visual flicker or blank-frame transition occurs — content hash comparison prevents unnecessary re-renders
   4. The `message.id` assigned during live streaming matches the `id` stored in the database, so React can reuse the same DOM node when switching from live to history view
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 48-01-PLAN.md — OPTI-01/02 regression tests + skeleton refactor (shared MessageSkeleton)
+- [ ] 48-02-PLAN.md — OPTI-03/04 content hash reconciliation + live-to-history transition
+- [ ] 48-03-PLAN.md — Human verify: browser OPTI UX check
 **UI hint**: yes
 
 ### Phase 49: Network Resilience
@@ -245,8 +249,8 @@ Plans:
 | 44. UX Polish | v0.12.0 | 1/2 | Complete | 2026-04-09 |
 | 45. Cleanup | v0.12.0 | 1/1 | Complete | 2026-04-09 |
 | 46. Streaming Performance | v0.13.0 | 3/3 | Complete    | 2026-04-09 |
-| 47. Scroll & Virtualization | v0.13.0 | 2/4 | In Progress|  |
-| 48. Optimistic & Responsive UI | v0.13.0 | 0/? | Not started | - |
+| 47. Scroll & Virtualization | v0.13.0 | 4/4 | Complete    | 2026-04-09 |
+| 48. Optimistic & Responsive UI | v0.13.0 | 0/3 | Not started | - |
 | 49. Network Resilience | v0.13.0 | 0/? | Not started | - |
 | 50. SSE Protocol Extensions | v0.13.0 | 0/? | Not started | - |
 | 51. Human-in-the-Loop | v0.13.0 | 0/? | Not started | - |
