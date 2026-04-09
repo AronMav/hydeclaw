@@ -232,7 +232,6 @@ interface AgentState {
   turnLimitMessage: string | null;
   /** Per-agent stream generation counter (CLN-02 HIST-03) — detects stale SSE deltas. */
   streamGeneration: number;
-<<<<<<< HEAD
   /** NET-02: Current reconnect attempt count (0 when not reconnecting). */
   reconnectAttempt: number;
   /** NET-02: Max reconnect attempts (exposed for UI indicator). */
