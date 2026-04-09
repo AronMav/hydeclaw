@@ -3,8 +3,7 @@
 ## Milestones
 
 - ✅ **v0.2.0–v0.11.0** — Core platform, Chat UI Polish, Engine Dispatcher (Phases 1–39, shipped)
-- ✅ **v0.12.0 Chat Redesign** — Phases 40–45 (completed)
-- 🚧 **v0.13.0 Chat UX Evolution** — Phase 52–53 (in progress)
+- 🚧 **v0.12.0 Chat Redesign** — Phases 40–45 (in progress)
 
 ## Phases
 
@@ -115,37 +114,12 @@ Plans:
 - [x] 45-01-PLAN.md — Remove deprecated fields (CLN-01) and module-scope globals (CLN-02)
 **UI hint**: yes
 
-### Phase 52: Citations & Generative UI
-**Goal**: Rich-card rendering via extensible CARD_REGISTRY with ErrorBoundary isolation and citation footnotes
-**Depends on**: Phase 45
-**Requirements**: GENUI-01, GENUI-02
-**Success Criteria** (what must be TRUE):
-  1. CARD_REGISTRY maps card type strings to React components; new types added by registering, not editing conditionals
-  2. Unknown card types render as formatted JSON without crashing
-  3. CardErrorBoundary wraps each GenerativeUISlot -- broken cards show fallback
-**Plans:** 3/3 plans complete
-Plans:
-- [x] 52-01-PLAN.md -- CARD_REGISTRY, GenerativeUISlot, CardErrorBoundary + wiring
-- [ ] 52-02-PLAN.md
-- [ ] 52-03-PLAN.md
-**UI hint**: yes
+### 🚧 v0.13.0 Chat UX Evolution (In Progress)
 
-### Phase 53: Message Branching
-**Goal**: Users can edit past messages and navigate between conversation branches without losing history
-**Depends on**: Phase 52
-**Requirements**: BRNC-01, BRNC-02, BRNC-03, BRNC-04
-**Success Criteria** (what must be TRUE):
-  1. Migration 012 adds parent_message_id and branch_from_message_id columns to messages table
-  2. POST /api/sessions/{id}/fork creates a new user message branching from a specified message
-  3. Frontend MessageTree store resolves the active path through the message tree
-  4. BranchNavigator component shows "1/N" controls on user messages with siblings
-  5. Editing a user message creates a new branch (fork) instead of destructive in-place overwrite
-  6. Sessions without branches render identically to before
-**Plans:** 2 plans
-Plans:
-- [ ] 53-01-PLAN.md -- Migration 012, backend fork endpoint, branch-aware queries
-- [ ] 53-02-PLAN.md -- MessageTree store model, BranchNavigator UI, EditButton fork wiring
-**UI hint**: yes
+**Milestone Goal:** Message branching support -- users can edit past messages and navigate conversation branches.
+
+- [x] **Phase 53-01: Message Branching Backend** - Migration 012, fork endpoint, branch-aware queries (completed 2026-04-09)
+- [ ] **Phase 53-02: Message Branching Frontend** - MessageTree store, branch navigation UI
 
 ## Progress
 
@@ -157,5 +131,4 @@ Plans:
 | 43. Reconnect & Optimistic UI | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
 | 44. UX Polish | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
 | 45. Cleanup | v0.12.0 | 1/1 | Complete    | 2026-04-09 |
-| 52. Citations & Generative UI | v0.13.0 | 1/3 | Complete    | 2026-04-09 |
-| 53. Message Branching | v0.13.0 | 0/2 | Planning    | — |
+| 53. Message Branching | v0.13.0 | 1/2 | In Progress | — |

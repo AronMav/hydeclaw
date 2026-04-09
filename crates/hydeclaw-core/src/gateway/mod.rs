@@ -139,6 +139,7 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
         .route("/api/sessions/{id}/invite", post(handlers::sessions::api_invite_to_session))
         .route("/api/sessions/{id}/documents", post(handlers::sessions::api_session_upload_document))
         .route("/api/sessions/{id}/messages", get(api_session_messages))
+        .route("/api/sessions/{id}/fork", post(handlers::sessions::api_fork_session))
         .route("/api/messages/{id}", delete(api_delete_message).patch(api_patch_message))
         .route("/api/messages/{id}/feedback", post(api_message_feedback))
         // Audit

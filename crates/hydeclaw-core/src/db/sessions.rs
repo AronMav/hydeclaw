@@ -195,9 +195,29 @@ pub async fn save_message_ex(
     agent_id: Option<&str>,
     thinking_blocks: Option<&serde_json::Value>,
 ) -> Result<Uuid> {
+    save_message_branched(
+        db, session_id, role, content, tool_calls, tool_call_id,
+        agent_id, thinking_blocks, None, None,
+    ).await
+}
+
+/// Save a message with full branch metadata (parent pointer + fork origin).
+#[allow(clippy::too_many_arguments)]
+pub async fn save_message_branched(
+    db: &PgPool,
+    session_id: Uuid,
+    role: &str,
+    content: &str,
+    tool_calls: Option<&serde_json::Value>,
+    tool_call_id: Option<&str>,
+    agent_id: Option<&str>,
+    thinking_blocks: Option<&serde_json::Value>,
+    parent_message_id: Option<Uuid>,
+    branch_from_message_id: Option<Uuid>,
+) -> Result<Uuid> {
     let id = sqlx::query_scalar(
-        "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, agent_id, thinking_blocks) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+        "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, agent_id, thinking_blocks, parent_message_id, branch_from_message_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
     )
     .bind(session_id)
     .bind(role)
@@ -206,6 +226,8 @@ pub async fn save_message_ex(
     .bind(tool_call_id)
     .bind(agent_id)
     .bind(thinking_blocks)
+    .bind(parent_message_id)
+    .bind(branch_from_message_id)
     .fetch_one(db)
     .await?;
 
@@ -222,7 +244,7 @@ pub async fn load_messages(
         Some(lim) => {
             sqlx::query_as::<_, MessageRow>(
                 "SELECT * FROM (\
-                   SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks \
+                   SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks, parent_message_id, branch_from_message_id \
                    FROM messages WHERE session_id = $1 \
                    ORDER BY created_at DESC LIMIT $2\
                  ) sub ORDER BY created_at ASC",
@@ -234,7 +256,7 @@ pub async fn load_messages(
         }
         None => {
             sqlx::query_as::<_, MessageRow>(
-                "SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks \
+                "SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks, parent_message_id, branch_from_message_id \
                  FROM messages WHERE session_id = $1 \
                  ORDER BY created_at ASC",
             )
@@ -262,6 +284,10 @@ pub struct MessageRow {
     pub status: String,
     #[sqlx(default)]
     pub thinking_blocks: Option<serde_json::Value>,
+    #[sqlx(default)]
+    pub parent_message_id: Option<Uuid>,
+    #[sqlx(default)]
+    pub branch_from_message_id: Option<Uuid>,
 }
 
 /// Insert or update a streaming assistant message (called every ~2s during LLM response).
@@ -658,7 +684,7 @@ pub async fn export_session(db: &PgPool, session_id: Uuid) -> sqlx::Result<Optio
 
     // 2. Fetch all messages ordered by created_at ASC
     let messages = sqlx::query_as::<_, MessageRow>(
-        "SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks \
+        "SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks, parent_message_id, branch_from_message_id \
          FROM messages WHERE session_id = $1 \
          ORDER BY created_at ASC",
     )
@@ -777,12 +803,131 @@ pub async fn get_latest_ui_session(db: &PgPool, agent_id: &str) -> Result<Option
     Ok(session)
 }
 
+/// Walk parent pointers backward from a leaf message to build the branch context chain.
+/// Returns messages in chronological order (oldest first).
+/// Falls back to regular load_messages if leaf_message_id is not found.
+pub async fn load_branch_messages(
+    db: &PgPool,
+    session_id: Uuid,
+    leaf_message_id: Uuid,
+) -> Result<Vec<MessageRow>> {
+    // Fetch all messages for the session
+    let all = load_messages(db, session_id, None).await?;
+
+    // Build lookup by id
+    let mut by_id: std::collections::HashMap<Uuid, usize> = std::collections::HashMap::new();
+    for (i, m) in all.iter().enumerate() {
+        by_id.insert(m.id, i);
+    }
+
+    // Check if leaf exists
+    if !by_id.contains_key(&leaf_message_id) {
+        // Fall back to regular load
+        return Ok(all);
+    }
+
+    // Walk backward from leaf following parent_message_id pointers
+    let mut chain_indices = Vec::new();
+    let mut current_id = Some(leaf_message_id);
+    let mut visited = std::collections::HashSet::new();
+
+    while let Some(cid) = current_id {
+        if !visited.insert(cid) {
+            break; // Cycle protection
+        }
+        if let Some(&idx) = by_id.get(&cid) {
+            chain_indices.push(idx);
+            current_id = all[idx].parent_message_id;
+        } else {
+            break;
+        }
+    }
+
+    if chain_indices.is_empty() {
+        return Ok(all);
+    }
+
+    // Reverse to chronological order
+    chain_indices.reverse();
+
+    // Collect the chain (clone each row)
+    let chain: Vec<MessageRow> = chain_indices
+        .into_iter()
+        .map(|i| {
+            let m = &all[i];
+            MessageRow {
+                id: m.id,
+                role: m.role.clone(),
+                content: m.content.clone(),
+                tool_calls: m.tool_calls.clone(),
+                tool_call_id: m.tool_call_id.clone(),
+                created_at: m.created_at,
+                agent_id: m.agent_id.clone(),
+                feedback: m.feedback,
+                edited_at: m.edited_at,
+                status: m.status.clone(),
+                thinking_blocks: m.thinking_blocks.clone(),
+                parent_message_id: m.parent_message_id,
+                branch_from_message_id: m.branch_from_message_id,
+            }
+        })
+        .collect();
+
+    Ok(chain)
+}
+
+/// Find the parent of a given message. If the message has an explicit parent_message_id,
+/// return it. Otherwise (trunk message), find the message immediately before it by created_at.
+pub async fn find_parent_of_message(
+    db: &PgPool,
+    session_id: Uuid,
+    message_id: Uuid,
+) -> Result<Option<Uuid>> {
+    // Check if the message has an explicit parent
+    let row = sqlx::query(
+        "SELECT parent_message_id FROM messages WHERE id = $1 AND session_id = $2",
+    )
+    .bind(message_id)
+    .bind(session_id)
+    .fetch_optional(db)
+    .await?;
+
+    match row {
+        Some(r) => {
+            let parent: Option<Uuid> = r.get("parent_message_id");
+            if parent.is_some() {
+                return Ok(parent);
+            }
+            // Trunk message: find predecessor by created_at
+            let prev = sqlx::query(
+                "SELECT id FROM messages WHERE session_id = $1 \
+                 AND created_at < (SELECT created_at FROM messages WHERE id = $2) \
+                 ORDER BY created_at DESC LIMIT 1",
+            )
+            .bind(session_id)
+            .bind(message_id)
+            .fetch_optional(db)
+            .await?;
+            Ok(prev.map(|r| r.get("id")))
+        }
+        None => anyhow::bail!("message {} not found in session {}", message_id, session_id),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
     fn message_row_has_thinking_blocks_field() {
         let _ = |row: super::MessageRow| {
             let _: Option<serde_json::Value> = row.thinking_blocks;
+        };
+    }
+
+    #[test]
+    fn message_row_has_branch_fields() {
+        let _ = |row: super::MessageRow| {
+            let _: Option<uuid::Uuid> = row.parent_message_id;
+            let _: Option<uuid::Uuid> = row.branch_from_message_id;
         };
     }
 }
