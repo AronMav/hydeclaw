@@ -195,7 +195,7 @@ pub(crate) async fn chat_completions(
     };
 
     let completion_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
-    let model_name = engine.agent.model.clone();
+    let model_name = engine.model_name();
     let created = chrono::Utc::now().timestamp();
 
     if req.stream {
@@ -461,7 +461,7 @@ pub(crate) async fn api_chat_sse(
 
     let _original_session_agent = agent_name.clone();
     // Update agent_name to the target agent (may differ from request if @-mention routed)
-    let agent_name = engine.agent.name.clone();
+    let agent_name = engine.name().to_string();
     tracing::info!(agent_name = %agent_name, mentioned = ?mentioned_agent, "mention routing: final target agent");
 
     // Send cleaned text to LLM (without @mention prefix — prevents LLM from echoing it)
@@ -469,7 +469,7 @@ pub(crate) async fn api_chat_sse(
         user_id: crate::agent::channel_kind::channel::UI.to_string(),
         text: Some(cleaned_text),
         attachments: vec![],
-        agent_id: engine.agent.name.clone(),
+        agent_id: engine.name().to_string(),
         channel: crate::agent::channel_kind::channel::UI.to_string(),
         context: serde_json::Value::Null,
         timestamp: chrono::Utc::now(),
@@ -501,7 +501,7 @@ pub(crate) async fn api_chat_sse(
         let mut turn_chain: Vec<String> = Vec::new();
 
         loop {
-            let current_agent_name = current_engine.agent.name.clone();
+            let current_agent_name = current_engine.name().to_string();
             turn_chain.push(current_agent_name.clone());
 
             if let Err(e) = current_engine.handle_sse(&current_msg, event_tx.clone(), current_session_id, current_force_new).await {
@@ -511,7 +511,7 @@ pub(crate) async fn api_chat_sse(
             }
 
             turn_count += 1;
-            let effective_limit = current_engine.agent.max_agent_turns
+            let effective_limit = current_engine.max_agent_turns()
                 .unwrap_or(global_max_agent_turns);
             if turn_count >= effective_limit {
                 tracing::info!(
@@ -554,7 +554,7 @@ pub(crate) async fn api_chat_sse(
                 id
             } else {
                 // First turn created a new session — find it
-                match crate::db::sessions::get_latest_session_id(&current_engine.db, &current_agent_name).await {
+                match crate::db::sessions::get_latest_session_id(current_engine.db_pool(), &current_agent_name).await {
                     Ok(Some(id)) => {
                         current_session_id = Some(id);
                         id
@@ -563,7 +563,7 @@ pub(crate) async fn api_chat_sse(
                 }
             };
 
-            let last_response = match crate::db::sessions::get_last_assistant_message(&current_engine.db, sid).await {
+            let last_response = match crate::db::sessions::get_last_assistant_message(current_engine.db_pool(), sid).await {
                 Ok(Some(text)) => {
                     tracing::debug!(session_id = %sid, response_len = text.len(), "turn loop: got last assistant message");
                     text
@@ -581,7 +581,7 @@ pub(crate) async fn api_chat_sse(
             // ── Routing: check handoff tool first, then @-mention fallback ──
 
             // Priority 1: Structured handoff (D-06, D-07)
-            let handoff = current_engine.handoff_target.lock().await.take();
+            let handoff = current_engine.take_handoff().await;
             if let Some(req) = handoff {
                 let next_agent_name = req.target_agent.clone();
 
@@ -595,7 +595,7 @@ pub(crate) async fn api_chat_sse(
                 };
 
                 // Add participant (D-03: handoff adds participant AND transfers turn)
-                let _ = crate::db::sessions::add_participant(&current_engine.db, sid, &next_agent_name).await;
+                let _ = crate::db::sessions::add_participant(current_engine.db_pool(), sid, &next_agent_name).await;
 
                 // Signal agent switch to converter task (UI separator)
                 event_tx.send(StreamEvent::AgentSwitch { agent_name: next_agent_name.clone() }).ok();
@@ -674,7 +674,7 @@ pub(crate) async fn api_chat_sse(
             };
 
             // Auto-invite next agent into the session
-            let _ = crate::db::sessions::add_participant(&current_engine.db, sid, &next_agent).await;
+            let _ = crate::db::sessions::add_participant(current_engine.db_pool(), sid, &next_agent).await;
 
             // Signal agent switch to the converter task (updates current_responding_agent)
             event_tx.send(StreamEvent::AgentSwitch { agent_name: next_agent.clone() }).ok();
@@ -1211,8 +1211,8 @@ pub(crate) async fn set_model_override(
     let Some(engine) = state.get_engine(&agent_name).await else {
         return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"not found"}))).into_response();
     };
-    engine.provider.set_model_override(body.model.clone());
-    let current = engine.provider.current_model();
+    engine.set_model_override(body.model.clone());
+    let current = engine.current_model();
     Json(serde_json::json!({"model": current})).into_response()
 }
 

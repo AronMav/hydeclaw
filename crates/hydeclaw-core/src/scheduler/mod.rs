@@ -445,7 +445,7 @@ impl Scheduler {
                 .to_std()
                 .unwrap_or(std::time::Duration::ZERO);
 
-            let fmt_prompt = engine.channel_formatting_prompt.read().await.clone();
+            let fmt_prompt = engine.formatting_prompt().await;
             let msg = hydeclaw_types::IncomingMessage {
                 user_id: "system".to_string(),
                 text: Some(task_message),
@@ -569,7 +569,7 @@ impl Scheduler {
                 tracing::info!(agent = %agent_name, job_id = %db_id, "dynamic job triggered");
                 // Use the channel's formatting prompt cached on the engine (from last adapter connection).
                 // This ensures cron output follows the same formatting rules as live chat.
-                let fmt_prompt = engine.channel_formatting_prompt.read().await.clone();
+                let fmt_prompt = engine.formatting_prompt().await;
 
                 let msg = hydeclaw_types::IncomingMessage {
                     user_id: "system".to_string(),
@@ -843,7 +843,7 @@ async fn run_heartbeat(
         .await
         .unwrap_or_else(|_| "No heartbeat checklist found.".to_string());
 
-    let fmt_prompt = engine.channel_formatting_prompt.read().await.clone();
+    let fmt_prompt = engine.formatting_prompt().await;
 
     // Build context from announce settings so agent's `message` tool can reach the owner.
     let context = match (announce_channel, owner_id.and_then(|s| s.parse::<i64>().ok())) {
@@ -891,8 +891,8 @@ async fn run_heartbeat(
 
     // Skill evolution: analyze heartbeat for skill improvements (fire-and-forget)
     {
-        let db = engine.db.clone();
-        let provider = engine.provider.clone();
+        let db = engine.db_pool().clone();
+        let provider = engine.provider_arc();
         let agent = agent_name.to_string();
         let task = checklist.clone();
         let resp = response.clone();
@@ -970,8 +970,8 @@ pub async fn run_first_run_onboarding(
     let response = engine.handle_isolated(&msg).await?;
 
     if !response.is_empty()
-        && let Some(ref router) = engine.channel_router
-        && let Some(ref ac) = engine.agent.access
+        && let Some(router) = engine.channel_router_ref()
+        && let Some(ac) = engine.agent_access()
         && let Some(ref owner_id) = ac.owner_id
     {
         let (reply_tx, _) = tokio::sync::oneshot::channel::<Result<(), String>>();
