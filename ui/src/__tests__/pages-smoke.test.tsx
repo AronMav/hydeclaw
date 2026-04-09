@@ -95,7 +95,7 @@ vi.mock("@/stores/chat-store", () => ({
       const agentState = {
         activeSessionId: null,
         activeSessionIds: [],
-        viewMode: "live",
+        messageSource: { mode: "new-chat" },
         streamStatus: "idle",
         streamError: null,
         messages: [],
@@ -124,7 +124,7 @@ vi.mock("@/stores/chat-store", () => ({
     {
       getState: () => ({
         currentAgent: "main",
-        agents: { main: { activeSessionId: null, activeSessionIds: [], viewMode: "live", streamStatus: "idle" } },
+        agents: { main: { activeSessionId: null, activeSessionIds: [], messageSource: { mode: "new-chat" }, streamStatus: "idle" } },
         setCurrentAgent: vi.fn(),
         selectSession: vi.fn(),
         newChat: vi.fn(),

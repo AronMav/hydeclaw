@@ -157,7 +157,8 @@ describe("chat store — streaming via sendMessage", () => {
 
     const st = useChatStore.getState().agents[AGENT];
     expect(st?.streamStatus).toBe("idle");
-    const assistantMsg = st?.liveMessages.find(m => m.role === "assistant");
+    const liveMessages = st?.messageSource.mode === "live" ? st.messageSource.messages : [];
+    const assistantMsg = liveMessages.find(m => m.role === "assistant");
     expect(assistantMsg).toBeDefined();
     // IncrementalParser buffers last 15 chars; emitted text may be partial
     const textPart = assistantMsg?.parts.find(p => p.type === "text");
@@ -205,7 +206,8 @@ describe("chat store — streaming via sendMessage", () => {
     await new Promise(r => setTimeout(r, 200));
 
     const st = useChatStore.getState().agents[AGENT];
-    const toolPart = st?.liveMessages.find(m => m.role === "assistant")?.parts.find(p => p.type === "tool");
+    const liveMessages = st?.messageSource.mode === "live" ? st.messageSource.messages : [];
+    const toolPart = liveMessages.find(m => m.role === "assistant")?.parts.find(p => p.type === "tool");
     expect(toolPart?.type).toBe("tool");
     if (toolPart?.type === "tool") {
       expect(toolPart.toolName).toBe("search");
@@ -242,7 +244,8 @@ describe("chat store — streaming via sendMessage", () => {
     const st = useChatStore.getState().agents[AGENT];
     expect(st?.streamStatus).toBe("idle");
     // Partial message must be preserved, not lost
-    const assistantMsg = st?.liveMessages.find(m => m.role === "assistant");
+    const liveMessages = st?.messageSource.mode === "live" ? st.messageSource.messages : [];
+    const assistantMsg = liveMessages.find(m => m.role === "assistant");
     expect(assistantMsg).toBeDefined();
   });
 
@@ -262,7 +265,8 @@ describe("chat store — streaming via sendMessage", () => {
     const st = useChatStore.getState().agents[AGENT];
     expect(st?.streamStatus).toBe("idle");
     // Assistant message preserved after sync + finish
-    const assistantMsg = st?.liveMessages.find(m => m.role === "assistant");
+    const liveMessages = st?.messageSource.mode === "live" ? st.messageSource.messages : [];
+    const assistantMsg = liveMessages.find(m => m.role === "assistant");
     expect(assistantMsg).toBeDefined();
   });
 
@@ -283,7 +287,8 @@ describe("chat store — streaming via sendMessage", () => {
     const st = useChatStore.getState().agents[AGENT];
     expect(st?.streamStatus).toBe("idle");
     // The assistant message should exist with a tool part (from tool-input-start)
-    const assistantMsg = st?.liveMessages.find(m => m.role === "assistant");
+    const liveMessages = st?.messageSource.mode === "live" ? st.messageSource.messages : [];
+    const assistantMsg = liveMessages.find(m => m.role === "assistant");
     expect(assistantMsg).toBeDefined();
     const toolPart = assistantMsg?.parts.find(p => p.type === "tool");
     expect(toolPart?.type).toBe("tool");

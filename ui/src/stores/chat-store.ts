@@ -114,14 +114,31 @@ export function isActivePhase(phase: ConnectionPhase | undefined): boolean {
   return phase === "submitted" || phase === "streaming";
 }
 
+// ── MessageSource discriminated union (HIST-02) ─────────────────────────────
+
+/**
+ * Discriminated union for message source mode.
+ * Replaces the dual-semantics of viewMode + liveMessages fields.
+ * - "new-chat": no session selected, no messages
+ * - "live": active or recently completed stream, messages held in store
+ * - "history": viewing a DB session snapshot, messages fetched via React Query
+ */
+export type MessageSource =
+  | { mode: "new-chat" }
+  | { mode: "live"; messages: ChatMessage[] }
+  | { mode: "history"; sessionId: string };
+
+/** Helper: extract live messages from a MessageSource union. */
+function getLiveMessages(source: MessageSource): ChatMessage[] {
+  return source.mode === "live" ? source.messages : [];
+}
+
 // ── Per-agent state ─────────────────────────────────────────────────────────
 
 interface AgentState {
   activeSessionId: string | null;
-  /** Messages from the current live stream (including seeded history). */
-  liveMessages: ChatMessage[];
-  /** Whether we're viewing a DB snapshot (true) or live stream (false). */
-  viewMode: "history" | "live";
+  /** Discriminated union replacing the old liveMessages + viewMode duality. */
+  messageSource: MessageSource;
   streamStatus: StreamStatus;
   streamError: string | null;
   /** FSM-01: authoritative phase enum mirroring streamStatus. Phase 45 CLN-01 will remove streamStatus. */
@@ -152,8 +169,7 @@ interface AgentState {
 function emptyAgentState(): AgentState {
   return {
     activeSessionId: null,
-    liveMessages: [],
-    viewMode: "live",
+    messageSource: { mode: "new-chat" },
     streamStatus: "idle",
     streamError: null,
     connectionPhase: "idle",
@@ -177,9 +193,10 @@ const LAST_SESSION_KEY = "hydeclaw.chat.lastSession";
 // Per-agent abort controllers (keyed by agent name, not module-scoped)
 const agentAbortControllers: Record<string, AbortController | null> = {};
 
-// Stream generation counter — prevents stale SSE deltas from writing to wrong session
-// after session switch. Incremented on each startStream(), checked in pushUpdate().
-let streamGeneration = 0;
+// Per-agent stream generation counters (HIST-03) — prevents stale SSE deltas from
+// writing to wrong session after session switch. Module-scope let replaced with Record
+// so switching agent A→B does not reset A's generation and kill its active stream.
+const streamGenerations: Record<string, number> = {};
 
 interface ChatStore {
   /** Per-agent state map. */
@@ -407,8 +424,10 @@ export const useChatStore = create<ChatStore>()(
       const st = get().agents[agent];
       if (!st?.activeSessionId) return;
       const streamStatus = st.streamStatus === "submitted" ? "streaming" : st.streamStatus;
+      // Backward-compat: serialize viewMode as "history" | "live" for backend UI state
+      const viewMode = st.messageSource.mode === "history" ? "history" : "live";
       apiPatch(`/api/sessions/${st.activeSessionId}`, {
-        ui_state: { viewMode: st.viewMode, streamStatus },
+        ui_state: { viewMode, streamStatus },
       }).catch((e) => { console.warn("[chat] save failed:", e); });
     }, 500);
   }
@@ -426,20 +445,26 @@ export const useChatStore = create<ChatStore>()(
     if (st && isActiveStream(st.streamStatus)) return;
 
     abortActiveStream(agent);
-    streamGeneration++;
-    const myGeneration = streamGeneration;
+    streamGenerations[agent] = (streamGenerations[agent] ?? 0) + 1;
+    const myGeneration = streamGenerations[agent];
     const controller = new AbortController();
     agentAbortControllers[agent] = controller;
 
     // Stage 4: Set persistence flag so UI shows thinking indicator instantly after reload
     sessionStorage.setItem(`hydeclaw.streaming.${agent}`, "true");
 
+    // Preserve existing live messages if available, otherwise seed from history cache
+    const existingSt = get().agents[agent];
+    const existingMessages = existingSt?.messageSource.mode === "live"
+      ? existingSt.messageSource.messages
+      : getCachedHistoryMessages(existingSt?.activeSessionId ?? null);
+
     update(agent, {
       streamStatus: "streaming",
       streamError: null,
       connectionPhase: "streaming",
       connectionError: null,
-      viewMode: "live",
+      messageSource: { mode: "live", messages: existingMessages },
     });
 
     const token = getToken();
@@ -478,8 +503,8 @@ export const useChatStore = create<ChatStore>()(
   // ── SSE stream handler ──
   function startStream(agent: string, sessionId: string | null, messages: ChatMessage[], userText: string) {
     abortActiveStream(agent);
-    streamGeneration++;
-    const myGeneration = streamGeneration;
+    streamGenerations[agent] = (streamGenerations[agent] ?? 0) + 1;
+    const myGeneration = streamGenerations[agent];
     const controller = new AbortController();
     agentAbortControllers[agent] = controller;
 
@@ -492,8 +517,7 @@ export const useChatStore = create<ChatStore>()(
     };
     const allMessages = [...messages, userMsg];
     update(agent, {
-      liveMessages: allMessages,
-      viewMode: "live",
+      messageSource: { mode: "live", messages: allMessages },
       streamStatus: "submitted",
       streamError: null,
       connectionPhase: "submitted",
@@ -577,26 +601,31 @@ export const useChatStore = create<ChatStore>()(
 
     function pushUpdate() {
       // Guard: stale stream — a newer stream has started, discard updates
-      if (generation !== streamGeneration) return;
+      if (generation !== streamGenerations[agent]) return;
       // Guard: don't update store after abort (prevents race with stopStream)
       if (signal.aborted) return;
-      
+
       const contentParts = incrementalParser.processDelta(""); // trigger emit of what's ready
-      
+
       set((draft) => {
         const st = draft.agents[agent];
         if (!st) return;
-        const existing = st.liveMessages.findIndex((m: ChatMessage) => m.id === assistantId);
-        
+        // Ensure messageSource is in live mode (it should be from startStream)
+        if (st.messageSource.mode !== "live") {
+          st.messageSource = { mode: "live", messages: [] };
+        }
+        const liveMessages = st.messageSource.messages;
+        const existing = liveMessages.findIndex((m: ChatMessage) => m.id === assistantId);
+
         // Merge incremental text/reasoning parts with other parts (tools, files)
         const allParts = [...contentParts, ...parts.filter(p => p.type !== "text" && p.type !== "reasoning")];
 
         if (existing >= 0) {
-          const msg = st.liveMessages[existing];
+          const msg = liveMessages[existing];
           msg.parts = allParts;
           msg.agentId = currentRespondingAgent ?? undefined;
         } else {
-          st.liveMessages.push({
+          liveMessages.push({
             id: assistantId,
             role: "assistant",
             parts: allParts,
@@ -649,7 +678,7 @@ export const useChatStore = create<ChatStore>()(
           switch (event.type) {
             case "data-session-id": {
               const sid = event.data.sessionId;
-              if (sid && generation === streamGeneration) {
+              if (sid && generation === streamGenerations[agent]) {
                 receivedSessionId = sid;
                 update(agent, { activeSessionId: sid });
                 saveLastSession(agent, sid);
@@ -677,12 +706,13 @@ export const useChatStore = create<ChatStore>()(
               // Dedup: remove resume placeholder (id starts with "resume-") and any
               // seeded message with same ID to prevent duplicates on stream resume
               const stNow = get().agents[agent];
-              if (stNow) {
-                const deduped = stNow.liveMessages.filter(
+              if (stNow && stNow.messageSource.mode === "live") {
+                const currentMessages = stNow.messageSource.messages;
+                const deduped = currentMessages.filter(
                   (m) => m.id !== newId && !m.id.startsWith("resume-")
                 );
-                if (deduped.length !== stNow.liveMessages.length) {
-                  update(agent, { liveMessages: deduped });
+                if (deduped.length !== currentMessages.length) {
+                  update(agent, { messageSource: { mode: "live", messages: deduped } });
                 }
               }
               break;
@@ -804,21 +834,25 @@ export const useChatStore = create<ChatStore>()(
               set((draft) => {
                 const st = draft.agents[agent];
                 if (!st) return;
-                
-                const existingIdx = st.liveMessages.findIndex(m => m.id === assistantId);
+                // Ensure we're in live mode for sync updates
+                if (st.messageSource.mode !== "live") {
+                  st.messageSource = { mode: "live", messages: [] };
+                }
+                const liveMessages = st.messageSource.messages;
+                const existingIdx = liveMessages.findIndex(m => m.id === assistantId);
                 if (existingIdx >= 0) {
                   // Differential update: preserves user messages and other assistant messages
-                  st.liveMessages[existingIdx].parts = syncParts;
+                  liveMessages[existingIdx].parts = syncParts;
                 } else {
                   // Fallback: if not found, it might be a clean resume, so we seed
-                  const userMsgs = st.liveMessages.filter(m => m.role === "user");
-                  st.liveMessages = [...userMsgs, {
+                  const userMsgs = liveMessages.filter(m => m.role === "user");
+                  st.messageSource = { mode: "live", messages: [...userMsgs, {
                     id: assistantId,
                     role: "assistant",
                     parts: syncParts,
                     createdAt: assistantCreatedAt,
                     agentId: currentRespondingAgent ?? undefined,
-                  }];
+                  }] };
                 }
               });
 
@@ -917,7 +951,7 @@ export const useChatStore = create<ChatStore>()(
         saveUiState(agent);
         // Session status is server-driven via WS agent_processing events — no optimistic update needed.
       } else if (parts.length > 0) {
-        // On abort: save partial response to liveMessages but keep idle status
+        // On abort: save partial response to live messages but keep idle status
         // (stopStream already set streamStatus to "idle")
         const st = get().agents[agent];
         if (st) {
@@ -928,12 +962,13 @@ export const useChatStore = create<ChatStore>()(
             createdAt: assistantCreatedAt,
             agentId: currentRespondingAgent ?? undefined,
           };
-          const existing = st.liveMessages.findIndex((m) => m.id === assistantId);
+          const currentMessages = getLiveMessages(st.messageSource);
+          const existing = currentMessages.findIndex((m) => m.id === assistantId);
           const updated =
             existing >= 0
-              ? st.liveMessages.map((m, i) => (i === existing ? assistantMsg : m))
-              : [...st.liveMessages, assistantMsg];
-          update(agent, { liveMessages: updated });
+              ? currentMessages.map((m, i) => (i === existing ? assistantMsg : m))
+              : [...currentMessages, assistantMsg];
+          update(agent, { messageSource: { mode: "live", messages: updated } });
         }
       }
     }
@@ -979,8 +1014,7 @@ export const useChatStore = create<ChatStore>()(
           ensure(name);
           update(name, {
             activeSessionId,
-            liveMessages: prevState?.liveMessages ?? [],
-            viewMode: prevState?.viewMode ?? "live",
+            messageSource: prevState?.messageSource ?? { mode: "new-chat" },
             streamStatus: prevState?.streamStatus ?? "idle",
             connectionPhase: prevState?.connectionPhase ?? "idle",
           });
@@ -1001,8 +1035,7 @@ export const useChatStore = create<ChatStore>()(
       // The restore effect in page.tsx may later select a server-active session.
       update(name, {
         activeSessionId: null,
-        viewMode: "live",
-        liveMessages: [],
+        messageSource: { mode: "new-chat" },
         streamStatus: "idle",
         streamError: null,
         connectionPhase: "idle",
@@ -1025,7 +1058,7 @@ export const useChatStore = create<ChatStore>()(
       // If re-selecting the same session that's currently streaming, just switch to live view
       const currentState = get().agents[agent];
       if (currentState?.activeSessionId === sessionId && isActiveStream(currentState.streamStatus)) {
-        update(agent, { viewMode: "live" });
+        // Already in live mode — no change needed (messageSource should already be live)
         return;
       }
 
@@ -1033,9 +1066,8 @@ export const useChatStore = create<ChatStore>()(
 
       update(agent, {
         activeSessionId: sessionId,
-        viewMode: "history",
+        messageSource: { mode: "history", sessionId },
         forceNewSession: false,
-        liveMessages: [],
         renderLimit: 100,
       });
       saveLastSession(agent, sessionId);
@@ -1054,9 +1086,8 @@ export const useChatStore = create<ChatStore>()(
       }
       update(agent, {
         activeSessionId: sessionId,
-        viewMode: "history",
+        messageSource: { mode: "history", sessionId },
         forceNewSession: false,
-        liveMessages: [],
         streamStatus: "idle",
         connectionPhase: "idle",
       });
@@ -1070,8 +1101,7 @@ export const useChatStore = create<ChatStore>()(
       agentAbortControllers[agent] = null;
       update(agent, {
         activeSessionId: null,
-        viewMode: "live",
-        liveMessages: [],
+        messageSource: { mode: "new-chat" },
         streamStatus: "idle",
         streamError: null,
         connectionPhase: "idle",
@@ -1157,12 +1187,12 @@ export const useChatStore = create<ChatStore>()(
       let sessionId = st.activeSessionId;
       let seedMessages: ChatMessage[] = [];
 
-      if (st.viewMode === "history") {
+      if (st.messageSource.mode === "history") {
         // Continue from history — get messages from React Query cache.
-        // Do NOT flip viewMode here; startStream sets viewMode + liveMessages atomically.
+        // Do NOT flip messageSource here; startStream sets messageSource atomically.
         seedMessages = getCachedHistoryMessages(sessionId);
-      } else if (st.liveMessages.length > 0) {
-        seedMessages = st.liveMessages;
+      } else if (st.messageSource.mode === "live" && st.messageSource.messages.length > 0) {
+        seedMessages = st.messageSource.messages;
       }
 
       startStream(agent, sessionId, seedMessages, text);
@@ -1190,11 +1220,11 @@ export const useChatStore = create<ChatStore>()(
       let sessionId = st.activeSessionId;
       let messages: ChatMessage[];
 
-      if (st.viewMode === "history") {
-        // Do NOT flip viewMode here; startStream sets viewMode + liveMessages atomically.
+      if (st.messageSource.mode === "history") {
+        // Do NOT flip messageSource here; startStream sets messageSource atomically.
         messages = getCachedHistoryMessages(sessionId);
       } else {
-        messages = st.liveMessages;
+        messages = getLiveMessages(st.messageSource);
       }
 
       // Remove last assistant message
@@ -1230,11 +1260,11 @@ export const useChatStore = create<ChatStore>()(
       let sessionId = st.activeSessionId;
       let messages: ChatMessage[];
 
-      if (st.viewMode === "history") {
-        // Do NOT flip viewMode here; startStream sets viewMode + liveMessages atomically.
+      if (st.messageSource.mode === "history") {
+        // Do NOT flip messageSource here; startStream sets messageSource atomically.
         messages = getCachedHistoryMessages(sessionId);
       } else {
-        messages = st.liveMessages;
+        messages = getLiveMessages(st.messageSource);
       }
 
       // Find the target user message and truncate everything after it
@@ -1277,7 +1307,7 @@ export const useChatStore = create<ChatStore>()(
         agentAbortControllers[agent]?.abort();
         agentAbortControllers[agent] = null;
         update(agent, {
-          activeSessionId: null, viewMode: "live", liveMessages: [],
+          activeSessionId: null, messageSource: { mode: "new-chat" },
           streamStatus: "idle", streamError: null,
           connectionPhase: "idle", connectionError: null,
           forceNewSession: true,
@@ -1294,7 +1324,7 @@ export const useChatStore = create<ChatStore>()(
       agentAbortControllers[agent]?.abort();
       agentAbortControllers[agent] = null;
       update(agent, {
-        activeSessionId: null, viewMode: "live", liveMessages: [],
+        activeSessionId: null, messageSource: { mode: "new-chat" },
         streamStatus: "idle", streamError: null,
         connectionPhase: "idle", connectionError: null,
         forceNewSession: true,
@@ -1315,12 +1345,13 @@ export const useChatStore = create<ChatStore>()(
       await apiDelete(`/api/messages/${messageId}`);
       const st = get().agents[agent];
       if (!st) return;
-      if (st.viewMode === "history" && st.activeSessionId) {
+      if (st.messageSource.mode === "history" && st.activeSessionId) {
         // Invalidate React Query cache to reload history
         queryClient.invalidateQueries({ queryKey: qk.sessionMessages(st.activeSessionId) });
       } else {
+        const currentMessages = getLiveMessages(st.messageSource);
         update(agent, {
-          liveMessages: st.liveMessages.filter((m) => m.id !== messageId),
+          messageSource: { mode: "live", messages: currentMessages.filter((m) => m.id !== messageId) },
         });
       }
     },
@@ -1331,8 +1362,8 @@ export const useChatStore = create<ChatStore>()(
       const st = store.agents[agent];
       if (!st) return;
 
-      const messages = st.viewMode === "live"
-        ? st.liveMessages
+      const messages = st.messageSource.mode === "live"
+        ? st.messageSource.messages
         : getCachedHistoryMessages(st.activeSessionId);
       if (messages.length === 0) return;
 

@@ -68,10 +68,9 @@ vi.mock("@/stores/chat-store", () => ({
       const agentState = {
         activeSessionId: null,
         activeSessionIds: [],
-        viewMode: "live",
+        messageSource: { mode: "new-chat" },
         streamStatus: "idle",
         streamError: null,
-        liveMessages: [],
         inputText: "",
       };
       const state: Record<string, unknown> = {
@@ -83,7 +82,7 @@ vi.mock("@/stores/chat-store", () => ({
     {
       getState: () => ({
         currentAgent: "Agent1",
-        agents: { Agent1: { activeSessionId: null, activeSessionIds: [], viewMode: "live", streamStatus: "idle" } },
+        agents: { Agent1: { activeSessionId: null, activeSessionIds: [], messageSource: { mode: "new-chat" }, streamStatus: "idle" } },
         regenerate: vi.fn(),
         clearError: vi.fn(),
         sendMessage: vi.fn(),
