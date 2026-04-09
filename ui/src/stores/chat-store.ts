@@ -3,7 +3,7 @@ import { devtools } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 
 import { apiGet, apiDelete, apiPatch, getToken } from "@/lib/api";
-import { parseSSELines, parseSseEvent, parseContentParts } from "@/stores/sse-events";
+import { parseSSELines, parseSseEvent, parseContentParts, extractSseEventId } from "@/stores/sse-events";
 import { IncrementalParser } from "@/lib/message-parser";
 import type { SessionRow, MessageRow } from "@/types/api";
 import { queryClient } from "@/lib/query-client";
@@ -201,6 +201,10 @@ interface AgentState {
   turnLimitMessage: string | null;
   /** Per-agent stream generation counter (CLN-02 HIST-03) — detects stale SSE deltas. */
   streamGeneration: number;
+  /** NET-02: Current reconnect attempt count (0 when not reconnecting). */
+  reconnectAttempt: number;
+  /** NET-02: Max reconnect attempts (exposed for UI indicator). */
+  maxReconnectAttempts: number;
 }
 
 function emptyAgentState(): AgentState {
@@ -219,6 +223,8 @@ function emptyAgentState(): AgentState {
     turnCount: 0,
     turnLimitMessage: null,
     streamGeneration: 0,
+    reconnectAttempt: 0,
+    maxReconnectAttempts: MAX_RECONNECT_ATTEMPTS,
   };
 }
 
@@ -246,6 +252,12 @@ function getReconnectTimer(agent: string): ReturnType<typeof setTimeout> | null 
 function setReconnectTimer(agent: string, timer: ReturnType<typeof setTimeout> | null): void {
   _reconnectTimers.set(agent, timer);
 }
+
+// ── NET-02: Last event ID tracking for SSE resume ──────────────────────────
+const _agentLastEventIds = new Map<string, string>();
+function getLastEventId(agent: string): string | null { return _agentLastEventIds.get(agent) ?? null; }
+function setLastEventId(agent: string, id: string) { _agentLastEventIds.set(agent, id); }
+function clearLastEventId(agent: string) { _agentLastEventIds.delete(agent); }
 
 // ── Reconnect constants (SSE-02) ─────────────────────────────────────────────
 const MAX_RECONNECT_ATTEMPTS = 3;
@@ -521,16 +533,33 @@ export const useChatStore = create<ChatStore>()(
 
     const token = getToken();
 
+    const resumeHeaders: Record<string, string> = { Authorization: `Bearer ${token}` };
+    const lastEid = getLastEventId(agent);
+    if (lastEid) {
+      resumeHeaders["Last-Event-ID"] = lastEid;
+    }
+
     fetch(`/api/chat/${sessionId}/stream`, {
       method: "GET",
-      headers: { Authorization: `Bearer ${token}` },
+      headers: resumeHeaders,
       signal: controller.signal,
     })
       .then((resp) => {
         if (resp.status === 204) {
           // No active stream — engine already finished.
           // Transition to history mode so useSessionMessages fetches fresh data (Fix B).
-          update(agent, { connectionPhase: "idle", messageSource: { mode: "history", sessionId } });
+          clearLastEventId(agent);
+          update(agent, { connectionPhase: "idle", messageSource: { mode: "history", sessionId }, reconnectAttempt: 0 });
+          return;
+        }
+        if (resp.status === 410) {
+          // Stream expired — fall back to history mode without error
+          clearLastEventId(agent);
+          update(agent, {
+            connectionPhase: "idle",
+            messageSource: { mode: "history", sessionId },
+            reconnectAttempt: 0,
+          });
           return;
         }
         if (!resp.ok) {
@@ -561,7 +590,7 @@ export const useChatStore = create<ChatStore>()(
     if (ctrl) {
       ctrl.abort();
       setAbortCtrl(agent, null);
-      update(agent, { connectionPhase: "idle" });
+      update(agent, { connectionPhase: "idle", reconnectAttempt: 0 });
     }
   }
 
@@ -583,7 +612,7 @@ export const useChatStore = create<ChatStore>()(
       });
       return;
     }
-    update(agent, { connectionPhase: "reconnecting", connectionError: null });
+    update(agent, { connectionPhase: "reconnecting", connectionError: null, reconnectAttempt: attempt + 1 });
     const delay = RECONNECT_DELAY_BASE_MS * Math.pow(2, attempt);
     setReconnectTimer(agent, setTimeout(() => {
       setReconnectTimer(agent, null);
@@ -595,7 +624,8 @@ export const useChatStore = create<ChatStore>()(
   // ── SSE stream handler ──
   function startStream(agent: string, sessionId: string | null, messages: ChatMessage[], userText: string) {
     abortActiveStream(agent);
-    update(agent, { streamGeneration: (get().agents[agent]?.streamGeneration ?? 0) + 1 });
+    clearLastEventId(agent);
+    update(agent, { streamGeneration: (get().agents[agent]?.streamGeneration ?? 0) + 1, reconnectAttempt: 0 });
     const myGeneration = get().agents[agent]?.streamGeneration ?? 1;
     const controller = new AbortController();
     setAbortCtrl(agent, controller);
@@ -786,8 +816,24 @@ export const useChatStore = create<ChatStore>()(
         const chunk = decoder.decode(value, { stream: true });
         const lines = parseSSELines(chunk, buffer);
 
+        let currentEventId: string | null = null;
+        let skipNextData = false;
         for (const line of lines) {
+          // NET-02: Extract SSE event IDs for dedup and Last-Event-ID header
+          const eid = extractSseEventId(line);
+          if (eid !== null) {
+            currentEventId = eid;
+            const lastId = getLastEventId(agent);
+            if (lastId !== null && parseInt(eid, 10) <= parseInt(lastId, 10)) {
+              skipNextData = true;
+            } else {
+              skipNextData = false;
+              setLastEventId(agent, eid);
+            }
+            continue;
+          }
           if (!line.startsWith("data:")) continue;
+          if (skipNextData) { skipNextData = false; continue; } // dedup
           const raw = line.slice(5).trim();
           if (raw === "[DONE]") continue;
 
@@ -1069,6 +1115,7 @@ export const useChatStore = create<ChatStore>()(
             connectionError: null,
             pendingTargetAgent: null,
             turnCount: 0,
+            reconnectAttempt: 0,
             // Keep messageSource as "live" with final messages — avoids flash when
             // React Query hasn't yet fetched fresh history.
           });
