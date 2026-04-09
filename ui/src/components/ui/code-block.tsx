@@ -53,13 +53,15 @@ export type CodeBlockProps = {
   className?: string
   language?: string
   showLineNumbers?: boolean
+  isStreaming?: boolean
 } & React.HTMLProps<HTMLDivElement>
 
-function CodeBlock({ children, className, language, ...props }: CodeBlockProps) {
+function CodeBlock({ children, className, language, isStreaming = false, ...props }: CodeBlockProps) {
   const codeRef = useRef<HTMLDivElement>(null)
   const [codeText, setCodeText] = useState("")
 
   useEffect(() => {
+    if (isStreaming) return // Skip during streaming — no copy button needed for partial code
     if (codeRef.current) {
       setCodeText(codeRef.current.textContent || "")
     }
@@ -74,7 +76,7 @@ function CodeBlock({ children, className, language, ...props }: CodeBlockProps) 
       )}
       {...props}
     >
-      {codeText && <CodeBlockHeader language={language} code={codeText} />}
+      {codeText && !isStreaming && <CodeBlockHeader language={language} code={codeText} />}
       <div ref={codeRef}>{children}</div>
     </div>
   )
@@ -88,6 +90,7 @@ export type CodeBlockCodeProps = {
   theme?: string
   showLineNumbers?: boolean
   className?: string
+  isStreaming?: boolean
 } & React.HTMLProps<HTMLDivElement>
 
 function CodeBlockCode({
@@ -96,6 +99,7 @@ function CodeBlockCode({
   theme: themeProp,
   showLineNumbers,
   className,
+  isStreaming = false,
   ...props
 }: CodeBlockCodeProps) {
   const { resolvedTheme } = useTheme()
@@ -110,7 +114,14 @@ function CodeBlockCode({
       return
     }
 
-    // Debounce highlight during streaming — wait 150ms of inactivity
+    // When streaming (fence unclosed): cancel any pending timer, show plain pre
+    if (isStreaming) {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+      setHighlightedHtml(null) // null → renders existing plain <pre><code> fallback
+      return
+    }
+
+    // Not streaming: run 150ms debounce + Shiki (unchanged behavior)
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(async () => {
       try {
@@ -126,7 +137,7 @@ function CodeBlockCode({
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
     }
-  }, [code, language, theme])
+  }, [code, language, theme, isStreaming])
 
   const classNames = cn(
     "w-full overflow-x-auto text-[13px] [&>pre]:px-4 [&>pre]:py-4 [&>pre]:bg-transparent",
