@@ -36,6 +36,8 @@ mod sse_types {
     pub const RICH_CARD: &str = "rich-card";
     pub const FILE: &str = "file";
     pub const SYNC: &str = "sync";
+    pub const TOOL_APPROVAL_NEEDED: &str = "tool-approval-needed";
+    pub const TOOL_APPROVAL_RESOLVED: &str = "tool-approval-resolved";
     pub const FINISH: &str = "finish";
     pub const ERROR: &str = "error";
 }

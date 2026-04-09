@@ -940,6 +940,26 @@ pub(crate) async fn api_chat_sse(
                         "mediaType": media_type
                     })
                 }
+                StreamEvent::ApprovalNeeded { approval_id, tool_name, tool_input, timeout_ms } => {
+                    json!({
+                        "type": sse_types::TOOL_APPROVAL_NEEDED,
+                        "approvalId": approval_id,
+                        "toolName": tool_name,
+                        "toolInput": tool_input,
+                        "timeoutMs": timeout_ms,
+                    })
+                }
+                StreamEvent::ApprovalResolved { approval_id, action, modified_input } => {
+                    let mut v = json!({
+                        "type": sse_types::TOOL_APPROVAL_RESOLVED,
+                        "approvalId": approval_id,
+                        "action": action,
+                    });
+                    if let Some(mi) = modified_input {
+                        v["modifiedInput"] = mi;
+                    }
+                    v
+                }
                 StreamEvent::AgentSwitch { agent_name: new_agent } => {
                     current_responding_agent = new_agent;
                     continue; // Internal event — don't emit SSE
