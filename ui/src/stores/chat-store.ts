@@ -335,21 +335,18 @@ export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean): 
       if (m.agent_id) lastAgentId = m.agent_id;
 
       const newParts = parseContentParts(m.content || "");
-      
-      // Virtual Merging: if this assistant block belongs to the same agent 
-      // as the previous one, and no user message intervened, merge them.
-      if (lastAssistantMsg && lastAssistantMsg.agentId === assistantAgentId) {
-        lastAssistantMsg.parts.push(...newParts);
-      } else {
-        if (lastAssistantMsg) messages.push(lastAssistantMsg);
-        lastAssistantMsg = {
-          id: m.id,
-          role: "assistant",
-          parts: newParts,
-          createdAt: m.created_at,
-          agentId: assistantAgentId,
-        };
-      }
+
+      // D-01: No merging. Each assistant DB row becomes its own ChatMessage.
+      // Virtual Merging was removed because it breaks tool call ordering —
+      // tools must appear between the assistant messages that invoked them.
+      if (lastAssistantMsg) messages.push(lastAssistantMsg);
+      lastAssistantMsg = {
+        id: m.id,
+        role: "assistant",
+        parts: newParts,
+        createdAt: m.created_at,
+        agentId: assistantAgentId,
+      };
     } else if (m.role === "tool" && m.tool_call_id) {
       // Tool result block — always attach to the latest assistant message
       if (lastAssistantMsg) {
