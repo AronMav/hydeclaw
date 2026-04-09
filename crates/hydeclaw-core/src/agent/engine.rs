@@ -353,77 +353,6 @@ pub(crate) fn row_to_message(row: &crate::db::sessions::MessageRow) -> Message {
     }
 }
 
-/// Strip `<minimax:tool_call>…</minimax:tool_call>` blocks from a string.
-///
-/// Used to sanitize tool results that contain MiniMax XML tool calls before they are
-/// included in the LLM context. Prevents MiniMax from learning the XML format from
-/// its own previous outputs and reproducing it endlessly.
-fn strip_minimax_xml(s: &str) -> String {
-    const OPEN: &str = "<minimax:tool_call>";
-    const CLOSE: &str = "</minimax:tool_call>";
-    if !s.contains(OPEN) {
-        return s.to_string();
-    }
-    let mut result = String::new();
-    let mut rest = s;
-    loop {
-        match rest.find(OPEN) {
-            None => {
-                result.push_str(rest);
-                break;
-            }
-            Some(start) => {
-                result.push_str(&rest[..start]);
-                let after = &rest[start + OPEN.len()..];
-                rest = match after.find(CLOSE) {
-                    Some(end) => &after[end + CLOSE.len()..],
-                    None => break, // unclosed — discard rest
-                };
-            }
-        }
-    }
-    result.trim().to_string()
-}
-
-/// Proactively strip tool result content from old turns to reduce LLM context on load.
-///
-/// Complements `compact_tool_results` (reactive, fires during tool loop at 70% threshold).
-/// This fires once in `build_context` — before the first LLM call — based on turn count.
-///
-/// A "turn" = one user message + the assistant+tool messages that follow it.
-/// Keeps the last `keep_turns` complete turns intact; replaces older tool results with
-/// a "[output omitted, N chars]" placeholder (preserving empty results untouched).
-fn prune_old_tool_outputs(messages: &[Message], keep_turns: usize) -> Vec<Message> {
-    let user_indices: Vec<usize> = messages
-        .iter()
-        .enumerate()
-        .filter(|(_, m)| m.role == MessageRole::User)
-        .map(|(i, _)| i)
-        .collect();
-
-    if user_indices.len() <= keep_turns {
-        return messages.to_vec();
-    }
-
-    let cutoff = user_indices[user_indices.len() - keep_turns];
-
-    messages
-        .iter()
-        .enumerate()
-        .map(|(i, m)| {
-            if i < cutoff && m.role == MessageRole::Tool && !m.content.is_empty() {
-                let hidden = m.content.len();
-                Message {
-                    content: format!("[output omitted, {} chars]", hidden),
-                    ..m.clone()
-                }
-            } else {
-                m.clone()
-            }
-        })
-        .collect()
-}
-
 impl AgentEngine {
     // ── Public accessors (sealed API) ──────────────────────────────
 
@@ -1137,10 +1066,6 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
             .unwrap_or("per-channel-peer")
     }
 
-    fn agent_tools_policy(&self) -> Option<&crate::config::AgentToolPolicy> {
-        self.agent.tools.as_ref()
-    }
-
     fn agent_prune_tool_output_after_turns(&self) -> Option<usize> {
         self.agent.session.as_ref()
             .and_then(|s| s.prune_tool_output_after_turns)
@@ -1148,10 +1073,6 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
 
     fn agent_max_tools_in_context(&self) -> Option<usize> {
         self.agent.max_tools_in_context
-    }
-
-    fn workspace_dir(&self) -> &str {
-        &self.workspace_dir
     }
 
     async fn load_workspace_prompt(&self) -> Result<String> {

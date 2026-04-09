@@ -68,12 +68,10 @@ pub(crate) trait ContextBuilderDeps: Send + Sync {
     fn agent_language(&self) -> &str;
     fn agent_max_history_messages(&self) -> i64;
     fn agent_dm_scope(&self) -> &str;
-    fn agent_tools_policy(&self) -> Option<&crate::config::AgentToolPolicy>;
     fn agent_prune_tool_output_after_turns(&self) -> Option<usize>;
     fn agent_max_tools_in_context(&self) -> Option<usize>;
 
     // Workspace
-    fn workspace_dir(&self) -> &str;
     async fn load_workspace_prompt(&self) -> Result<String>;
 
     // MCP
@@ -390,6 +388,8 @@ impl ContextBuilder for DefaultContextBuilder {
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 /// Strip `<minimax:tool_call>…</minimax:tool_call>` blocks from a string.
+// Called from DefaultContextBuilder::build() via ContextBuilder trait object dispatch.
+#[allow(dead_code)]
 fn strip_minimax_xml(s: &str) -> String {
     const OPEN: &str = "<minimax:tool_call>";
     const CLOSE: &str = "</minimax:tool_call>";
@@ -418,6 +418,8 @@ fn strip_minimax_xml(s: &str) -> String {
 }
 
 /// Proactively strip tool result content from old turns to reduce LLM context on load.
+// Called from DefaultContextBuilder::build() via ContextBuilder trait object dispatch.
+#[allow(dead_code)]
 fn prune_old_tool_outputs(messages: &[hydeclaw_types::Message], keep_turns: usize) -> Vec<hydeclaw_types::Message> {
     let user_indices: Vec<usize> = messages
         .iter()
