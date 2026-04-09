@@ -115,6 +115,36 @@ pub struct BgProcess {
     pub started_at: std::time::Instant,
 }
 
+/// Stable public API for agent message processing.
+/// Gateway and scheduler code should call these methods, not access engine fields directly.
+#[async_trait::async_trait]
+pub trait AgentDispatch: Send + Sync {
+    async fn handle_sse(
+        &self,
+        msg: &IncomingMessage,
+        event_tx: mpsc::UnboundedSender<StreamEvent>,
+        resume_session_id: Option<Uuid>,
+        force_new_session: bool,
+    ) -> Result<()>;
+
+    async fn handle_with_status(
+        &self,
+        msg: &IncomingMessage,
+        status_tx: Option<mpsc::UnboundedSender<ProcessingPhase>>,
+        chunk_tx: Option<mpsc::UnboundedSender<String>>,
+    ) -> Result<String>;
+
+    async fn handle_openai(
+        &self,
+        openai_messages: &[crate::gateway::OpenAiMessage],
+        chunk_tx: Option<mpsc::UnboundedSender<String>>,
+    ) -> Result<hydeclaw_types::LlmResponse>;
+
+    async fn handle_isolated(&self, msg: &IncomingMessage) -> Result<String>;
+
+    async fn resolve_approval(&self, approval_id: Uuid, approved: bool, resolved_by: &str) -> Result<()>;
+}
+
 pub struct AgentEngine {
     pub provider: Arc<dyn LlmProvider>,
     pub agent: AgentSettings,
@@ -979,6 +1009,46 @@ mod context_impl;
 mod provider_impl;
 #[path = "engine_dispatch.rs"]
 mod dispatch_impl;
+
+// ── AgentDispatch impl ───────────────────────────────────────────────────────
+
+#[async_trait::async_trait]
+impl AgentDispatch for AgentEngine {
+    async fn handle_sse(
+        &self,
+        msg: &IncomingMessage,
+        event_tx: mpsc::UnboundedSender<StreamEvent>,
+        resume_session_id: Option<Uuid>,
+        force_new_session: bool,
+    ) -> Result<()> {
+        AgentEngine::handle_sse(self, msg, event_tx, resume_session_id, force_new_session).await
+    }
+
+    async fn handle_with_status(
+        &self,
+        msg: &IncomingMessage,
+        status_tx: Option<mpsc::UnboundedSender<ProcessingPhase>>,
+        chunk_tx: Option<mpsc::UnboundedSender<String>>,
+    ) -> Result<String> {
+        AgentEngine::handle_with_status(self, msg, status_tx, chunk_tx).await
+    }
+
+    async fn handle_openai(
+        &self,
+        openai_messages: &[crate::gateway::OpenAiMessage],
+        chunk_tx: Option<mpsc::UnboundedSender<String>>,
+    ) -> Result<hydeclaw_types::LlmResponse> {
+        AgentEngine::handle_openai(self, openai_messages, chunk_tx).await
+    }
+
+    async fn handle_isolated(&self, msg: &IncomingMessage) -> Result<String> {
+        AgentEngine::handle_isolated(self, msg).await
+    }
+
+    async fn resolve_approval(&self, approval_id: Uuid, approved: bool, resolved_by: &str) -> Result<()> {
+        AgentEngine::resolve_approval(self, approval_id, approved, resolved_by).await
+    }
+}
 
 
 
