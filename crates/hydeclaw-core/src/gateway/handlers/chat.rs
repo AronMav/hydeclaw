@@ -862,8 +862,8 @@ pub(crate) async fn api_chat_sse(
                 StreamEvent::MessageStart { message_id } => {
                     json!({"type": sse_types::START, "messageId": message_id, "agentName": current_responding_agent})
                 }
-                StreamEvent::StepStart { step_id: _ } => {
-                    continue;
+                StreamEvent::StepStart { step_id } => {
+                    json!({"type": sse_types::STEP_START, "stepId": step_id})
                 }
                 StreamEvent::TextDelta(ref text) => {
                     if session_uuid.is_none() && accumulated_text.is_empty() {
@@ -931,8 +931,8 @@ pub(crate) async fn api_chat_sse(
                         "output": result
                     })
                 }
-                StreamEvent::StepFinish { step_id: _, finish_reason: _ } => {
-                    continue;
+                StreamEvent::StepFinish { step_id, finish_reason } => {
+                    json!({"type": sse_types::STEP_FINISH, "stepId": step_id, "finishReason": finish_reason})
                 }
                 StreamEvent::RichCard { card_type, data } => {
                     json!({
@@ -952,13 +952,13 @@ pub(crate) async fn api_chat_sse(
                     current_responding_agent = new_agent;
                     continue; // Internal event — don't emit SSE
                 }
-                StreamEvent::Finish { finish_reason: _, continuation: _ } => {
+                StreamEvent::Finish { finish_reason: _, continuation } => {
                     // Send any pending text-end first
                     if let Some(text_id) = pending_text_end.take() {
                         let end_data = json!({"type": sse_types::TEXT_END, "id": text_id}).to_string();
                         let _ = send_and_buffer!(end_data);
                     }
-                    let finish_data = json!({"type": sse_types::FINISH, "agentName": current_responding_agent}).to_string();
+                    let finish_data = json!({"type": sse_types::FINISH, "agentName": current_responding_agent, "continuation": continuation}).to_string();
                     let _ = send_and_buffer!(finish_data);
                     // Final flush of streaming message + mark complete
                     // CRITICAL ORDERING: upsert → read_streaming_content → set_content → finalize (DELETE)

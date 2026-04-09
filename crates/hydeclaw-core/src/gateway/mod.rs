@@ -36,6 +36,8 @@ mod sse_types {
     pub const RICH_CARD: &str = "rich-card";
     pub const FILE: &str = "file";
     pub const SYNC: &str = "sync";
+    pub const STEP_START: &str = "step-start";
+    pub const STEP_FINISH: &str = "step-finish";
     pub const FINISH: &str = "finish";
     pub const ERROR: &str = "error";
 }
