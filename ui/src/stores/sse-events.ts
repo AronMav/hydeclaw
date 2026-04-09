@@ -19,6 +19,8 @@ export type SseEvent =
   | { type: "file"; url: string; mediaType?: string }
   | { type: "rich-card"; cardType: "table" | "metric" | "agent-turn"; data: Record<string, unknown> }
   | { type: "sync"; content: string; toolCalls: unknown[]; status: string; error?: string }
+  | { type: "tool-approval-needed"; approvalId: string; toolName: string; toolInput: Record<string, unknown>; timeoutMs: number }
+  | { type: "tool-approval-resolved"; approvalId: string; action: "approved" | "rejected" | "timeout_rejected"; modifiedInput?: Record<string, unknown> }
   | { type: "finish"; agentName?: string }
   | { type: "error"; errorText: string };
 
@@ -81,6 +83,27 @@ export function parseSseEvent(raw: string): SseEvent | null {
       return { type, agentName: typeof e.agentName === "string" ? e.agentName : undefined };
     case "error":
       return { type, errorText: typeof e.errorText === "string" ? e.errorText : "Unknown error" };
+    case "tool-approval-needed": {
+      if (typeof e.approvalId !== "string" || typeof e.toolName !== "string") return null;
+      return {
+        type,
+        approvalId: e.approvalId,
+        toolName: e.toolName,
+        toolInput: (e.toolInput as Record<string, unknown>) ?? {},
+        timeoutMs: typeof e.timeoutMs === "number" ? e.timeoutMs : 300000,
+      };
+    }
+    case "tool-approval-resolved": {
+      if (typeof e.approvalId !== "string") return null;
+      const action = e.action as string;
+      if (action !== "approved" && action !== "rejected" && action !== "timeout_rejected") return null;
+      return {
+        type,
+        approvalId: e.approvalId,
+        action,
+        modifiedInput: e.modifiedInput != null ? (e.modifiedInput as Record<string, unknown>) : undefined,
+      };
+    }
     default:
       return null;
   }
