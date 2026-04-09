@@ -33,6 +33,7 @@ import { Button } from "@/components/ui/button";
 import { RichCard } from "@/components/ui/rich-card";
 import { SlashMenu } from "./parts/SlashMenu";
 import { MessageList, MessageSkeleton } from "./MessageList";
+import { ReconnectingIndicator } from "@/components/chat/ReconnectingIndicator";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import {
   Bot,
@@ -828,6 +829,8 @@ export function ChatThread({
   const currentAgent = useChatStore((s) => s.currentAgent);
   const activeSessionId = useChatStore((s) => s.agents[s.currentAgent]?.activeSessionId ?? null);
   const connectionPhase = useChatStore((s) => s.agents[s.currentAgent]?.connectionPhase ?? "idle");
+  const reconnectAttempt = useChatStore((s) => s.agents[s.currentAgent]?.reconnectAttempt ?? 0);
+  const maxReconnectAttempts = useChatStore((s) => s.agents[s.currentAgent]?.maxReconnectAttempts ?? 3);
   const activeSessionIds = useChatStore((s) => s.agents[s.currentAgent]?.activeSessionIds ?? []);
   const engineRunning = !isActivePhase(connectionPhase) && !!activeSessionId && activeSessionIds.includes(activeSessionId);
 
@@ -916,6 +919,15 @@ export function ChatThread({
         hiddenCount={hiddenCount}
         onLoadEarlier={() => loadEarlierMessages(currentAgent)}
       />
+
+      {/* Reconnecting indicator */}
+      {connectionPhase === "reconnecting" && (
+        <ReconnectingIndicator
+          attempt={reconnectAttempt}
+          maxAttempts={maxReconnectAttempts}
+          className="my-4"
+        />
+      )}
 
       {/* Error banner */}
       {streamError && !isReadOnly && messageSource.mode !== "history" && (
