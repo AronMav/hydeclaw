@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { SseConnection } from "@/lib/sse-connection";
-import type { SseConnectionConfig, SseConnectionCallbacks } from "@/lib/sse-connection";
+import type { SseConnectionConfig, SseConnectionCallbacks, SseConnectionCallbacksWithPhase } from "@/lib/sse-connection";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -48,6 +48,28 @@ function makeCallbacks(): SseConnectionCallbacks & {
     onEvent: (e) => events.push(e),
     onError: (msg) => errors.push(msg),
     onDone: () => doneCalled++,
+  };
+}
+
+function makeCallbacksWithPhase(): SseConnectionCallbacksWithPhase & {
+  events: any[];
+  errors: string[];
+  doneCalled: number;
+  phases: string[];
+} {
+  const events: any[] = [];
+  const errors: string[] = [];
+  const phases: string[] = [];
+  let doneCalled = 0;
+  return {
+    events,
+    errors,
+    phases,
+    get doneCalled() { return doneCalled; },
+    onEvent: (e: any) => events.push(e),
+    onError: (msg: string) => errors.push(msg),
+    onDone: () => doneCalled++,
+    onPhaseChange: (phase: string) => phases.push(phase),
   };
 }
 
@@ -232,6 +254,243 @@ describe("SseConnection.connect() — GET resume stream", () => {
     expect(cbs.doneCalled).toBe(1);
     expect(cbs.errors.length).toBe(0);
     expect(cbs.events.length).toBe(0);
+  });
+});
+
+describe("SseConnection — onPhaseChange callbacks", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("calls onPhaseChange('connecting') at start and onPhaseChange('streaming') on first byte", async () => {
+    const cbs = makeCallbacksWithPhase();
+    mockFetchOk([sseChunk({ type: "finish" })]);
+    const conn = new SseConnection(
+      { url: "/api/chat", method: "POST", body: {}, token: "tok" },
+      cbs,
+    );
+    await conn.connect();
+    expect(cbs.phases).toContain("connecting");
+    expect(cbs.phases).toContain("streaming");
+    const connectingIdx = cbs.phases.indexOf("connecting");
+    const streamingIdx = cbs.phases.indexOf("streaming");
+    expect(connectingIdx).toBeLessThan(streamingIdx);
+  });
+
+  it("calls onPhaseChange('done') when stream ends naturally", async () => {
+    const cbs = makeCallbacksWithPhase();
+    mockFetchOk([sseChunk({ type: "finish" })]);
+    const conn = new SseConnection(
+      { url: "/api/chat", method: "POST", body: {}, token: "tok" },
+      cbs,
+    );
+    await conn.connect();
+    expect(cbs.phases).toContain("done");
+  });
+});
+
+describe("SseConnection — reconnect lifecycle", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("calls onPhaseChange('reconnecting') when stream ends without finish event and sessionId is set", async () => {
+    const cbs = makeCallbacksWithPhase();
+    // Stream that ends without a finish event
+    mockFetchOk([sseChunk({ type: "text-delta", delta: "partial" })]);
+    const conn = new SseConnection(
+      { url: "/api/chat", method: "POST", body: {}, token: "tok", maxRetries: 3 },
+      cbs,
+    );
+    conn.setSessionId("sess-123");
+    // Run connect but don't advance timers yet — reconnect is pending
+    const connectPromise = conn.connect();
+    await connectPromise;
+    expect(cbs.phases).toContain("reconnecting");
+  });
+
+  it("retries with exponential backoff delays (1s, 2s, 4s)", async () => {
+    const cbs = makeCallbacksWithPhase();
+    let callCount = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        // Initial POST: stream that drops without finish
+        return Promise.resolve(
+          new Response(createMockStream([sseChunk({ type: "text-delta", delta: "hi" })]), { status: 200 }),
+        );
+      }
+      // Retry GETs: return 500 to exhaust retries
+      return Promise.resolve(new Response("error", { status: 500 }));
+    });
+
+    const conn = new SseConnection(
+      { url: "/api/chat", method: "POST", body: {}, token: "tok", maxRetries: 3 },
+      cbs,
+    );
+    conn.setSessionId("sess-abc");
+    const connectPromise = conn.connect();
+    await connectPromise;
+    // First reconnect should be scheduled at 1s
+    expect(callCount).toBe(1); // only initial fetch so far
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(callCount).toBe(2); // first retry after 1s
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(callCount).toBe(3); // second retry after 2s
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(callCount).toBe(4); // third retry after 4s
+  });
+
+  it("calls onError('Max reconnect attempts exceeded') after max retries and onPhaseChange('error')", async () => {
+    const cbs = makeCallbacksWithPhase();
+    let callCount = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        return Promise.resolve(
+          new Response(createMockStream([sseChunk({ type: "text-delta", delta: "hi" })]), { status: 200 }),
+        );
+      }
+      return Promise.resolve(new Response("error", { status: 500 }));
+    });
+
+    const conn = new SseConnection(
+      { url: "/api/chat", method: "POST", body: {}, token: "tok", maxRetries: 3 },
+      cbs,
+    );
+    conn.setSessionId("sess-abc");
+    const connectPromise = conn.connect();
+    await connectPromise;
+    // Advance through all retry delays: 1s + 2s + 4s
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(cbs.errors).toContain("Max reconnect attempts exceeded");
+    expect(cbs.phases).toContain("error");
+  });
+
+  it("stop() during reconnect backoff does NOT trigger further retries", async () => {
+    const cbs = makeCallbacksWithPhase();
+    let callCount = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+      callCount++;
+      // Initial fetch: stream drops without finish
+      return Promise.resolve(
+        new Response(createMockStream([sseChunk({ type: "text-delta", delta: "hi" })]), { status: 200 }),
+      );
+    });
+
+    const conn = new SseConnection(
+      { url: "/api/chat", method: "POST", body: {}, token: "tok", maxRetries: 3 },
+      cbs,
+    );
+    conn.setSessionId("sess-abc");
+    const connectPromise = conn.connect();
+    await connectPromise;
+    // Reconnect should be pending now (phases contains "reconnecting")
+    expect(cbs.phases).toContain("reconnecting");
+    // Stop before the backoff timer fires
+    conn.stop();
+    // Advance 5 seconds — should not trigger any retry fetch
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(callCount).toBe(1); // only the initial fetch
+  });
+
+  it("reconnect uses GET /api/chat/{sessionId}/stream (resume endpoint)", async () => {
+    const cbs = makeCallbacksWithPhase();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((url, init) => {
+      if ((init as RequestInit)?.method === "POST") {
+        // Initial POST: stream drops without finish
+        return Promise.resolve(
+          new Response(createMockStream([sseChunk({ type: "text-delta", delta: "hi" })]), { status: 200 }),
+        );
+      }
+      // GET resume: return 204 (engine finished)
+      return Promise.resolve(new Response(null, { status: 204 }));
+    });
+
+    const conn = new SseConnection(
+      { url: "/api/chat", method: "POST", body: {}, token: "tok", maxRetries: 3 },
+      cbs,
+    );
+    conn.setSessionId("sess-xyz");
+    const connectPromise = conn.connect();
+    await connectPromise;
+    await vi.advanceTimersByTimeAsync(1000);
+    // Check that GET was called with the correct resume URL
+    const calls = fetchMock.mock.calls;
+    const getCall = calls.find(([, init]) => (init as RequestInit)?.method === "GET");
+    expect(getCall).toBeDefined();
+    expect(getCall![0]).toBe("/api/chat/sess-xyz/stream");
+  });
+
+  it("on 204 resume response, calls onDone (natural completion, not error)", async () => {
+    const cbs = makeCallbacksWithPhase();
+    vi.spyOn(globalThis, "fetch").mockImplementation((url, init) => {
+      if ((init as RequestInit)?.method === "POST") {
+        return Promise.resolve(
+          new Response(createMockStream([sseChunk({ type: "text-delta", delta: "hi" })]), { status: 200 }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 204 }));
+    });
+
+    const conn = new SseConnection(
+      { url: "/api/chat", method: "POST", body: {}, token: "tok", maxRetries: 3 },
+      cbs,
+    );
+    conn.setSessionId("sess-xyz");
+    const connectPromise = conn.connect();
+    await connectPromise;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(cbs.doneCalled).toBeGreaterThan(0);
+    expect(cbs.errors.length).toBe(0);
+  });
+
+  it("if resume returns non-ok status, counts as failed attempt and retries", async () => {
+    const cbs = makeCallbacksWithPhase();
+    let callCount = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => {
+      callCount++;
+      if ((init as RequestInit)?.method === "POST") {
+        return Promise.resolve(
+          new Response(createMockStream([sseChunk({ type: "text-delta", delta: "hi" })]), { status: 200 }),
+        );
+      }
+      // First retry: 503, second: 204
+      if (callCount === 2) return Promise.resolve(new Response("", { status: 503 }));
+      return Promise.resolve(new Response(null, { status: 204 }));
+    });
+
+    const conn = new SseConnection(
+      { url: "/api/chat", method: "POST", body: {}, token: "tok", maxRetries: 3 },
+      cbs,
+    );
+    conn.setSessionId("sess-retry");
+    const connectPromise = conn.connect();
+    await connectPromise;
+    await vi.advanceTimersByTimeAsync(1000); // first retry → 503
+    await vi.advanceTimersByTimeAsync(2000); // second retry → 204
+    expect(cbs.doneCalled).toBeGreaterThan(0);
+  });
+
+  it("does NOT reconnect when no sessionId is set (no session to resume)", async () => {
+    const cbs = makeCallbacksWithPhase();
+    mockFetchOk([sseChunk({ type: "text-delta", delta: "hi" })]);
+    const conn = new SseConnection(
+      { url: "/api/chat", method: "POST", body: {}, token: "tok", maxRetries: 3 },
+      cbs,
+    );
+    // Do NOT call conn.setSessionId(...)
+    const connectPromise = conn.connect();
+    await connectPromise;
+    await vi.advanceTimersByTimeAsync(5000);
+    // No reconnect phases should be emitted
+    expect(cbs.phases).not.toContain("reconnecting");
+    // onDone called (treated as natural end since no session to reconnect)
+    expect(cbs.doneCalled).toBe(1);
   });
 });
 
