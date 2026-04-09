@@ -6,6 +6,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useTranslation } from "@/hooks/use-translation";
 import type { ChatMessage, MessagePart, ToolPart, ToolPartState } from "@/stores/chat-store";
 import { formatMessageTime } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import { ChevronRight } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { BarsLoader } from "@/components/ui/loader";
@@ -200,7 +201,13 @@ function UserMessage({ message, sessionChannel, sessionUserId }: { message: Chat
     : undefined;
 
   return (
-    <div data-role="user" className="group flex gap-3 py-5 md:py-6 border-t border-border/30 dark:border-border/20 first:border-t-0">
+    <div
+      data-role={isAgentSender ? "agent-sender" : "user"}
+      className={cn(
+        "group flex gap-3 py-5 md:py-6 border-t border-border/30 dark:border-border/20 first:border-t-0",
+        isAgentSender && "bg-muted/20 dark:bg-muted/10 rounded-lg px-3"
+      )}
+    >
       <span className="message-avatar">
         <RoleAvatar
           role={isAgentSender ? "agent-sender" : "user"}

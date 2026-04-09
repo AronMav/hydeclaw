@@ -482,6 +482,7 @@ export const useChatStore = create<ChatStore>()(
       agentTurns: [],  // Reset for new stream
       turnCount: 0,
       turnLimitMessage: null,
+      pendingTargetAgent: null,  // clear stale target from previous stream
     });
     saveUiState(agent);
 
@@ -547,8 +548,9 @@ export const useChatStore = create<ChatStore>()(
     let reasoningAccum = ""; // reasoning text accumulator
     const toolInputChunks = new Map<string, string[]>();
     let receivedSessionId: string | null = null;
-    // Initialize from pendingTargetAgent so first render shows correct avatar
-    let currentRespondingAgent: string | null = get().agents[agent]?.pendingTargetAgent ?? null;
+    // Initialize from pendingTargetAgent so first render shows correct avatar.
+    // Fall back to primary agent name so single-agent sessions never produce undefined agentId.
+    let currentRespondingAgent: string | null = get().agents[agent]?.pendingTargetAgent ?? agent;
 
     function flushText() {
       if (!currentTextId) return;
