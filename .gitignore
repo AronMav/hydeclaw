@@ -12,6 +12,9 @@ test.env
 .DS_Store
 Thumbs.db
 node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
 .next/
 out/
 ui-lit/
