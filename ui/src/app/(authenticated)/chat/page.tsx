@@ -115,46 +115,36 @@ export default function ChatPage() {
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const isReadOnly = activeSession?.channel === "heartbeat" || activeSession?.channel === "cron" || activeSession?.channel === "inter-agent";
 
-  // Session restore on mount or agent switch
+  // Session restore on mount or agent switch.
+  // Simple and robust: wait for sessions, pick the best one, select it.
   useEffect(() => {
-    if (!currentAgent) return;
-
-    const agentState = useChatStore.getState().agents[currentAgent];
-
-    // If already viewing something (live stream or selected session) — don't override
-    if (agentState?.messageSource?.mode === "live" || agentState?.activeSessionId) {
-      restoredAgents.current.add(currentAgent);
-      return;
-    }
+    if (!currentAgent || sessionsLoading) return;
 
     // Already restored this agent — skip
     if (restoredAgents.current.has(currentAgent)) return;
-
-    // Wait for sessions to load
-    if (sessionsLoading) return;
-
     restoredAgents.current.add(currentAgent);
 
-    // Priority 1: URL ?s= param
+    const agentState = useChatStore.getState().agents[currentAgent];
+
+    // If already streaming — don't touch
+    if (isActivePhase(agentState?.connectionPhase)) return;
+
+    // If already viewing a session — don't touch
+    if (agentState?.activeSessionId) return;
+
+    // Priority 1: URL ?s= param (deep link)
     if (urlSessionId && sessions.some((s) => s.id === urlSessionId)) {
       useChatStore.getState().selectSession(urlSessionId, currentAgent);
       return;
     }
 
-    // Priority 2: Last session from localStorage
-    const lastSid = getLastSessionId(currentAgent);
-    if (lastSid && sessions.some((s) => s.id === lastSid)) {
-      useChatStore.getState().selectSession(lastSid, currentAgent);
-      return;
-    }
-
-    // Priority 3: Most recent session
+    // Priority 2: Most recent session (sessions are sorted by recency from API)
     if (sessions.length > 0) {
       useChatStore.getState().selectSession(sessions[0].id, currentAgent);
       return;
     }
 
-    // No sessions — new chat
+    // No sessions at all — new chat
     useChatStore.getState().newChat();
   }, [sessionsLoading, sessions, currentAgent, urlSessionId]);
 
