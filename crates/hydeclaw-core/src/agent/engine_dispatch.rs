@@ -267,10 +267,10 @@ impl AgentEngine {
                 // If approved with modified args, re-inject _context and recurse into execute_tool_call
                 if let Some(mut modified) = effective_args {
                     // Preserve internal _context from original arguments
-                    if let Some(ctx) = arguments.get("_context") {
-                        if let Some(obj) = modified.as_object_mut() {
-                            obj.insert("_context".to_string(), ctx.clone());
-                        }
+                    if let Some(ctx) = arguments.get("_context")
+                        && let Some(obj) = modified.as_object_mut()
+                    {
+                        obj.insert("_context".to_string(), ctx.clone());
                     }
                     return self.execute_tool_call(name, &modified).await;
                 }
