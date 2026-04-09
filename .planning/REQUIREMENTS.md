@@ -17,8 +17,8 @@ Requirements for Chat Redesign milestone. ChatGPT-level UX quality.
 ### History & Restore
 
 - [ ] **HIST-01**: F5 → history загружается мгновенно, никаких ghost thinking avatars
-- [ ] **HIST-02**: MessageSource discriminated union заменяет viewMode + liveMessages двойственность
-- [ ] **HIST-03**: streamGeneration counter per-agent (не module-scope) — смена агента не убивает чужой stream
+- [x] **HIST-02**: MessageSource discriminated union заменяет viewMode + liveMessages двойственность
+- [x] **HIST-03**: streamGeneration counter per-agent (не module-scope) — смена агента не убивает чужой stream
 
 ### SSE Connection
 
@@ -60,8 +60,8 @@ Requirements for Chat Redesign milestone. ChatGPT-level UX quality.
 | FSM-03      | Phase 41 | Complete |
 | FSM-04      | Phase 41 | Complete |
 | HIST-01     | Phase 42 | Pending |
-| HIST-02     | Phase 42 | Pending |
-| HIST-03     | Phase 42 | Pending |
+| HIST-02     | Phase 42 | Complete |
+| HIST-03     | Phase 42 | Complete |
 | SSE-01      | Phase 40 | Complete |
 | SSE-02      | Phase 43 | Pending |
 | SSE-03      | Phase 43 | Pending |

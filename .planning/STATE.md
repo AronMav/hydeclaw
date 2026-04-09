@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v0.12.0
 milestone_name: Chat Redesign
-status: verifying
-stopped_at: Completed 41-02-PLAN.md tasks 1-2, checkpoint at task 3
-last_updated: "2026-04-09T11:48:21.402Z"
+status: executing
+stopped_at: Completed 42-01-PLAN.md
+last_updated: "2026-04-09T12:10:39.529Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 6
   completed_phases: 2
-  total_plans: 3
-  completed_plans: 3
+  total_plans: 5
+  completed_plans: 4
   percent: 0
 ---
 
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-09)
 
 **Core value:** Стабильная и безопасная AI-платформа с self-hosted фокусом
-**Current focus:** Phase 41 — ConnectionPhase FSM
+**Current focus:** Phase 42 — History & MessageSource
 
 ## Current Position
 
-Phase: 41 (ConnectionPhase FSM) — EXECUTING
+Phase: 42 (History & MessageSource) — EXECUTING
 Plan: 2 of 2
-Status: Phase complete — ready for verification
+Status: Ready to execute
 Last activity: 2026-04-09
 
 Progress: ░░░░░░░░░░ 0% (0/6 phases)
@@ -43,6 +43,7 @@ Progress: ░░░░░░░░░░ 0% (0/6 phases)
 | Phase 40-sseconnection-extraction P01 | 8 | 2 tasks | 3 files |
 | Phase 41-connectionphase-fsm P01 | 25 | 2 tasks | 3 files |
 | Phase 41-connectionphase-fsm P02 | 8 | 2 tasks | 4 files |
+| Phase 42-history-messagesource P01 | 25 | 2 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -65,6 +66,8 @@ Progress: ░░░░░░░░░░ 0% (0/6 phases)
 - [Phase 41]: IncrementalParser.reset() called on finish events to prevent reasoning state leaking between agent turns
 - [Phase 41]: sessionStorage streaming flag cleared atomically in finish handler (not just sync)
 - [Phase 41]: showThinking = connectionPhase === submitted || engineRunning (removed 4-signal expression and sessionStorage fallback)
+- [Phase 42]: MessageSource discriminated union (new-chat|live|history) replaces viewMode+liveMessages dual-semantics in AgentState
+- [Phase 42]: Per-agent streamGenerations[agent] Record — module-scope counter replacement prevents concurrent stream killing when switching agents
 
 ### Pending Todos
 
@@ -78,6 +81,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-09T11:48:21.398Z
-Stopped at: Completed 41-02-PLAN.md tasks 1-2, checkpoint at task 3
+Last session: 2026-04-09T12:10:39.526Z
+Stopped at: Completed 42-01-PLAN.md
 Resume with: `/gsd:plan-phase 40`

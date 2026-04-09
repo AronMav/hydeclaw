@@ -66,9 +66,9 @@ Plans:
   2. Pressing F5 while a stream is actively running shows the history seed and then continues showing live tokens as they arrive
   3. Switching agents while agent A is streaming does not kill agent A's stream — both agents' state is independent
   4. Selecting a completed session from the sidebar shows the correct history without duplicate user messages
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 Plans:
-- [ ] 42-01-PLAN.md — Replace viewMode+liveMessages with MessageSource union; per-agent streamGeneration
+- [x] 42-01-PLAN.md — Replace viewMode+liveMessages with MessageSource union; per-agent streamGeneration
 - [ ] 42-02-PLAN.md — Fix F5 history restore; seed resumeStream from cache; human verify
 **UI hint**: yes
 
@@ -112,7 +112,7 @@ Plans:
 |-------|-----------|----------------|--------|-----------|
 | 40. SseConnection Extraction | v0.12.0 | 1/1 | Complete    | 2026-04-09 |
 | 41. ConnectionPhase FSM | v0.12.0 | 2/2 | Complete    | 2026-04-09 |
-| 42. History & MessageSource | v0.12.0 | 0/2 | In progress | - |
+| 42. History & MessageSource | v0.12.0 | 1/2 | In Progress|  |
 | 43. Reconnect & Optimistic UI | v0.12.0 | 0/TBD | Not started | - |
 | 44. UX Polish | v0.12.0 | 0/TBD | Not started | - |
 | 45. Cleanup | v0.12.0 | 0/TBD | Not started | - |
