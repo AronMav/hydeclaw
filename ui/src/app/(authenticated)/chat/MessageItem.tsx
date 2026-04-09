@@ -7,7 +7,7 @@ import { useTranslation } from "@/hooks/use-translation";
 import type { ChatMessage, MessagePart, ToolPart, ToolPartState } from "@/stores/chat-store";
 import { formatMessageTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { ChevronRight } from "lucide-react";
+import { AlertCircle, ChevronRight } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { BarsLoader } from "@/components/ui/loader";
 import { MessageActions } from "./MessageActions";
@@ -206,12 +206,16 @@ function UserMessage({ message, sessionChannel, sessionUserId }: { message: Chat
     ? `/uploads/${agentIcons[senderAgentName]}`
     : undefined;
 
+  const isSending = message.status === "sending";
+  const isFailed = message.status === "failed";
+
   return (
     <div
       data-role={isAgentSender ? "agent-sender" : "user"}
       className={cn(
         "group flex gap-3 py-5 md:py-6 border-t border-border/30 dark:border-border/20 first:border-t-0",
-        isAgentSender && "bg-muted/20 dark:bg-muted/10 rounded-lg px-3"
+        isAgentSender && "bg-muted/20 dark:bg-muted/10 rounded-lg px-3",
+        isFailed && "border-l-2 border-l-destructive pl-3"
       )}
     >
       <span className="message-avatar">
@@ -235,9 +239,22 @@ function UserMessage({ message, sessionChannel, sessionUserId }: { message: Chat
           </div>
           <MessageActions message={message} showReload={false} />
         </div>
-        <div className="min-w-0 space-y-3">
+        <div className={cn("min-w-0 space-y-3", isSending && "opacity-70")}>
           {message.parts.map((part, i) => renderPart(part, i))}
         </div>
+        {isFailed && (
+          <div className="flex items-center gap-2 mt-1 text-xs text-destructive">
+            <AlertCircle className="h-3 w-3 shrink-0" />
+            <span>{t("chat.failedToSend")}</span>
+            <button
+              type="button"
+              className="underline hover:no-underline"
+              onClick={() => useChatStore.getState().regenerate()}
+            >
+              {t("chat.retry")}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
