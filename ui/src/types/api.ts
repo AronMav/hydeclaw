@@ -122,6 +122,8 @@ export interface MessageRow {
   status: string;
   feedback: number;
   edited_at: string | null;
+  parent_message_id: string | null;
+  branch_from_message_id: string | null;
 }
 
 export interface CronJob {
