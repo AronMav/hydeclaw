@@ -12,11 +12,19 @@ import { MermaidBlock } from "./mermaid-block"
 
 // ── Math Detection ─────────────────────────────────────────────────────────
 
-// Detect math content: $...$, $$...$$, \(...\), \[...\]
-const MATH_PATTERN = /\$\$[\s\S]+?\$\$|\$[^\s$].*?[^\s$]\$|\\[([]\s*[\s\S]*?\s*\\[\])]/
+// Detect math content: $$...$$, \(...\), \[...\], and inline $...$ only when
+// the content between $ signs contains at least one LaTeX operator (\, ^, _, {, })
+// to avoid false positives on currency ($100) or Cyrillic text near $ signs.
+const DISPLAY_MATH = /\$\$[\s\S]+?\$\$|\\[([]\s*[\s\S]*?\s*\\[\])]/
+const INLINE_MATH = /\$[^\s$].*?[^\s$]\$/
 
 function hasMathContent(content: string): boolean {
-  return MATH_PATTERN.test(content)
+  if (DISPLAY_MATH.test(content)) return true
+  const m = content.match(INLINE_MATH)
+  if (!m) return false
+  // Only treat inline $...$ as math if it contains a LaTeX operator
+  const inner = m[0].slice(1, -1)
+  return /[\\^_{}]/.test(inner)
 }
 
 // ── Block Key & Fence Detection ────────────────────────────────────────────
