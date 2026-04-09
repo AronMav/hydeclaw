@@ -83,8 +83,8 @@ export default function ChatPage() {
   const sessions = sessionsData?.sessions ?? EMPTY_SESSIONS;
   const activeSessionId = useChatStore((s) => s.agents[s.currentAgent]?.activeSessionId ?? null);
   const activeSessionIds = useChatStore((s) => s.agents[s.currentAgent]?.activeSessionIds ?? EMPTY_ACTIVE);
-  const viewMode = useChatStore((s) => s.agents[s.currentAgent]?.viewMode ?? "live");
-  const viewingHistory = viewMode === "history";
+  const messageSource = useChatStore((s) => s.agents[s.currentAgent]?.messageSource ?? { mode: "new-chat" as const });
+  const viewingHistory = messageSource.mode === "history";
   const streamError = useChatStore((s) => s.agents[s.currentAgent]?.streamError ?? null);
   const isStreaming = isActivePhase(useChatStore((s) => s.agents[s.currentAgent]?.connectionPhase ?? "idle"));
 
@@ -123,9 +123,14 @@ export default function ChatPage() {
     // CRITICAL: If there's an active stream, DON'T touch anything — just show live view
     if (isActivePhase(agentState?.connectionPhase)) {
       restoredAgents.current.add(currentAgent);
-      if (agentState?.viewMode !== "live") {
+      if (agentState?.messageSource?.mode !== "live") {
         useChatStore.setState((draft) => {
-          if (draft.agents[currentAgent]) draft.agents[currentAgent].viewMode = "live";
+          if (draft.agents[currentAgent]) {
+            const current = draft.agents[currentAgent].messageSource;
+            if (current.mode !== "live") {
+              draft.agents[currentAgent].messageSource = { mode: "live", messages: [] };
+            }
+          }
         });
       }
       return;
@@ -190,7 +195,7 @@ export default function ChatPage() {
     queryClient.invalidateQueries({ queryKey: qk.sessions(s.currentAgent) });
     const agentState = s.agents[s.currentAgent];
     // Silently refresh history messages (no loading indicator to avoid flicker)
-    if (agentState?.viewMode === "history" && agentState.activeSessionId && !isActivePhase(agentState.connectionPhase)) {
+    if (agentState?.messageSource?.mode === "history" && agentState.activeSessionId && !isActivePhase(agentState.connectionPhase)) {
       s.refreshHistory(agentState.activeSessionId);
     }
   }, []));
