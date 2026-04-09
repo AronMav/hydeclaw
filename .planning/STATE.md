@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v0.12.0
 milestone_name: Chat Redesign
-status: verifying
-stopped_at: Completed 40-01-PLAN.md (awaiting human verify checkpoint)
-last_updated: "2026-04-09T11:25:27.309Z"
+status: executing
+stopped_at: Completed 41-01-PLAN.md
+last_updated: "2026-04-09T11:42:53.442Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 6
   completed_phases: 1
-  total_plans: 1
+  total_plans: 3
   completed_plans: 1
   percent: 0
 ---
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-09)
 
 **Core value:** Стабильная и безопасная AI-платформа с self-hosted фокусом
-**Current focus:** Phase 40 — SseConnection Extraction
+**Current focus:** Phase 41 — ConnectionPhase FSM
 
 ## Current Position
 
-Phase: 40 (SseConnection Extraction) — EXECUTING
-Plan: 1 of 1
-Status: Phase complete — ready for verification
+Phase: 41 (ConnectionPhase FSM) — EXECUTING
+Plan: 2 of 2
+Status: Ready to execute
 Last activity: 2026-04-09
 
 Progress: ░░░░░░░░░░ 0% (0/6 phases)
@@ -41,6 +41,7 @@ Progress: ░░░░░░░░░░ 0% (0/6 phases)
 | Requirements mapped  | 15/15 |
 | Coverage             | 100%  |
 | Phase 40-sseconnection-extraction P01 | 8 | 2 tasks | 3 files |
+| Phase 41-connectionphase-fsm P01 | 25 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -59,6 +60,9 @@ Progress: ░░░░░░░░░░ 0% (0/6 phases)
 - [Architecture]: `streamGeneration` must become per-agent — module-scope counter silently kills concurrent streams
 - [Phase 40-sseconnection-extraction]: SseConnection.onDone called only on natural completion; finalizeStream is always natural-end path
 - [Phase 40-sseconnection-extraction]: streamGeneration kept as module-global (per-agent is Phase 45 CLN-02 scope)
+- [Phase 41]: ConnectionPhase runs in parallel with StreamStatus (Phase 45 CLN-01 removes it)
+- [Phase 41]: IncrementalParser.reset() called on finish events to prevent reasoning state leaking between agent turns
+- [Phase 41]: sessionStorage streaming flag cleared atomically in finish handler (not just sync)
 
 ### Pending Todos
 
@@ -72,6 +76,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-09T11:25:27.306Z
-Stopped at: Completed 40-01-PLAN.md (awaiting human verify checkpoint)
+Last session: 2026-04-09T11:42:53.439Z
+Stopped at: Completed 41-01-PLAN.md
 Resume with: `/gsd:plan-phase 40`

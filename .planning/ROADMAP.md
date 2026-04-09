@@ -51,7 +51,10 @@ Plans:
   3. After the stream completes (finish event), the thinking indicator is gone and the full response is visible — no residual spinner
   4. In a multi-agent session, switching between agent turns does not leave an orphaned thinking indicator from the previous turn
   5. `IncrementalParser` resets between agent turns — second agent's text is not misclassified as reasoning
-**Plans**: TBD
+**Plans:** 0/2 plans executed
+Plans:
+- [ ] 41-01-PLAN.md — Add ConnectionPhase enum to AgentState, wire transitions, add IncrementalParser.reset()
+- [ ] 41-02-PLAN.md — Replace 4-signal showThinking with connectionPhase, remove sessionStorage flag, human verify
 **UI hint**: yes
 
 ### Phase 42: History & MessageSource
@@ -104,8 +107,8 @@ Plans:
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 40. SseConnection Extraction | v0.12.0 | 1/1 | Complete   | 2026-04-09 |
-| 41. ConnectionPhase FSM | v0.12.0 | 0/TBD | Not started | - |
+| 40. SseConnection Extraction | v0.12.0 | 1/1 | Complete    | 2026-04-09 |
+| 41. ConnectionPhase FSM | v0.12.0 | 0/2 | Planned    |  |
 | 42. History & MessageSource | v0.12.0 | 0/TBD | Not started | - |
 | 43. Reconnect & Optimistic UI | v0.12.0 | 0/TBD | Not started | - |
 | 44. UX Polish | v0.12.0 | 0/TBD | Not started | - |

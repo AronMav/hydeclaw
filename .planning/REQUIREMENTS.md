@@ -9,10 +9,10 @@ Requirements for Chat Redesign milestone. ChatGPT-level UX quality.
 
 ### Chat State Machine
 
-- [ ] **FSM-01**: ConnectionPhase enum (idle → submitted → streaming → complete → error) заменяет 4 boolean flags
+- [x] **FSM-01**: ConnectionPhase enum (idle → submitted → streaming → complete → error) заменяет 4 boolean flags
 - [ ] **FSM-02**: ThinkingMessage рендерится ТОЛЬКО когда phase=submitted AND нет assistant parts
-- [ ] **FSM-03**: finish SSE event атомарно переводит state в idle и очищает все streaming флаги
-- [ ] **FSM-04**: IncrementalParser сбрасывается между agent turns в multi-agent сессии
+- [x] **FSM-03**: finish SSE event атомарно переводит state в idle и очищает все streaming флаги
+- [x] **FSM-04**: IncrementalParser сбрасывается между agent turns в multi-agent сессии
 
 ### History & Restore
 
@@ -55,10 +55,10 @@ Requirements for Chat Redesign milestone. ChatGPT-level UX quality.
 
 | Requirement | Phase    | Status  |
 | ----------- | -------- | ------- |
-| FSM-01      | Phase 41 | Pending |
+| FSM-01      | Phase 41 | Complete |
 | FSM-02      | Phase 41 | Pending |
-| FSM-03      | Phase 41 | Pending |
-| FSM-04      | Phase 41 | Pending |
+| FSM-03      | Phase 41 | Complete |
+| FSM-04      | Phase 41 | Complete |
 | HIST-01     | Phase 42 | Pending |
 | HIST-02     | Phase 42 | Pending |
 | HIST-03     | Phase 42 | Pending |
