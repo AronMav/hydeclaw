@@ -116,9 +116,12 @@ export default function ChatPage() {
   const isReadOnly = activeSession?.channel === "heartbeat" || activeSession?.channel === "cron" || activeSession?.channel === "inter-agent";
 
   // Session restore on mount or agent switch.
+  // IMPORTANT: Wait until sessions are ACTUALLY loaded (not just isLoading=false with empty data).
+  // React Query can report isLoading=false before the first fetch completes (initial state).
+  const sessionsReady = !sessionsLoading && sessionsData !== undefined;
   useEffect(() => {
-    console.log("[RESTORE]", { currentAgent, sessionsLoading, sessionsCount: sessions.length, restored: restoredAgents.current.has(currentAgent ?? "") });
-    if (!currentAgent || sessionsLoading) return;
+    console.log("[RESTORE]", { currentAgent, sessionsLoading, sessionsReady, sessionsCount: sessions.length, restored: restoredAgents.current.has(currentAgent ?? "") });
+    if (!currentAgent || !sessionsReady) return;
 
     // Already restored this agent — skip
     if (restoredAgents.current.has(currentAgent)) return;
@@ -133,9 +136,17 @@ export default function ChatPage() {
       return;
     }
 
-    // If already viewing a session — don't touch
-    if (agentState?.activeSessionId) {
-      console.log("[RESTORE] SKIP: has activeSessionId", agentState.activeSessionId);
+    // If has activeSessionId but UI shows new-chat — WS set the ID but didn't load the session.
+    // Load it now.
+    if (agentState?.activeSessionId && agentState?.messageSource?.mode === "new-chat") {
+      console.log("[RESTORE] FIX: has sessionId but mode=new-chat, selecting", agentState.activeSessionId);
+      useChatStore.getState().selectSession(agentState.activeSessionId, currentAgent);
+      return;
+    }
+
+    // If already viewing a real session (live or history) — don't touch
+    if (agentState?.activeSessionId && agentState?.messageSource?.mode !== "new-chat") {
+      console.log("[RESTORE] SKIP: already viewing session", agentState.activeSessionId);
       return;
     }
 
@@ -155,7 +166,7 @@ export default function ChatPage() {
 
     console.log("[RESTORE] NEW CHAT: no sessions");
     useChatStore.getState().newChat();
-  }, [sessionsLoading, sessions, currentAgent, urlSessionId]);
+  }, [sessionsReady, sessions, currentAgent, urlSessionId]);
 
   // Sync activeSessionId → URL ?s= param
   useEffect(() => {
