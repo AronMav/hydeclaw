@@ -69,7 +69,6 @@ vi.mock("@/stores/chat-store", () => ({
         activeSessionId: null,
         activeSessionIds: [],
         messageSource: { mode: "new-chat" },
-        streamStatus: "idle",
         streamError: null,
         inputText: "",
       };
@@ -82,7 +81,7 @@ vi.mock("@/stores/chat-store", () => ({
     {
       getState: () => ({
         currentAgent: "Agent1",
-        agents: { Agent1: { activeSessionId: null, activeSessionIds: [], messageSource: { mode: "new-chat" }, streamStatus: "idle" } },
+        agents: { Agent1: { activeSessionId: null, activeSessionIds: [], messageSource: { mode: "new-chat" }, connectionPhase: "idle" } },
         regenerate: vi.fn(),
         clearError: vi.fn(),
         sendMessage: vi.fn(),
@@ -95,7 +94,6 @@ vi.mock("@/stores/chat-store", () => ({
       }),
     },
   ),
-  isActiveStream: () => false,
   isActivePhase: () => false,
   convertHistory: () => [],
   MAX_INPUT_LENGTH: 32000,

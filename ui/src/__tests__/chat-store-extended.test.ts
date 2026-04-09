@@ -12,7 +12,6 @@ vi.mock("@/lib/api", () => ({
 }));
 
 import {
-  isActiveStream,
   convertHistory,
   MAX_INPUT_LENGTH,
   getInitialAgent,
@@ -254,12 +253,10 @@ describe("STATE-01: history to live transition", () => {
         s.agents["TestAgent"] = {
           activeSessionId: "sess-history",
           messageSource: { mode: "history", sessionId: "sess-history" },
-          streamStatus: "idle",
           streamError: null,
           connectionPhase: "idle",
           connectionError: null,
           forceNewSession: false,
-          thinkingSessionId: null,
           activeSessionIds: [],
           renderLimit: 100,
           modelOverride: null,
@@ -271,7 +268,7 @@ describe("STATE-01: history to live transition", () => {
       } else {
         s.agents["TestAgent"].messageSource = { mode: "history", sessionId: "sess-history" };
         s.agents["TestAgent"].activeSessionId = "sess-history";
-        s.agents["TestAgent"].streamStatus = "idle";
+        s.agents["TestAgent"].connectionPhase = "idle";
       }
     });
 

@@ -63,7 +63,6 @@ const mockChatStoreState: Record<string, unknown> = {
       activeSessionId: null,
       activeSessionIds: [],
       messageSource: { mode: "new-chat" },
-      streamStatus: "idle",
       streamError: null,
       inputText: "",
       pendingTargetAgent: null,
@@ -100,7 +99,7 @@ vi.mock("@/stores/chat-store", () => ({
     {
       getState: () => ({
         currentAgent: "TestAgent",
-        agents: { TestAgent: { activeSessionId: null, activeSessionIds: [], messageSource: { mode: "new-chat" }, streamStatus: "idle" } },
+        agents: { TestAgent: { activeSessionId: null, activeSessionIds: [], messageSource: { mode: "new-chat" }, connectionPhase: "idle" } },
         regenerate: vi.fn(),
         clearError: vi.fn(),
         sendMessage: vi.fn(),
@@ -110,7 +109,6 @@ vi.mock("@/stores/chat-store", () => ({
       }),
     },
   ),
-  isActiveStream: () => false,
   convertHistory: () => [],
   MAX_INPUT_LENGTH: 32000,
 }));
