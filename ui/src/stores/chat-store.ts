@@ -10,9 +10,16 @@ import { qk } from "@/lib/queries";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Generate cryptographically secure UUID v4 */
+/** Generate UUID v4 — crypto.randomUUID in secure contexts, fallback for plain HTTP */
 function uuid(): string {
-  return crypto.randomUUID();
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  // Fallback for non-secure contexts (HTTP, not HTTPS)
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────

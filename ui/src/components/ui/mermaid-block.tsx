@@ -35,7 +35,7 @@ export function MermaidBlock({ code }: { code: string }) {
             padding: 15,
           },
         })
-        const id = `mermaid-${crypto.randomUUID()}`
+        const id = `mermaid-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`
         const { svg } = await mermaid.render(id, code)
         // Sanitize with DOMPurify — allow foreignObject + style for htmlLabels
         const sanitized = DOMPurify.sanitize(svg, {
