@@ -72,7 +72,7 @@ export interface ToolPart {
 
 export interface RichCardPart {
   type: "rich-card";
-  cardType: "table" | "metric" | "agent-turn";
+  cardType: string;
   data: Record<string, unknown>;
 }
 
