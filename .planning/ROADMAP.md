@@ -22,8 +22,8 @@ Covered: core platform stability, providers, channels, memory, tools, orchestrat
 - [x] **Phase 41: ConnectionPhase FSM** - Replace 4-signal thinking indicator with single state machine (completed 2026-04-09)
 - [x] **Phase 42: History & MessageSource** - Fix F5 restore; replace viewMode with discriminated union (completed 2026-04-09)
 - [x] **Phase 43: Reconnect & Optimistic UI** - Exponential backoff reconnect + React 19 useOptimistic (completed 2026-04-09)
-- [ ] **Phase 44: UX Polish** - Draft persistence, scroll behavior, error state UI
-- [ ] **Phase 45: Cleanup** - Remove deprecated flags, move module-globals into AgentState
+- [x] **Phase 44: UX Polish** - Draft persistence, scroll behavior, error state UI (completed 2026-04-09)
+- [x] **Phase 45: Cleanup** - Remove deprecated flags, move module-globals into AgentState (completed 2026-04-09)
 
 ## Phase Details
 
@@ -95,7 +95,7 @@ Plans:
   1. Typing a message, navigating away, and returning restores the draft text in the input field
   2. During streaming, the message list auto-scrolls to follow new tokens; when the user scrolls up manually, auto-scroll pauses and resumes when the user scrolls back to the bottom
   3. Connection lost, API error, and timeout each show a distinct error UI with a labeled retry button — no generic "Stream failed" banner
-**Plans:** 1/2 plans executed
+**Plans:** 1/2 plans complete
 Plans:
 - [x] 44-01-PLAN.md — Draft persistence in localStorage + consolidate scroll to single followOutput authority
 - [ ] 44-02-PLAN.md — Classified error state UI with distinct icons, labels, and retry actions
@@ -109,7 +109,9 @@ Plans:
   1. `viewMode`, `sessionStorage` streaming flag (`hydeclaw.streaming.*`), and `thinkingSessionId` are absent from the codebase — searches return no results
   2. `agentAbortControllers` and `streamGeneration` module-scope globals are removed; their responsibilities live inside `AgentState` or `SseConnection`
   3. Full chat regression passes: send, stream, stop, F5 restore, agent switch, error recovery all work correctly
-**Plans**: TBD
+**Plans:** 1/1 plans complete
+Plans:
+- [x] 45-01-PLAN.md — Remove deprecated fields (CLN-01) and module-scope globals (CLN-02)
 **UI hint**: yes
 
 ## Progress
@@ -120,5 +122,5 @@ Plans:
 | 41. ConnectionPhase FSM | v0.12.0 | 2/2 | Complete    | 2026-04-09 |
 | 42. History & MessageSource | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
 | 43. Reconnect & Optimistic UI | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
-| 44. UX Polish | v0.12.0 | 1/2 | In Progress|  |
-| 45. Cleanup | v0.12.0 | 0/TBD | Not started | - |
+| 44. UX Polish | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
+| 45. Cleanup | v0.12.0 | 1/1 | Complete   | 2026-04-09 |

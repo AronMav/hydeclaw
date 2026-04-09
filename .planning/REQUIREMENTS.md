@@ -34,8 +34,8 @@ Requirements for Chat Redesign milestone. ChatGPT-level UX quality.
 
 ### Cleanup
 
-- [ ] **CLN-01**: Удалить deprecated viewMode, sessionStorage streaming flag, thinkingSessionId
-- [ ] **CLN-02**: Удалить module-scope globals — переместить в AgentState
+- [x] **CLN-01**: Удалить deprecated viewMode, sessionStorage streaming flag, thinkingSessionId
+- [x] **CLN-02**: Удалить module-scope globals — переместить в AgentState
 
 ## Future Requirements
 
@@ -68,5 +68,5 @@ Requirements for Chat Redesign milestone. ChatGPT-level UX quality.
 | UX-01       | Phase 44 | Complete |
 | UX-02       | Phase 44 | Complete |
 | UX-03       | Phase 44 | Pending |
-| CLN-01      | Phase 45 | Pending |
-| CLN-02      | Phase 45 | Pending |
+| CLN-01      | Phase 45 | Complete |
+| CLN-02      | Phase 45 | Complete |
