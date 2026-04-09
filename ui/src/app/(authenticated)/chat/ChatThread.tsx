@@ -45,6 +45,9 @@ import {
   RotateCcw,
   X,
   Loader2,
+  WifiOff,
+  Clock,
+  AlertTriangle,
 } from "lucide-react";
 
 const EMPTY_LIVE_MESSAGES: ChatMessage[] = [];
@@ -265,6 +268,23 @@ export function MentionAutocomplete({ query, agents, onSelect }: {
   );
 }
 
+// ── Draft persistence helpers ─────────────────────────────────────────────────
+
+const DRAFT_PREFIX = "hydeclaw.draft.";
+
+export function saveDraft(agent: string, text: string) {
+  if (text) localStorage.setItem(DRAFT_PREFIX + agent, text);
+  else localStorage.removeItem(DRAFT_PREFIX + agent);
+}
+
+export function loadDraft(agent: string): string {
+  return localStorage.getItem(DRAFT_PREFIX + agent) ?? "";
+}
+
+export function clearDraft(agent: string) {
+  localStorage.removeItem(DRAFT_PREFIX + agent);
+}
+
 // ── Composer ──────────────────────────────────────────────────────────────────
 
 interface AttachmentEntry {
@@ -300,6 +320,23 @@ function ChatComposer() {
     }
   }, []);
 
+  // Restore draft when mounting or switching agents
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const draft = loadDraft(currentAgent);
+    if (draft) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(ta, draft);
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    } else {
+      // Clear textarea when switching to an agent with no draft
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(ta, "");
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  }, [currentAgent]);
+
   // Auto-resize textarea — use "0px" reset instead of "auto" to prevent flicker on paste
   const autoResize = useCallback(() => {
     const ta = textareaRef.current;
@@ -312,6 +349,7 @@ function ChatComposer() {
     const ta = e.target instanceof HTMLTextAreaElement ? e.target : null;
     if (!ta) return;
     setHasInput(!!ta.value.trim());
+    saveDraft(currentAgent, ta.value);
     autoResize();
     const val = ta.value;
     if (val.startsWith("/") && !val.includes(" ") && !val.includes("\n") && !val.slice(1).includes("/")) {
@@ -411,6 +449,7 @@ function ChatComposer() {
     const text = textareaRef.current?.value?.trim() ?? "";
     if (!text && attachments.length === 0) return;
     useChatStore.getState().sendMessage(text);
+    clearDraft(useChatStore.getState().currentAgent);
     setAttachments([]);
     setHasInput(false);
     if (textareaRef.current) {
@@ -647,6 +686,25 @@ function ErrorText({ text }: { text: string }) {
 
 // ── Error banner ─────────────────────────────────────────────────────────────
 
+export type StreamErrorType = "connection_lost" | "timeout" | "api_error";
+
+export function classifyStreamError(error: string): StreamErrorType {
+  const lower = error.toLowerCase();
+  if (
+    lower.includes("connection lost") ||
+    lower.includes("failed to fetch") ||
+    lower.includes("network") ||
+    lower.includes("disconnected") ||
+    lower.includes("aborted")
+  ) {
+    return "connection_lost";
+  }
+  if (lower.includes("timeout") || lower.includes("timed out")) {
+    return "timeout";
+  }
+  return "api_error";
+}
+
 function ErrorBanner({
   error,
   hasMessages,
@@ -659,24 +717,61 @@ function ErrorBanner({
   onRetry: () => void;
 }) {
   const { t } = useTranslation();
+  const errorType = classifyStreamError(error);
+
+  const isAmber = errorType === "connection_lost" || errorType === "timeout";
+  const containerClass = isAmber
+    ? "border-amber-500/30 bg-amber-500/5 dark:bg-amber-500/15 text-amber-700 dark:text-amber-400"
+    : "border-destructive/30 bg-destructive/5 dark:bg-destructive/15 text-destructive";
+
+  const IconComponent =
+    errorType === "connection_lost" ? WifiOff :
+    errorType === "timeout" ? Clock :
+    AlertTriangle;
+
+  const label =
+    errorType === "connection_lost" ? t("chat.error_connection_lost") :
+    errorType === "timeout" ? t("chat.error_timeout") :
+    t("chat.error_api");
+
+  const retryLabel =
+    errorType === "connection_lost" ? t("chat.error_reconnect") : t("error.retry");
+
+  const buttonHoverClass = isAmber
+    ? "hover:bg-amber-500/10 text-amber-700 dark:text-amber-400"
+    : "text-destructive hover:bg-destructive/10";
+
+  const closeHoverClass = isAmber
+    ? "hover:bg-amber-500/20 text-amber-700/60 hover:text-amber-700 dark:text-amber-400/60 dark:hover:text-amber-400"
+    : "hover:bg-destructive/20 text-destructive/60 hover:text-destructive";
+
   return (
     <div className="shrink-0 px-3 md:px-4 pb-1">
-      <div className="mx-auto max-w-4xl flex items-center gap-3 rounded-lg border border-destructive/30 bg-destructive/5 dark:bg-destructive/15 px-4 py-2.5 text-sm text-destructive font-medium">
+      <div
+        data-testid="stream-error-banner"
+        data-error-type={errorType}
+        className={cn(
+          "mx-auto max-w-4xl flex items-center gap-3 rounded-lg border px-4 py-2.5 text-sm font-medium",
+          containerClass,
+        )}
+      >
+        <IconComponent className="h-4 w-4 shrink-0" />
+        <span className="shrink-0 font-semibold">{label}</span>
         <ErrorText text={error} />
         {hasMessages && (
           <Button
             variant="ghost"
             size="xs"
-            className="text-destructive hover:bg-destructive/10 shrink-0"
+            className={cn("shrink-0", buttonHoverClass)}
             onClick={onRetry}
           >
             <RotateCcw className="h-3 w-3 mr-1" />
-            {t("error.retry")}
+            {retryLabel}
           </Button>
         )}
         <button
           onClick={onClear}
-          className="shrink-0 rounded p-0.5 hover:bg-destructive/20 text-destructive/60 hover:text-destructive transition-colors"
+          className={cn("shrink-0 rounded p-0.5 transition-colors", closeHoverClass)}
         >
           <X className="h-3.5 w-3.5" />
         </button>
