@@ -165,6 +165,35 @@ impl SessionManager {
         .await
     }
 
+    /// Save a message with branch metadata (parent pointer + fork origin).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn save_message_branched(
+        &self,
+        session_id: Uuid,
+        role: &str,
+        content: &str,
+        tool_calls: Option<&serde_json::Value>,
+        tool_call_id: Option<&str>,
+        sender_agent_id: Option<&str>,
+        thinking_blocks: Option<&serde_json::Value>,
+        parent_message_id: Option<Uuid>,
+        branch_from_message_id: Option<Uuid>,
+    ) -> Result<Uuid> {
+        crate::db::sessions::save_message_branched(
+            &self.db,
+            session_id,
+            role,
+            content,
+            tool_calls,
+            tool_call_id,
+            sender_agent_id,
+            thinking_blocks,
+            parent_message_id,
+            branch_from_message_id,
+        )
+        .await
+    }
+
     /// Update the session `run_status` field.
     pub async fn set_run_status(&self, session_id: Uuid, status: &str) -> Result<()> {
         crate::db::sessions::set_session_run_status(&self.db, session_id, status).await
