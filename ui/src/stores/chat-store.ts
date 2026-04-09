@@ -156,6 +156,8 @@ interface AgentState {
   turnCount: number;
   /** Inline message when turn limit or cycle detection stops the loop. */
   turnLimitMessage: string | null;
+  /** Per-agent stream generation counter (CLN-02 HIST-03) — detects stale SSE deltas. */
+  streamGeneration: number;
 }
 
 function emptyAgentState(): AgentState {
@@ -173,6 +175,7 @@ function emptyAgentState(): AgentState {
     agentTurns: [],
     turnCount: 0,
     turnLimitMessage: null,
+    streamGeneration: 0,
   };
 }
 
@@ -180,21 +183,30 @@ function emptyAgentState(): AgentState {
 
 const LAST_SESSION_KEY = "hydeclaw.chat.lastSession";
 
-// Per-agent abort controllers (keyed by agent name, not module-scoped)
-const agentAbortControllers: Record<string, AbortController | null> = {};
+// ── CLN-02: Encapsulated non-serializable state ──────────────────────────────
+// AbortController and setTimeout handles are not plain objects — Immer cannot
+// proxy or freeze them. They live in private Maps behind accessor helpers so
+// no bare module-scope mutable Records remain.
 
-// Per-agent stream generation counters (HIST-03) — prevents stale SSE deltas from
-// writing to wrong session after session switch. Module-scope let replaced with Record
-// so switching agent A→B does not reset A's generation and kill its active stream.
-const streamGenerations: Record<string, number> = {};
+const _abortControllers = new Map<string, AbortController | null>();
+const _reconnectTimers = new Map<string, ReturnType<typeof setTimeout> | null>();
 
-// ── Reconnect constants and state (SSE-02) ───────────────────────────────────
+function getAbortCtrl(agent: string): AbortController | null {
+  return _abortControllers.get(agent) ?? null;
+}
+function setAbortCtrl(agent: string, ctrl: AbortController | null): void {
+  _abortControllers.set(agent, ctrl);
+}
+function getReconnectTimer(agent: string): ReturnType<typeof setTimeout> | null {
+  return _reconnectTimers.get(agent) ?? null;
+}
+function setReconnectTimer(agent: string, timer: ReturnType<typeof setTimeout> | null): void {
+  _reconnectTimers.set(agent, timer);
+}
+
+// ── Reconnect constants (SSE-02) ─────────────────────────────────────────────
 const MAX_RECONNECT_ATTEMPTS = 3;
 const RECONNECT_DELAY_BASE_MS = 1000;
-
-// Per-agent reconnect timers — cleared on stopStream/abortActiveStream to prevent
-// reconnect after user-initiated abort.
-const reconnectTimers: Record<string, ReturnType<typeof setTimeout> | null> = {};
 
 interface ChatStore {
   /** Per-agent state map. */
@@ -440,15 +452,16 @@ export const useChatStore = create<ChatStore>()(
     if (st && st.connectionPhase === "streaming") return;
 
     // Clear any existing reconnect timer before starting a new stream
-    if (reconnectTimers[agent]) {
-      clearTimeout(reconnectTimers[agent]!);
-      reconnectTimers[agent] = null;
+    const existingTimer = getReconnectTimer(agent);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      setReconnectTimer(agent, null);
     }
     abortActiveStream(agent);
-    streamGenerations[agent] = (streamGenerations[agent] ?? 0) + 1;
-    const myGeneration = streamGenerations[agent];
+    update(agent, { streamGeneration: (get().agents[agent]?.streamGeneration ?? 0) + 1 });
+    const myGeneration = get().agents[agent]?.streamGeneration ?? 1;
     const controller = new AbortController();
-    agentAbortControllers[agent] = controller;
+    setAbortCtrl(agent, controller);
 
     // Seed with history from React Query cache so UI shows messages immediately (Fix A).
     // Read getCachedHistoryMessages BEFORE the update() call — never call get() inside set().
@@ -499,13 +512,15 @@ export const useChatStore = create<ChatStore>()(
   /** Abort active stream for an agent and reset status. */
   function abortActiveStream(agent: string) {
     // Clear any pending reconnect timer first — prevents reconnect after abort
-    if (reconnectTimers[agent]) {
-      clearTimeout(reconnectTimers[agent]!);
-      reconnectTimers[agent] = null;
+    const timer = getReconnectTimer(agent);
+    if (timer) {
+      clearTimeout(timer);
+      setReconnectTimer(agent, null);
     }
-    if (agentAbortControllers[agent]) {
-      agentAbortControllers[agent].abort();
-      agentAbortControllers[agent] = null;
+    const ctrl = getAbortCtrl(agent);
+    if (ctrl) {
+      ctrl.abort();
+      setAbortCtrl(agent, null);
       update(agent, { connectionPhase: "idle" });
     }
   }
@@ -527,20 +542,20 @@ export const useChatStore = create<ChatStore>()(
     }
     update(agent, { connectionPhase: "reconnecting", connectionError: null });
     const delay = RECONNECT_DELAY_BASE_MS * Math.pow(2, attempt);
-    reconnectTimers[agent] = setTimeout(() => {
-      reconnectTimers[agent] = null;
+    setReconnectTimer(agent, setTimeout(() => {
+      setReconnectTimer(agent, null);
       // resumeStream handles 204 (engine finished) gracefully
       resumeStream(agent, sessionId, attempt + 1);
-    }, delay);
+    }, delay));
   }
 
   // ── SSE stream handler ──
   function startStream(agent: string, sessionId: string | null, messages: ChatMessage[], userText: string) {
     abortActiveStream(agent);
-    streamGenerations[agent] = (streamGenerations[agent] ?? 0) + 1;
-    const myGeneration = streamGenerations[agent];
+    update(agent, { streamGeneration: (get().agents[agent]?.streamGeneration ?? 0) + 1 });
+    const myGeneration = get().agents[agent]?.streamGeneration ?? 1;
     const controller = new AbortController();
-    agentAbortControllers[agent] = controller;
+    setAbortCtrl(agent, controller);
 
     // Build user message — optimistic status: "sending" until data-session-id confirms receipt
     const userMsg: ChatMessage = {
@@ -650,7 +665,7 @@ export const useChatStore = create<ChatStore>()(
 
     function pushUpdate() {
       // Guard: stale stream — a newer stream has started, discard updates
-      if (generation !== streamGenerations[agent]) return;
+      if (generation !== (get().agents[agent]?.streamGeneration ?? 0)) return;
       // Guard: don't update store after abort (prevents race with stopStream)
       if (signal.aborted) return;
 
@@ -726,7 +741,7 @@ export const useChatStore = create<ChatStore>()(
           switch (event.type) {
             case "data-session-id": {
               const sid = event.data.sessionId;
-              if (sid && generation === streamGenerations[agent]) {
+              if (sid && generation === (get().agents[agent]?.streamGeneration ?? 0)) {
                 receivedSessionId = sid;
                 // SSE-03: Confirm the optimistic user message — server has accepted it.
                 // Find the last "sending" user message and mark it confirmed.
@@ -1087,9 +1102,10 @@ export const useChatStore = create<ChatStore>()(
       }
 
       // Abort stream for the agent being left
-      if (agentAbortControllers[prev]) {
-        agentAbortControllers[prev].abort();
-        agentAbortControllers[prev] = null;
+      const prevCtrl = getAbortCtrl(prev);
+      if (prevCtrl) {
+        prevCtrl.abort();
+        setAbortCtrl(prev, null);
         update(prev, { connectionPhase: "idle" });
       }
       ensure(name);
@@ -1141,9 +1157,10 @@ export const useChatStore = create<ChatStore>()(
       set({ currentAgent: agent });
       ensure(agent);
       // Abort any active stream for this agent
-      if (agentAbortControllers[agent]) {
-        agentAbortControllers[agent].abort();
-        agentAbortControllers[agent] = null;
+      const sbiCtrl = getAbortCtrl(agent);
+      if (sbiCtrl) {
+        sbiCtrl.abort();
+        setAbortCtrl(agent, null);
       }
       update(agent, {
         activeSessionId: sessionId,
@@ -1157,8 +1174,8 @@ export const useChatStore = create<ChatStore>()(
 
     newChat: () => {
       const agent = get().currentAgent;
-      agentAbortControllers[agent]?.abort();
-      agentAbortControllers[agent] = null;
+      getAbortCtrl(agent)?.abort();
+      setAbortCtrl(agent, null);
       update(agent, {
         activeSessionId: null,
         messageSource: { mode: "new-chat" },
@@ -1260,12 +1277,13 @@ export const useChatStore = create<ChatStore>()(
     stopStream: () => {
       const agent = get().currentAgent;
       // Clear any pending reconnect timer — user abort must not trigger reconnect
-      if (reconnectTimers[agent]) {
-        clearTimeout(reconnectTimers[agent]!);
-        reconnectTimers[agent] = null;
+      const stopTimer = getReconnectTimer(agent);
+      if (stopTimer) {
+        clearTimeout(stopTimer);
+        setReconnectTimer(agent, null);
       }
-      agentAbortControllers[agent]?.abort();
-      agentAbortControllers[agent] = null;
+      getAbortCtrl(agent)?.abort();
+      setAbortCtrl(agent, null);
       update(agent, { connectionPhase: "idle" });
     },
 
@@ -1276,8 +1294,8 @@ export const useChatStore = create<ChatStore>()(
 
       // Abort any active stream first
       if (isActivePhase(st.connectionPhase)) {
-        agentAbortControllers[agent]?.abort();
-        agentAbortControllers[agent] = null;
+        getAbortCtrl(agent)?.abort();
+        setAbortCtrl(agent, null);
         update(agent, { connectionPhase: "idle" });
       }
 
@@ -1316,8 +1334,8 @@ export const useChatStore = create<ChatStore>()(
       const st = store.agents[agent] ?? emptyAgentState();
 
       if (isActivePhase(st.connectionPhase)) {
-        agentAbortControllers[agent]?.abort();
-        agentAbortControllers[agent] = null;
+        getAbortCtrl(agent)?.abort();
+        setAbortCtrl(agent, null);
         update(agent, { connectionPhase: "idle" });
       }
 
@@ -1368,8 +1386,8 @@ export const useChatStore = create<ChatStore>()(
       const st = get().agents[agent];
       if (st?.activeSessionId === sessionId) {
         // Use captured `agent` — currentAgent may have changed during await
-        agentAbortControllers[agent]?.abort();
-        agentAbortControllers[agent] = null;
+        getAbortCtrl(agent)?.abort();
+        setAbortCtrl(agent, null);
         update(agent, {
           activeSessionId: null, messageSource: { mode: "new-chat" },
           streamError: null,
@@ -1385,8 +1403,8 @@ export const useChatStore = create<ChatStore>()(
       const agent = get().currentAgent;
       await apiDelete(`/api/sessions?agent=${encodeURIComponent(agent)}`);
       // Use captured `agent` — currentAgent may have changed during await
-      agentAbortControllers[agent]?.abort();
-      agentAbortControllers[agent] = null;
+      getAbortCtrl(agent)?.abort();
+      setAbortCtrl(agent, null);
       update(agent, {
         activeSessionId: null, messageSource: { mode: "new-chat" },
         streamError: null,
