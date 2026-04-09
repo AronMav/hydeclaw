@@ -4,19 +4,16 @@ import { TrendingUp, TrendingDown, Minus } from "lucide-react";
 export function RichCard({ part }: { part: RichCardPart }) {
   const { cardType, data } = part;
 
-  if (cardType === "table") {
-    return <TableCard data={data} />;
-  }
-
-  if (cardType === "metric") {
-    return <MetricCard data={data} />;
-  }
-
-  // Fallback: render raw JSON
   return (
-    <pre className="rounded-lg border bg-muted/30 p-4 text-sm font-mono whitespace-pre-wrap overflow-auto">
-      {JSON.stringify(data, null, 2)}
-    </pre>
+    <div style={{ contentVisibility: "auto", containIntrinsicSize: "0 200px" }}>
+      {cardType === "table" && <TableCard data={data} />}
+      {cardType === "metric" && <MetricCard data={data} />}
+      {cardType !== "table" && cardType !== "metric" && (
+        <pre className="rounded-lg border bg-muted/30 p-4 text-sm font-mono whitespace-pre-wrap overflow-auto">
+          {JSON.stringify(data, null, 2)}
+        </pre>
+      )}
+    </div>
   );
 }
 
