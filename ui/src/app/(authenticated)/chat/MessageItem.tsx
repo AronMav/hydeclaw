@@ -60,14 +60,13 @@ function renderPart(part: MessagePart, index: number) {
     case "reasoning":
       return <ReasoningPart key={index} text={part.text} />;
     case "tool": {
-      const tp = part as ToolPart;
       return (
         <ToolCallPartView
           key={index}
-          toolName={tp.toolName}
-          args={tp.input as Record<string, unknown>}
-          result={tp.output}
-          status={{ type: mapToolPartState(tp.state) }}
+          toolName={part.toolName}
+          args={part.input}
+          result={part.output}
+          status={{ type: mapToolPartState(part.state) }}
         />
       );
     }
@@ -126,7 +125,7 @@ function ToolCallGroup({ parts }: { parts: ToolPart[] }) {
             <ToolCallPartView
               key={i}
               toolName={tp.toolName}
-              args={tp.input as Record<string, unknown>}
+              args={tp.input}
               result={tp.output}
               status={{ type: mapToolPartState(tp.state) }}
             />
@@ -148,7 +147,8 @@ function renderPartsWithGrouping(parts: MessagePart[]) {
       // Collect consecutive tool parts
       const toolRun: ToolPart[] = [];
       while (i < parts.length && parts[i].type === "tool") {
-        toolRun.push(parts[i] as ToolPart);
+        const p = parts[i];
+        if (p.type === "tool") toolRun.push(p);
         i++;
       }
 
@@ -162,7 +162,7 @@ function renderPartsWithGrouping(parts: MessagePart[]) {
             <ToolCallPartView
               key={`tool-${i - toolRun.length + j}`}
               toolName={tp.toolName}
-              args={tp.input as Record<string, unknown>}
+              args={tp.input}
               result={tp.output}
               status={{ type: mapToolPartState(tp.state) }}
             />

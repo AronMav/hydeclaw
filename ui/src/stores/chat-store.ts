@@ -61,7 +61,7 @@ export interface ToolPart {
   toolCallId: string;
   toolName: string;
   state: ToolPartState;
-  input: unknown;
+  input: Record<string, unknown>;
   output?: unknown;
   errorText?: string;
 }
@@ -322,7 +322,7 @@ export function convertHistory(rows: MessageRow[]): ChatMessage[] {
           toolCallId: m.tool_call_id,
           toolName: tc?.name || "tool",
           state: "output-available",
-          input: tc?.arguments ?? {},
+          input: (tc?.arguments as Record<string, unknown>) ?? {},
           output: cleanLines.join("\n"),
         });
       }
@@ -772,7 +772,7 @@ export const useChatStore = create<ChatStore>()(
                 (p) => p.type === "tool" && p.toolCallId === tcId,
               );
               if (idx >= 0) {
-                parts[idx] = { ...(parts[idx] as ToolPart), state: "input-available", input };
+                parts[idx] = { ...(parts[idx] as ToolPart), state: "input-available", input: (input as Record<string, unknown>) ?? {} };
               }
               scheduleUpdate();
               break;

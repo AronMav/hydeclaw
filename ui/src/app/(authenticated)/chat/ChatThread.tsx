@@ -146,9 +146,10 @@ export function RichCardDataPartView({ data }: { data: Record<string, unknown> }
   const { cardType, ...rest } = data;
   // Render agent-turn cards as visual separators instead of generic rich cards
   if (cardType === "agent-turn" && typeof rest.agentName === "string") {
-    return <AgentTurnSeparator data={{ agentName: rest.agentName as string, reason: (rest.reason as string) ?? "" }} animate={false} />;
+    return <AgentTurnSeparator data={{ agentName: rest.agentName, reason: typeof rest.reason === "string" ? rest.reason : "" }} animate={false} />;
   }
-  return <RichCard part={{ type: "rich-card", cardType: cardType as "table" | "metric", data: rest }} />;
+  const validCardType = cardType === "table" || cardType === "metric" ? cardType : "table";
+  return <RichCard part={{ type: "rich-card", cardType: validCardType, data: rest }} />;
 }
 
 // ── Empty state ──────────────────────────────────────────────────────────────
