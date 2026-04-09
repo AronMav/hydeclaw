@@ -156,6 +156,51 @@ describe("convertHistory", () => {
   });
 });
 
+// ── STATE-03: convertHistory agentId forward-fill ───────────────────────────
+
+describe("STATE-03: convertHistory agentId forward-fill", () => {
+  it("forward-fills agentId from last seen non-null agent_id", () => {
+    // rows: user(AgentA), assistant(AgentA), tool(null), assistant(null)
+    // The second assistant should inherit AgentA via forward-fill
+    const rows: MessageRow[] = [
+      makeRow({ id: "u1", role: "user", content: "hi", agent_id: "AgentA" }),
+      makeRow({
+        id: "a1",
+        role: "assistant",
+        content: "",
+        agent_id: "AgentA",
+        tool_calls: [{ id: "tc1", name: "search", arguments: {} }],
+      }),
+      makeRow({ id: "t1", role: "tool", content: "result", tool_call_id: "tc1", agent_id: null }),
+      makeRow({ id: "a2", role: "assistant", content: "Done", agent_id: null }),
+    ];
+    const msgs = convertHistory(rows);
+    const assistantMsgs = msgs.filter(m => m.role === "assistant");
+    // Both assistant messages should have agentId="AgentA"
+    expect(assistantMsgs[0].agentId).toBe("AgentA");
+    expect(assistantMsgs[1].agentId).toBe("AgentA");
+  });
+
+  it("does not forward-fill agentId when a new agent_id appears", () => {
+    const rows: MessageRow[] = [
+      makeRow({ id: "a1", role: "assistant", content: "First", agent_id: "AgentA" }),
+      makeRow({ id: "a2", role: "assistant", content: "Second", agent_id: "AgentB" }),
+    ];
+    const msgs = convertHistory(rows);
+    const assistantMsgs = msgs.filter(m => m.role === "assistant");
+    expect(assistantMsgs[0].agentId).toBe("AgentA");
+    expect(assistantMsgs[1].agentId).toBe("AgentB");
+  });
+
+  it("leaves agentId undefined when no prior agent_id exists", () => {
+    const rows: MessageRow[] = [
+      makeRow({ id: "a1", role: "assistant", content: "Solo", agent_id: null }),
+    ];
+    const msgs = convertHistory(rows);
+    expect(msgs[0].agentId).toBeUndefined();
+  });
+});
+
 // ── localStorage helpers ────────────────────────────────────────────────────
 
 describe("getInitialAgent", () => {

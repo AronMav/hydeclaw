@@ -318,6 +318,24 @@ describe("Multi-Agent Identity (MAID)", () => {
     });
   });
 
+  // STATE-03: Agent avatar stable after forward-fill
+  describe("STATE-03: agent avatar stable with forward-filled agentId", () => {
+    it("STATE-03: renders correct agent name for message with forward-filled agentId", () => {
+      // Simulates a message where agentId was forward-filled from a prior DB row
+      // (i.e., DB had null agent_id, convertHistory filled it from the previous non-null row)
+      const msg = makeMsg({
+        id: "ff-1",
+        role: "assistant",
+        agentId: "Agent1",
+        parts: [{ type: "text", text: "Reply from forward-filled agent" }],
+      });
+
+      render(<MessageItem message={msg} />);
+      // Agent name should be visible, proving forward-filled agentId is respected
+      expect(screen.getByText("Agent1")).toBeInTheDocument();
+    });
+  });
+
   // MAID-04: No assistant-ui hooks for agent identity
   describe("MAID-04: No assistant-ui identity dependency", () => {
     it("MessageItem uses agentId from message prop directly without assistant-ui hooks", () => {
