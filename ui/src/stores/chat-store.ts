@@ -107,11 +107,12 @@ export function isActiveStream(status: StreamStatus | undefined): boolean {
  * Single authoritative phase enum for stream lifecycle state.
  * Replaces fragmented StreamStatus — Phase 45 CLN-01 will remove StreamStatus.
  * "complete" is a transient phase between finish event and finalizeStream.
+ * "reconnecting" is set when stream drops mid-run and backoff retry is pending.
  */
-export type ConnectionPhase = "idle" | "submitted" | "streaming" | "complete" | "error";
+export type ConnectionPhase = "idle" | "submitted" | "streaming" | "reconnecting" | "complete" | "error";
 
 export function isActivePhase(phase: ConnectionPhase | undefined): boolean {
-  return phase === "submitted" || phase === "streaming";
+  return phase === "submitted" || phase === "streaming" || phase === "reconnecting";
 }
 
 // ── MessageSource discriminated union (HIST-02) ─────────────────────────────
@@ -197,6 +198,14 @@ const agentAbortControllers: Record<string, AbortController | null> = {};
 // writing to wrong session after session switch. Module-scope let replaced with Record
 // so switching agent A→B does not reset A's generation and kill its active stream.
 const streamGenerations: Record<string, number> = {};
+
+// ── Reconnect constants and state (SSE-02) ───────────────────────────────────
+const MAX_RECONNECT_ATTEMPTS = 3;
+const RECONNECT_DELAY_BASE_MS = 1000;
+
+// Per-agent reconnect timers — cleared on stopStream/abortActiveStream to prevent
+// reconnect after user-initiated abort.
+const reconnectTimers: Record<string, ReturnType<typeof setTimeout> | null> = {};
 
 interface ChatStore {
   /** Per-agent state map. */
@@ -439,11 +448,16 @@ export const useChatStore = create<ChatStore>()(
    * Resume an active backend stream after page reload.
    * Connects to GET /api/chat/{sessionId}/stream and processes replay + live events.
    */
-  function resumeStream(agent: string, sessionId: string) {
-    // Don't resume if already streaming
+  function resumeStream(agent: string, sessionId: string, reconnectAttempt = 0) {
+    // Don't resume if already streaming (but allow reconnect path even in "reconnecting" phase)
     const st = get().agents[agent];
-    if (st && isActiveStream(st.streamStatus)) return;
+    if (st && st.streamStatus === "streaming") return;
 
+    // Clear any existing reconnect timer before starting a new stream
+    if (reconnectTimers[agent]) {
+      clearTimeout(reconnectTimers[agent]!);
+      reconnectTimers[agent] = null;
+    }
     abortActiveStream(agent);
     streamGenerations[agent] = (streamGenerations[agent] ?? 0) + 1;
     const myGeneration = streamGenerations[agent];
@@ -484,21 +498,56 @@ export const useChatStore = create<ChatStore>()(
         if (!resp.ok) {
           return resp.text().then((t) => { throw new Error(t || `HTTP ${resp.status}`); });
         }
-        return processSSEStream(agent, resp.body!, controller.signal, myGeneration);
+        return processSSEStream(agent, resp.body!, controller.signal, myGeneration, sessionId, reconnectAttempt);
       })
       .catch((err) => {
         if (err.name === "AbortError") return;
-        update(agent, { streamStatus: "idle", connectionPhase: "idle" });
+        // Network error during reconnect — schedule next retry
+        if (reconnectAttempt < MAX_RECONNECT_ATTEMPTS) {
+          scheduleReconnect(agent, sessionId, reconnectAttempt);
+        } else {
+          update(agent, { streamStatus: "idle", connectionPhase: "idle" });
+        }
       });
   }
 
   /** Abort active stream for an agent and reset status. */
   function abortActiveStream(agent: string) {
+    // Clear any pending reconnect timer first — prevents reconnect after abort
+    if (reconnectTimers[agent]) {
+      clearTimeout(reconnectTimers[agent]!);
+      reconnectTimers[agent] = null;
+    }
     if (agentAbortControllers[agent]) {
       agentAbortControllers[agent].abort();
       agentAbortControllers[agent] = null;
       update(agent, { streamStatus: "idle", connectionPhase: "idle" });
     }
+  }
+
+  // ── Reconnect scheduling (SSE-02) ────────────────────────────────────────────
+  /**
+   * Schedule an exponential-backoff reconnect for an agent.
+   * Called when processSSEStream exits without receiving a finish event.
+   * Cleared by abortActiveStream/stopStream (user-initiated aborts must NOT retry).
+   */
+  function scheduleReconnect(agent: string, sessionId: string, attempt: number) {
+    if (attempt >= MAX_RECONNECT_ATTEMPTS) {
+      update(agent, {
+        streamStatus: "error",
+        streamError: "Connection lost after retries",
+        connectionPhase: "error",
+        connectionError: "Connection lost after retries",
+      });
+      return;
+    }
+    update(agent, { connectionPhase: "reconnecting", connectionError: null });
+    const delay = RECONNECT_DELAY_BASE_MS * Math.pow(2, attempt);
+    reconnectTimers[agent] = setTimeout(() => {
+      reconnectTimers[agent] = null;
+      // resumeStream handles 204 (engine finished) gracefully
+      resumeStream(agent, sessionId, attempt + 1);
+    }, delay);
   }
 
   // ── SSE stream handler ──
@@ -580,6 +629,8 @@ export const useChatStore = create<ChatStore>()(
     body: ReadableStream<Uint8Array>,
     signal: AbortSignal,
     generation: number,
+    knownSessionId?: string,
+    reconnectAttempt = 0,
   ) {
     const reader = body.getReader();
     const decoder = new TextDecoder();
@@ -591,7 +642,9 @@ export const useChatStore = create<ChatStore>()(
     let parts: MessagePart[] = [];
     const incrementalParser = new IncrementalParser();
     const toolInputChunks = new Map<string, string[]>();
-    let receivedSessionId: string | null = null;
+    let receivedSessionId: string | null = knownSessionId ?? null;
+    // Track finish event to distinguish natural end from connection drop
+    let receivedFinishEvent = false;
     // Initialize from pendingTargetAgent so first render shows correct avatar.
     // Fall back to primary agent name so single-agent sessions never produce undefined agentId.
     let currentRespondingAgent: string | null = get().agents[agent]?.pendingTargetAgent ?? agent;
@@ -876,6 +929,8 @@ export const useChatStore = create<ChatStore>()(
             }
 
             case "finish": {
+              // Mark natural end — distinguishes from connection drop in finally block
+              receivedFinishEvent = true;
               // Cancel any pending update and do synchronous update
               cancelScheduledUpdate();
               flushText();
@@ -938,8 +993,17 @@ export const useChatStore = create<ChatStore>()(
       if (!signal.aborted) {
         // Only push if there's content — avoids phantom empty message after finish reset
         if (parts.length > 0) pushUpdate();
-        // Preserve error status if error event was already received
+
+        // SSE-02: Detect connection drop (stream ended without finish event).
+        // If we have a session ID and haven't been aborted, schedule reconnect.
         const isError = get().agents[agent]?.streamStatus === "error";
+        if (!isError && !receivedFinishEvent && receivedSessionId) {
+          // Connection dropped mid-stream — schedule exponential backoff reconnect
+          scheduleReconnect(agent, receivedSessionId, reconnectAttempt);
+          return;
+        }
+
+        // Preserve error status if error event was already received
         if (!isError) {
           update(agent, {
             streamStatus: "idle",
@@ -1201,6 +1265,11 @@ export const useChatStore = create<ChatStore>()(
 
     stopStream: () => {
       const agent = get().currentAgent;
+      // Clear any pending reconnect timer — user abort must not trigger reconnect
+      if (reconnectTimers[agent]) {
+        clearTimeout(reconnectTimers[agent]!);
+        reconnectTimers[agent] = null;
+      }
       agentAbortControllers[agent]?.abort();
       agentAbortControllers[agent] = null;
       update(agent, { streamStatus: "idle", connectionPhase: "idle" });
