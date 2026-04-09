@@ -327,7 +327,7 @@ use crate::agent::session_manager::{SessionLifecycleGuard, SessionManager};
 
 /// Convert a DB MessageRow into a typed Message.
 /// Parses tool_calls JSON exactly once per row (ENG-02).
-fn row_to_message(row: &crate::db::sessions::MessageRow) -> Message {
+pub(crate) fn row_to_message(row: &crate::db::sessions::MessageRow) -> Message {
     let tool_calls = row.tool_calls.as_ref().and_then(|tc| {
         serde_json::from_value::<Vec<hydeclaw_types::ToolCall>>(tc.clone()).ok()
     });
@@ -1050,7 +1050,181 @@ impl AgentDispatch for AgentEngine {
     }
 }
 
+// ── ContextBuilderDeps impl ───────────────────────────────────────────────────
 
+#[async_trait::async_trait]
+impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
+    async fn session_resume(&self, sid: Uuid) -> Result<Uuid> {
+        SessionManager::new(self.db.clone()).resume(sid).await
+    }
+
+    async fn session_create_new(&self, user_id: &str, channel: &str) -> Result<Uuid> {
+        SessionManager::new(self.db.clone())
+            .create_new(&self.agent.name, user_id, channel)
+            .await
+    }
+
+    async fn session_get_or_create(
+        &self,
+        user_id: &str,
+        channel: &str,
+        dm_scope: &str,
+    ) -> Result<Uuid> {
+        SessionManager::new(self.db.clone())
+            .get_or_create(&self.agent.name, user_id, channel, dm_scope)
+            .await
+    }
+
+    async fn session_load_messages(
+        &self,
+        session_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<crate::db::sessions::MessageRow>> {
+        SessionManager::new(self.db.clone())
+            .load_messages(session_id, Some(limit))
+            .await
+    }
+
+    async fn session_insert_missing_tool_results(
+        &self,
+        session_id: Uuid,
+        call_ids: &[String],
+    ) -> Result<()> {
+        SessionManager::new(self.db.clone())
+            .insert_missing_tool_results(session_id, call_ids)
+            .await
+    }
+
+    async fn session_get_participants(&self, session_id: Uuid) -> Result<Vec<String>> {
+        crate::db::sessions::get_participants(&self.db, session_id).await
+    }
+
+    fn agent_name(&self) -> &str {
+        &self.agent.name
+    }
+
+    fn agent_base(&self) -> bool {
+        self.agent.base
+    }
+
+    fn agent_language(&self) -> &str {
+        &self.agent.language
+    }
+
+    fn agent_max_history_messages(&self) -> i64 {
+        self.agent.max_history_messages.unwrap_or(50) as i64
+    }
+
+    fn agent_dm_scope(&self) -> &str {
+        self.agent.session.as_ref()
+            .map(|s| s.dm_scope.as_str())
+            .unwrap_or("per-channel-peer")
+    }
+
+    fn agent_tools_policy(&self) -> Option<&crate::config::AgentToolPolicy> {
+        self.agent.tools.as_ref()
+    }
+
+    fn agent_prune_tool_output_after_turns(&self) -> Option<usize> {
+        self.agent.session.as_ref()
+            .and_then(|s| s.prune_tool_output_after_turns)
+    }
+
+    fn agent_max_tools_in_context(&self) -> Option<usize> {
+        self.agent.max_tools_in_context
+    }
+
+    fn workspace_dir(&self) -> &str {
+        &self.workspace_dir
+    }
+
+    async fn load_workspace_prompt(&self) -> Result<String> {
+        workspace::load_workspace_prompt(&self.workspace_dir, &self.agent.name).await
+    }
+
+    async fn mcp_tool_definitions(&self) -> Vec<hydeclaw_types::ToolDefinition> {
+        if let Some(ref mcp) = self.mcp {
+            mcp.all_tool_definitions().await
+        } else {
+            vec![]
+        }
+    }
+
+    async fn has_tool(&self, name: &str) -> bool {
+        AgentEngine::has_tool(self, name).await
+    }
+
+    fn memory_is_available(&self) -> bool {
+        self.memory_store.is_available()
+    }
+
+    fn channel_router_present(&self) -> bool {
+        self.channel_router.is_some()
+    }
+
+    fn scheduler_present(&self) -> bool {
+        self.scheduler.is_some()
+    }
+
+    fn sandbox_absent(&self) -> bool {
+        self.sandbox.is_none()
+    }
+
+    fn runtime_context(&self, msg: &IncomingMessage) -> workspace::RuntimeContext {
+        AgentEngine::runtime_context(self, msg)
+    }
+
+    async fn get_channel_info(&self) -> Vec<workspace::ChannelInfo> {
+        AgentEngine::get_channel_info(self).await
+    }
+
+    fn pinned_budget_tokens(&self) -> u32 {
+        self.app_config.memory.pinned_budget_tokens
+    }
+
+    async fn build_memory_context(&self, budget_tokens: u32) -> (String, Vec<String>) {
+        let ctx = AgentEngine::build_memory_context(self, budget_tokens).await;
+        (ctx.pinned_text, ctx.pinned_ids)
+    }
+
+    async fn store_pinned_chunk_ids(&self, ids: Vec<String>) {
+        *self.pinned_chunk_ids.lock().await = ids;
+    }
+
+    fn internal_tool_definitions(&self) -> Vec<hydeclaw_types::ToolDefinition> {
+        AgentEngine::internal_tool_definitions(self)
+    }
+
+    async fn load_yaml_tools_cached(&self) -> Vec<crate::tools::yaml_tools::YamlToolDef> {
+        let cache = self.yaml_tools_cache.read().await;
+        if cache.0.elapsed() < std::time::Duration::from_secs(30) && !cache.1.is_empty() {
+            return cache.1.values().cloned().collect();
+        }
+        drop(cache);
+        let loaded = crate::tools::yaml_tools::load_yaml_tools(&self.workspace_dir, false).await;
+        let map: std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef> =
+            loaded.iter().cloned().map(|t| (t.name.clone(), t)).collect();
+        *self.yaml_tools_cache.write().await = (std::time::Instant::now(), map);
+        loaded
+    }
+
+    async fn tool_penalties(&self) -> std::collections::HashMap<String, f32> {
+        self.penalty_cache.get_penalties().await
+    }
+
+    fn filter_tools_by_policy(&self, tools: Vec<hydeclaw_types::ToolDefinition>) -> Vec<hydeclaw_types::ToolDefinition> {
+        AgentEngine::filter_tools_by_policy(self, tools)
+    }
+
+    async fn select_top_k_tools_semantic(
+        &self,
+        tools: Vec<hydeclaw_types::ToolDefinition>,
+        query: &str,
+        k: usize,
+    ) -> Vec<hydeclaw_types::ToolDefinition> {
+        AgentEngine::select_top_k_tools_semantic(self, tools, query, k).await
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -1,4 +1,5 @@
 pub mod memory_service;
+pub mod context_builder;
 pub mod session_manager;
 pub mod channel_actions;
 pub mod channel_kind;

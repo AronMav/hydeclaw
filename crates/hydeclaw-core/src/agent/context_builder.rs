@@ -1,0 +1,450 @@
+//! ContextBuilder trait, ContextSnapshot return type, and DefaultContextBuilder implementation.
+//!
+//! Extracted from engine_context.rs (build_context body) to decouple context building
+//! from the engine god object (CTX-01) and replace the fragile unnamed tuple with a
+//! self-documenting struct (CTX-02). Enables MockContextBuilder injection in tests (CTX-03).
+
+use anyhow::Result;
+use async_trait::async_trait;
+use hydeclaw_types::{IncomingMessage, Message, ToolDefinition};
+use std::sync::Arc;
+use uuid::Uuid;
+
+// ── Public types ──────────────────────────────────────────────────────────────
+
+/// Named return type for context building — replaces the anonymous
+/// `(Uuid, Vec<Message>, Vec<ToolDefinition>)` tuple.
+#[derive(Debug, Clone)]
+pub struct ContextSnapshot {
+    pub session_id: Uuid,
+    pub messages: Vec<Message>,
+    pub tools: Vec<ToolDefinition>,
+}
+
+/// Abstraction over context building so unit tests can inject a `MockContextBuilder`
+/// without needing a live LLM stack.
+#[async_trait]
+pub trait ContextBuilder: Send + Sync {
+    async fn build(
+        &self,
+        msg: &IncomingMessage,
+        include_tools: bool,
+        resume_session_id: Option<Uuid>,
+        force_new_session: bool,
+    ) -> Result<ContextSnapshot>;
+}
+
+// ── Private engine-deps trait ─────────────────────────────────────────────────
+
+/// Private trait listing the AgentEngine capabilities consumed by DefaultContextBuilder.
+/// `AgentEngine` implements this; the impl delegates to its own fields/methods.
+/// This avoids a direct Arc<AgentEngine> dependency from context_builder.rs back to engine.rs.
+#[async_trait]
+pub(crate) trait ContextBuilderDeps: Send + Sync {
+    // Session management
+    async fn session_resume(&self, sid: Uuid) -> Result<Uuid>;
+    async fn session_create_new(&self, user_id: &str, channel: &str) -> Result<Uuid>;
+    async fn session_get_or_create(
+        &self,
+        user_id: &str,
+        channel: &str,
+        dm_scope: &str,
+    ) -> Result<Uuid>;
+    async fn session_load_messages(
+        &self,
+        session_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<crate::db::sessions::MessageRow>>;
+    async fn session_insert_missing_tool_results(
+        &self,
+        session_id: Uuid,
+        call_ids: &[String],
+    ) -> Result<()>;
+    async fn session_get_participants(&self, session_id: Uuid) -> Result<Vec<String>>;
+
+    // Agent settings
+    fn agent_name(&self) -> &str;
+    fn agent_base(&self) -> bool;
+    fn agent_language(&self) -> &str;
+    fn agent_max_history_messages(&self) -> i64;
+    fn agent_dm_scope(&self) -> &str;
+    fn agent_tools_policy(&self) -> Option<&crate::config::AgentToolPolicy>;
+    fn agent_prune_tool_output_after_turns(&self) -> Option<usize>;
+    fn agent_max_tools_in_context(&self) -> Option<usize>;
+
+    // Workspace
+    fn workspace_dir(&self) -> &str;
+    async fn load_workspace_prompt(&self) -> Result<String>;
+
+    // MCP
+    async fn mcp_tool_definitions(&self) -> Vec<ToolDefinition>;
+
+    // Capabilities
+    async fn has_tool(&self, name: &str) -> bool;
+    fn memory_is_available(&self) -> bool;
+    fn channel_router_present(&self) -> bool;
+    fn scheduler_present(&self) -> bool;
+    fn sandbox_absent(&self) -> bool; // agent.base && sandbox.is_none()
+
+    // Runtime context
+    fn runtime_context(&self, msg: &IncomingMessage) -> crate::agent::workspace::RuntimeContext;
+    async fn get_channel_info(&self) -> Vec<crate::agent::workspace::ChannelInfo>;
+
+    // Memory
+    fn pinned_budget_tokens(&self) -> u32;
+    /// Returns (pinned_text, pinned_ids)
+    async fn build_memory_context(&self, budget_tokens: u32) -> (String, Vec<String>);
+    async fn store_pinned_chunk_ids(&self, ids: Vec<String>);
+
+    // Tools
+    fn internal_tool_definitions(&self) -> Vec<ToolDefinition>;
+    async fn load_yaml_tools_cached(&self) -> Vec<crate::tools::yaml_tools::YamlToolDef>;
+    async fn tool_penalties(&self) -> std::collections::HashMap<String, f32>;
+    fn filter_tools_by_policy(&self, tools: Vec<ToolDefinition>) -> Vec<ToolDefinition>;
+    async fn select_top_k_tools_semantic(
+        &self,
+        tools: Vec<ToolDefinition>,
+        query: &str,
+        k: usize,
+    ) -> Vec<ToolDefinition>;
+}
+
+// ── DefaultContextBuilder ─────────────────────────────────────────────────────
+
+/// Concrete implementation of `ContextBuilder` that delegates all engine access
+/// through the `ContextBuilderDeps` trait.
+pub struct DefaultContextBuilder {
+    deps: Arc<dyn ContextBuilderDeps>,
+}
+
+impl DefaultContextBuilder {
+    pub fn new(deps: Arc<dyn ContextBuilderDeps>) -> Self {
+        Self { deps }
+    }
+}
+
+// Send/Sync assertion (PITFALLS.md Pitfall 1)
+fn _assert_send() {
+    fn _check<T: Send + Sync>() {}
+    _check::<DefaultContextBuilder>();
+}
+
+#[async_trait]
+impl ContextBuilder for DefaultContextBuilder {
+    async fn build(
+        &self,
+        msg: &IncomingMessage,
+        include_tools: bool,
+        resume_session_id: Option<Uuid>,
+        force_new_session: bool,
+    ) -> Result<ContextSnapshot> {
+        let deps = &self.deps;
+
+        // 1. Get or create session (or resume existing)
+        let session_id = if let Some(sid) = resume_session_id {
+            deps.session_resume(sid).await?
+        } else if force_new_session {
+            deps.session_create_new(&msg.user_id, &msg.channel).await?
+        } else {
+            let dm_scope = deps.agent_dm_scope().to_string();
+            deps.session_get_or_create(&msg.user_id, &msg.channel, &dm_scope).await?
+        };
+
+        // 2. Load conversation history
+        let limit = deps.agent_max_history_messages();
+        let history = deps.session_load_messages(session_id, limit).await?;
+
+        // 3. Build system prompt with MCP tool schemas
+        let ws_prompt = deps.load_workspace_prompt().await?;
+
+        // MCP tool schemas in system prompt: name + description only.
+        let mcp_defs = deps.mcp_tool_definitions().await;
+        let mcp_schemas: Vec<String> = mcp_defs
+            .iter()
+            .map(|t| format!("- **{}**: {}", t.name, t.description))
+            .collect();
+
+        // 4. Capabilities + system prompt
+        let user_text = msg.text.clone().unwrap_or_default();
+
+        let capabilities = crate::agent::workspace::CapabilityFlags {
+            has_search: deps.has_tool("search_web").await || deps.has_tool("search_web_fresh").await,
+            has_memory: deps.memory_is_available(),
+            has_message_actions: deps.channel_router_present(),
+            has_cron: deps.scheduler_present(),
+            has_yaml_tools: true,
+            has_browser: std::env::var("BROWSER_RENDERER_URL")
+                .unwrap_or_else(|_| "http://localhost:9020".to_string())
+                != "disabled",
+            has_host_exec: deps.agent_base() && deps.sandbox_absent(),
+            is_base: deps.agent_base(),
+        };
+
+        let mut runtime = deps.runtime_context(msg);
+        runtime.channels = deps.get_channel_info().await;
+        let mut system_prompt = crate::agent::workspace::build_system_prompt(
+            &ws_prompt,
+            &mcp_schemas,
+            &capabilities,
+            deps.agent_language(),
+            &runtime,
+        );
+
+        // 4c. Skill capture prompt
+        {
+            let msg_lower = user_text.to_lowercase();
+            let is_capture_request =
+                (msg_lower.contains("save") && msg_lower.contains("skill"))
+                || (msg_lower.contains("сохрани")
+                    && (msg_lower.contains("навык") || msg_lower.contains("скилл")));
+            if is_capture_request {
+                system_prompt.push_str(
+                    "\n\n## Skill Capture\n\
+                     The user wants to save the approach from the previous task as a reusable skill.\n\
+                     Use workspace_write to create a file in workspace/skills/ with YAML frontmatter \
+                     (name, description, triggers, tools_required) and markdown body.\n\
+                     Extract the strategy, not specific data.\n",
+                );
+            }
+        }
+
+        // 4d. Multi-agent session context
+        if let Ok(participants) = deps.session_get_participants(session_id).await
+            && participants.len() > 1
+        {
+            system_prompt.push_str("\n\n## Multi-Agent Session\n");
+            system_prompt.push_str("You are in a collaborative multi-agent session.\n\n");
+            system_prompt.push_str("**Participants:** ");
+            system_prompt.push_str(&participants.join(", "));
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str("**CRITICAL RULE:** When another agent hands off to you or mentions you, ");
+            system_prompt.push_str("you MUST respond to the question or task directly. ");
+            system_prompt.push_str("Do NOT redirect back to the agent who called you. ");
+            system_prompt.push_str("Do NOT say 'ask them directly'. Answer the question yourself.\n\n");
+            system_prompt.push_str("**Forward handoff:** If the task requires ANOTHER agent's expertise ");
+            system_prompt.push_str("(not the one who called you), use the `handoff` tool to delegate forward. ");
+            system_prompt.push_str("Example: Agent A asks you to get info from Agent C — use handoff to Agent C.\n");
+            system_prompt.push_str("Provide: `agent` (target name), `task` (what they should do), ");
+            system_prompt.push_str("`context` (relevant facts — keep concise).\n");
+        }
+
+        // L0: pinned memory chunks
+        let pinned_budget = deps.pinned_budget_tokens();
+        let (pinned_text, pinned_ids) = deps.build_memory_context(pinned_budget).await;
+        if !pinned_text.is_empty() {
+            system_prompt.push_str(&pinned_text);
+        }
+        deps.store_pinned_chunk_ids(pinned_ids).await;
+
+        tracing::info!(
+            agent = %deps.agent_name(),
+            prompt_bytes = system_prompt.len(),
+            prompt_approx_tokens = system_prompt.len() / 4,
+            "system_prompt_size"
+        );
+
+        // 5. Assemble messages
+        let mut messages: Vec<hydeclaw_types::Message> = vec![hydeclaw_types::Message {
+            role: hydeclaw_types::MessageRole::System,
+            content: system_prompt,
+            tool_calls: None,
+            tool_call_id: None,
+            thinking_blocks: vec![],
+        }];
+
+        for row in &history {
+            let content_lower = row.content.to_lowercase();
+            if content_lower.contains("heartbeat_ok")
+                || content_lower.contains("heartbeat ok")
+                || (content_lower.contains("nothing to announce") && content_lower.len() < 100)
+            {
+                continue;
+            }
+            messages.push(crate::agent::engine::row_to_message(row));
+        }
+
+        // Transcript repair — differential append scoped to last dangling assistant (ENG-01)
+        if let Some(last_idx) = messages.iter().rposition(|m| {
+            m.role == hydeclaw_types::MessageRole::Assistant
+                && m.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty())
+        }) {
+            let has_results = messages[last_idx + 1..]
+                .iter()
+                .any(|m| m.role == hydeclaw_types::MessageRole::Tool);
+            if !has_results {
+                let all_call_ids: Vec<String> = messages[last_idx]
+                    .tool_calls
+                    .as_ref()
+                    .map(|tcs| tcs.iter().map(|tc| tc.id.clone()).collect())
+                    .unwrap_or_default();
+
+                let existing_ids: std::collections::HashSet<&str> = messages[last_idx + 1..]
+                    .iter()
+                    .filter(|m| m.role == hydeclaw_types::MessageRole::Tool)
+                    .filter_map(|m| m.tool_call_id.as_deref())
+                    .collect();
+                let missing_ids: Vec<String> = all_call_ids
+                    .into_iter()
+                    .filter(|id| !existing_ids.contains(id.as_str()))
+                    .collect();
+
+                if !missing_ids.is_empty() {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        count = missing_ids.len(),
+                        "dangling tool calls detected — inserting synthetic results"
+                    );
+
+                    if let Err(e) = deps
+                        .session_insert_missing_tool_results(session_id, &missing_ids)
+                        .await
+                    {
+                        tracing::warn!(error = %e, "failed to insert synthetic tool results");
+                    }
+
+                    for call_id in missing_ids {
+                        messages.push(hydeclaw_types::Message {
+                            role: hydeclaw_types::MessageRole::Tool,
+                            content: "[interrupted] Tool execution was interrupted (process restart). Result unavailable.".to_string(),
+                            tool_calls: None,
+                            tool_call_id: Some(call_id),
+                            thinking_blocks: vec![],
+                        });
+                    }
+                }
+            }
+        }
+
+        // Sanitize MiniMax XML tool calls
+        if messages
+            .iter()
+            .any(|m| m.role == hydeclaw_types::MessageRole::Tool && m.content.contains("<minimax:tool_call>"))
+        {
+            messages = messages
+                .into_iter()
+                .map(|mut m| {
+                    if m.role == hydeclaw_types::MessageRole::Tool {
+                        m.content = strip_minimax_xml(&m.content);
+                    }
+                    m
+                })
+                .collect();
+            tracing::warn!("sanitized MiniMax XML tool calls from session context");
+        }
+
+        // Proactive tool output pruning
+        if let Some(keep_turns) = deps.agent_prune_tool_output_after_turns()
+            && keep_turns > 0
+        {
+            messages = prune_old_tool_outputs(&messages, keep_turns);
+            tracing::debug!(keep_turns, "proactive tool output pruning applied");
+        }
+
+        // 6. Available tools (if requested)
+        let tools = if include_tools {
+            let mut tool_list = deps.internal_tool_definitions();
+
+            // Shared YAML tools (cached)
+            let yaml_tools = deps.load_yaml_tools_cached().await;
+            let is_base = deps.agent_base();
+            let penalties = deps.tool_penalties().await;
+            let mut yaml_filtered: Vec<_> = yaml_tools
+                .into_iter()
+                .filter(|t| !t.required_base || is_base)
+                .collect();
+            yaml_filtered.sort_by(|a, b| {
+                let pa = penalties.get(&a.name).copied().unwrap_or(1.0);
+                let pb = penalties.get(&b.name).copied().unwrap_or(1.0);
+                pb.partial_cmp(&pa).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            tool_list.extend(yaml_filtered.into_iter().map(|t| t.to_tool_definition()));
+
+            // MCP tools
+            tool_list.extend(deps.mcp_tool_definitions().await);
+
+            let mut all_tools = deps.filter_tools_by_policy(tool_list);
+
+            // Dynamic top-K
+            if let Some(max_k) = deps.agent_max_tools_in_context()
+                && all_tools.len() > max_k
+                && !user_text.is_empty()
+            {
+                all_tools = deps
+                    .select_top_k_tools_semantic(all_tools, &user_text, max_k)
+                    .await;
+            }
+
+            all_tools
+        } else {
+            vec![]
+        };
+
+        Ok(ContextSnapshot {
+            session_id,
+            messages,
+            tools,
+        })
+    }
+}
+
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+/// Strip `<minimax:tool_call>…</minimax:tool_call>` blocks from a string.
+fn strip_minimax_xml(s: &str) -> String {
+    const OPEN: &str = "<minimax:tool_call>";
+    const CLOSE: &str = "</minimax:tool_call>";
+    if !s.contains(OPEN) {
+        return s.to_string();
+    }
+    let mut result = String::new();
+    let mut rest = s;
+    loop {
+        match rest.find(OPEN) {
+            None => {
+                result.push_str(rest);
+                break;
+            }
+            Some(start) => {
+                result.push_str(&rest[..start]);
+                let after = &rest[start + OPEN.len()..];
+                rest = match after.find(CLOSE) {
+                    Some(end) => &after[end + CLOSE.len()..],
+                    None => break,
+                };
+            }
+        }
+    }
+    result.trim().to_string()
+}
+
+/// Proactively strip tool result content from old turns to reduce LLM context on load.
+fn prune_old_tool_outputs(messages: &[hydeclaw_types::Message], keep_turns: usize) -> Vec<hydeclaw_types::Message> {
+    let user_indices: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.role == hydeclaw_types::MessageRole::User)
+        .map(|(i, _)| i)
+        .collect();
+
+    if user_indices.len() <= keep_turns {
+        return messages.to_vec();
+    }
+
+    let cutoff = user_indices[user_indices.len() - keep_turns];
+
+    messages
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            if i < cutoff && m.role == hydeclaw_types::MessageRole::Tool && !m.content.is_empty() {
+                let n = m.content.len();
+                hydeclaw_types::Message {
+                    content: format!("[output omitted, {} chars]", n),
+                    ..m.clone()
+                }
+            } else {
+                m.clone()
+            }
+        })
+        .collect()
+}
