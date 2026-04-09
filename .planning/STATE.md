@@ -25,15 +25,18 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-04-09 — Milestone v0.13.0 started
+Phase: 53-message-branching
+Plan: 2 of 2 auto tasks complete (Task 3 deferred: human-verify checkpoint)
+Status: Executing
+Last activity: 2026-04-09 — Completed 53-02-PLAN.md (tree-aware store + branch navigation UI)
 
 ## Accumulated Context
 
 ### Decisions
 
+- [Phase 53-02]: resolveActivePath defaults to latest child at each fork (new branches immediately visible)
+- [Phase 53-02]: EditButton uses forkAndRegenerate (non-destructive) instead of PATCH+regenerateFrom (destructive)
+- [Phase 53-02]: getCachedRawMessages exported for component-level sibling discovery
 - [v0.11.2]: Virtual Merging, IncrementalParser, Robust Thinking Indicator added but introduced regressions
 - [Bug]: ThinkingMessage appears on new empty session (sessionStorage persistence never clears)
 - [Bug]: ThinkingMessage stays after stream completion (no cleanup path)
@@ -73,6 +76,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-09T13:07:39.887Z
-Stopped at: Completed 45-01-PLAN.md
-Resume with: `/gsd:plan-phase 40`
+Last session: 2026-04-09T20:25:18Z
+Stopped at: Completed 53-02-PLAN.md
+Resume with: Next plan in phase 53 or verify checkpoint
