@@ -6,7 +6,8 @@ import { useChatStore } from "@/stores/chat-store";
 import type { ChatMessage } from "@/stores/chat-store";
 import { Button } from "@/components/ui/button";
 import { BarsLoader } from "@/components/ui/loader";
-import { RoleAvatar, AgentTurnSeparator } from "./ChatThread";
+import { RoleAvatar } from "./ChatThread";
+import { HandoffDivider } from "@/components/chat/HandoffDivider";
 import { MessageItem } from "./MessageItem";
 import { useAuthStore } from "@/stores/auth-store";
 import { useSessions } from "@/lib/queries";
@@ -154,11 +155,7 @@ function VirtuosoFooter({ turnLimitMessage }: { turnLimitMessage: string | null 
   );
 }
 
-// ── Turn count selector ────────────────────────────────────────────────────
-
-function useTurnCount() {
-  return useChatStore((s) => s.agents[s.currentAgent]?.turnCount ?? 0);
-}
+// ── Turn limit selector ───────────────────────────────────────────────────
 
 function useTurnLimitMessage() {
   return useChatStore((s) => s.agents[s.currentAgent]?.turnLimitMessage ?? null);
@@ -184,7 +181,6 @@ export function MessageList({
   onLoadEarlier: () => void;
 }) {
   const { t } = useTranslation();
-  const turnCount = useTurnCount();
   const turnLimitMessage = useTurnLimitMessage();
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -390,11 +386,7 @@ export function MessageList({
           return (
             <div className="mx-auto w-full max-w-4xl px-3 md:px-6">
               {showSeparator && (
-                <AgentTurnSeparator
-                  data={{ agentName: msg.agentId!, reason: "" }}
-                  animate={isNew}
-                  turnCount={!isStreaming && isNew ? turnCount : undefined}
-                />
+                <HandoffDivider agentName={msg.agentId!} />
               )}
               <div className={cn(
                 isNew && "animate-in fade-in slide-in-from-bottom-2 duration-200 ease-out",
