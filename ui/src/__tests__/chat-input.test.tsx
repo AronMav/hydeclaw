@@ -97,6 +97,7 @@ vi.mock("@/stores/chat-store", () => ({
     },
   ),
   isActiveStream: () => false,
+  isActivePhase: () => false,
   convertHistory: () => [],
   MAX_INPUT_LENGTH: 32000,
 }));

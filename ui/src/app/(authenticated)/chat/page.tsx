@@ -6,7 +6,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useAuthStore } from "@/stores/auth-store";
 import {
   useChatStore,
-  isActiveStream,
+  isActivePhase,
   getInitialAgent,
 } from "@/stores/chat-store";
 import { useWsSubscription } from "@/hooks/use-ws-subscription";
@@ -86,7 +86,7 @@ export default function ChatPage() {
   const viewMode = useChatStore((s) => s.agents[s.currentAgent]?.viewMode ?? "live");
   const viewingHistory = viewMode === "history";
   const streamError = useChatStore((s) => s.agents[s.currentAgent]?.streamError ?? null);
-  const isStreaming = isActiveStream(useChatStore((s) => s.agents[s.currentAgent]?.streamStatus ?? "idle"));
+  const isStreaming = isActivePhase(useChatStore((s) => s.agents[s.currentAgent]?.connectionPhase ?? "idle"));
 
   // Track which agents have been auto-restored (per-agent, not global boolean)
   // This preserves "new chat" state when switching A → B → A
@@ -121,7 +121,7 @@ export default function ChatPage() {
     const agentState = useChatStore.getState().agents[currentAgent];
 
     // CRITICAL: If there's an active stream, DON'T touch anything — just show live view
-    if (isActiveStream(agentState?.streamStatus)) {
+    if (isActivePhase(agentState?.connectionPhase)) {
       restoredAgents.current.add(currentAgent);
       if (agentState?.viewMode !== "live") {
         useChatStore.setState((draft) => {
@@ -190,7 +190,7 @@ export default function ChatPage() {
     queryClient.invalidateQueries({ queryKey: qk.sessions(s.currentAgent) });
     const agentState = s.agents[s.currentAgent];
     // Silently refresh history messages (no loading indicator to avoid flicker)
-    if (agentState?.viewMode === "history" && agentState.activeSessionId && !isActiveStream(agentState.streamStatus)) {
+    if (agentState?.viewMode === "history" && agentState.activeSessionId && !isActivePhase(agentState.connectionPhase)) {
       s.refreshHistory(agentState.activeSessionId);
     }
   }, []));
