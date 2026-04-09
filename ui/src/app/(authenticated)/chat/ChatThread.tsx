@@ -32,7 +32,7 @@ import { BarsLoader } from "@/components/ui/loader";
 import { Button } from "@/components/ui/button";
 import { RichCard } from "@/components/ui/rich-card";
 import { SlashMenu } from "./parts/SlashMenu";
-import { MessageList } from "./MessageList";
+import { MessageList, MessageSkeleton } from "./MessageList";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import {
   Bot,
@@ -895,14 +895,7 @@ export function ChatThread({
     return (
       <div className="flex flex-1 flex-col gap-6 p-6 max-w-4xl mx-auto">
         {[1, 2, 3].map((i) => (
-          <div key={i} className="flex gap-3">
-            <div className="h-9 w-9 rounded-xl bg-muted/50 animate-pulse shrink-0" />
-            <div className="flex-1 space-y-2">
-              <div className="h-3 w-20 rounded bg-muted/50 animate-pulse" />
-              <div className="h-4 w-full rounded bg-muted/40 animate-pulse" />
-              <div className="h-4 w-3/4 rounded bg-muted/30 animate-pulse" />
-            </div>
-          </div>
+          <MessageSkeleton key={i} />
         ))}
       </div>
     );
