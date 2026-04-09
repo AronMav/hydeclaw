@@ -8,6 +8,7 @@ import {
   useChatStore,
   isActivePhase,
   getInitialAgent,
+  getLastSessionId,
 } from "@/stores/chat-store";
 import { useWsSubscription } from "@/hooks/use-ws-subscription";
 import { useHotkey } from "@/hooks/use-hotkey";
@@ -174,7 +175,20 @@ export default function ChatPage() {
       }
     }
 
-    // Otherwise — open new chat (don't load stale history)
+    // Try to restore last session for this agent
+    const lastSid = getLastSessionId(currentAgent);
+    if (lastSid && sessions.some((s) => s.id === lastSid)) {
+      useChatStore.getState().selectSession(lastSid, currentAgent);
+      return;
+    }
+
+    // Fallback: open most recent session if available
+    if (sessions.length > 0) {
+      useChatStore.getState().selectSession(sessions[0].id, currentAgent);
+      return;
+    }
+
+    // No sessions at all — open new chat
     useChatStore.getState().newChat();
   }, [sessionsLoading, sessions, currentAgent, urlSessionId]);
 

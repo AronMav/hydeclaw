@@ -35,7 +35,7 @@ describe("convertHistory — message identity", () => {
     expect(messages[1].agentId).toBe("Helper");
   });
 
-  it("merges consecutive assistant messages from same agent (Virtual Merging)", () => {
+  it("separates consecutive assistant messages from same agent (D-01 no merge)", () => {
     const rows: MessageRow[] = [
       makeRow({ id: "a1", agent_id: "Agent1", content: "First message" }),
       makeRow({ id: "a2", agent_id: "Agent1", content: "Second message" }),
@@ -43,15 +43,10 @@ describe("convertHistory — message identity", () => {
 
     const messages = convertHistory(rows);
 
-    // Virtual Merging: consecutive same-agent assistant blocks merge into one ChatMessage
-    expect(messages).toHaveLength(1);
+    // D-01: Each assistant DB row = separate ChatMessage (no merge)
+    expect(messages).toHaveLength(2);
     expect(messages[0].id).toBe("a1");
-    expect(messages[0].agentId).toBe("Agent1");
-    // Both texts should be present in the merged parts
-    const textParts = messages[0].parts.filter(p => p.type === "text");
-    const allText = textParts.map(p => "text" in p ? p.text : "").join("");
-    expect(allText).toContain("First message");
-    expect(allText).toContain("Second message");
+    expect(messages[1].id).toBe("a2");
   });
 
   it("tool results attach to correct parent assistant (Virtual Merging)", () => {
@@ -78,14 +73,14 @@ describe("convertHistory — message identity", () => {
 
     const messages = convertHistory(rows);
 
-    // Virtual Merging: both assistant blocks from Agent1 merge into one message
-    expect(messages).toHaveLength(1);
+    // D-01: No merge — 2 assistant messages + tool result attached to first
+    expect(messages).toHaveLength(2);
     expect(messages[0].agentId).toBe("Agent1");
-
-    // Merged message has both tool and text parts
+    // First assistant has tool parts (tool result attaches to it)
     const toolParts = messages[0].parts.filter((p) => p.type === "tool");
     expect(toolParts.length).toBeGreaterThan(0);
-    const textParts = messages[0].parts.filter((p) => p.type === "text");
+    // Second assistant has the text
+    const textParts = messages[1].parts.filter((p) => p.type === "text");
     expect(textParts.length).toBeGreaterThan(0);
     expect(textParts.some(p => "text" in p && p.text.includes("Based on the search"))).toBe(true);
   });

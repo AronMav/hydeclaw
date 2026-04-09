@@ -172,7 +172,7 @@ describe("convertHistory", () => {
 describe("STATE-03: convertHistory agentId forward-fill", () => {
   it("forward-fills agentId from last seen non-null agent_id", () => {
     // rows: user(AgentA), assistant(AgentA), tool(null), assistant(null)
-    // Virtual Merging: both assistant blocks belong to AgentA, so they merge into one
+    // D-01: No merge — 2 separate assistant messages
     const rows: MessageRow[] = [
       makeRow({ id: "u1", role: "user", content: "hi", agent_id: "AgentA" }),
       makeRow({
@@ -187,12 +187,10 @@ describe("STATE-03: convertHistory agentId forward-fill", () => {
     ];
     const msgs = convertHistory(rows);
     const assistantMsgs = msgs.filter(m => m.role === "assistant");
-    // Virtual Merging: consecutive same-agent assistant blocks merge into one
-    expect(assistantMsgs).toHaveLength(1);
+    // D-01: Each assistant row = separate message; forward-fill gives AgentA to second
+    expect(assistantMsgs).toHaveLength(2);
     expect(assistantMsgs[0].agentId).toBe("AgentA");
-    // The merged message should contain both tool and text parts
-    expect(assistantMsgs[0].parts.some(p => p.type === "tool")).toBe(true);
-    expect(assistantMsgs[0].parts.some(p => p.type === "text")).toBe(true);
+    expect(assistantMsgs[1].agentId).toBe("AgentA"); // forward-filled
   });
 
   it("does not forward-fill agentId when a new agent_id appears", () => {

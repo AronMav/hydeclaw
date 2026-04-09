@@ -882,7 +882,11 @@ export function ChatThread({
 
   const isStreaming = isActivePhase(connectionPhase);
 
-  const showThinking = connectionPhase === "submitted" || engineRunning;
+  // Show thinking ONLY when:
+  // 1. User just submitted (waiting for first SSE event), OR
+  // 2. Engine is actively running (WS-driven, e.g. Telegram/cron trigger)
+  // NEVER show on new-chat mode or history mode — prevents ghost avatars
+  const showThinking = messageSource.mode === "live" && (connectionPhase === "submitted" || engineRunning);
 
   // Only show loading skeleton when there is truly no data to display (Fix D).
   // If we have seeded live messages (F5 resume) or cached history, skip the skeleton.
