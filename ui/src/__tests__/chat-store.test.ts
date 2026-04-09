@@ -1,17 +1,19 @@
 import { describe, it, expect } from "vitest";
 
-import { isActiveStream } from "@/stores/chat-store";
+import { isActivePhase } from "@/stores/chat-store";
 
-describe("isActiveStream", () => {
-  it("returns true for streaming states", () => {
-    expect(isActiveStream("submitted")).toBe(true);
-    expect(isActiveStream("streaming")).toBe(true);
+describe("isActivePhase", () => {
+  it("returns true for active streaming states", () => {
+    expect(isActivePhase("submitted")).toBe(true);
+    expect(isActivePhase("streaming")).toBe(true);
+    expect(isActivePhase("reconnecting")).toBe(true);
   });
 
-  it("returns false for idle/error states", () => {
-    expect(isActiveStream("idle")).toBe(false);
-    expect(isActiveStream("error")).toBe(false);
-    expect(isActiveStream(undefined)).toBe(false);
+  it("returns false for idle/error/complete states", () => {
+    expect(isActivePhase("idle")).toBe(false);
+    expect(isActivePhase("error")).toBe(false);
+    expect(isActivePhase("complete")).toBe(false);
+    expect(isActivePhase(undefined)).toBe(false);
   });
 });
 

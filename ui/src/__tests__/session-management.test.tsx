@@ -93,7 +93,6 @@ const mockChatStoreState: Record<string, unknown> = {
       activeSessionId: "s1",
       activeSessionIds: [],
       messageSource: { mode: "new-chat" },
-      streamStatus: "idle",
       streamError: null,
       inputText: "",
       pendingTargetAgent: null,
@@ -110,7 +109,7 @@ vi.mock("@/stores/chat-store", () => ({
     {
       getState: () => ({
         currentAgent: "Agent1",
-        agents: { Agent1: { activeSessionId: "s1", activeSessionIds: [], messageSource: { mode: "new-chat" }, streamStatus: "idle" } },
+        agents: { Agent1: { activeSessionId: "s1", activeSessionIds: [], messageSource: { mode: "new-chat" }, connectionPhase: "idle" } },
         regenerate: vi.fn(),
         clearError: vi.fn(),
         sendMessage: vi.fn(),
@@ -120,7 +119,6 @@ vi.mock("@/stores/chat-store", () => ({
       }),
     },
   ),
-  isActiveStream: () => false,
   convertHistory: () => [],
   MAX_INPUT_LENGTH: 32000,
 }));
@@ -458,7 +456,7 @@ describe("Session Management (SESS)", () => {
       // The implementation (chat-store.ts lines 916-939):
       // 1. Gets activeSessionId from previous agent
       // 2. Checks sessionParticipants[activeSessionId].includes(newAgent)
-      // 3. If yes: carries over activeSessionId, messageSource, streamStatus
+      // 3. If yes: carries over activeSessionId, messageSource, connectionPhase
       // 4. If no: resets to new-chat state
 
       // We verify this by testing the store's setCurrentAgent function directly.
@@ -471,7 +469,7 @@ describe("Session Management (SESS)", () => {
       type AgentState = {
         activeSessionId: string | null;
         messageSource: MessageSource;
-        streamStatus: string;
+        connectionPhase: string;
       };
 
       type StoreState = {
@@ -488,7 +486,7 @@ describe("Session Management (SESS)", () => {
             AgentA: {
               activeSessionId: "s1",
               messageSource: { mode: "live", messages: [{ id: "msg1", text: "hello" }] },
-              streamStatus: "idle",
+              connectionPhase: "idle",
             },
           },
           sessionParticipants: {
@@ -507,11 +505,11 @@ describe("Session Management (SESS)", () => {
                 // Carry over
                 set((draft) => {
                   if (!draft.agents[name]) {
-                    draft.agents[name] = { activeSessionId: null, messageSource: { mode: "new-chat" }, streamStatus: "idle" };
+                    draft.agents[name] = { activeSessionId: null, messageSource: { mode: "new-chat" }, connectionPhase: "idle" };
                   }
                   draft.agents[name].activeSessionId = activeSessionId;
                   draft.agents[name].messageSource = prevState?.messageSource ?? { mode: "new-chat" };
-                  draft.agents[name].streamStatus = prevState?.streamStatus ?? "idle";
+                  draft.agents[name].connectionPhase = prevState?.connectionPhase ?? "idle";
                   draft.currentAgent = name;
                 });
                 return;
@@ -521,11 +519,11 @@ describe("Session Management (SESS)", () => {
             // No carry-over: reset
             set((draft) => {
               if (!draft.agents[name]) {
-                draft.agents[name] = { activeSessionId: null, messageSource: { mode: "new-chat" }, streamStatus: "idle" };
+                draft.agents[name] = { activeSessionId: null, messageSource: { mode: "new-chat" }, connectionPhase: "idle" };
               }
               draft.agents[name].activeSessionId = null;
               draft.agents[name].messageSource = { mode: "new-chat" };
-              draft.agents[name].streamStatus = "idle";
+              draft.agents[name].connectionPhase = "idle";
               draft.currentAgent = name;
             });
           },
@@ -552,7 +550,7 @@ describe("Session Management (SESS)", () => {
       type AgentState = {
         activeSessionId: string | null;
         messageSource: MessageSource;
-        streamStatus: string;
+        connectionPhase: string;
       };
 
       type StoreState = {
@@ -569,7 +567,7 @@ describe("Session Management (SESS)", () => {
             AgentA: {
               activeSessionId: "s1",
               messageSource: { mode: "live", messages: [{ id: "msg1", text: "hello" }] },
-              streamStatus: "idle",
+              connectionPhase: "idle",
             },
           },
           sessionParticipants: {
@@ -587,11 +585,11 @@ describe("Session Management (SESS)", () => {
               if (participants && participants.includes(name)) {
                 set((draft) => {
                   if (!draft.agents[name]) {
-                    draft.agents[name] = { activeSessionId: null, messageSource: { mode: "new-chat" }, streamStatus: "idle" };
+                    draft.agents[name] = { activeSessionId: null, messageSource: { mode: "new-chat" }, connectionPhase: "idle" };
                   }
                   draft.agents[name].activeSessionId = activeSessionId;
                   draft.agents[name].messageSource = prevState?.messageSource ?? { mode: "new-chat" };
-                  draft.agents[name].streamStatus = prevState?.streamStatus ?? "idle";
+                  draft.agents[name].connectionPhase = prevState?.connectionPhase ?? "idle";
                   draft.currentAgent = name;
                 });
                 return;
@@ -600,11 +598,11 @@ describe("Session Management (SESS)", () => {
 
             set((draft) => {
               if (!draft.agents[name]) {
-                draft.agents[name] = { activeSessionId: null, messageSource: { mode: "new-chat" }, streamStatus: "idle" };
+                draft.agents[name] = { activeSessionId: null, messageSource: { mode: "new-chat" }, connectionPhase: "idle" };
               }
               draft.agents[name].activeSessionId = null;
               draft.agents[name].messageSource = { mode: "new-chat" };
-              draft.agents[name].streamStatus = "idle";
+              draft.agents[name].connectionPhase = "idle";
               draft.currentAgent = name;
             });
           },
@@ -627,7 +625,7 @@ describe("Session Management (SESS)", () => {
       type AgentState = {
         activeSessionId: string | null;
         messageSource: MessageSource;
-        streamStatus: string;
+        connectionPhase: string;
       };
 
       type StoreState = {
@@ -644,7 +642,7 @@ describe("Session Management (SESS)", () => {
             AgentA: {
               activeSessionId: "s1",
               messageSource: { mode: "live", messages: [{ id: "msg1", text: "hello" }] },
-              streamStatus: "idle",
+              connectionPhase: "idle",
             },
           },
           sessionParticipants: { s1: ["AgentA"] },

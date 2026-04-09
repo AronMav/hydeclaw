@@ -156,7 +156,7 @@ describe("chat store — streaming via sendMessage", () => {
     await new Promise(r => setTimeout(r, 200));
 
     const st = useChatStore.getState().agents[AGENT];
-    expect(st?.streamStatus).toBe("idle");
+    expect(st?.connectionPhase).toBe("idle");
     const liveMessages = st?.messageSource.mode === "live" ? st.messageSource.messages : [];
     const assistantMsg = liveMessages.find(m => m.role === "assistant");
     expect(assistantMsg).toBeDefined();
@@ -167,7 +167,7 @@ describe("chat store — streaming via sendMessage", () => {
     }
   });
 
-  it("sets streamStatus=error on error event", async () => {
+  it("sets connectionPhase=error on error event", async () => {
     mockFetch([
       { type: "start", messageId: "msg-1" },
       { type: "error", errorText: "LLM timeout" },
@@ -177,7 +177,7 @@ describe("chat store — streaming via sendMessage", () => {
     await new Promise(r => setTimeout(r, 200));
 
     const st = useChatStore.getState().agents[AGENT];
-    expect(st?.streamStatus).toBe("error");
+    expect(st?.connectionPhase).toBe("error");
     expect(st?.streamError).toBe("LLM timeout");
   });
 
@@ -242,7 +242,7 @@ describe("chat store — streaming via sendMessage", () => {
     await new Promise(r => setTimeout(r, 50));
 
     const st = useChatStore.getState().agents[AGENT];
-    expect(st?.streamStatus).toBe("idle");
+    expect(st?.connectionPhase).toBe("idle");
     // Partial message must be preserved, not lost
     const liveMessages = st?.messageSource.mode === "live" ? st.messageSource.messages : [];
     const assistantMsg = liveMessages.find(m => m.role === "assistant");
@@ -263,7 +263,7 @@ describe("chat store — streaming via sendMessage", () => {
     await new Promise(r => setTimeout(r, 200));
 
     const st = useChatStore.getState().agents[AGENT];
-    expect(st?.streamStatus).toBe("idle");
+    expect(st?.connectionPhase).toBe("idle");
     // Assistant message preserved after sync + finish
     const liveMessages = st?.messageSource.mode === "live" ? st.messageSource.messages : [];
     const assistantMsg = liveMessages.find(m => m.role === "assistant");
@@ -285,7 +285,7 @@ describe("chat store — streaming via sendMessage", () => {
     await new Promise(r => setTimeout(r, 200));
 
     const st = useChatStore.getState().agents[AGENT];
-    expect(st?.streamStatus).toBe("idle");
+    expect(st?.connectionPhase).toBe("idle");
     // The assistant message should exist with a tool part (from tool-input-start)
     const liveMessages = st?.messageSource.mode === "live" ? st.messageSource.messages : [];
     const assistantMsg = liveMessages.find(m => m.role === "assistant");
@@ -311,7 +311,7 @@ describe("chat store — streaming via sendMessage", () => {
     await new Promise(r => setTimeout(r, 200));
 
     const st = useChatStore.getState().agents[AGENT];
-    expect(st?.streamStatus).toBe("error");
+    expect(st?.connectionPhase).toBe("error");
     expect(st?.streamError).toBe("LLM provider timeout");
   });
 });
