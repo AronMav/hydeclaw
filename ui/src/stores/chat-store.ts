@@ -270,14 +270,13 @@ export function convertHistory(rows: MessageRow[]): ChatMessage[] {
         messages.push(currentAssistant);
         currentAssistant = null;
       }
-      const userAgentId = m.agent_id ?? lastAgentId;
       if (m.agent_id) lastAgentId = m.agent_id;
       messages.push({
         id: m.id,
         role: "user",
         parts: [{ type: "text", text: m.content }],
         createdAt: m.created_at,
-        agentId: userAgentId,
+        agentId: m.agent_id ?? undefined,
       });
     } else if (m.role === "assistant" && !m.tool_call_id) {
       // D-01: No merging. Each assistant DB row becomes its own ChatMessage.
