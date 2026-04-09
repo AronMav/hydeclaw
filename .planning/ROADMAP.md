@@ -175,7 +175,7 @@ Plans:
   4. The `message.id` assigned during live streaming matches the `id` stored in the database, so React can reuse the same DOM node when switching from live to history view
 **Plans**: 3 plans
 Plans:
-- [ ] 48-01-PLAN.md — OPTI-01/02 regression tests + skeleton refactor (shared MessageSkeleton)
+- [x] 48-01-PLAN.md — OPTI-01/02 regression tests + skeleton refactor (shared MessageSkeleton)
 - [ ] 48-02-PLAN.md — OPTI-03/04 content hash reconciliation + live-to-history transition
 - [ ] 48-03-PLAN.md — Human verify: browser OPTI UX check
 **UI hint**: yes
@@ -250,7 +250,7 @@ Plans:
 | 45. Cleanup | v0.12.0 | 1/1 | Complete | 2026-04-09 |
 | 46. Streaming Performance | v0.13.0 | 3/3 | Complete    | 2026-04-09 |
 | 47. Scroll & Virtualization | v0.13.0 | 4/4 | Complete    | 2026-04-09 |
-| 48. Optimistic & Responsive UI | v0.13.0 | 0/3 | Not started | - |
+| 48. Optimistic & Responsive UI | v0.13.0 | 1/3 | In Progress|  |
 | 49. Network Resilience | v0.13.0 | 0/? | Not started | - |
 | 50. SSE Protocol Extensions | v0.13.0 | 0/? | Not started | - |
 | 51. Human-in-the-Loop | v0.13.0 | 0/? | Not started | - |

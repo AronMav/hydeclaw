@@ -6,7 +6,6 @@ import { useChatStore } from "@/stores/chat-store";
 import type { ChatMessage } from "@/stores/chat-store";
 import { Button } from "@/components/ui/button";
 import { BarsLoader } from "@/components/ui/loader";
-import { Skeleton } from "@/components/ui/skeleton";
 import { RoleAvatar, AgentTurnSeparator } from "./ChatThread";
 import { MessageItem } from "./MessageItem";
 import { useAuthStore } from "@/stores/auth-store";
@@ -31,14 +30,14 @@ function isNewMessage(msg: ChatMessage): boolean {
 
 // ── Loading skeletons ──────────────────────────────────────────────────────
 
-function MessageSkeleton() {
+export function MessageSkeleton() {
   return (
     <div className="flex gap-3 py-5 md:py-6">
-      <Skeleton className="h-8 w-8 rounded-full shrink-0" />
-      <div className="flex flex-1 flex-col gap-2">
-        <Skeleton className="h-3 w-20" />
-        <Skeleton className="h-4 w-full" />
-        <Skeleton className="h-4 w-3/4" />
+      <div className="h-9 w-9 rounded-xl bg-muted/50 animate-pulse shrink-0" />
+      <div className="flex-1 space-y-2">
+        <div className="h-3 w-20 rounded bg-muted/50 animate-pulse" />
+        <div className="h-4 w-full rounded bg-muted/40 animate-pulse" />
+        <div className="h-4 w-3/4 rounded bg-muted/30 animate-pulse" />
       </div>
     </div>
   );

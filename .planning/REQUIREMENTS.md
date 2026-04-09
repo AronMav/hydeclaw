@@ -21,8 +21,8 @@ Requirements for Chat UX Evolution milestone. Stability, responsiveness, advance
 
 ### Optimistic & Responsive UI
 
-- [ ] **OPTI-01**: Instant thinking indicator — анимация "думания" запускается локально сразу при send, до первого SSE байта
-- [ ] **OPTI-02**: Skeleton sync при переключении агентов — shape-matched скелетные превью
+- [x] **OPTI-01**: Instant thinking indicator — анимация "думания" запускается локально сразу при send, до первого SSE байта
+- [x] **OPTI-02**: Skeleton sync при переключении агентов — shape-matched скелетные превью
 - [ ] **OPTI-03**: Content hash для live→history перехода — без визуального мерцания при замене
 - [ ] **OPTI-04**: Reference stability — message.id совпадает между live и DB для переиспользования DOM узлов
 
@@ -93,8 +93,8 @@ Requirements for Chat UX Evolution milestone. Stability, responsiveness, advance
 | SCRL-03 | Phase 47 | Pending |
 | VIRT-01 | Phase 47 | Complete |
 | VIRT-02 | Phase 47 | Pending |
-| OPTI-01 | Phase 48 | Pending |
-| OPTI-02 | Phase 48 | Pending |
+| OPTI-01 | Phase 48 | Complete |
+| OPTI-02 | Phase 48 | Complete |
 | OPTI-03 | Phase 48 | Pending |
 | OPTI-04 | Phase 48 | Pending |
 | NET-01 | Phase 49 | Pending |
