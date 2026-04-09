@@ -1,0 +1,131 @@
+"use client";
+
+import { memo, useState } from "react";
+import { useTranslation } from "@/hooks/use-translation";
+import { useToolProgress } from "@/hooks/use-tool-progress";
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
+import { ChevronRight } from "lucide-react";
+import { truncateOutput } from "@/lib/format";
+
+export const ToolCallPartView = memo(function ToolCallPartView({ toolName, args, result, status }: {
+  toolName: string;
+  args: Record<string, unknown>;
+  result?: unknown;
+  status: { type: string };
+}) {
+  const { t } = useTranslation();
+  const isComplete = status.type === "complete";
+  const hasError = status.type === "error";
+  const isDenied = status.type === "denied";
+  const isRunning = status.type === "running" || status.type === "requires-action";
+  const hasContent = isComplete || hasError || isDenied;
+
+  const progress = useToolProgress(isRunning);
+
+  const inputDisplay = args && Object.keys(args).length > 0
+    ? JSON.stringify(args, null, 2)
+    : null;
+
+  const TOOL_OUTPUT_MAX_CHARS = 10_000;
+  const resultRaw = result
+    ? typeof result === "string" ? result : JSON.stringify(result, null, 2)
+    : "";
+  const [showFullOutput, setShowFullOutput] = useState(false);
+  const { text: resultDisplay, truncated: resultTruncated, hiddenChars: resultHiddenChars } =
+    showFullOutput
+      ? { text: resultRaw, truncated: false, hiddenChars: 0 }
+      : truncateOutput(resultRaw, TOOL_OUTPUT_MAX_CHARS);
+
+  return (
+    <Collapsible
+      disabled={!hasContent && !inputDisplay}
+      className="group overflow-hidden rounded-xl border border-border/60 bg-card/50 dark:bg-card/30 transition-all hover:border-primary/40 dark:hover:bg-card/50"
+    >
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors"
+        >
+          <div
+            className={`h-2.5 w-2.5 rounded-full shrink-0 ${
+              hasError || isDenied
+                ? "bg-destructive shadow-lg shadow-destructive/30"
+                : isComplete
+                  ? "bg-success shadow-lg shadow-success/30"
+                  : "bg-warning animate-pulse shadow-lg shadow-warning/30"
+            }`}
+          />
+          <span className="font-mono text-xs font-semibold tracking-tight text-foreground truncate">
+            {toolName}
+          </span>
+          <div className="ml-auto flex items-center gap-2 shrink-0">
+            {isRunning && (
+              <div className="w-[60px]">
+                <div className="h-0.5 w-full rounded-full bg-border/40 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-warning/60 transition-all duration-200 ease-out"
+                    style={{ width: `${progress * 100}%` }}
+                  />
+                </div>
+              </div>
+            )}
+            <span className={`font-mono text-[10px] font-bold uppercase tracking-widest ${
+              hasError || isDenied
+                ? "text-destructive"
+                : isComplete
+                  ? "text-success"
+                  : "text-muted-foreground/50"
+            }`}>
+              {hasError ? "ERR" : isDenied ? "DENY" : isComplete ? "OK" : "..."}
+            </span>
+            {(hasContent || inputDisplay) && (
+              <ChevronRight
+                className="h-4 w-4 text-muted-foreground/40 transition-transform duration-300 group-data-[state=open]:rotate-90"
+              />
+            )}
+          </div>
+        </button>
+      </CollapsibleTrigger>
+
+      <CollapsibleContent>
+        <div className="border-t border-border/50 bg-muted/40 dark:bg-muted/20">
+          {inputDisplay && (
+            <div className="border-b border-border/30 p-3">
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="font-mono text-[10px] font-bold uppercase tracking-wider text-primary/70">
+                  {t("chat.tool_input")}
+                </span>
+              </div>
+              <pre className="max-h-[150px] overflow-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-foreground/80 dark:text-foreground/60">
+                {inputDisplay}
+              </pre>
+            </div>
+          )}
+          {(isComplete || hasError || isDenied) && (
+            <div className="p-3">
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className={`font-mono text-[10px] font-bold uppercase tracking-wider ${
+                  hasError || isDenied ? "text-destructive" : "text-success"
+                }`}>
+                  {hasError ? t("chat.tool_error") : isDenied ? t("chat.tool_denied") : t("chat.tool_result")}
+                </span>
+              </div>
+              <pre className="max-h-[300px] overflow-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-foreground/90 dark:text-foreground/70">
+                {resultDisplay}
+                {resultTruncated && (
+                  <button
+                    type="button"
+                    onClick={() => setShowFullOutput(true)}
+                    className="mt-2 text-xs text-primary/70 hover:text-primary underline underline-offset-2"
+                  >
+                    Show {Math.round(resultHiddenChars / 1000)}K more characters…
+                  </button>
+                )}
+              </pre>
+            </div>
+          )}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+});
