@@ -1299,14 +1299,18 @@ pub(crate) async fn api_resolve_approval(
         ).into_response(),
     };
 
+    // Extract optional modified_input from the request body
+    let modified_input = body.get("modified_input")
+        .and_then(|v| if v.is_null() { None } else { Some(v.clone()) });
+
     // Resolve in the engine (updates DB + wakes waiter)
     let agents = state.agents.read().await;
     if let Some(handle) = agents.get(&approval.agent_id) {
         let approved = status == "approved";
-        match handle.engine.resolve_approval(id, approved, resolved_by).await {
+        match handle.engine.resolve_approval(id, approved, resolved_by, modified_input.clone()).await {
             Ok(()) => {
                 // audit is already recorded inside engine.resolve_approval()
-                Json(json!({"ok": true, "status": status})).into_response()
+                Json(json!({"ok": true, "status": status, "modified": modified_input.is_some()})).into_response()
             }
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
