@@ -957,21 +957,10 @@ export const useChatStore = create<ChatStore>()(
             case "finish": {
               // Mark natural end — distinguishes from connection drop in finally block
               receivedFinishEvent = true;
-              // Cancel any pending update and do synchronous update
+              // Cancel any pending update and do final synchronous update
               cancelScheduledUpdate();
-              flushText();
-              // SSE-02: Normalize parts through parseContentParts for live/history parity
-              const textContent = parts
-                .filter((p): p is TextPart | ReasoningPart => p.type === "text" || p.type === "reasoning")
-                .map(p => p.type === "reasoning" ? `<think>${p.text}</think>` : p.text)
-                .join("");
-              if (textContent) {
-                const nonTextParts = parts.filter(p => p.type !== "text" && p.type !== "reasoning");
-                const normalizedTextParts = parseContentParts(textContent);
-                parts.length = 0;
-                parts.push(...normalizedTextParts, ...nonTextParts);
-              }
-              pushUpdate();
+              flushText(); // Snapshot remaining text into parts at correct position
+              pushUpdate(); // Final render with all parts in correct order
               // FSM-04: Reset incremental parser state so next agent turn starts clean.
               // Prevents reasoning state from leaking from one agent's output to the next.
               incrementalParser.reset();
