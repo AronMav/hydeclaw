@@ -2,7 +2,7 @@
 // Pure SSE transport layer extracted from chat-store.ts.
 // No React, no Zustand, no Immer — only Web APIs and sse-events helpers.
 
-import { parseSSELines, parseSseEvent } from "@/stores/sse-events";
+import { parseSSELines, parseSseEvent, extractSseEventId } from "@/stores/sse-events";
 import type { SseEvent } from "@/stores/sse-events";
 
 export type { SseEvent };
@@ -54,6 +54,7 @@ export class SseConnection {
   private sessionId: string | null = null;
   private readonly maxRetries: number;
   private receivedFinish = false;
+  private lastEventId: string | null = null;
 
   constructor(
     private readonly config: SseConnectionConfig,
@@ -157,6 +158,12 @@ export class SseConnection {
 
         for (const line of lines) {
           if (signal.aborted) break;
+          // Track SSE event IDs for Last-Event-ID header on reconnect
+          const eid = extractSseEventId(line);
+          if (eid !== null) {
+            this.lastEventId = eid;
+            continue;
+          }
           if (!line.startsWith("data:")) continue;
           const raw = line.slice(5).trim();
           if (raw === "[DONE]") continue;
@@ -214,11 +221,16 @@ export class SseConnection {
     const { token } = this.config;
     const url = `/api/chat/${this.sessionId}/stream`;
 
+    const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+    if (this.lastEventId) {
+      headers["Last-Event-ID"] = this.lastEventId;
+    }
+
     let response: Response;
     try {
       response = await fetch(url, {
         method: "GET",
-        headers: { Authorization: `Bearer ${token}` },
+        headers,
         signal: this.controller.signal,
       });
     } catch (err: unknown) {
@@ -230,6 +242,13 @@ export class SseConnection {
 
     if (response.status === 204) {
       // Engine already finished — natural completion
+      this.callbacks.onDone();
+      this.notifyPhase("done");
+      return;
+    }
+
+    if (response.status === 410) {
+      // Stream expired — treat as natural end, let caller fetch history
       this.callbacks.onDone();
       this.notifyPhase("done");
       return;
@@ -271,6 +290,12 @@ export class SseConnection {
 
         for (const line of lines) {
           if (this.controller.signal.aborted) break;
+          // Track SSE event IDs for subsequent reconnects
+          const eid = extractSseEventId(line);
+          if (eid !== null) {
+            this.lastEventId = eid;
+            continue;
+          }
           if (!line.startsWith("data:")) continue;
           const raw = line.slice(5).trim();
           if (raw === "[DONE]") continue;
