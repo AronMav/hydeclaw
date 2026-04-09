@@ -85,15 +85,19 @@ function ThinkingMessage() {
 function ScrollToBottomButton({
   isAtBottom,
   isStreaming,
+  newTokenCount,
   onClick,
   ariaLabel,
 }: {
   isAtBottom: boolean;
   isStreaming: boolean;
+  newTokenCount: number;
   onClick: () => void;
   ariaLabel: string;
 }) {
   if (isAtBottom) return null;
+
+  const badge = newTokenCount > 99 ? "99+" : newTokenCount > 0 ? String(newTokenCount) : null;
 
   return (
     <Button
@@ -106,6 +110,11 @@ function ScrollToBottomButton({
       <ChevronDown className="h-5 w-5" />
       {isStreaming && (
         <span className="absolute -top-1 -right-1 h-3 w-3 rounded-full bg-primary animate-pulse" />
+      )}
+      {badge && (
+        <span className="absolute -bottom-1 -right-1 min-w-[18px] h-[18px] rounded-full bg-primary text-primary-foreground text-[10px] font-bold flex items-center justify-center px-1 leading-none">
+          {badge}
+        </span>
       )}
     </Button>
   );
@@ -183,6 +192,9 @@ export function MessageList({
   const isAtBottomRef = useRef(true);
   // Track whether user manually scrolled up (wheel/touch) vs content growth pushing us up
   const userScrolledUpRef = useRef(false);
+  // Track tokens received while user is scrolled up (SCRL-03)
+  const [missedTokens, setMissedTokens] = useState(0);
+  const missedTokensRef = useRef(0); // shadow ref to avoid stale closure in effect
 
   // Hoist session data so individual UserMessage components don't each subscribe
   const currentAgent = useChatStore((s) => s.currentAgent);
@@ -247,6 +259,19 @@ export function MessageList({
     return () => ro.disconnect();
   }, [virtualItems.length]); // Re-attach when items count changes structurally
 
+  // ── SCRL-03: count tokens that arrived while user was scrolled up ────────────
+  const prevPartsLenRef = useRef(0);
+  useEffect(() => {
+    // Compute total parts across all live messages (proxy for token arrivals)
+    const totalParts = virtualItems.reduce((acc, m) => acc + m.parts.length, 0);
+    if (totalParts > prevPartsLenRef.current && userScrolledUpRef.current) {
+      const delta = totalParts - prevPartsLenRef.current;
+      missedTokensRef.current += delta;
+      setMissedTokens(missedTokensRef.current);
+    }
+    prevPartsLenRef.current = totalParts;
+  }, [virtualItems]);
+
   // Force scroll to bottom on session switch
   const prevLenRef = useRef(messages.length);
   useEffect(() => {
@@ -266,6 +291,8 @@ export function MessageList({
     prevStreamingRef.current = isStreaming;
     if (streamJustStarted && virtualItems.length > 0) {
       userScrolledUpRef.current = false;
+      missedTokensRef.current = 0;
+      setMissedTokens(0);
       virtuosoRef.current?.scrollToIndex({ index: virtualItems.length - 1, behavior: "smooth" });
     }
   }, [isStreaming, virtualItems.length]);
@@ -274,6 +301,9 @@ export function MessageList({
     virtuosoRef.current?.scrollToIndex({ index: virtualItems.length - 1, behavior: "smooth" });
     isAtBottomRef.current = true;
     setIsAtBottom(true);
+    // SCRL-03: reset missed token counter
+    missedTokensRef.current = 0;
+    setMissedTokens(0);
   }, []);
 
   const virtuosoComponents = useMemo(() => ({
@@ -316,8 +346,12 @@ export function MessageList({
         atBottomStateChange={(atBottom) => {
           isAtBottomRef.current = atBottom;
           setIsAtBottom(atBottom);
-          // If we reached bottom, reset user-scrolled-up flag
-          if (atBottom) userScrolledUpRef.current = false;
+          if (atBottom) {
+            userScrolledUpRef.current = false;
+            // SCRL-03: reset missed token counter when user naturally reaches bottom
+            missedTokensRef.current = 0;
+            setMissedTokens(0);
+          }
         }}
         isScrolling={(scrolling) => {
           // Detect user-initiated scroll-up during streaming
@@ -377,6 +411,7 @@ export function MessageList({
       <ScrollToBottomButton
         isAtBottom={isAtBottom}
         isStreaming={isStreaming}
+        newTokenCount={missedTokens}
         onClick={scrollToBottom}
         ariaLabel={t("chat.scroll_to_bottom")}
       />
