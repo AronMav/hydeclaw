@@ -19,7 +19,9 @@ export type SseEvent =
   | { type: "file"; url: string; mediaType?: string }
   | { type: "rich-card"; cardType: "table" | "metric" | "agent-turn"; data: Record<string, unknown> }
   | { type: "sync"; content: string; toolCalls: unknown[]; status: string; error?: string }
-  | { type: "finish"; agentName?: string }
+  | { type: "step-start"; stepId: string }
+  | { type: "step-finish"; stepId: string; finishReason: string }
+  | { type: "finish"; agentName?: string; continuation?: boolean }
   | { type: "error"; errorText: string };
 
 /**
@@ -77,8 +79,18 @@ export function parseSseEvent(raw: string): SseEvent | null {
         status: typeof e.status === "string" ? e.status : "unknown",
         error: typeof e.error === "string" ? e.error : undefined,
       };
+    case "step-start":
+      if (typeof e.stepId !== "string") return null;
+      return { type, stepId: e.stepId };
+    case "step-finish":
+      if (typeof e.stepId !== "string") return null;
+      return { type, stepId: e.stepId, finishReason: typeof e.finishReason === "string" ? e.finishReason : "unknown" };
     case "finish":
-      return { type, agentName: typeof e.agentName === "string" ? e.agentName : undefined };
+      return {
+        type,
+        agentName: typeof e.agentName === "string" ? e.agentName : undefined,
+        continuation: typeof e.continuation === "boolean" ? e.continuation : undefined,
+      };
     case "error":
       return { type, errorText: typeof e.errorText === "string" ? e.errorText : "Unknown error" };
     default:
