@@ -3,7 +3,7 @@ import { devtools } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 
 import { apiGet, apiDelete, apiPatch, getToken } from "@/lib/api";
-import { parseSSELines, parseSseEvent } from "@/stores/sse-events";
+import { parseSSELines, parseSseEvent, parseContentParts } from "@/stores/sse-events";
 import type { SessionRow, MessageRow } from "@/types/api";
 import { queryClient } from "@/lib/query-client";
 import { qk } from "@/lib/queries";
@@ -230,47 +230,6 @@ function loadLastSession(): { agent?: string; sessions?: Record<string, string>;
   return {};
 }
 
-/** Extract <think> blocks into reasoning parts and clean text parts from raw content */
-function parseContentParts(raw: string): MessagePart[] {
-  if (!raw) return [];
-  const parts: MessagePart[] = [];
-  const thinkRegex = /<think>([\s\S]*?)<\/think>/g;
-  let lastIndex = 0;
-  let match;
-
-  while ((match = thinkRegex.exec(raw)) !== null) {
-    const before = raw.slice(lastIndex, match.index).trim();
-    if (before) parts.push({ type: "text", text: before });
-    const reasoning = match[1].trim();
-    if (reasoning) parts.push({ type: "reasoning", text: reasoning });
-    lastIndex = match.index + match[0].length;
-  }
-
-  // Handle remaining text after last closed </think> (or all text if no <think> blocks)
-  let after = raw.slice(lastIndex).trim();
-  // Handle unclosed <think> at end of remaining text
-  const unclosedIdx = after.indexOf("<think>");
-  if (unclosedIdx >= 0) {
-    const beforeUnclosed = after.slice(0, unclosedIdx).trim();
-    if (beforeUnclosed) {
-      const cleanedBefore = beforeUnclosed
-        .replace(/<minimax:tool_call>[\s\S]*?(<\/minimax:tool_call>|$)\s*/g, "")
-        .replace(/\[TOOL_CALL\][\s\S]*?(\[\/TOOL_CALL\]|$)\s*/g, "")
-        .trim();
-      if (cleanedBefore) parts.push({ type: "text", text: cleanedBefore });
-    }
-    const unclosedReasoning = after.slice(unclosedIdx + 7).trim();
-    if (unclosedReasoning) parts.push({ type: "reasoning", text: unclosedReasoning });
-  } else {
-    const cleaned = after
-      .replace(/<minimax:tool_call>[\s\S]*?(<\/minimax:tool_call>|$)\s*/g, "")
-      .replace(/\[TOOL_CALL\][\s\S]*?(\[\/TOOL_CALL\]|$)\s*/g, "")
-      .trim();
-    if (cleaned) parts.push({ type: "text", text: cleaned });
-  }
-
-  return parts.length > 0 ? parts : [{ type: "text", text: raw.trim() }];
-}
 
 // ── History conversion (MessageRow[] → ChatMessage[]) ───────────────────────
 
@@ -884,6 +843,17 @@ export const useChatStore = create<ChatStore>()(
               // Cancel any pending update and do synchronous update
               cancelScheduledUpdate();
               flushText();
+              // SSE-02: Normalize parts through parseContentParts for live/history parity
+              const textContent = parts
+                .filter((p): p is TextPart | ReasoningPart => p.type === "text" || p.type === "reasoning")
+                .map(p => p.type === "reasoning" ? `<think>${p.text}</think>` : p.text)
+                .join("");
+              if (textContent) {
+                const nonTextParts = parts.filter(p => p.type !== "text" && p.type !== "reasoning");
+                const normalizedTextParts = parseContentParts(textContent);
+                parts.length = 0;
+                parts.push(...normalizedTextParts, ...nonTextParts);
+              }
               pushUpdate();
               // CRITICAL for multi-agent turn loop: reset state for next agent turn.
               // Without this, events between finish and next start (e.g. agent-turn rich card)
