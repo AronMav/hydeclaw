@@ -290,11 +290,14 @@ impl AgentEngine {
                     tx.send(ProcessingPhase::CallingTool(tc.name.clone())).ok();
                 }
             tool_iterations += 1;
-            let loop_broken = match self.execute_tool_calls_partitioned(
-                &response.tool_calls, &msg.context, session_id, &msg.channel,
-                messages.iter().map(|m| m.content.len()).sum(),
-                &mut detector, loop_config.detect_loops,
-            ).await {
+            let loop_broken = match self.tool_executor
+                .get()
+                .expect("tool_executor not initialized")
+                .execute_batch(
+                    &response.tool_calls, &msg.context, session_id, &msg.channel,
+                    messages.iter().map(|m| m.content.len()).sum(),
+                    &mut detector, loop_config.detect_loops,
+                ).await {
                 Ok(results) => {
                     for (tc_id, tool_result) in &results {
                         messages.push(Message {

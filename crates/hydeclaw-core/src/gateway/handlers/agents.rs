@@ -595,9 +595,11 @@ pub async fn start_agent_from_config(
         app_config: std::sync::Arc::new(state.config.clone()),
         compaction_provider,
         context_builder: std::sync::OnceLock::new(),
+        tool_executor: std::sync::OnceLock::new(),
     });
     engine.set_self_ref(&engine);
     engine.set_context_builder(&engine);
+    engine.set_tool_executor(&engine);
     let workspace_dir = deps.workspace_dir.clone();
     drop(deps); // Release read lock before async operations
 

@@ -228,6 +228,9 @@ pub struct AgentEngine {
     /// Initialized via `set_context_builder` after engine Arc creation (mirrors self_ref pattern).
     /// Holds `Arc<dyn ContextBuilder>` for testability (MockContextBuilder in plan 02).
     pub context_builder: OnceLock<Arc<dyn crate::agent::context_builder::ContextBuilder>>,
+    /// Tool executor — dispatches tool calls through trait boundary.
+    /// Initialized via `set_tool_executor` after engine Arc creation (mirrors context_builder).
+    pub tool_executor: OnceLock<Arc<dyn crate::agent::tool_executor::ToolExecutor>>,
 }
 
 /// Snapshot of what's currently displayed on the canvas.
@@ -428,6 +431,17 @@ impl AgentEngine {
         let builder = Arc::new(DefaultContextBuilder::new(deps))
             as Arc<dyn crate::agent::context_builder::ContextBuilder>;
         let _ = self.context_builder.set(builder);
+    }
+
+    /// Initialize the tool executor after engine Arc creation.
+    /// Must be called once, mirrors `set_context_builder` pattern.
+    pub fn set_tool_executor(&self, arc: &Arc<AgentEngine>) {
+        use crate::agent::tool_executor::{DefaultToolExecutor, ToolExecutor, ToolExecutorDeps};
+        let deps = arc.clone() as Arc<dyn ToolExecutorDeps>;
+        let executor = Arc::new(DefaultToolExecutor::new(deps));
+        let executor_trait: Arc<dyn ToolExecutor> = executor.clone();
+        executor.set_self_ref(&executor_trait);
+        let _ = self.tool_executor.set(executor_trait);
     }
 
     /// Invalidate the cached YAML tool definitions so the next request reloads from disk.
@@ -1161,6 +1175,41 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
         k: usize,
     ) -> Vec<hydeclaw_types::ToolDefinition> {
         AgentEngine::select_top_k_tools_semantic(self, tools, query, k).await
+    }
+}
+
+// ── ToolExecutorDeps impl ─────────────────────────────────────────────────────
+
+#[async_trait::async_trait]
+impl crate::agent::tool_executor::ToolExecutorDeps for AgentEngine {
+    fn execute_tool_call_raw<'a>(
+        &'a self,
+        name: &'a str,
+        arguments: &'a serde_json::Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
+        self.execute_tool_call(name, arguments)
+    }
+
+    async fn execute_tool_calls_partitioned_raw(
+        &self,
+        tool_calls: &[hydeclaw_types::ToolCall],
+        context: &serde_json::Value,
+        session_id: Uuid,
+        channel: &str,
+        current_context_chars: usize,
+        detector: &mut crate::agent::tool_loop::LoopDetector,
+        detect_loops: bool,
+    ) -> Result<Vec<(String, String)>, parallel_impl::LoopBreak> {
+        self.execute_tool_calls_partitioned(
+            tool_calls,
+            context,
+            session_id,
+            channel,
+            current_context_chars,
+            detector,
+            detect_loops,
+        )
+        .await
     }
 }
 
