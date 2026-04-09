@@ -223,8 +223,8 @@ Plans:
 **Plans**: 3 plans
 Plans:
 - [x] 51-01-PLAN.md — Backend: SSE approval events, modified_input support in resolve API
-- [ ] 51-02-PLAN.md — Frontend store: SSE event parsing, ApprovalPart type, decideApproval API
-- [ ] 51-03-PLAN.md — UI components (ApprovalCard, Countdown, ArgsEditor) + i18n + human verify
+- [x] 51-02-PLAN.md — Frontend store: SSE event parsing, ApprovalPart type, decideApproval API
+- [x] 51-03-PLAN.md — UI components (ApprovalCard, Countdown, ArgsEditor) + i18n + human verify
 **UI hint**: yes
 
 ### Phase 52: Citations & Generative UI
@@ -274,6 +274,6 @@ Plans:
 | 48. Optimistic & Responsive UI | v0.13.0 | 3/3 | Complete    | 2026-04-09 |
 | 49. Network Resilience | v0.13.0 | 3/3 | Complete    | 2026-04-09 |
 | 50. SSE Protocol Extensions | v0.13.0 | 3/1 | Complete    | 2026-04-09 |
-| 51. Human-in-the-Loop | v0.13.0 | 1/3 | In progress | - |
+| 51. Human-in-the-Loop | v0.13.0 | 3/3 | Complete    | 2026-04-09 |
 | 52. Citations & Generative UI | v0.13.0 | 0/? | Not started | - |
 | 53. Message Branching | v0.13.0 | 0/? | Not started | - |

@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v0.12.0
 milestone_name: Chat Redesign
 status: Defining requirements
-stopped_at: Completed 51-02-PLAN.md
-last_updated: "2026-04-09T19:10:41.793Z"
+stopped_at: Completed 51-03-PLAN.md
+last_updated: "2026-04-09T19:26:26Z"
 last_activity: 2026-04-09 — Milestone v0.13.0 started
 progress:
   total_phases: 6
@@ -60,6 +60,7 @@ Last activity: 2026-04-09 — Milestone v0.13.0 started
 - [Phase 45-cleanup]: CLN-01: StreamStatus/isActiveStream removed — ConnectionPhase/isActivePhase are sole stream-state authorities
 - [Phase 45-cleanup]: CLN-02: AbortController/timers in private Maps not Immer state; streamGeneration moved to AgentState as plain number
 - [Phase 51]: ApprovalPart uses receivedAt: Date.now() for countdown timer; decideApproval returns {ok, error?} for graceful error handling
+- [Phase 51]: ApprovalCard does not locally track status — reacts to part.status prop from SSE events; countdown aria-live updates every 30s
 
 ### Pending Todos
 
@@ -73,6 +74,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-09T19:10:36.470Z
-Stopped at: Completed 51-02-PLAN.md
+Last session: 2026-04-09T19:26:26Z
+Stopped at: Completed 51-03-PLAN.md
 Resume with: `/gsd:plan-phase 40`
