@@ -114,6 +114,13 @@ Plans:
 - [x] 45-01-PLAN.md — Remove deprecated fields (CLN-01) and module-scope globals (CLN-02)
 **UI hint**: yes
 
+### 🚧 v0.13.0 Chat UX Evolution (In Progress)
+
+**Milestone Goal:** Message branching support -- users can edit past messages and navigate conversation branches.
+
+- [x] **Phase 53-01: Message Branching Backend** - Migration 012, fork endpoint, branch-aware queries (completed 2026-04-09)
+- [ ] **Phase 53-02: Message Branching Frontend** - MessageTree store, branch navigation UI
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -124,3 +131,4 @@ Plans:
 | 43. Reconnect & Optimistic UI | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
 | 44. UX Polish | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
 | 45. Cleanup | v0.12.0 | 1/1 | Complete    | 2026-04-09 |
+| 53. Message Branching | v0.13.0 | 1/2 | In Progress | — |
