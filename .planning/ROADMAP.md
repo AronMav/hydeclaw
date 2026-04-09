@@ -31,7 +31,8 @@ Covered: core platform stability, providers, channels, memory, tools, orchestrat
 
 **Milestone Goal:** Advanced UX patterns — continuations, branching, human-in-the-loop, generative UI, streaming performance, scroll anchoring, quick wins.
 
-- [ ] **Phase 46: Streaming Performance** - rAF-throttled rendering, incremental markdown, deferred syntax highlighting
+- [x] **Phase 46: Streaming Performance** - rAF-throttled rendering, incremental markdown, deferred syntax highlighting
+ (completed 2026-04-09)
 - [ ] **Phase 47: Scroll & Virtualization** - CSS overflow-anchor, smart sticky logic, floating scroll button, viewport-aware DOM capping
 - [ ] **Phase 48: Optimistic & Responsive UI** - Instant thinking indicator, agent-switch skeletons, live-to-history hash sync, reference stability
 - [ ] **Phase 49: Network Resilience** - Last-Event-ID resume on reconnect, reconnecting phase UI
@@ -142,7 +143,7 @@ Plans:
 Plans:
 - [x] 46-01-PLAN.md — Test scaffold: PERF-01 regression tests (green) + PERF-02/03 stubs (red until plan 02)
 - [x] 46-02-PLAN.md — Stable block keys (PERF-02) + deferred syntax highlighting via isStreaming prop thread (PERF-03)
-- [ ] 46-03-PLAN.md — Human verify: browser streaming UX check
+- [x] 46-03-PLAN.md — Human verify: browser streaming UX check
 **UI hint**: yes
 
 ### Phase 47: Scroll & Virtualization
@@ -155,7 +156,12 @@ Plans:
   3. A floating "scroll to bottom" button appears when the user is not at the bottom and shows a badge with the count of new tokens received while scrolled away
   4. Media-heavy messages (images, rich cards) outside the visible viewport load lazily without triggering layout shifts for on-screen content
   5. Rich cards and iframes that scroll out of view are replaced with lightweight placeholders — DOM node count stays bounded for conversations exceeding 200 messages
-**Plans**: TBD
+**Plans:** 4 plans
+Plans:
+- [ ] 47-01-PLAN.md — CSS overflow-anchor + atBottomThreshold 100 + increaseViewportBy VIRT-01
+- [ ] 47-02-PLAN.md — New-token badge counter on ScrollToBottomButton
+- [ ] 47-03-PLAN.md — content-visibility on RichCard + loading=lazy on images
+- [ ] 47-04-PLAN.md — Human verify: browser scroll UX check
 **UI hint**: yes
 
 ### Phase 48: Optimistic & Responsive UI
@@ -238,8 +244,8 @@ Plans:
 | 43. Reconnect & Optimistic UI | v0.12.0 | 1/2 | Complete | 2026-04-09 |
 | 44. UX Polish | v0.12.0 | 1/2 | Complete | 2026-04-09 |
 | 45. Cleanup | v0.12.0 | 1/1 | Complete | 2026-04-09 |
-| 46. Streaming Performance | v0.13.0 | 2/3 | In Progress|  |
-| 47. Scroll & Virtualization | v0.13.0 | 0/? | Not started | - |
+| 46. Streaming Performance | v0.13.0 | 3/3 | Complete    | 2026-04-09 |
+| 47. Scroll & Virtualization | v0.13.0 | 0/4 | Not started | - |
 | 48. Optimistic & Responsive UI | v0.13.0 | 0/? | Not started | - |
 | 49. Network Resilience | v0.13.0 | 0/? | Not started | - |
 | 50. SSE Protocol Extensions | v0.13.0 | 0/? | Not started | - |
