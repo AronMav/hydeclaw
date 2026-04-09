@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v0.12.0
 milestone_name: Chat Redesign
 status: Defining requirements
-stopped_at: Completed 49-01-PLAN.md
-last_updated: "2026-04-09T17:43:32.755Z"
+stopped_at: Completed 49-02-PLAN.md
+last_updated: "2026-04-09T17:51:31.028Z"
 last_activity: 2026-04-09 — Milestone v0.13.0 started
 progress:
   total_phases: 6
@@ -59,7 +59,7 @@ Last activity: 2026-04-09 — Milestone v0.13.0 started
 - [Phase 44-ux-polish]: totalPartsCount Stage 3 Fix useEffect removed — followOutput callback is single scroll authority
 - [Phase 45-cleanup]: CLN-01: StreamStatus/isActiveStream removed — ConnectionPhase/isActivePhase are sole stream-state authorities
 - [Phase 45-cleanup]: CLN-02: AbortController/timers in private Maps not Immer state; streamGeneration moved to AgentState as plain number
-- [Phase 49]: SSE event IDs are per-stream monotonic u64, replay_from uses exclusive comparison per SSE spec
+- [Phase 49]: extractSseEventId as standalone helper for SSE id: line parsing
 
 ### Pending Todos
 
@@ -73,6 +73,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-09T17:43:32.752Z
-Stopped at: Completed 49-01-PLAN.md
+Last session: 2026-04-09T17:51:31.025Z
+Stopped at: Completed 49-02-PLAN.md
 Resume with: `/gsd:plan-phase 40`
