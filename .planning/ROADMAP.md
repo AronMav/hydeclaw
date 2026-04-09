@@ -123,4 +123,4 @@ Plans:
 | 42. History & MessageSource | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
 | 43. Reconnect & Optimistic UI | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
 | 44. UX Polish | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
-| 45. Cleanup | v0.12.0 | 1/1 | Complete   | 2026-04-09 |
+| 45. Cleanup | v0.12.0 | 1/1 | Complete    | 2026-04-09 |
