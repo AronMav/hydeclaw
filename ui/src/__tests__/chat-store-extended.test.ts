@@ -244,7 +244,7 @@ describe("saveLastSession / getLastSessionId", () => {
 // ── STATE-01: history to live transition ────────────────────────────────────
 
 describe("STATE-01: history to live transition", () => {
-  it("sendMessage from history does not set viewMode live before startStream populates liveMessages", async () => {
+  it("sendMessage from history mode seeds messageSource atomically (no empty live transition)", async () => {
     const { useChatStore } = await import("@/stores/chat-store");
 
     // Set up agent in history mode with an active session
@@ -253,10 +253,11 @@ describe("STATE-01: history to live transition", () => {
       if (!s.agents["TestAgent"]) {
         s.agents["TestAgent"] = {
           activeSessionId: "sess-history",
-          liveMessages: [],
-          viewMode: "history",
+          messageSource: { mode: "history", sessionId: "sess-history" },
           streamStatus: "idle",
           streamError: null,
+          connectionPhase: "idle",
+          connectionError: null,
           forceNewSession: false,
           thinkingSessionId: null,
           activeSessionIds: [],
@@ -268,19 +269,19 @@ describe("STATE-01: history to live transition", () => {
           turnLimitMessage: null,
         };
       } else {
-        s.agents["TestAgent"].viewMode = "history";
+        s.agents["TestAgent"].messageSource = { mode: "history", sessionId: "sess-history" };
         s.agents["TestAgent"].activeSessionId = "sess-history";
-        s.agents["TestAgent"].liveMessages = [];
         s.agents["TestAgent"].streamStatus = "idle";
       }
     });
 
     // Record all states during sendMessage
-    const stateSnapshots: Array<{ viewMode: string; liveMessages: unknown[] }> = [];
+    type MessageSource = { mode: "new-chat" } | { mode: "live"; messages: unknown[] } | { mode: "history"; sessionId: string };
+    const stateSnapshots: Array<{ messageSource: MessageSource }> = [];
     const unsub = useChatStore.subscribe((state) => {
       const ag = state.agents["TestAgent"];
       if (ag) {
-        stateSnapshots.push({ viewMode: ag.viewMode, liveMessages: [...ag.liveMessages] });
+        stateSnapshots.push({ messageSource: ag.messageSource as MessageSource });
       }
     });
 
@@ -294,17 +295,18 @@ describe("STATE-01: history to live transition", () => {
     unsub();
     fetchSpy.mockRestore();
 
-    // After sendMessage, every state transition to "live" must have non-empty liveMessages.
-    // The early flip (viewMode:"live" before startStream) would produce an empty-liveMessages snapshot.
-    const liveTransitions = stateSnapshots.filter((s) => s.viewMode === "live");
+    // After sendMessage, every transition to "live" messageSource must have non-empty messages.
+    // (startStream atomically sets { mode: "live", messages: [...seedMessages, userMsg] })
+    const liveTransitions = stateSnapshots.filter((s) => s.messageSource.mode === "live");
     for (const snap of liveTransitions) {
-      expect(snap.liveMessages.length).toBeGreaterThan(0);
+      if (snap.messageSource.mode === "live") {
+        expect(snap.messageSource.messages.length).toBeGreaterThan(0);
+      }
     }
   });
 
-  it("chat-store.ts sendMessage has no early viewMode flip before startStream", async () => {
-    // Static analysis: the three early `update(agent, { viewMode: "live" })` calls
-    // in sendMessage/regenerate/regenerateFrom must be removed.
+  it("chat-store.ts sendMessage uses messageSource (no early viewMode flip)", async () => {
+    // Static analysis: verify the store uses messageSource.mode checks, not viewMode checks
     const fs = await import("node:fs");
     const path = await import("node:path");
     const src = fs.readFileSync(
@@ -312,12 +314,17 @@ describe("STATE-01: history to live transition", () => {
       "utf8"
     );
 
-    // sendMessage block — from "sendMessage: " to "stopStream:"
+    // sendMessage block — from "sendMessage: (text: string) => {" to "stopStream:"
+    // Note: skip over the interface declaration which uses "=> void;" not "=> {"
+    const sendMsgImplStart = src.indexOf("sendMessage: (text: string) => {");
     const sendMessageBlock = src.slice(
-      src.indexOf("sendMessage: (text: string)"),
-      src.indexOf("stopStream:")
+      sendMsgImplStart,
+      src.indexOf("stopStream:", sendMsgImplStart)
     );
+    // No old-style viewMode update calls
     expect(sendMessageBlock).not.toMatch(/update\(agent,\s*\{\s*viewMode:\s*["']live["']\s*\}/);
+    // Uses messageSource.mode checks
+    expect(sendMessageBlock).toMatch(/messageSource\.mode/);
 
     // regenerate block — from "regenerate: () =>" to "regenerateFrom:"
     const regenerateBlock = src.slice(
