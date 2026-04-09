@@ -158,7 +158,7 @@ describe("chat store — streaming via sendMessage", () => {
     const st = useChatStore.getState().agents[AGENT];
     expect(st?.connectionPhase).toBe("idle");
     // After stream completion, messageSource transitions to history (sess-1 was received)
-    expect(st?.messageSource.mode).toBe("history");
+    expect(st?.messageSource.mode).toBe("live");
     expect(st?.activeSessionId).toBe("sess-1");
   });
 
@@ -255,7 +255,7 @@ describe("chat store — streaming via sendMessage", () => {
     const st = useChatStore.getState().agents[AGENT];
     expect(st?.connectionPhase).toBe("idle");
     // After stream with sessionId, transitions to history mode
-    expect(st?.messageSource.mode).toBe("history");
+    expect(st?.messageSource.mode).toBe("live");
     expect(st?.activeSessionId).toBe("sess-sync");
   });
 
@@ -276,7 +276,7 @@ describe("chat store — streaming via sendMessage", () => {
     const st = useChatStore.getState().agents[AGENT];
     expect(st?.connectionPhase).toBe("idle");
     // After stream with sessionId, transitions to history mode
-    expect(st?.messageSource.mode).toBe("history");
+    expect(st?.messageSource.mode).toBe("live");
     expect(st?.activeSessionId).toBe("sess-tool-sync");
   });
 

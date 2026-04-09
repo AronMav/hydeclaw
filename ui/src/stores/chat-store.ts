@@ -1015,16 +1015,14 @@ export const useChatStore = create<ChatStore>()(
 
         // Preserve error status if error event was already received
         if (!isError) {
-          const completedSessionId = receivedSessionId ?? get().agents[agent]?.activeSessionId;
           update(agent, {
             connectionPhase: "idle",
             connectionError: null,
             pendingTargetAgent: null,
             turnCount: 0,
-            // Transition to history mode so showThinking doesn't trigger on stale "live" mode
-            messageSource: completedSessionId
-              ? { mode: "history", sessionId: completedSessionId }
-              : { mode: "new-chat" },
+            // Keep messageSource as "live" with final messages — avoids flash when
+            // React Query hasn't yet fetched fresh history. The live messages ARE
+            // the complete response. History mode will be set on next session select.
           });
         }
         saveUiState(agent);
