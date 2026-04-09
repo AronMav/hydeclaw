@@ -40,11 +40,30 @@ app = FastAPI(lifespan=lifespan)
 
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")
 INTERNAL_NETWORK = os.environ.get("INTERNAL_NETWORK", "127.0.0.0/8")
+TRUSTED_PROXIES = os.environ.get("TRUSTED_PROXIES", "")
 # Paths/prefixes that don't require authentication
 PUBLIC_PATHS = {"/health"}
 
 import ipaddress
-_internal_nets = [ipaddress.ip_network(n.strip()) for n in INTERNAL_NETWORK.split(",")]
+
+
+def _parse_networks(
+    raw: str,
+    fallback: list[str] | None = None,
+) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    """Parse comma-separated CIDR list. Returns fallback on any parse error."""
+    if not raw.strip():
+        return []
+    try:
+        return [ipaddress.ip_network(n.strip(), strict=False) for n in raw.split(",") if n.strip()]
+    except ValueError as e:
+        fb = fallback or []
+        log.warning("Failed to parse network config %r: %s — using fallback %s", raw, e, fb)
+        return [ipaddress.ip_network(f) for f in fb]
+
+
+_internal_nets = _parse_networks(INTERNAL_NETWORK, fallback=["127.0.0.0/8"])
+_trusted_proxies = _parse_networks(TRUSTED_PROXIES, fallback=[])
 
 
 def _is_internal(client_host: str) -> bool:
@@ -56,12 +75,65 @@ def _is_internal(client_host: str) -> bool:
         return False
 
 
+def _get_real_client_ip(request: Request) -> str:
+    """Return the real client IP, considering trusted proxy headers.
+
+    Algorithm:
+    1. Get sender_ip from request.client.host (TCP-level source).
+    2. If sender_ip is NOT in _trusted_proxies, return sender_ip (ignore XFF).
+    3. If sender_ip IS in _trusted_proxies, read X-Forwarded-For header.
+    4. Walk XFF entries from RIGHT to LEFT. Return the first entry that is
+       NOT in _trusted_proxies. This is the real client.
+    5. If all entries are trusted proxies (shouldn't happen), return leftmost.
+    """
+    if not request.client:
+        log.warning("request.client is None — treating as external")
+        return ""
+
+    sender_ip = request.client.host
+
+    # If no trusted proxies configured, never read XFF (SEC-02)
+    if not _trusted_proxies:
+        return sender_ip
+
+    # Check if the direct sender is a trusted proxy
+    try:
+        sender_addr = ipaddress.ip_address(sender_ip)
+    except ValueError:
+        return sender_ip
+
+    is_trusted_sender = any(sender_addr in net for net in _trusted_proxies)
+    if not is_trusted_sender:
+        # Untrusted sender — ignore any XFF they sent (SEC-03)
+        return sender_ip
+
+    # Sender is trusted proxy — read XFF
+    xff = request.headers.get("x-forwarded-for", "")
+    if not xff:
+        return sender_ip
+
+    # Walk from right to left, find first non-proxy IP (SEC-01)
+    parts = [p.strip() for p in xff.split(",") if p.strip()]
+    for entry in reversed(parts):
+        try:
+            entry_addr = ipaddress.ip_address(entry)
+            if not any(entry_addr in net for net in _trusted_proxies):
+                return entry
+        except ValueError:
+            # Malformed entry — skip
+            continue
+
+    # All entries are proxies — use leftmost as best guess
+    return parts[0] if parts else sender_ip
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
     if AUTH_TOKEN and path not in PUBLIC_PATHS:
         # Skip auth for inter-container traffic on Docker network
-        if _is_internal(request.client.host if request.client else ""):
+        real_ip = _get_real_client_ip(request)
+        if _is_internal(real_ip):
             return await call_next(request)
         auth = request.headers.get("authorization", "")
         expected = f"Bearer {AUTH_TOKEN}"
