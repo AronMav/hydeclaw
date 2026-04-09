@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.12.0
 milestone_name: Chat Redesign
 status: executing
-stopped_at: Completed 42-01-PLAN.md
-last_updated: "2026-04-09T12:10:39.529Z"
+stopped_at: Completed 43-01-PLAN.md
+last_updated: "2026-04-09T12:33:27.399Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 6
   completed_phases: 2
-  total_plans: 5
-  completed_plans: 4
+  total_plans: 7
+  completed_plans: 5
   percent: 0
 ---
 
@@ -21,11 +21,11 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-09)
 
 **Core value:** Стабильная и безопасная AI-платформа с self-hosted фокусом
-**Current focus:** Phase 42 — History & MessageSource
+**Current focus:** Phase 43 — Reconnect & Optimistic UI
 
 ## Current Position
 
-Phase: 42 (History & MessageSource) — EXECUTING
+Phase: 43 (Reconnect & Optimistic UI) — EXECUTING
 Plan: 2 of 2
 Status: Ready to execute
 Last activity: 2026-04-09
@@ -44,6 +44,7 @@ Progress: ░░░░░░░░░░ 0% (0/6 phases)
 | Phase 41-connectionphase-fsm P01 | 25 | 2 tasks | 3 files |
 | Phase 41-connectionphase-fsm P02 | 8 | 2 tasks | 4 files |
 | Phase 42-history-messagesource P01 | 25 | 2 tasks | 11 files |
+| Phase 43-reconnect-optimistic-ui P01 | 4 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -68,6 +69,9 @@ Progress: ░░░░░░░░░░ 0% (0/6 phases)
 - [Phase 41]: showThinking = connectionPhase === submitted || engineRunning (removed 4-signal expression and sessionStorage fallback)
 - [Phase 42]: MessageSource discriminated union (new-chat|live|history) replaces viewMode+liveMessages dual-semantics in AgentState
 - [Phase 42]: Per-agent streamGenerations[agent] Record — module-scope counter replacement prevents concurrent stream killing when switching agents
+- [Phase 43]: onPhaseChange added as SseConnectionCallbacksWithPhase (extends base callbacks) — backward-compat, callers without phase tracking unaffected
+- [Phase 43]: receivedFinishEvent flag distinguishes natural stream end from connection drop in processSSEStream
+- [Phase 43]: reconnectTimers cleared in both abortActiveStream() and stopStream() — user abort must not trigger reconnect
 
 ### Pending Todos
 
@@ -81,6 +85,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-09T12:10:39.526Z
-Stopped at: Completed 42-01-PLAN.md
+Last session: 2026-04-09T12:33:27.396Z
+Stopped at: Completed 43-01-PLAN.md
 Resume with: `/gsd:plan-phase 40`

@@ -81,9 +81,9 @@ Plans:
   2. After max retries are exhausted, the UI shows an explicit connection-lost error with a retry button — no silent failure
   3. Sending a message shows the user bubble immediately before the server confirms receipt
   4. If the send fails (server error or network timeout), the optimistic user bubble is rolled back and an error indicator appears inline
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 Plans:
-- [ ] 43-01-PLAN.md — Add reconnect with exponential backoff to SseConnection and wire into chat-store
+- [x] 43-01-PLAN.md — Add reconnect with exponential backoff to SseConnection and wire into chat-store
 - [ ] 43-02-PLAN.md — Optimistic user message status tracking with error rollback UI
 **UI hint**: yes
 
@@ -116,6 +116,6 @@ Plans:
 | 40. SseConnection Extraction | v0.12.0 | 1/1 | Complete    | 2026-04-09 |
 | 41. ConnectionPhase FSM | v0.12.0 | 2/2 | Complete    | 2026-04-09 |
 | 42. History & MessageSource | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
-| 43. Reconnect & Optimistic UI | v0.12.0 | 0/2 | Not started | - |
+| 43. Reconnect & Optimistic UI | v0.12.0 | 1/2 | In Progress|  |
 | 44. UX Polish | v0.12.0 | 0/TBD | Not started | - |
 | 45. Cleanup | v0.12.0 | 0/TBD | Not started | - |

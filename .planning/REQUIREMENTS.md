@@ -23,7 +23,7 @@ Requirements for Chat Redesign milestone. ChatGPT-level UX quality.
 ### SSE Connection
 
 - [x] **SSE-01**: SseConnection class извлечён из Zustand store — testable в изоляции
-- [ ] **SSE-02**: Exponential backoff reconnect при обрыве соединения
+- [x] **SSE-02**: Exponential backoff reconnect при обрыве соединения
 - [ ] **SSE-03**: Optimistic user message с rollback при ошибке (useOptimistic React 19)
 
 ### UX Polish
@@ -63,7 +63,7 @@ Requirements for Chat Redesign milestone. ChatGPT-level UX quality.
 | HIST-02     | Phase 42 | Complete |
 | HIST-03     | Phase 42 | Complete |
 | SSE-01      | Phase 40 | Complete |
-| SSE-02      | Phase 43 | Pending |
+| SSE-02      | Phase 43 | Complete |
 | SSE-03      | Phase 43 | Pending |
 | UX-01       | Phase 44 | Pending |
 | UX-02       | Phase 44 | Pending |
