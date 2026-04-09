@@ -494,6 +494,126 @@ describe("SseConnection — reconnect lifecycle", () => {
   });
 });
 
+describe("SseConnection — lastEventId tracking and Last-Event-ID header", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("tracks lastEventId from id: lines in the stream", async () => {
+    const cbs = makeCallbacksWithPhase();
+    // Stream with id: lines interleaved
+    mockFetchOk([
+      "id: 5\n",
+      sseChunk({ type: "text-delta", delta: "hi" }),
+      "id: 6\n",
+      sseChunk({ type: "finish" }),
+    ]);
+    const conn = new SseConnection(
+      { url: "/api/chat", method: "POST", body: {}, token: "tok" },
+      cbs,
+    );
+    await conn.connect();
+    // Should have processed events normally
+    expect(cbs.events.length).toBe(2);
+    expect(cbs.doneCalled).toBe(1);
+  });
+
+  it("sends Last-Event-ID header on retryConnect when lastEventId is set", async () => {
+    const cbs = makeCallbacksWithPhase();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => {
+      if ((init as RequestInit)?.method === "POST") {
+        // Initial POST: stream with id: line, then drops without finish
+        return Promise.resolve(
+          new Response(createMockStream([
+            "id: 42\n",
+            sseChunk({ type: "text-delta", delta: "hi" }),
+          ]), { status: 200 }),
+        );
+      }
+      // GET resume: return 204
+      return Promise.resolve(new Response(null, { status: 204 }));
+    });
+
+    const conn = new SseConnection(
+      { url: "/api/chat", method: "POST", body: {}, token: "tok", maxRetries: 3 },
+      cbs,
+    );
+    conn.setSessionId("sess-eid");
+    const connectPromise = conn.connect();
+    await connectPromise;
+    await vi.advanceTimersByTimeAsync(1000);
+
+    // Check that GET retry included Last-Event-ID header
+    const getCalls = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit)?.method === "GET");
+    expect(getCalls.length).toBeGreaterThan(0);
+    const getHeaders = (getCalls[0][1] as RequestInit).headers as Record<string, string>;
+    expect(getHeaders["Last-Event-ID"]).toBe("42");
+  });
+
+  it("does NOT send Last-Event-ID header when lastEventId is null", async () => {
+    const cbs = makeCallbacksWithPhase();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => {
+      if ((init as RequestInit)?.method === "POST") {
+        // Initial POST: stream drops without finish, no id: lines
+        return Promise.resolve(
+          new Response(createMockStream([
+            sseChunk({ type: "text-delta", delta: "hi" }),
+          ]), { status: 200 }),
+        );
+      }
+      // GET resume: return 204
+      return Promise.resolve(new Response(null, { status: 204 }));
+    });
+
+    const conn = new SseConnection(
+      { url: "/api/chat", method: "POST", body: {}, token: "tok", maxRetries: 3 },
+      cbs,
+    );
+    conn.setSessionId("sess-no-eid");
+    const connectPromise = conn.connect();
+    await connectPromise;
+    await vi.advanceTimersByTimeAsync(1000);
+
+    const getCalls = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit)?.method === "GET");
+    expect(getCalls.length).toBeGreaterThan(0);
+    const getHeaders = (getCalls[0][1] as RequestInit).headers as Record<string, string>;
+    expect(getHeaders["Last-Event-ID"]).toBeUndefined();
+  });
+
+  it("handles 410 response by calling onDone (not onError)", async () => {
+    const cbs = makeCallbacksWithPhase();
+    vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => {
+      if ((init as RequestInit)?.method === "POST") {
+        // Initial POST: stream drops without finish
+        return Promise.resolve(
+          new Response(createMockStream([
+            sseChunk({ type: "text-delta", delta: "hi" }),
+          ]), { status: 200 }),
+        );
+      }
+      // GET resume: return 410 (stream expired)
+      return Promise.resolve(new Response("Gone", { status: 410 }));
+    });
+
+    const conn = new SseConnection(
+      { url: "/api/chat", method: "POST", body: {}, token: "tok", maxRetries: 3 },
+      cbs,
+    );
+    conn.setSessionId("sess-410");
+    const connectPromise = conn.connect();
+    await connectPromise;
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(cbs.doneCalled).toBeGreaterThan(0);
+    expect(cbs.errors.length).toBe(0);
+    expect(cbs.phases).toContain("done");
+  });
+});
+
 describe("SseConnection.stop()", () => {
   afterEach(() => vi.restoreAllMocks());
 
