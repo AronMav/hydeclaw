@@ -124,3 +124,4 @@ Plans:
 | 43. Reconnect & Optimistic UI | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
 | 44. UX Polish | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
 | 45. Cleanup | v0.12.0 | 1/1 | Complete    | 2026-04-09 |
+| 48. Optimistic & Responsive UI | v0.13.0 | 1/3 | In Progress | — |

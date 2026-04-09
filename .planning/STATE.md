@@ -60,6 +60,8 @@ Last activity: 2026-04-09 — Milestone v0.13.0 started
 - [Phase 44-ux-polish]: totalPartsCount Stage 3 Fix useEffect removed — followOutput callback is single scroll authority
 - [Phase 45-cleanup]: CLN-01: StreamStatus/isActiveStream removed — ConnectionPhase/isActivePhase are sole stream-state authorities
 - [Phase 45-cleanup]: CLN-02: AbortController/timers in private Maps not Immer state; streamGeneration moved to AgentState as plain number
+- [Phase 48-02]: OPTI-03: contentHash djb2 fingerprint + reconcileLiveWithHistory for flicker-free live-to-history transition
+- [Phase 48-02]: OPTI-04: User message UUID-to-DB-ID swap is clean DOM swap (identical content); assistant IDs from SSE start event already match DB
 
 ### Pending Todos
 
