@@ -89,6 +89,17 @@ export interface StepGroupPart {
   isStreaming: boolean;
 }
 
+export interface ApprovalPart {
+  type: "approval";
+  approvalId: string;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  timeoutMs: number;
+  receivedAt: number;
+  status: "pending" | "approved" | "rejected" | "timeout_rejected";
+  modifiedInput?: Record<string, unknown>;
+}
+
 export type MessagePart =
   | TextPart
   | ReasoningPart
@@ -97,7 +108,8 @@ export type MessagePart =
   | ToolPart
   | RichCardPart
   | ContinuationSeparatorPart
-  | StepGroupPart;
+  | StepGroupPart
+  | ApprovalPart;
 
 export interface ChatMessage {
   id: string;
@@ -1035,6 +1047,37 @@ export const useChatStore = create<ChatStore>()(
                 cardType: event.cardType,
                 data: event.data,
               });
+              scheduleUpdate();
+              break;
+            }
+
+            case "tool-approval-needed": {
+              flushText();
+              parts.push({
+                type: "approval",
+                approvalId: event.approvalId,
+                toolName: event.toolName,
+                toolInput: event.toolInput,
+                timeoutMs: event.timeoutMs,
+                receivedAt: Date.now(),
+                status: "pending",
+              });
+              scheduleUpdate();
+              break;
+            }
+
+            case "tool-approval-resolved": {
+              const idx = parts.findIndex(
+                (p) => p.type === "approval" && p.approvalId === event.approvalId,
+              );
+              if (idx >= 0) {
+                const existing = parts[idx] as ApprovalPart;
+                parts[idx] = {
+                  ...existing,
+                  status: event.action,
+                  ...(event.modifiedInput != null ? { modifiedInput: event.modifiedInput } : {}),
+                };
+              }
               scheduleUpdate();
               break;
             }

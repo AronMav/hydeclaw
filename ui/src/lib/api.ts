@@ -112,6 +112,33 @@ export async function apiDelete(path: string): Promise<void> {
   if (!resp.ok) throw new Error(await extractError(resp));
 }
 
+export async function decideApproval(
+  approvalId: string,
+  action: "approved" | "rejected",
+  modifiedInput?: Record<string, unknown>,
+): Promise<{ ok: boolean; error?: string }> {
+  const body: Record<string, unknown> = {
+    status: action,
+    resolved_by: "chat-ui",
+  };
+  if (modifiedInput) {
+    body.modified_input = modifiedInput;
+  }
+  try {
+    const resp = await apiFetch(`/api/approvals/${approvalId}/resolve`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const err = await extractError(resp);
+      return { ok: false, error: err };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Unknown error" };
+  }
+}
+
 export async function inviteAgent(sessionId: string, agentName: string): Promise<{ participants: string[] }> {
   return apiPost<{ participants: string[] }>(`/api/sessions/${sessionId}/invite`, { agent_name: agentName });
 }
