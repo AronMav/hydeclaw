@@ -16,15 +16,16 @@ const MAX_ACTIVE_STREAMS: usize = 50;
 
 /// Mutable per-stream state, protected by its own Mutex.
 struct ActiveStreamInner {
-    events: Vec<String>,
+    events: Vec<(u64, String)>,
     finished_at: Option<Instant>,
+    next_event_id: u64,
 }
 
 /// A single SSE stream. `broadcast_tx` is outside the Mutex because
 /// `broadcast::Sender::send` only requires `&self`.
 struct ActiveStream {
     inner: Mutex<ActiveStreamInner>,
-    broadcast_tx: broadcast::Sender<String>,
+    broadcast_tx: broadcast::Sender<(u64, String)>,
     cancel_token: CancellationToken,
     /// Lock-free finished flag — prevents deadlock in eviction
     finished: AtomicBool,
@@ -104,6 +105,7 @@ impl StreamRegistry {
                 inner: Mutex::new(ActiveStreamInner {
                     events: Vec::new(),
                     finished_at: None,
+                    next_event_id: 0,
                 }),
                 broadcast_tx,
                 cancel_token,
@@ -129,22 +131,28 @@ impl StreamRegistry {
     }
 
     /// Push an SSE JSON event string into the buffer and broadcast to subscribers.
+    /// Returns the assigned monotonic event ID.
     ///
     /// Uses a **read lock** on the HashMap (concurrent with other streams)
     /// plus a per-stream Mutex (serializes events within the same stream).
-    pub async fn push_event(&self, session_id: &str, event_json: &str) {
+    pub async fn push_event(&self, session_id: &str, event_json: &str) -> u64 {
         let streams = self.streams.read().await;
         if let Some(stream) = streams.get(session_id) {
             let mut inner = stream.inner.lock().await;
+            let id = inner.next_event_id;
+            inner.next_event_id += 1;
+            let owned = event_json.to_owned();
             if inner.events.len() < MAX_BUFFER_SIZE {
-                // Buffer + broadcast: one to_owned + one clone
-                let owned = event_json.to_owned();
-                inner.events.push(owned.clone());
-                let _ = stream.broadcast_tx.send(owned);
+                // Buffer + broadcast
+                inner.events.push((id, owned.clone()));
+                let _ = stream.broadcast_tx.send((id, owned));
             } else {
-                // Buffer full: single to_owned for broadcast only
-                let _ = stream.broadcast_tx.send(event_json.to_owned());
+                // Buffer full: broadcast only
+                let _ = stream.broadcast_tx.send((id, owned));
             }
+            id
+        } else {
+            0
         }
     }
 
@@ -188,7 +196,7 @@ impl StreamRegistry {
     pub async fn subscribe(
         &self,
         session_id: &str,
-    ) -> Option<(Vec<String>, broadcast::Receiver<String>, bool)> {
+    ) -> Option<(Vec<(u64, String)>, broadcast::Receiver<(u64, String)>, bool)> {
         let streams = self.streams.read().await;
         let stream = streams.get(session_id)?;
         let inner = stream.inner.lock().await;
@@ -197,6 +205,28 @@ impl StreamRegistry {
         let snapshot = inner.events.clone();
         let finished = stream.finished.load(Ordering::Relaxed);
         Some((snapshot, rx, finished))
+    }
+
+    /// Replay events after the given `last_event_id` (exclusive — SSE spec: last successfully processed).
+    /// Returns (events after last_event_id, broadcast receiver, is_finished).
+    /// Returns None if the stream does not exist (expired or never registered).
+    pub async fn replay_from(
+        &self,
+        session_id: &str,
+        last_event_id: u64,
+    ) -> Option<(Vec<(u64, String)>, broadcast::Receiver<(u64, String)>, bool)> {
+        let streams = self.streams.read().await;
+        let stream = streams.get(session_id)?;
+        let inner = stream.inner.lock().await;
+        let rx = stream.broadcast_tx.subscribe();
+        let events: Vec<(u64, String)> = inner
+            .events
+            .iter()
+            .filter(|(id, _)| *id > last_event_id)
+            .cloned()
+            .collect();
+        let finished = stream.finished.load(Ordering::Relaxed);
+        Some((events, rx, finished))
     }
 
     /// Remove finished streams older than max_age.
