@@ -812,6 +812,107 @@ impl MemoryStore {
             .await?;
         Ok(result.rows_affected())
     }
+
+    /// Search session-scoped documents by embedding vector.
+    pub async fn search_session_documents(
+        &self,
+        session_id: uuid::Uuid,
+        embedding_vec_str: &str,
+        limit: i64,
+    ) -> Result<Vec<(String, String, f64)>> {
+        crate::db::session_documents::search(&self.db, session_id, embedding_vec_str, limit).await
+    }
+
+    /// Fetch memory chunks and their children for GraphRAG extraction.
+    pub async fn fetch_chunks_for_graph(&self, chunk_id: &str) -> Result<Vec<(String, String)>> {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT id::text, content FROM memory_chunks \
+             WHERE id = $1::uuid OR parent_id = $1::uuid ORDER BY chunk_index",
+        )
+        .bind(chunk_id)
+        .fetch_all(&self.db)
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Wipe all memory for an agent: graph episodes, orphaned edges/entities, then memory chunks.
+    /// Returns the number of memory chunks deleted.
+    pub async fn wipe_agent_memory(&self, agent_id: &str) -> Result<u64> {
+        // 1. Delete graph episodes linked to this agent's chunks FIRST (while chunks still exist)
+        if let Err(e) = sqlx::query(
+            "DELETE FROM graph_episodes WHERE chunk_id IN (SELECT id FROM memory_chunks WHERE agent_id = $1)"
+        ).bind(agent_id).execute(&self.db).await {
+            tracing::warn!(error = %e, "graph episodes cleanup failed");
+        }
+        // 2. Clean orphaned edges
+        if let Err(e) = sqlx::query(
+            "DELETE FROM graph_edges WHERE source_id NOT IN (SELECT entity_id FROM graph_episodes) AND target_id NOT IN (SELECT entity_id FROM graph_episodes)"
+        ).execute(&self.db).await {
+            tracing::warn!(error = %e, "graph edges cleanup failed");
+        }
+        // 3. Clean orphaned entities
+        if let Err(e) = sqlx::query(
+            "DELETE FROM graph_entities WHERE id NOT IN (SELECT entity_id FROM graph_episodes)"
+        ).execute(&self.db).await {
+            tracing::warn!(error = %e, "graph entities cleanup failed");
+        }
+        // 4. Delete memory chunks
+        let result = sqlx::query("DELETE FROM memory_chunks WHERE agent_id = $1")
+            .bind(agent_id)
+            .execute(&self.db)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Insert a reindex task into the memory worker queue.
+    pub async fn enqueue_reindex_task(&self, params: serde_json::Value) -> Result<uuid::Uuid> {
+        sqlx::query_scalar(
+            "INSERT INTO memory_tasks (task_type, params) VALUES ('reindex', $1) RETURNING id",
+        )
+        .bind(params)
+        .fetch_one(&self.db)
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Find entities related to the given entity within max_hops in the knowledge graph.
+    pub async fn find_graph_related(
+        &self,
+        entity: &str,
+        max_hops: u8,
+    ) -> Result<Vec<crate::memory_graph::GraphEntity>> {
+        crate::memory_graph::find_related(&self.db, entity, max_hops).await
+    }
+
+    /// Fetch compressible memory chunk groups older than age_days.
+    pub async fn fetch_compressible_groups(
+        &self,
+        age_days: u32,
+    ) -> Result<Vec<crate::db::memory_queries::CompressibleGroup>> {
+        crate::db::memory_queries::fetch_compressible_groups(&self.db, age_days).await
+    }
+
+    /// Spawn background GraphRAG entity extraction for the given chunks.
+    pub async fn spawn_graph_extraction(
+        &self,
+        chunks: Vec<(String, String)>,
+        provider: std::sync::Arc<dyn crate::agent::providers::LlmProvider>,
+    ) -> Result<()> {
+        for (chunk_id, chunk_content) in chunks {
+            let db = self.db.clone();
+            let prov = provider.clone();
+            tokio::spawn(async move {
+                if let Err(e) = crate::memory_graph::extract_entities_for_chunk(
+                    &db, &prov, &chunk_content, &chunk_id,
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, chunk_id = %chunk_id, "GraphRAG entity extraction failed");
+                }
+            });
+        }
+        Ok(())
+    }
 }
 
 // ── Workspace File Watcher ─────────────────────────────────────────────────

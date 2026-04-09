@@ -62,6 +62,49 @@ pub trait MemoryService: Send + Sync {
 
     /// Return the N most recently created chunks.
     async fn recent(&self, limit: i64) -> Result<Vec<crate::memory::MemoryResult>>;
+
+    /// Search session-scoped documents by embedding vector.
+    /// Returns vec of (filename, content_snippet, similarity_score).
+    async fn search_session_documents(
+        &self,
+        session_id: uuid::Uuid,
+        embedding_vec_str: &str,
+        limit: i64,
+    ) -> Result<Vec<(String, String, f64)>>;
+
+    /// Fetch memory chunks and their children for GraphRAG extraction.
+    /// Returns vec of (chunk_id_str, content).
+    async fn fetch_chunks_for_graph(&self, chunk_id: &str) -> Result<Vec<(String, String)>>;
+
+    /// Wipe all memory for an agent: graph episodes, orphaned edges/entities, then memory chunks.
+    /// Returns the number of memory chunks deleted.
+    async fn wipe_agent_memory(&self, agent_id: &str) -> Result<u64>;
+
+    /// Insert a reindex task into the memory worker queue.
+    /// Returns the task UUID.
+    async fn enqueue_reindex_task(&self, params: serde_json::Value) -> Result<uuid::Uuid>;
+
+    /// Find entities related to the given entity within max_hops in the knowledge graph.
+    async fn find_graph_related(
+        &self,
+        entity: &str,
+        max_hops: u8,
+    ) -> Result<Vec<crate::memory_graph::GraphEntity>>;
+
+    /// Fetch compressible memory chunk groups older than age_days.
+    async fn fetch_compressible_groups(
+        &self,
+        age_days: u32,
+    ) -> Result<Vec<crate::db::memory_queries::CompressibleGroup>>;
+
+    /// Spawn background GraphRAG entity extraction for the given chunks.
+    /// The provider is needed for LLM-based extraction; implementations that don't
+    /// support this (mock) should no-op.
+    async fn spawn_graph_extraction(
+        &self,
+        chunks: Vec<(String, String)>,
+        provider: std::sync::Arc<dyn crate::agent::providers::LlmProvider>,
+    ) -> Result<()>;
 }
 
 // ── MemoryStore impl ─────────────────────────────────────────────────────────
@@ -126,6 +169,50 @@ impl MemoryService for crate::memory::MemoryStore {
 
     async fn recent(&self, limit: i64) -> Result<Vec<crate::memory::MemoryResult>> {
         self.recent(limit).await
+    }
+
+    async fn search_session_documents(
+        &self,
+        session_id: uuid::Uuid,
+        embedding_vec_str: &str,
+        limit: i64,
+    ) -> Result<Vec<(String, String, f64)>> {
+        self.search_session_documents(session_id, embedding_vec_str, limit).await
+    }
+
+    async fn fetch_chunks_for_graph(&self, chunk_id: &str) -> Result<Vec<(String, String)>> {
+        self.fetch_chunks_for_graph(chunk_id).await
+    }
+
+    async fn wipe_agent_memory(&self, agent_id: &str) -> Result<u64> {
+        self.wipe_agent_memory(agent_id).await
+    }
+
+    async fn enqueue_reindex_task(&self, params: serde_json::Value) -> Result<uuid::Uuid> {
+        self.enqueue_reindex_task(params).await
+    }
+
+    async fn find_graph_related(
+        &self,
+        entity: &str,
+        max_hops: u8,
+    ) -> Result<Vec<crate::memory_graph::GraphEntity>> {
+        self.find_graph_related(entity, max_hops).await
+    }
+
+    async fn fetch_compressible_groups(
+        &self,
+        age_days: u32,
+    ) -> Result<Vec<crate::db::memory_queries::CompressibleGroup>> {
+        self.fetch_compressible_groups(age_days).await
+    }
+
+    async fn spawn_graph_extraction(
+        &self,
+        chunks: Vec<(String, String)>,
+        provider: std::sync::Arc<dyn crate::agent::providers::LlmProvider>,
+    ) -> Result<()> {
+        self.spawn_graph_extraction(chunks, provider).await
     }
 }
 
@@ -213,6 +300,50 @@ pub mod mock {
 
         async fn recent(&self, _limit: i64) -> Result<Vec<crate::memory::MemoryResult>> {
             Ok(vec![])
+        }
+
+        async fn search_session_documents(
+            &self,
+            _session_id: uuid::Uuid,
+            _embedding_vec_str: &str,
+            _limit: i64,
+        ) -> Result<Vec<(String, String, f64)>> {
+            Ok(vec![])
+        }
+
+        async fn fetch_chunks_for_graph(&self, chunk_id: &str) -> Result<Vec<(String, String)>> {
+            Ok(vec![(chunk_id.to_string(), String::new())])
+        }
+
+        async fn wipe_agent_memory(&self, _agent_id: &str) -> Result<u64> {
+            Ok(0)
+        }
+
+        async fn enqueue_reindex_task(&self, _params: serde_json::Value) -> Result<uuid::Uuid> {
+            Ok(uuid::Uuid::nil())
+        }
+
+        async fn find_graph_related(
+            &self,
+            _entity: &str,
+            _max_hops: u8,
+        ) -> Result<Vec<crate::memory_graph::GraphEntity>> {
+            Ok(vec![])
+        }
+
+        async fn fetch_compressible_groups(
+            &self,
+            _age_days: u32,
+        ) -> Result<Vec<crate::db::memory_queries::CompressibleGroup>> {
+            Ok(vec![])
+        }
+
+        async fn spawn_graph_extraction(
+            &self,
+            _chunks: Vec<(String, String)>,
+            _provider: std::sync::Arc<dyn crate::agent::providers::LlmProvider>,
+        ) -> Result<()> {
+            Ok(())
         }
     }
 }
