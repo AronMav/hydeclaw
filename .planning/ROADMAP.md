@@ -95,9 +95,9 @@ Plans:
   1. Typing a message, navigating away, and returning restores the draft text in the input field
   2. During streaming, the message list auto-scrolls to follow new tokens; when the user scrolls up manually, auto-scroll pauses and resumes when the user scrolls back to the bottom
   3. Connection lost, API error, and timeout each show a distinct error UI with a labeled retry button — no generic "Stream failed" banner
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 Plans:
-- [ ] 44-01-PLAN.md — Draft persistence in localStorage + consolidate scroll to single followOutput authority
+- [x] 44-01-PLAN.md — Draft persistence in localStorage + consolidate scroll to single followOutput authority
 - [ ] 44-02-PLAN.md — Classified error state UI with distinct icons, labels, and retry actions
 **UI hint**: yes
 
@@ -120,5 +120,5 @@ Plans:
 | 41. ConnectionPhase FSM | v0.12.0 | 2/2 | Complete    | 2026-04-09 |
 | 42. History & MessageSource | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
 | 43. Reconnect & Optimistic UI | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
-| 44. UX Polish | v0.12.0 | 0/2 | Not started | - |
+| 44. UX Polish | v0.12.0 | 1/2 | In Progress|  |
 | 45. Cleanup | v0.12.0 | 0/TBD | Not started | - |

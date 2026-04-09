@@ -28,8 +28,8 @@ Requirements for Chat Redesign milestone. ChatGPT-level UX quality.
 
 ### UX Polish
 
-- [ ] **UX-01**: Input draft persistence — незавершённый текст сохраняется в localStorage
-- [ ] **UX-02**: Scroll behavior — единый авторитетный источник (followOutput)
+- [x] **UX-01**: Input draft persistence — незавершённый текст сохраняется в localStorage
+- [x] **UX-02**: Scroll behavior — единый авторитетный источник (followOutput)
 - [ ] **UX-03**: Error state UI — connection lost, API error, timeout с retry кнопками
 
 ### Cleanup
@@ -65,8 +65,8 @@ Requirements for Chat Redesign milestone. ChatGPT-level UX quality.
 | SSE-01      | Phase 40 | Complete |
 | SSE-02      | Phase 43 | Complete |
 | SSE-03      | Phase 43 | Pending |
-| UX-01       | Phase 44 | Pending |
-| UX-02       | Phase 44 | Pending |
+| UX-01       | Phase 44 | Complete |
+| UX-02       | Phase 44 | Complete |
 | UX-03       | Phase 44 | Pending |
 | CLN-01      | Phase 45 | Pending |
 | CLN-02      | Phase 45 | Pending |
