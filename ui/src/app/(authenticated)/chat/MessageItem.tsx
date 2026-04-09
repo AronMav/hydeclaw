@@ -1,6 +1,6 @@
 "use client";
 
-import React, { memo } from "react";
+import React, { memo, type ReactNode } from "react";
 import { useChatStore } from "@/stores/chat-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useTranslation } from "@/hooks/use-translation";
@@ -28,7 +28,7 @@ import {
 // gets its parts updated — all other messages keep stable object references,
 // so cache entries survive across renders. Entries are GC'd when ChatMessage
 // objects leave scope.
-const _partsRenderCache = new WeakMap<ChatMessage, (React.ReactElement | null)[]>();
+const _partsRenderCache = new WeakMap<ChatMessage, ReactNode[]>();
 
 // ── Tool grouping threshold ─────────────────────────────────────────────────
 // Minimum consecutive tool calls required to collapse into a ToolCallGroup.
@@ -143,17 +143,23 @@ function ToolCallGroup({ parts }: { parts: ToolPart[] }) {
 }
 
 function renderPartsWithGrouping(parts: MessagePart[]) {
-  const result: (React.ReactElement | null)[] = [];
-  let i = 0;
+  const result: ReactNode[] = [];
 
-  while (i < parts.length) {
-    const part = parts[i];
+  // Stage 2 & 3 Fix: Pre-filter empty/whitespace-only text parts that could break tool grouping
+  const effectiveParts = parts.filter(p => {
+    if (p.type === "text") return p.text.trim().length > 0;
+    return true;
+  });
+
+  let i = 0;
+  while (i < effectiveParts.length) {
+    const part = effectiveParts[i];
 
     if (part.type === "tool") {
       // Collect consecutive tool parts
       const toolRun: ToolPart[] = [];
-      while (i < parts.length && parts[i].type === "tool") {
-        const p = parts[i];
+      while (i < effectiveParts.length && effectiveParts[i].type === "tool") {
+        const p = effectiveParts[i];
         if (p.type === "tool") toolRun.push(p);
         i++;
       }
@@ -253,7 +259,7 @@ function AssistantMessage({ message }: { message: ChatMessage }) {
   // PERF-03: WeakMap cache for rendered parts — only re-render if message object changed.
   // Cache key is the ChatMessage object reference; PERF-02 in-place mutation ensures
   // non-streaming messages keep stable refs so they get cache hits across re-renders.
-  let renderedParts: (React.ReactElement | null)[] | undefined;
+  let renderedParts: ReactNode[] | undefined;
   if (hasParts) {
     renderedParts = _partsRenderCache.get(message);
     if (!renderedParts) {

@@ -779,10 +779,18 @@ export function ChatThread({
 
   const isStreaming = streamStatus === "submitted" || streamStatus === "streaming";
 
-  // Show thinking: (1) SSE submitted, (2) server says session is active (WS-driven),
-  // (3) pending target agent during turn loop (between finish of Agent A and start of Agent B)
+  // Stage 4: Robust Thinking Indicator.
+  // We check Zustand state (isStreaming), WS state (engineRunning), and a persistence fallback (sessionStorage).
+  // This ensures the loader appears instantly after F5, even before WS reconnects.
+  const [isPersistedStreaming, setIsPersistedStreaming] = useState(false);
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setIsPersistedStreaming(!!sessionStorage.getItem(`hydeclaw.streaming.${currentAgent}`));
+    }
+  }, [currentAgent]);
+
   const pendingTarget = useChatStore((s) => s.agents[s.currentAgent]?.pendingTargetAgent ?? null);
-  const showThinking = streamStatus === "submitted" || engineRunning || (isStreaming && !!pendingTarget);
+  const showThinking = streamStatus === "submitted" || engineRunning || (isStreaming && !!pendingTarget) || (isPersistedStreaming && !historyLoading);
 
   if (historyLoading) {
     return (

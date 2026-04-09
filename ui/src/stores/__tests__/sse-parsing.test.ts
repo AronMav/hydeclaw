@@ -7,9 +7,9 @@ describe("parseContentParts — basic cases", () => {
   it("parses text with think tags into mixed parts", () => {
     const result = parseContentParts("Hello <think>reasoning</think> world");
     expect(result).toEqual([
-      { type: "text", text: "Hello" },
+      { type: "text", text: "Hello " },
       { type: "reasoning", text: "reasoning" },
-      { type: "text", text: "world" },
+      { type: "text", text: " world" },
     ]);
   });
 
@@ -25,7 +25,7 @@ describe("parseContentParts — basic cases", () => {
   it("handles unclosed think tag", () => {
     const result = parseContentParts("Before <think>unclosed reasoning");
     expect(result).toEqual([
-      { type: "text", text: "Before" },
+      { type: "text", text: "Before " },
       { type: "reasoning", text: "unclosed reasoning" },
     ]);
   });
@@ -38,11 +38,11 @@ describe("parseContentParts — basic cases", () => {
   it("handles multiple think blocks", () => {
     const result = parseContentParts("Text <think>r1</think> middle <think>r2</think> end");
     expect(result).toEqual([
-      { type: "text", text: "Text" },
+      { type: "text", text: "Text " },
       { type: "reasoning", text: "r1" },
-      { type: "text", text: "middle" },
+      { type: "text", text: " middle " },
       { type: "reasoning", text: "r2" },
-      { type: "text", text: "end" },
+      { type: "text", text: " end" },
     ]);
   });
 
@@ -77,9 +77,9 @@ describe("SSE-02: parseContentParts unification", () => {
 
     const result = parseContentParts(textAccum);
     expect(result).toEqual([
-      { type: "text", text: "Before" },
+      { type: "text", text: "Before " },
       { type: "reasoning", text: "start of reasoning" },
-      { type: "text", text: "After" },
+      { type: "text", text: " After" },
     ]);
   });
 });
@@ -108,9 +108,9 @@ describe("SSE-01: flushText() live state machine", () => {
     flushText();
 
     expect(parts).toEqual([
-      { type: "text", text: "Hello" },
+      { type: "text", text: "Hello " },
       { type: "reasoning", text: "deep thought" },
-      { type: "text", text: "world" },
+      { type: "text", text: " world" },
     ]);
   });
 
@@ -173,11 +173,11 @@ describe("SSE-01: flushText() live state machine", () => {
     flushText();
 
     expect(parts).toEqual([
-      { type: "text", text: "Start" },
+      { type: "text", text: "Start " },
       { type: "reasoning", text: "r1" },
-      { type: "text", text: "mid" },
+      { type: "text", text: " mid " },
       { type: "reasoning", text: "r2" },
-      { type: "text", text: "end" },
+      { type: "text", text: " end" },
     ]);
   });
 });

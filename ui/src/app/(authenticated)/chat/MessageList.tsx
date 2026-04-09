@@ -236,6 +236,18 @@ export function MessageList({
   const virtualItemsLengthRef = useRef(virtualItems.length);
   virtualItemsLengthRef.current = virtualItems.length;
 
+  const totalPartsCount = useMemo(() => {
+    return messages.reduce((acc, m) => acc + m.parts.length, 0);
+  }, [messages]);
+
+  useEffect(() => {
+    // Stage 3 Fix: Explicitly scroll to bottom when total content changes
+    // if we were already at bottom or if a new stream just started.
+    if (isAtBottomRef.current || (isStreaming && !userScrolledUpRef.current)) {
+      virtuosoRef.current?.scrollToIndex({ index: "LAST", behavior: "smooth" });
+    }
+  }, [totalPartsCount, isStreaming]);
+
   const scrollToBottom = useCallback(() => {
     virtuosoRef.current?.scrollToIndex({ index: virtualItemsLengthRef.current - 1, behavior: "smooth" });
     isAtBottomRef.current = true;

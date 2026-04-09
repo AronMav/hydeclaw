@@ -246,6 +246,7 @@ vi.mock("@/lib/queries", () => ({
   useMediaDrivers: () => ({ ...emptyObjQuery, data: {} }),
   useOAuthAccounts: () => ({ ...emptyQuery, data: [] }),
   useOAuthBindings: () => ({ ...emptyQuery, data: [] }),
+  useAgentTasks: () => ({ ...emptyQuery, data: [] }),
   // Mutation hooks
   useUpsertSecret: () => ({ ...emptyMutation }),
   useDeleteSecret: () => ({ ...emptyMutation }),

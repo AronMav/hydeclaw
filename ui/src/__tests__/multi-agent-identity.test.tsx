@@ -171,10 +171,17 @@ vi.mock("react-virtuoso", () => {
   const React = require("react");
   return {
     Virtuoso: React.forwardRef(function MockVirtuoso(props: Record<string, unknown>, ref: unknown) {
+      const divRef = React.useRef(null);
+      React.useImperativeHandle(ref, () => ({
+        scrollToIndex: () => {},
+        scrollTo: () => {},
+        scrollBy: () => {},
+        scrollIntoView: () => {},
+      }));
       const data = (props.data ?? []) as unknown[];
       const itemContent = props.itemContent as ((index: number, item: unknown) => React.ReactNode) | undefined;
       const components = props.components as { Header?: () => React.ReactNode; Footer?: () => React.ReactNode } | undefined;
-      return React.createElement("div", { "data-testid": "virtuoso-mock", ref },
+      return React.createElement("div", { "data-testid": "virtuoso-mock", ref: divRef },
         components?.Header ? React.createElement(components.Header) : null,
         ...(data.map((item: unknown, i: number) =>
           React.createElement("div", { key: i }, itemContent ? itemContent(i, item) : null)

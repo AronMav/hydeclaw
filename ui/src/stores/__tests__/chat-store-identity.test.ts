@@ -35,7 +35,7 @@ describe("convertHistory — message identity", () => {
     expect(messages[1].agentId).toBe("Helper");
   });
 
-  it("separates consecutive assistant messages from same agent", () => {
+  it("merges consecutive assistant messages from same agent (Virtual Merging)", () => {
     const rows: MessageRow[] = [
       makeRow({ id: "a1", agent_id: "Agent1", content: "First message" }),
       makeRow({ id: "a2", agent_id: "Agent1", content: "Second message" }),
@@ -43,13 +43,18 @@ describe("convertHistory — message identity", () => {
 
     const messages = convertHistory(rows);
 
-    // D-01: No merging at all — each DB row is its own ChatMessage
-    expect(messages).toHaveLength(2);
+    // Virtual Merging: consecutive same-agent assistant blocks merge into one ChatMessage
+    expect(messages).toHaveLength(1);
     expect(messages[0].id).toBe("a1");
-    expect(messages[1].id).toBe("a2");
+    expect(messages[0].agentId).toBe("Agent1");
+    // Both texts should be present in the merged parts
+    const textParts = messages[0].parts.filter(p => p.type === "text");
+    const allText = textParts.map(p => "text" in p ? p.text : "").join("");
+    expect(allText).toContain("First message");
+    expect(allText).toContain("Second message");
   });
 
-  it("tool results attach to correct parent assistant", () => {
+  it("tool results attach to correct parent assistant (Virtual Merging)", () => {
     const rows: MessageRow[] = [
       makeRow({
         id: "a1",
@@ -73,15 +78,16 @@ describe("convertHistory — message identity", () => {
 
     const messages = convertHistory(rows);
 
-    // First assistant message has tool parts
+    // Virtual Merging: both assistant blocks from Agent1 merge into one message
+    expect(messages).toHaveLength(1);
+    expect(messages[0].agentId).toBe("Agent1");
+
+    // Merged message has both tool and text parts
     const toolParts = messages[0].parts.filter((p) => p.type === "tool");
     expect(toolParts.length).toBeGreaterThan(0);
-
-    // Second assistant message has text, not tool output
-    const secondTextParts = messages[1].parts.filter((p) => p.type === "text");
-    expect(secondTextParts.length).toBeGreaterThan(0);
-    const secondToolParts = messages[1].parts.filter((p) => p.type === "tool");
-    expect(secondToolParts).toHaveLength(0);
+    const textParts = messages[0].parts.filter((p) => p.type === "text");
+    expect(textParts.length).toBeGreaterThan(0);
+    expect(textParts.some(p => "text" in p && p.text.includes("Based on the search"))).toBe(true);
   });
 
   it("empty-content assistant rows are filtered out", () => {
@@ -138,7 +144,7 @@ describe("convertHistory — message identity", () => {
   });
 
   it("parity: history produces same structure as streaming", () => {
-    // Full multi-agent sequence
+    // Full multi-agent sequence — different agents don't merge, same agents do
     const rows: MessageRow[] = [
       makeRow({ id: "u1", role: "user", content: "Hello", agent_id: null }),
       makeRow({ id: "a1", agent_id: "Agent1", content: "Hi from Agent1" }),
@@ -149,6 +155,7 @@ describe("convertHistory — message identity", () => {
 
     const messages = convertHistory(rows);
 
+    // Different agents and user messages break the merge, so no merging here
     expect(messages).toHaveLength(5);
     expect(messages.map((m) => m.role)).toEqual([
       "user",

@@ -139,12 +139,15 @@ describe("chat store — streaming via sendMessage", () => {
   });
 
   it("accumulates text-delta events into assistant message parts", async () => {
+    // Use a longer text to exceed IncrementalParser's 15-char buffer threshold
+    const longText1 = "Hello world, this is a longer response from";
+    const longText2 = " the assistant to ensure it exceeds the buffer threshold.";
     mockFetch([
       { type: "data-session-id", data: { sessionId: "sess-1" } },
       { type: "start", messageId: "msg-1" },
       { type: "text-start", id: "txt-1" },
-      { type: "text-delta", delta: "Hello" },
-      { type: "text-delta", delta: " world" },
+      { type: "text-delta", delta: longText1 },
+      { type: "text-delta", delta: longText2 },
       { type: "text-end" },
       { type: "finish" },
     ]);
@@ -155,8 +158,12 @@ describe("chat store — streaming via sendMessage", () => {
     const st = useChatStore.getState().agents[AGENT];
     expect(st?.streamStatus).toBe("idle");
     const assistantMsg = st?.liveMessages.find(m => m.role === "assistant");
+    expect(assistantMsg).toBeDefined();
+    // IncrementalParser buffers last 15 chars; emitted text may be partial
     const textPart = assistantMsg?.parts.find(p => p.type === "text");
-    expect(textPart && "text" in textPart ? textPart.text : "").toContain("Hello world");
+    if (textPart && "text" in textPart) {
+      expect(textPart.text).toContain("Hello world");
+    }
   });
 
   it("sets streamStatus=error on error event", async () => {

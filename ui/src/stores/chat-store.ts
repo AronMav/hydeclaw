@@ -4,6 +4,7 @@ import { immer } from "zustand/middleware/immer";
 
 import { apiGet, apiDelete, apiPatch, getToken } from "@/lib/api";
 import { parseSSELines, parseSseEvent, parseContentParts } from "@/stores/sse-events";
+import { IncrementalParser } from "@/lib/message-parser";
 import type { SessionRow, MessageRow } from "@/types/api";
 import { queryClient } from "@/lib/query-client";
 import { qk } from "@/lib/queries";
@@ -237,90 +238,99 @@ function loadLastSession(): { agent?: string; sessions?: Record<string, string>;
 
 // ── History conversion (MessageRow[] → ChatMessage[]) ───────────────────────
 
-export function convertHistory(rows: MessageRow[]): ChatMessage[] {
-  // Filter out streaming placeholder messages — they duplicate content
-  // and show a separate loading indicator that conflicts with ThinkingMessage.
-  const filtered = rows.filter(m => m.status !== "streaming");
+/**
+ * Converts flat database rows into structured ChatMessage objects.
+ * Implements "Virtual Merging" (Stage 2): consecutive assistant/tool blocks
+ * from the same agent are merged into a single visual message to ensure
+ * stable tool grouping and consistent identity.
+ */
+export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean): ChatMessage[] {
+  // Filter out streaming placeholder messages ONLY if we have an active live stream
+  // that will provide the same content. If not, show them as fallback (history).
+  const filtered = rows.filter(m => {
+    if (m.status === "streaming" && isAgentStreaming) return false;
+    return true;
+  });
 
+  const messages: ChatMessage[] = [];
+  let lastAssistantMsg: ChatMessage | null = null;
+  let lastAgentId: string | undefined = undefined;
+
+  // Tool call map for resolving tool names/inputs from the main assistant record
   const toolCallMap = new Map<string, { name: string; arguments: unknown }>();
   for (const m of filtered) {
     if (m.role === "assistant" && m.tool_calls) {
-      const calls = m.tool_calls as Array<{
-        id: string;
-        name: string;
-        arguments?: unknown;
-      }>;
+      const calls = m.tool_calls as Array<{ id: string; name: string; arguments?: unknown }>;
       if (Array.isArray(calls)) {
         for (const tc of calls) {
-          if (tc.id && tc.name) {
-            toolCallMap.set(tc.id, {
-              name: tc.name,
-              arguments: tc.arguments ?? {},
-            });
-          }
+          if (tc.id) toolCallMap.set(tc.id, { name: tc.name || "tool", arguments: tc.arguments ?? {} });
         }
       }
     }
   }
 
-  const messages: ChatMessage[] = [];
-  let currentAssistant: ChatMessage | null = null;
-  let lastAgentId: string | undefined = undefined;
-
   for (const m of filtered) {
     if (m.role === "user") {
-      if (currentAssistant) {
-        messages.push(currentAssistant);
-        currentAssistant = null;
+      // Finalize any pending assistant message before starting a user block
+      if (lastAssistantMsg) {
+        messages.push(lastAssistantMsg);
+        lastAssistantMsg = null;
       }
       if (m.agent_id) lastAgentId = m.agent_id;
       messages.push({
         id: m.id,
         role: "user",
-        parts: [{ type: "text", text: m.content }],
+        parts: [{ type: "text", text: m.content || "" }],
         createdAt: m.created_at,
         agentId: m.agent_id ?? undefined,
       });
     } else if (m.role === "assistant" && !m.tool_call_id) {
-      // D-01: No merging. Each assistant DB row becomes its own ChatMessage.
-      const newParts = parseContentParts(m.content);
-      if (currentAssistant) {
-        messages.push(currentAssistant);
-      }
+      // Assistant text block
       const assistantAgentId = m.agent_id ?? lastAgentId;
       if (m.agent_id) lastAgentId = m.agent_id;
-      currentAssistant = {
-        id: m.id,
-        role: "assistant",
-        parts: newParts,
-        createdAt: m.created_at,
-        agentId: assistantAgentId,
-      };
-    } else if (m.role === "tool" && m.tool_call_id) {
-      if (currentAssistant) {
-        const tc = toolCallMap.get(m.tool_call_id);
 
-        // Extract __file__: markers from tool content for inline image display
+      const newParts = parseContentParts(m.content || "");
+      
+      // Virtual Merging: if this assistant block belongs to the same agent 
+      // as the previous one, and no user message intervened, merge them.
+      if (lastAssistantMsg && lastAssistantMsg.agentId === assistantAgentId) {
+        lastAssistantMsg.parts.push(...newParts);
+      } else {
+        if (lastAssistantMsg) messages.push(lastAssistantMsg);
+        lastAssistantMsg = {
+          id: m.id,
+          role: "assistant",
+          parts: newParts,
+          createdAt: m.created_at,
+          agentId: assistantAgentId,
+        };
+      }
+    } else if (m.role === "tool" && m.tool_call_id) {
+      // Tool result block — always attach to the latest assistant message
+      if (lastAssistantMsg) {
+        const tc = toolCallMap.get(m.tool_call_id);
+        
+        // Extract inline files (__file__: markers)
         const lines = (m.content || "").split("\n");
         const cleanLines: string[] = [];
         for (const line of lines) {
           if (line.startsWith("__file__:")) {
             try {
               const meta = JSON.parse(line.slice("__file__:".length));
-              if (meta.url && meta.mediaType?.startsWith("image/")) {
-                currentAssistant.parts.push({
+              if (meta.url) {
+                lastAssistantMsg.parts.push({
                   type: "file",
                   url: meta.url,
-                  mediaType: meta.mediaType,
+                  mediaType: meta.mediaType || "image/png",
                 });
               }
-            } catch { /* ignore malformed markers */ }
+            } catch { /* ignore */ }
           } else {
             cleanLines.push(line);
           }
         }
 
-        currentAssistant.parts.push({
+        lastAssistantMsg.parts.push({
           type: "tool",
           toolCallId: m.tool_call_id,
           toolName: tc?.name || "tool",
@@ -331,13 +341,11 @@ export function convertHistory(rows: MessageRow[]): ChatMessage[] {
       }
     }
   }
-  if (currentAssistant) messages.push(currentAssistant);
+  
+  if (lastAssistantMsg) messages.push(lastAssistantMsg);
 
-  return messages
-    .filter((m) => m.parts.length > 0)
-    .filter((m) =>
-      m.parts.some((p) => p.type !== "text" || (p.type === "text" && p.text.trim() !== ""))
-    );
+  // Final pass: filter empty messages and stabilize referential identity
+  return messages.filter(m => m.parts.length > 0);
 }
 
 /**
@@ -388,29 +396,7 @@ export const useChatStore = create<ChatStore>()(
   }
 
   // ── Guaranteed UI state flush on tab close ──────────────────────────────
-  if (typeof window !== "undefined") {
-    window.addEventListener("beforeunload", () => {
-      const state = get();
-      const agent = state.currentAgent;
-      const st = state.agents[agent];
-      if (!st?.activeSessionId) return;
-      // Cancel pending debounced save — we flush immediately
-      clearTimeout(uiStateSaveTimers[agent]);
-      const streamStatus = st.streamStatus === "submitted" ? "streaming" : st.streamStatus;
-      const token = getToken();
-      fetch(`/api/sessions/${st.activeSessionId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({
-          ui_state: { viewMode: st.viewMode, streamStatus },
-        }),
-        keepalive: true,
-      });
-    });
-  }
+  // [MOVED TO REACT EFFECT IN ChatThread.tsx to prevent listener leaks]
 
   /**
    * Resume an active backend stream after page reload.
@@ -426,6 +412,9 @@ export const useChatStore = create<ChatStore>()(
     const myGeneration = streamGeneration;
     const controller = new AbortController();
     agentAbortControllers[agent] = controller;
+
+    // Stage 4: Set persistence flag so UI shows thinking indicator instantly after reload
+    sessionStorage.setItem(`hydeclaw.streaming.${agent}`, "true");
 
     update(agent, {
       streamStatus: "streaming",
@@ -550,10 +539,7 @@ export const useChatStore = create<ChatStore>()(
     let assistantId = uuid();
     let assistantCreatedAt = new Date().toISOString();
     let parts: MessagePart[] = [];
-    let currentTextId: string | null = null;
-    let textAccum = "";
-    let insideThink = false; // tracking <think> state across deltas
-    let reasoningAccum = ""; // reasoning text accumulator
+    const incrementalParser = new IncrementalParser();
     const toolInputChunks = new Map<string, string[]>();
     let receivedSessionId: string | null = null;
     // Initialize from pendingTargetAgent so first render shows correct avatar.
@@ -561,69 +547,7 @@ export const useChatStore = create<ChatStore>()(
     let currentRespondingAgent: string | null = get().agents[agent]?.pendingTargetAgent ?? agent;
 
     function flushText() {
-      if (!currentTextId) return;
-      // Parse accumulated text for <think> blocks
-      let remaining = textAccum;
-      while (remaining) {
-        if (insideThink) {
-          const endIdx = remaining.indexOf("</think>");
-          if (endIdx >= 0) {
-            reasoningAccum += remaining.slice(0, endIdx);
-            if (reasoningAccum.trim()) {
-              // Merge with previous reasoning part if exists
-              const lastPart = parts[parts.length - 1];
-              if (lastPart && lastPart.type === "reasoning") {
-                parts[parts.length - 1] = { type: "reasoning", text: lastPart.text + reasoningAccum.trim() };
-              } else {
-                parts.push({ type: "reasoning", text: reasoningAccum.trim() });
-              }
-            }
-            reasoningAccum = "";
-            insideThink = false;
-            remaining = remaining.slice(endIdx + 8); // skip "</think>"
-          } else {
-            // Still inside think, accumulate
-            reasoningAccum += remaining;
-            // Update reasoning part in-place for streaming display (replace, don't concatenate)
-            const lastPart = parts[parts.length - 1];
-            if (lastPart && lastPart.type === "reasoning") {
-              parts[parts.length - 1] = { type: "reasoning", text: reasoningAccum.trim() };
-            } else if (reasoningAccum.trim()) {
-              parts.push({ type: "reasoning", text: reasoningAccum.trim() });
-            }
-            remaining = "";
-          }
-        } else {
-          const startIdx = remaining.indexOf("<think>");
-          if (startIdx >= 0) {
-            const before = remaining.slice(0, startIdx);
-            if (before.trim()) {
-              const lastPart = parts[parts.length - 1];
-              if (lastPart && lastPart.type === "text") {
-                parts[parts.length - 1] = { type: "text", text: lastPart.text + before };
-              } else {
-                parts.push({ type: "text", text: before });
-              }
-            }
-            insideThink = true;
-            reasoningAccum = "";
-            remaining = remaining.slice(startIdx + 7); // skip "<think>"
-          } else {
-            // No think tags, plain text
-            if (remaining.trim()) {
-              const lastPart = parts[parts.length - 1];
-              if (lastPart && lastPart.type === "text") {
-                parts[parts.length - 1] = { type: "text", text: lastPart.text + remaining };
-              } else {
-                parts.push({ type: "text", text: remaining });
-              }
-            }
-            remaining = "";
-          }
-        }
-      }
-      currentTextId = null;
-      textAccum = "";
+      // Logic handled by incrementalParser.flush()
     }
 
     function pushUpdate() {
@@ -631,21 +555,26 @@ export const useChatStore = create<ChatStore>()(
       if (generation !== streamGeneration) return;
       // Guard: don't update store after abort (prevents race with stopStream)
       if (signal.aborted) return;
+      
+      const contentParts = incrementalParser.processDelta(""); // trigger emit of what's ready
+      
       set((draft) => {
         const st = draft.agents[agent];
         if (!st) return;
         const existing = st.liveMessages.findIndex((m: ChatMessage) => m.id === assistantId);
+        
+        // Merge incremental text/reasoning parts with other parts (tools, files)
+        const allParts = [...contentParts, ...parts.filter(p => p.type !== "text" && p.type !== "reasoning")];
+
         if (existing >= 0) {
-          // PERF-02: In-place mutation preserves message object identity for WeakMap caches.
-          // Immer tracks which paths changed — only parts array gets a new reference.
           const msg = st.liveMessages[existing];
-          msg.parts = [...parts];
+          msg.parts = allParts;
           msg.agentId = currentRespondingAgent ?? undefined;
         } else {
           st.liveMessages.push({
             id: assistantId,
             role: "assistant",
-            parts: [...parts],
+            parts: allParts,
             createdAt: assistantCreatedAt,
             agentId: currentRespondingAgent ?? undefined,
           });
@@ -734,21 +663,18 @@ export const useChatStore = create<ChatStore>()(
             }
 
             case "text-start": {
-              flushText();
-              currentTextId = event.id ?? "";
-              textAccum = "";
               if (event.agentName) currentRespondingAgent = event.agentName;
               break;
             }
 
             case "text-delta": {
-              textAccum += event.delta;
+              incrementalParser.processDelta(event.delta);
               scheduleUpdate();
               break;
             }
 
             case "text-end": {
-              flushText();
+              // Incremental parser accumulates state across text blocks
               scheduleUpdate();
               break;
             }
@@ -832,13 +758,12 @@ export const useChatStore = create<ChatStore>()(
             }
 
             case "sync": {
-              // Full content sync from DB (resume after disconnect/restart)
+              // Stage 3: Differential Sync. Instead of replacing all liveMessages,
+              // we only update the assistant message if it matches our current assistantId.
               const { content: syncContent, toolCalls: syncToolCalls, status: syncStatus } = event;
-
-              const syncParts: MessagePart[] = [];
-              if (syncContent) {
-                syncParts.push({ type: "text", text: syncContent });
-              }
+              const normalizedParts = parseContentParts(syncContent || "");
+              
+              const syncParts: MessagePart[] = [...normalizedParts];
               for (const tc of syncToolCalls as Array<Record<string, unknown>>) {
                 syncParts.push({
                   type: "tool",
@@ -850,31 +775,36 @@ export const useChatStore = create<ChatStore>()(
                 });
               }
 
-              const syncMsg: ChatMessage = {
-                id: assistantId,
-                role: "assistant",
-                parts: syncParts.length > 0 ? syncParts : [{ type: "text", text: "" }],
-                createdAt: assistantCreatedAt,
-              };
-
-              // Replace live messages: keep user messages + add sync assistant message
-              const stSync = get().agents[agent];
-              if (stSync) {
-                const userMsgs = stSync.liveMessages.filter(
-                  (m) => m.role === "user"
-                );
-                update(agent, { liveMessages: [...userMsgs, syncMsg] });
-              }
+              set((draft) => {
+                const st = draft.agents[agent];
+                if (!st) return;
+                
+                const existingIdx = st.liveMessages.findIndex(m => m.id === assistantId);
+                if (existingIdx >= 0) {
+                  // Differential update: preserves user messages and other assistant messages
+                  st.liveMessages[existingIdx].parts = syncParts;
+                } else {
+                  // Fallback: if not found, it might be a clean resume, so we seed
+                  const userMsgs = st.liveMessages.filter(m => m.role === "user");
+                  st.liveMessages = [...userMsgs, {
+                    id: assistantId,
+                    role: "assistant",
+                    parts: syncParts,
+                    createdAt: assistantCreatedAt,
+                    agentId: currentRespondingAgent ?? undefined,
+                  }];
+                }
+              });
 
               if (syncStatus === "finished" || syncStatus === "error" || syncStatus === "interrupted") {
                 const errorText = syncStatus === "error" ? (event.error ?? null) : null;
-                // Don't reset to idle during turn loop — pendingTargetAgent means more agents coming
                 const inTurnLoop = !!get().agents[agent]?.pendingTargetAgent;
                 if (syncStatus === "error" || !inTurnLoop) {
                   update(agent, {
                     streamStatus: syncStatus === "error" ? "error" : "idle",
                     streamError: errorText,
                   });
+                  sessionStorage.removeItem(`hydeclaw.streaming.${agent}`);
                 }
               }
               break;

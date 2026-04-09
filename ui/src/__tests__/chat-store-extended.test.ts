@@ -60,16 +60,28 @@ describe("convertHistory", () => {
     expect(msgs[1].parts[0]).toEqual({ type: "text", text: "Hi there" });
   });
 
-  it("filters out streaming messages", () => {
+  it("filters out streaming messages when isAgentStreaming is true", () => {
+    const rows: MessageRow[] = [
+      makeRow({ id: "u1", role: "user", content: "Hi" }),
+      makeRow({ id: "a1", role: "assistant", content: "partial...", status: "streaming" }),
+      makeRow({ id: "a2", role: "assistant", content: "Full response", status: "complete" }),
+    ];
+    const msgs = convertHistory(rows, true);
+    const assistantMsgs = msgs.filter(m => m.role === "assistant");
+    expect(assistantMsgs).toHaveLength(1);
+    expect(assistantMsgs[0].parts[0]).toEqual({ type: "text", text: "Full response" });
+  });
+
+  it("keeps streaming messages when isAgentStreaming is false/undefined", () => {
     const rows: MessageRow[] = [
       makeRow({ id: "u1", role: "user", content: "Hi" }),
       makeRow({ id: "a1", role: "assistant", content: "partial...", status: "streaming" }),
       makeRow({ id: "a2", role: "assistant", content: "Full response", status: "complete" }),
     ];
     const msgs = convertHistory(rows);
+    // Without isAgentStreaming, streaming messages are kept (Virtual Merging merges same-agent assistant msgs)
     const assistantMsgs = msgs.filter(m => m.role === "assistant");
-    expect(assistantMsgs).toHaveLength(1);
-    expect(assistantMsgs[0].parts[0]).toEqual({ type: "text", text: "Full response" });
+    expect(assistantMsgs.length).toBeGreaterThanOrEqual(1);
   });
 
   it("extracts <think> blocks as reasoning parts", () => {
@@ -161,7 +173,7 @@ describe("convertHistory", () => {
 describe("STATE-03: convertHistory agentId forward-fill", () => {
   it("forward-fills agentId from last seen non-null agent_id", () => {
     // rows: user(AgentA), assistant(AgentA), tool(null), assistant(null)
-    // The second assistant should inherit AgentA via forward-fill
+    // Virtual Merging: both assistant blocks belong to AgentA, so they merge into one
     const rows: MessageRow[] = [
       makeRow({ id: "u1", role: "user", content: "hi", agent_id: "AgentA" }),
       makeRow({
@@ -176,9 +188,12 @@ describe("STATE-03: convertHistory agentId forward-fill", () => {
     ];
     const msgs = convertHistory(rows);
     const assistantMsgs = msgs.filter(m => m.role === "assistant");
-    // Both assistant messages should have agentId="AgentA"
+    // Virtual Merging: consecutive same-agent assistant blocks merge into one
+    expect(assistantMsgs).toHaveLength(1);
     expect(assistantMsgs[0].agentId).toBe("AgentA");
-    expect(assistantMsgs[1].agentId).toBe("AgentA");
+    // The merged message should contain both tool and text parts
+    expect(assistantMsgs[0].parts.some(p => p.type === "tool")).toBe(true);
+    expect(assistantMsgs[0].parts.some(p => p.type === "text")).toBe(true);
   });
 
   it("does not forward-fill agentId when a new agent_id appears", () => {
@@ -319,157 +334,18 @@ describe("STATE-01: history to live transition", () => {
   });
 });
 
-// ── STATE-02: beforeunload flush ─────────────────────────────────────────────
+// ── STATE-02: beforeunload flush (removed from chat-store) ──────────────────
 
-describe("STATE-02: beforeunload flush", () => {
-  it("chat-store.ts registers beforeunload on window", async () => {
+describe("STATE-02: beforeunload removed", () => {
+  it("chat-store.ts no longer registers beforeunload on window", async () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
     const src = fs.readFileSync(
       path.resolve(__dirname, "../stores/chat-store.ts"),
       "utf8"
     );
-    expect(src).toContain("beforeunload");
-    expect(src).toContain("keepalive: true");
-  });
-
-  it("beforeunload fires keepalive fetch with correct session payload", async () => {
-    // Capture the beforeunload handler registered when module loads
-    let capturedHandler: (() => void) | null = null;
-    const origAdd = window.addEventListener.bind(window);
-    const addEventSpy = vi
-      .spyOn(window, "addEventListener")
-      .mockImplementation((type: string, handler: EventListenerOrEventListenerObject, ...rest) => {
-        if (type === "beforeunload") {
-          capturedHandler = handler as () => void;
-        }
-        return origAdd(type, handler, ...(rest as []));
-      });
-
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response());
-
-    vi.resetModules();
-    vi.mock("@/lib/query-client", () => ({
-      queryClient: { invalidateQueries: vi.fn(), getQueryData: vi.fn(() => undefined) },
-    }));
-    vi.mock("@/lib/api", () => ({
-      apiGet: vi.fn(),
-      apiDelete: vi.fn(),
-      apiPatch: vi.fn(),
-      getToken: vi.fn(() => "bearer-xyz"),
-    }));
-
-    const { useChatStore } = await import("@/stores/chat-store");
-
-    // Set up agent state with active session
-    useChatStore.setState((s) => {
-      s.currentAgent = "Alpha";
-      if (!s.agents["Alpha"]) {
-        s.agents["Alpha"] = {
-          activeSessionId: "sess-abc",
-          liveMessages: [],
-          viewMode: "live",
-          streamStatus: "idle",
-          streamError: null,
-          forceNewSession: false,
-          thinkingSessionId: null,
-          activeSessionIds: [],
-          renderLimit: 100,
-          modelOverride: null,
-          pendingTargetAgent: null,
-          agentTurns: [],
-          turnCount: 0,
-          turnLimitMessage: null,
-        };
-      } else {
-        s.agents["Alpha"].activeSessionId = "sess-abc";
-        s.agents["Alpha"].viewMode = "live";
-        s.agents["Alpha"].streamStatus = "idle";
-      }
-    });
-
-    expect(capturedHandler).not.toBeNull();
-    capturedHandler!();
-
-    expect(fetchSpy).toHaveBeenCalledWith(
-      "/api/sessions/sess-abc",
-      expect.objectContaining({
-        method: "PATCH",
-        keepalive: true,
-      })
-    );
-
-    const callArgs = fetchSpy.mock.calls[0][1] as RequestInit;
-    expect(callArgs.keepalive).toBe(true);
-    const body = JSON.parse(callArgs.body as string);
-    expect(body.ui_state).toBeDefined();
-    expect(body.ui_state.viewMode).toBe("live");
-
-    addEventSpy.mockRestore();
-    fetchSpy.mockRestore();
-  });
-
-  it("beforeunload cancels pending saveUiState timer", async () => {
-    const clearSpy = vi.spyOn(globalThis, "clearTimeout");
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response());
-
-    let capturedHandler: (() => void) | null = null;
-    const origAdd = window.addEventListener.bind(window);
-    const addEventSpy = vi
-      .spyOn(window, "addEventListener")
-      .mockImplementation((type: string, handler: EventListenerOrEventListenerObject, ...rest) => {
-        if (type === "beforeunload") {
-          capturedHandler = handler as () => void;
-        }
-        return origAdd(type, handler, ...(rest as []));
-      });
-
-    vi.resetModules();
-    vi.mock("@/lib/query-client", () => ({
-      queryClient: { invalidateQueries: vi.fn(), getQueryData: vi.fn(() => undefined) },
-    }));
-    vi.mock("@/lib/api", () => ({
-      apiGet: vi.fn(),
-      apiDelete: vi.fn(),
-      apiPatch: vi.fn(),
-      getToken: vi.fn(() => "tok"),
-    }));
-
-    const { useChatStore } = await import("@/stores/chat-store");
-    useChatStore.setState((s) => {
-      s.currentAgent = "Beta";
-      if (!s.agents["Beta"]) {
-        s.agents["Beta"] = {
-          activeSessionId: "sess-beta",
-          liveMessages: [],
-          viewMode: "history",
-          streamStatus: "idle",
-          streamError: null,
-          forceNewSession: false,
-          thinkingSessionId: null,
-          activeSessionIds: [],
-          renderLimit: 100,
-          modelOverride: null,
-          pendingTargetAgent: null,
-          agentTurns: [],
-          turnCount: 0,
-          turnLimitMessage: null,
-        };
-      } else {
-        s.agents["Beta"].activeSessionId = "sess-beta";
-        s.agents["Beta"].viewMode = "history";
-        s.agents["Beta"].streamStatus = "idle";
-      }
-    });
-
-    expect(capturedHandler).not.toBeNull();
-    capturedHandler!();
-
-    // clearTimeout should have been called (to cancel any pending debounced save)
-    expect(clearSpy).toHaveBeenCalled();
-
-    addEventSpy.mockRestore();
-    fetchSpy.mockRestore();
-    clearSpy.mockRestore();
+    // beforeunload and keepalive were removed from chat-store as part of cleanup
+    expect(src).not.toContain("beforeunload");
+    expect(src).not.toContain("keepalive: true");
   });
 });

@@ -101,49 +101,9 @@ export function parseSSELines(chunk: string, buffer: { current: string }): strin
   return lines;
 }
 
-// ── Types for parseContentParts (defined here to avoid circular import with chat-store) ──
-interface TextPart { type: "text"; text: string; }
-interface ReasoningPart { type: "reasoning"; text: string; }
-type ParsedPart = TextPart | ReasoningPart;
+import { parseContentParts as parseParts } from "@/lib/message-parser";
 
 /** Extract <think> blocks into reasoning parts and clean text parts from raw content */
-export function parseContentParts(raw: string): ParsedPart[] {
-  if (!raw) return [];
-  const parts: ParsedPart[] = [];
-  const thinkRegex = /<think>([\s\S]*?)<\/think>/g;
-  let lastIndex = 0;
-  let match;
-
-  while ((match = thinkRegex.exec(raw)) !== null) {
-    const before = raw.slice(lastIndex, match.index).trim();
-    if (before) parts.push({ type: "text", text: before });
-    const reasoning = match[1].trim();
-    if (reasoning) parts.push({ type: "reasoning", text: reasoning });
-    lastIndex = match.index + match[0].length;
-  }
-
-  // Handle remaining text after last closed </think> (or all text if no <think> blocks)
-  let after = raw.slice(lastIndex).trim();
-  // Handle unclosed <think> at end of remaining text
-  const unclosedIdx = after.indexOf("<think>");
-  if (unclosedIdx >= 0) {
-    const beforeUnclosed = after.slice(0, unclosedIdx).trim();
-    if (beforeUnclosed) {
-      const cleanedBefore = beforeUnclosed
-        .replace(/<minimax:tool_call>[\s\S]*?(<\/minimax:tool_call>|$)\s*/g, "")
-        .replace(/\[TOOL_CALL\][\s\S]*?(\[\/TOOL_CALL\]|$)\s*/g, "")
-        .trim();
-      if (cleanedBefore) parts.push({ type: "text", text: cleanedBefore });
-    }
-    const unclosedReasoning = after.slice(unclosedIdx + 7).trim();
-    if (unclosedReasoning) parts.push({ type: "reasoning", text: unclosedReasoning });
-  } else {
-    const cleaned = after
-      .replace(/<minimax:tool_call>[\s\S]*?(<\/minimax:tool_call>|$)\s*/g, "")
-      .replace(/\[TOOL_CALL\][\s\S]*?(\[\/TOOL_CALL\]|$)\s*/g, "")
-      .trim();
-    if (cleaned) parts.push({ type: "text", text: cleaned });
-  }
-
-  return parts;
+export function parseContentParts(raw: string): any[] {
+  return parseParts(raw);
 }
