@@ -207,7 +207,43 @@ export function MessageList({
     return [...messages, thinkingItem];
   }, [messages, showThinking]);
 
-  // Force scroll on session switch (messages array identity changes from empty)
+  // ── ResizeObserver-based scroll anchoring ──────────────────────────────────
+  // Instead of counting parts.length or virtualItems.length, observe the actual
+  // content height. When it grows and user was at bottom → auto-scroll.
+  // This is the pattern used by assistant-ui and Vercel AI SDK.
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    // Find the Virtuoso scroller element (first child with overflow)
+    const scroller = container.querySelector("[data-virtuoso-scroller]") as HTMLElement | null;
+    if (!scroller) return;
+
+    let prevHeight = scroller.scrollHeight;
+
+    const ro = new ResizeObserver(() => {
+      const newHeight = scroller.scrollHeight;
+      if (newHeight > prevHeight && isAtBottomRef.current && !userScrolledUpRef.current) {
+        // Content grew and we were at bottom → scroll down
+        requestAnimationFrame(() => {
+          virtuosoRef.current?.scrollToIndex({ index: virtualItems.length - 1, behavior: "auto" });
+        });
+      }
+      prevHeight = newHeight;
+    });
+
+    // Observe the list container (Virtuoso renders items here)
+    const listContainer = scroller.querySelector("[data-viewport-type='element']") as HTMLElement | null;
+    if (listContainer) {
+      ro.observe(listContainer);
+    }
+
+    return () => ro.disconnect();
+  }, [virtualItems.length]); // Re-attach when items count changes structurally
+
+  // Force scroll to bottom on session switch
   const prevLenRef = useRef(messages.length);
   useEffect(() => {
     const wasEmpty = prevLenRef.current === 0;
@@ -219,25 +255,19 @@ export function MessageList({
     }
   }, [messages.length]);
 
-  // Thinking indicator is now a virtual data item — followOutput handles
-  // auto-scrolling natively when virtualItems grows. This effect only
-  // forces scroll when stream starts and Virtuoso's atBottom might be stale
-  // (textarea expansion can push us past atBottomThreshold).
+  // Force scroll when stream starts (user submitted a message)
   const prevStreamingRef = useRef(isStreaming);
   useEffect(() => {
     const streamJustStarted = !prevStreamingRef.current && isStreaming;
     prevStreamingRef.current = isStreaming;
     if (streamJustStarted && virtualItems.length > 0) {
-      userScrolledUpRef.current = false; // New stream = user wants to see response
+      userScrolledUpRef.current = false;
       virtuosoRef.current?.scrollToIndex({ index: virtualItems.length - 1, behavior: "smooth" });
     }
   }, [isStreaming, virtualItems.length]);
 
-  const virtualItemsLengthRef = useRef(virtualItems.length);
-  virtualItemsLengthRef.current = virtualItems.length;
-
   const scrollToBottom = useCallback(() => {
-    virtuosoRef.current?.scrollToIndex({ index: virtualItemsLengthRef.current - 1, behavior: "smooth" });
+    virtuosoRef.current?.scrollToIndex({ index: virtualItems.length - 1, behavior: "smooth" });
     isAtBottomRef.current = true;
     setIsAtBottom(true);
   }, []);
@@ -266,7 +296,7 @@ export function MessageList({
   }
 
   return (
-    <div className="flex flex-1 flex-col pt-14 lg:pt-0 relative">
+    <div ref={scrollContainerRef} className="flex flex-1 flex-col pt-14 lg:pt-0 relative">
       <Virtuoso
         ref={virtuosoRef}
         data={virtualItems}
