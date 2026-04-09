@@ -38,6 +38,8 @@ mod sse_types {
     pub const SYNC: &str = "sync";
     pub const STEP_START: &str = "step-start";
     pub const STEP_FINISH: &str = "step-finish";
+    pub const TOOL_APPROVAL_NEEDED: &str = "tool-approval-needed";
+    pub const TOOL_APPROVAL_RESOLVED: &str = "tool-approval-resolved";
     pub const FINISH: &str = "finish";
     pub const ERROR: &str = "error";
 }
