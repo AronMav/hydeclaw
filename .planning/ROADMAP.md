@@ -20,7 +20,7 @@ Covered: core platform stability, providers, channels, memory, tools, orchestrat
 
 - [x] **Phase 40: SseConnection Extraction** - Extract SSE transport into a standalone testable class (completed 2026-04-09)
 - [x] **Phase 41: ConnectionPhase FSM** - Replace 4-signal thinking indicator with single state machine (completed 2026-04-09)
-- [ ] **Phase 42: History & MessageSource** - Fix F5 restore; replace viewMode with discriminated union
+- [x] **Phase 42: History & MessageSource** - Fix F5 restore; replace viewMode with discriminated union (completed 2026-04-09)
 - [ ] **Phase 43: Reconnect & Optimistic UI** - Exponential backoff reconnect + React 19 useOptimistic
 - [ ] **Phase 44: UX Polish** - Draft persistence, scroll behavior, error state UI
 - [ ] **Phase 45: Cleanup** - Remove deprecated flags, move module-globals into AgentState
@@ -66,7 +66,7 @@ Plans:
   2. Pressing F5 while a stream is actively running shows the history seed and then continues showing live tokens as they arrive
   3. Switching agents while agent A is streaming does not kill agent A's stream — both agents' state is independent
   4. Selecting a completed session from the sidebar shows the correct history without duplicate user messages
-**Plans:** 1/2 plans executed
+**Plans:** 1/2 plans complete
 Plans:
 - [x] 42-01-PLAN.md — Replace viewMode+liveMessages with MessageSource union; per-agent streamGeneration
 - [ ] 42-02-PLAN.md — Fix F5 history restore; seed resumeStream from cache; human verify
@@ -81,7 +81,10 @@ Plans:
   2. After max retries are exhausted, the UI shows an explicit connection-lost error with a retry button — no silent failure
   3. Sending a message shows the user bubble immediately before the server confirms receipt
   4. If the send fails (server error or network timeout), the optimistic user bubble is rolled back and an error indicator appears inline
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 43-01-PLAN.md — Add reconnect with exponential backoff to SseConnection and wire into chat-store
+- [ ] 43-02-PLAN.md — Optimistic user message status tracking with error rollback UI
 **UI hint**: yes
 
 ### Phase 44: UX Polish
@@ -112,7 +115,7 @@ Plans:
 |-------|-----------|----------------|--------|-----------|
 | 40. SseConnection Extraction | v0.12.0 | 1/1 | Complete    | 2026-04-09 |
 | 41. ConnectionPhase FSM | v0.12.0 | 2/2 | Complete    | 2026-04-09 |
-| 42. History & MessageSource | v0.12.0 | 1/2 | In Progress|  |
-| 43. Reconnect & Optimistic UI | v0.12.0 | 0/TBD | Not started | - |
+| 42. History & MessageSource | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
+| 43. Reconnect & Optimistic UI | v0.12.0 | 0/2 | Not started | - |
 | 44. UX Polish | v0.12.0 | 0/TBD | Not started | - |
 | 45. Cleanup | v0.12.0 | 0/TBD | Not started | - |
