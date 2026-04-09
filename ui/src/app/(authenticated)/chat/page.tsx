@@ -116,8 +116,8 @@ export default function ChatPage() {
   const isReadOnly = activeSession?.channel === "heartbeat" || activeSession?.channel === "cron" || activeSession?.channel === "inter-agent";
 
   // Session restore on mount or agent switch.
-  // Simple and robust: wait for sessions, pick the best one, select it.
   useEffect(() => {
+    console.log("[RESTORE]", { currentAgent, sessionsLoading, sessionsCount: sessions.length, restored: restoredAgents.current.has(currentAgent ?? "") });
     if (!currentAgent || sessionsLoading) return;
 
     // Already restored this agent — skip
@@ -125,26 +125,35 @@ export default function ChatPage() {
     restoredAgents.current.add(currentAgent);
 
     const agentState = useChatStore.getState().agents[currentAgent];
+    console.log("[RESTORE] agentState:", { phase: agentState?.connectionPhase, activeSessionId: agentState?.activeSessionId, mode: agentState?.messageSource?.mode });
 
     // If already streaming — don't touch
-    if (isActivePhase(agentState?.connectionPhase)) return;
+    if (isActivePhase(agentState?.connectionPhase)) {
+      console.log("[RESTORE] SKIP: already streaming");
+      return;
+    }
 
     // If already viewing a session — don't touch
-    if (agentState?.activeSessionId) return;
+    if (agentState?.activeSessionId) {
+      console.log("[RESTORE] SKIP: has activeSessionId", agentState.activeSessionId);
+      return;
+    }
 
     // Priority 1: URL ?s= param (deep link)
     if (urlSessionId && sessions.some((s) => s.id === urlSessionId)) {
+      console.log("[RESTORE] SELECT: URL session", urlSessionId);
       useChatStore.getState().selectSession(urlSessionId, currentAgent);
       return;
     }
 
-    // Priority 2: Most recent session (sessions are sorted by recency from API)
+    // Priority 2: Most recent session
     if (sessions.length > 0) {
+      console.log("[RESTORE] SELECT: sessions[0]", sessions[0].id);
       useChatStore.getState().selectSession(sessions[0].id, currentAgent);
       return;
     }
 
-    // No sessions at all — new chat
+    console.log("[RESTORE] NEW CHAT: no sessions");
     useChatStore.getState().newChat();
   }, [sessionsLoading, sessions, currentAgent, urlSessionId]);
 
