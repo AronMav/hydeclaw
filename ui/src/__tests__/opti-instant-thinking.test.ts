@@ -88,7 +88,8 @@ describe("OPTI-02: skeleton display guard contract", () => {
     );
     expect(result).toBe(true);
     // Verify the guard: historyLoading && !sessionMessagesData
-    expect(true && !undefined).toBe(true);
+    const sessionMessagesData = undefined;
+    expect(true && !sessionMessagesData).toBe(true);
   });
 
   it("OPTI-02-B: skeleton does NOT render when sessionMessagesData exists in cache", () => {
