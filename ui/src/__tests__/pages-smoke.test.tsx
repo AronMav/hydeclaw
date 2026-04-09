@@ -137,6 +137,7 @@ vi.mock("@/stores/chat-store", () => ({
     },
   ),
   isActiveStream: () => false,
+  isActivePhase: () => false,
   getInitialAgent: (agents: string[]) => agents[0] || "main",
   getLastSessionId: () => undefined,
   MAX_INPUT_LENGTH: 32000,
