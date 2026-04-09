@@ -461,7 +461,7 @@ impl AgentEngine {
             let sid = session_id;
             let msgs = std::sync::Arc::new(messages);
             tokio::spawn(async move {
-                if let Err(e) = memory_impl::extract_session_to_graph(&db, &provider, sid, msgs).await {
+                if let Err(e) = crate::memory_graph::extract_session_to_graph(&db, &provider, sid, msgs).await {
                     tracing::debug!(session = %sid, error = %e, "post-session graph extraction skipped");
                 }
             });
@@ -546,7 +546,7 @@ impl AgentEngine {
             let sid = session_id;
             let msgs = std::sync::Arc::new(messages);
             tokio::spawn(async move {
-                if let Err(e) = memory_impl::extract_session_to_graph(&db, &provider, sid, msgs).await {
+                if let Err(e) = crate::memory_graph::extract_session_to_graph(&db, &provider, sid, msgs).await {
                     tracing::debug!(session = %sid, error = %e, "post-session graph extraction skipped");
                 }
             });

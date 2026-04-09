@@ -913,6 +913,15 @@ impl MemoryStore {
         }
         Ok(())
     }
+
+    /// Run memory compression for a single topic group.
+    pub async fn compress_memory_group(
+        &self,
+        provider: std::sync::Arc<dyn crate::agent::providers::LlmProvider>,
+        group: crate::db::memory_queries::CompressibleGroup,
+    ) -> Result<u64> {
+        crate::compression_worker::compress_group(&self.db, &provider, self, group).await
+    }
 }
 
 // ── Workspace File Watcher ─────────────────────────────────────────────────

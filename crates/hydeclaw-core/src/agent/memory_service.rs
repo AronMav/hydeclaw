@@ -105,6 +105,14 @@ pub trait MemoryService: Send + Sync {
         chunks: Vec<(String, String)>,
         provider: std::sync::Arc<dyn crate::agent::providers::LlmProvider>,
     ) -> Result<()>;
+
+    /// Run memory compression for a single topic group via compression_worker.
+    /// Wraps `compress_group` so callers don't need a `&PgPool`.
+    async fn compress_memory_group(
+        &self,
+        provider: std::sync::Arc<dyn crate::agent::providers::LlmProvider>,
+        group: crate::db::memory_queries::CompressibleGroup,
+    ) -> Result<u64>;
 }
 
 // ── MemoryStore impl ─────────────────────────────────────────────────────────
@@ -213,6 +221,14 @@ impl MemoryService for crate::memory::MemoryStore {
         provider: std::sync::Arc<dyn crate::agent::providers::LlmProvider>,
     ) -> Result<()> {
         self.spawn_graph_extraction(chunks, provider).await
+    }
+
+    async fn compress_memory_group(
+        &self,
+        provider: std::sync::Arc<dyn crate::agent::providers::LlmProvider>,
+        group: crate::db::memory_queries::CompressibleGroup,
+    ) -> Result<u64> {
+        self.compress_memory_group(provider, group).await
     }
 }
 
@@ -344,6 +360,14 @@ pub mod mock {
             _provider: std::sync::Arc<dyn crate::agent::providers::LlmProvider>,
         ) -> Result<()> {
             Ok(())
+        }
+
+        async fn compress_memory_group(
+            &self,
+            _provider: std::sync::Arc<dyn crate::agent::providers::LlmProvider>,
+            _group: crate::db::memory_queries::CompressibleGroup,
+        ) -> Result<u64> {
+            Ok(0)
         }
     }
 }

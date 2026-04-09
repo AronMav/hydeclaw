@@ -12,120 +12,6 @@ pub(super) struct MemoryContext {
     pub pinned_ids: Vec<String>,
 }
 
-/// Extract entities/relations from content via LLM and link to graph.
-/// Thin wrapper around shared function in memory_graph.rs.
-async fn extract_and_link_entities(
-    db: &sqlx::PgPool,
-    provider: &std::sync::Arc<dyn LlmProvider>,
-    content: &str,
-    chunk_id_str: &str,
-) -> anyhow::Result<()> {
-    crate::memory_graph::extract_entities_for_chunk(db, provider, content, chunk_id_str).await?;
-    Ok(())
-}
-
-/// Extract entities from a completed session's messages and link to graph.
-/// Called as background task when session completes (>= 5 messages).
-pub(super) async fn extract_session_to_graph(
-    db: &sqlx::PgPool,
-    provider: &std::sync::Arc<dyn LlmProvider>,
-    session_id: uuid::Uuid,
-    messages: std::sync::Arc<Vec<hydeclaw_types::Message>>,
-) -> anyhow::Result<usize> {
-    use hydeclaw_types::MessageRole;
-
-    if messages.len() < 5 {
-        return Ok(0);
-    }
-
-    // Build conversation text (last 20 user+assistant messages)
-    let text: String = messages
-        .iter()
-        .filter(|m| matches!(m.role, MessageRole::User | MessageRole::Assistant))
-        .rev()
-        .take(20)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .map(|m| {
-            let role = if matches!(m.role, MessageRole::User) { "User" } else { "Assistant" };
-            format!("{}: {}", role, m.content.chars().take(2000).collect::<String>())
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    if text.len() < 100 {
-        return Ok(0);
-    }
-
-    let prompt = format!(
-        "Extract entities and relations from this conversation. Return JSON only:\n\
-        {{\"entities\": [{{\"name\": \"...\", \"entity_type\": \"Person|Organization|Concept|Place|Event|Technology\"}}], \
-        \"relations\": [{{\"source\": \"...\", \"target\": \"...\", \"relation_type\": \"KNOWS|WORKS_AT|LOCATED_IN|PART_OF|RELATED_TO|CREATED_BY|USES\"}}]}}\n\
-        Conversation:\n{}",
-        text
-    );
-
-    let response = provider
-        .chat(
-            &[hydeclaw_types::Message {
-                role: MessageRole::User,
-                content: prompt,
-                tool_calls: None,
-                tool_call_id: None,
-                thinking_blocks: vec![],
-            }],
-            &[],
-        )
-        .await?;
-
-    let (entities, relations) = crate::memory_graph::parse_extraction_response(&response.content);
-    if entities.is_empty() {
-        return Ok(0);
-    }
-
-    let mut entity_ids: Vec<uuid::Uuid> = Vec::new();
-    for entity in &entities {
-        match crate::memory_graph::upsert_entity_resolved(db, &entity.name, &entity.entity_type)
-            .await
-        {
-            Ok(id) => entity_ids.push(id),
-            Err(e) => tracing::warn!(error = %e, entity = %entity.name, "session graph extraction: entity upsert failed"),
-        }
-    }
-
-    for rel in &relations {
-        let src_type = entities
-            .iter()
-            .find(|e| e.name == rel.source)
-            .map(|e| e.entity_type.as_str())
-            .unwrap_or("Concept");
-        let tgt_type = entities
-            .iter()
-            .find(|e| e.name == rel.target)
-            .map(|e| e.entity_type.as_str())
-            .unwrap_or("Concept");
-        let fact = format!("{} {} {}", rel.source, rel.relation_type, rel.target);
-        if let Err(e) = crate::memory_graph::upsert_relation(
-            db, &rel.source, src_type, &rel.target, tgt_type, &rel.relation_type, Some(&fact),
-        )
-        .await
-        {
-            tracing::warn!(error = %e, "session graph extraction: relation upsert failed");
-        }
-    }
-
-    crate::memory_graph::link_session_entities(db, session_id, &entity_ids).await?;
-
-    tracing::info!(
-        session = %session_id,
-        entities = entity_ids.len(),
-        relations = relations.len(),
-        "post-session graph extraction complete"
-    );
-    Ok(entity_ids.len())
-}
-
 impl AgentEngine {
     /// Build L0 memory context: load pinned chunks for this agent.
     /// Called from build_context() in engine.rs before the system prompt size log.
@@ -197,7 +83,7 @@ impl AgentEngine {
 
         if let (Some(sid), Ok(embedding)) = (session_id, self.memory_store.embed(query).await) {
             let vec_str = format!("[{}]", embedding.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
-            if let Ok(docs) = crate::db::session_documents::search(&self.db, sid, &vec_str, 3).await
+            if let Ok(docs) = self.memory_store.search_session_documents(sid, &vec_str, 3).await
                 && !docs.is_empty() {
                     let doc_body = docs.iter().enumerate()
                         .map(|(i, (filename, content, score))| format!("{}. [{}] {} (score: {:.2})", i + 1, filename, content, score))
@@ -266,25 +152,15 @@ impl AgentEngine {
                 // Build (chunk_id, chunk_content) pairs for GraphRAG.
                 // One query: parent (id match) + children (parent_id match).
                 // For single-chunk docs, returns just the parent row.
-                let chunks_for_graph = sqlx::query_as::<_, (String, String)>(
-                    "SELECT id::text, content FROM memory_chunks \
-                     WHERE id = $1::uuid OR parent_id = $1::uuid ORDER BY chunk_index"
-                )
-                .bind(&id)
-                .fetch_all(&self.db)
-                .await
-                .unwrap_or_else(|_| vec![(id.clone(), content.to_string())]);
+                let chunks_for_graph = self.memory_store.fetch_chunks_for_graph(&id)
+                    .await
+                    .unwrap_or_else(|_| vec![(id.clone(), content.to_string())]);
 
                 let chunk_count = chunks_for_graph.len();
-                for (chunk_id, chunk_content) in chunks_for_graph {
-                    let db = self.db.clone();
-                    let provider = self.provider.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = extract_and_link_entities(&db, &provider, &chunk_content, &chunk_id).await {
-                            tracing::warn!(error = %e, chunk_id = %chunk_id, "GraphRAG entity extraction failed");
-                        }
-                    });
-                }
+                let _ = self.memory_store.spawn_graph_extraction(
+                    chunks_for_graph,
+                    self.provider.clone(),
+                ).await;
 
                 if chunk_count > 1 {
                     format!("Indexed as {} ({} chunks)", id, chunk_count)
@@ -340,45 +216,18 @@ impl AgentEngine {
 
         // Clear existing memory synchronously (fast DB operation)
         if clear_existing {
-            // 1. Delete graph episodes linked to this agent's chunks FIRST (while chunks still exist)
-            if let Err(e) = sqlx::query(
-                "DELETE FROM graph_episodes WHERE chunk_id IN (SELECT id FROM memory_chunks WHERE agent_id = $1)"
-            ).bind(&self.agent.name).execute(&self.db).await {
-                tracing::warn!(error = %e, "graph episodes cleanup failed");
-            }
-            // 2. Clean orphaned edges and entities
-            if let Err(e) = sqlx::query(
-                "DELETE FROM graph_edges WHERE source_id NOT IN (SELECT entity_id FROM graph_episodes) AND target_id NOT IN (SELECT entity_id FROM graph_episodes)"
-            ).execute(&self.db).await {
-                tracing::warn!(error = %e, "graph edges cleanup failed");
-            }
-            if let Err(e) = sqlx::query(
-                "DELETE FROM graph_entities WHERE id NOT IN (SELECT entity_id FROM graph_episodes)"
-            ).execute(&self.db).await {
-                tracing::warn!(error = %e, "graph entities cleanup failed");
-            }
-            // 3. NOW delete memory chunks
-            match sqlx::query("DELETE FROM memory_chunks WHERE agent_id = $1")
-                .bind(&self.agent.name)
-                .execute(&self.db)
-                .await
-            {
-                Ok(r) => tracing::info!(deleted = r.rows_affected(), agent = %self.agent.name, "cleared memory before reindex"),
+            match self.memory_store.wipe_agent_memory(&self.agent.name).await {
+                Ok(deleted) => tracing::info!(deleted, agent = %self.agent.name, "cleared memory before reindex"),
                 Err(e) => return format!("Failed to clear memory: {}", e),
             }
         }
 
         // Create reindex task for memory-worker
-        let task_id: uuid::Uuid = match sqlx::query_scalar(
-            "INSERT INTO memory_tasks (task_type, params) VALUES ('reindex', $1) RETURNING id",
-        )
-        .bind(serde_json::json!({
+        let task_id = match self.memory_store.enqueue_reindex_task(serde_json::json!({
             "clear_existing": clear_existing,
             "include_sessions": include_sessions,
             "agent_id": self.agent.name,
-        }))
-        .fetch_one(&self.db)
-        .await {
+        })).await {
             Ok(id) => id,
             Err(e) => return format!("Failed to create reindex task: {}", e),
         };
@@ -403,7 +252,7 @@ impl AgentEngine {
             .unwrap_or(2)
             .min(3) as u8;
 
-        match crate::memory_graph::find_related(&self.db, entity, max_hops).await {
+        match self.memory_store.find_graph_related(entity, max_hops).await {
             Ok(related) if related.is_empty() => {
                 format!("No relations found for entity '{}'.", entity)
             }
@@ -551,7 +400,7 @@ impl AgentEngine {
             return "Memory compression is not available (embedding endpoint not configured).".to_string();
         }
 
-        let groups = match crate::db::memory_queries::fetch_compressible_groups(&self.db, age_days).await {
+        let groups = match self.memory_store.fetch_compressible_groups(age_days).await {
             Ok(g) => g,
             Err(e) => return format!("{{\"error\": \"Failed to fetch compressible groups: {}\"}}", e),
         };
@@ -572,10 +421,8 @@ impl AgentEngine {
 
         for group in filtered {
             let topic_name = group.topic.clone();
-            match crate::compression_worker::compress_group(
-                &self.db,
-                &self.provider,
-                self.memory_store.as_ref(),
+            match self.memory_store.compress_memory_group(
+                self.provider.clone(),
                 group,
             )
             .await

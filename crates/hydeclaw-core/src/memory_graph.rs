@@ -498,6 +498,108 @@ pub fn parse_extraction_response(json_text: &str) -> (Vec<GraphEntity>, Vec<Grap
     (vec![], vec![])
 }
 
+// ── Session-level graph extraction ──────────────────────────────────────────
+
+/// Extract entities from a completed session's messages and link to graph.
+/// Called as background task when session completes (>= 5 messages).
+pub async fn extract_session_to_graph(
+    db: &PgPool,
+    provider: &std::sync::Arc<dyn crate::agent::providers::LlmProvider>,
+    session_id: Uuid,
+    messages: std::sync::Arc<Vec<hydeclaw_types::Message>>,
+) -> anyhow::Result<usize> {
+    use hydeclaw_types::MessageRole;
+
+    if messages.len() < 5 {
+        return Ok(0);
+    }
+
+    // Build conversation text (last 20 user+assistant messages)
+    let text: String = messages
+        .iter()
+        .filter(|m| matches!(m.role, MessageRole::User | MessageRole::Assistant))
+        .rev()
+        .take(20)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|m| {
+            let role = if matches!(m.role, MessageRole::User) { "User" } else { "Assistant" };
+            format!("{}: {}", role, m.content.chars().take(2000).collect::<String>())
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if text.len() < 100 {
+        return Ok(0);
+    }
+
+    let prompt = format!(
+        "Extract entities and relations from this conversation. Return JSON only:\n\
+        {{\"entities\": [{{\"name\": \"...\", \"entity_type\": \"Person|Organization|Concept|Place|Event|Technology\"}}], \
+        \"relations\": [{{\"source\": \"...\", \"target\": \"...\", \"relation_type\": \"KNOWS|WORKS_AT|LOCATED_IN|PART_OF|RELATED_TO|CREATED_BY|USES\"}}]}}\n\
+        Conversation:\n{}",
+        text
+    );
+
+    let response = provider
+        .chat(
+            &[hydeclaw_types::Message {
+                role: MessageRole::User,
+                content: prompt,
+                tool_calls: None,
+                tool_call_id: None,
+                thinking_blocks: vec![],
+            }],
+            &[],
+        )
+        .await?;
+
+    let (entities, relations) = parse_extraction_response(&response.content);
+    if entities.is_empty() {
+        return Ok(0);
+    }
+
+    let mut entity_ids: Vec<Uuid> = Vec::new();
+    for entity in &entities {
+        match upsert_entity_resolved(db, &entity.name, &entity.entity_type).await {
+            Ok(id) => entity_ids.push(id),
+            Err(e) => tracing::warn!(error = %e, entity = %entity.name, "session graph extraction: entity upsert failed"),
+        }
+    }
+
+    for rel in &relations {
+        let src_type = entities
+            .iter()
+            .find(|e| e.name == rel.source)
+            .map(|e| e.entity_type.as_str())
+            .unwrap_or("Concept");
+        let tgt_type = entities
+            .iter()
+            .find(|e| e.name == rel.target)
+            .map(|e| e.entity_type.as_str())
+            .unwrap_or("Concept");
+        let fact = format!("{} {} {}", rel.source, rel.relation_type, rel.target);
+        if let Err(e) = upsert_relation(
+            db, &rel.source, src_type, &rel.target, tgt_type, &rel.relation_type, Some(&fact),
+        )
+        .await
+        {
+            tracing::warn!(error = %e, "session graph extraction: relation upsert failed");
+        }
+    }
+
+    link_session_entities(db, session_id, &entity_ids).await?;
+
+    tracing::info!(
+        session = %session_id,
+        entities = entity_ids.len(),
+        relations = relations.len(),
+        "post-session graph extraction complete"
+    );
+    Ok(entity_ids.len())
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
