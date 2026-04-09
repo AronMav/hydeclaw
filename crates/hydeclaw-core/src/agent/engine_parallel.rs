@@ -26,7 +26,7 @@ fn is_system_tool_parallel_safe(name: &str) -> bool {
 
 /// Signals that the tool execution loop should break.
 /// Carries an optional reason string for logging and nudge messages.
-pub(super) struct LoopBreak(pub Option<String>);
+pub struct LoopBreak(pub Option<String>);
 
 impl super::AgentEngine {
     /// Execute tool calls with parallel/sequential partitioning.

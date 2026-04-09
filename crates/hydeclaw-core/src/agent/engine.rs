@@ -39,6 +39,7 @@ pub use tool_defs_impl::all_system_tool_names;
 mod subagent_impl;
 #[path = "engine_parallel.rs"]
 mod parallel_impl;
+pub use parallel_impl::LoopBreak;
 #[path = "engine_handoff.rs"]
 mod handoff_impl;
 #[path = "engine_sandbox.rs"]
