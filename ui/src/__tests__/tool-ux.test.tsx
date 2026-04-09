@@ -1,5 +1,5 @@
 import { vi, describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import * as fs from "fs";
 import * as path from "path";
@@ -95,7 +95,7 @@ vi.mock("@tanstack/react-query", async () => {
 // ── Import under test ─────────────────────────────────────────────────────
 
 import { TOOL_GROUP_THRESHOLD, mapToolPartState } from "@/app/(authenticated)/chat/MessageItem";
-import { ToolCallPartView } from "@/components/chat/ToolCallPartView";
+import { ToolCallPartView, TOOL_OUTPUT_MAX_CHARS } from "@/components/chat/ToolCallPartView";
 
 // ── TOOL-01 tests ──────────────────────────────────────────────────────────
 
@@ -161,5 +161,71 @@ describe("TOOL-02: ToolCallPartView renders state-driven text labels", () => {
     );
     const fileContents = fs.readFileSync(filePath, "utf-8");
     expect(fileContents).not.toContain("useToolProgress");
+  });
+});
+
+// ── TOOL-03 tests: expand button accessibility ─────────────────────────────
+
+describe("TOOL-03: TOOL_OUTPUT_MAX_CHARS constant", () => {
+  it("TOOL_OUTPUT_MAX_CHARS is exported and equals 10_000", () => {
+    expect(TOOL_OUTPUT_MAX_CHARS).toBe(10_000);
+  });
+});
+
+describe("TOOL-03: Expand button is outside the pre element", () => {
+  const longResult = "x".repeat(15_000);
+
+  it("renders expand button when result exceeds TOOL_OUTPUT_MAX_CHARS", () => {
+    render(
+      <ToolCallPartView
+        toolName="test_tool"
+        args={{}}
+        result={longResult}
+        status={{ type: "complete" }}
+      />,
+    );
+    // Open the collapsible first
+    const trigger = screen.getByRole("button", { name: /test_tool/i });
+    fireEvent.click(trigger);
+
+    // Expand button should be present
+    const expandBtn = screen.getByRole("button", { name: /show|more|chat\.tool_show_full/i });
+    expect(expandBtn).toBeInTheDocument();
+  });
+
+  it("expand button is NOT inside a pre element", () => {
+    render(
+      <ToolCallPartView
+        toolName="test_tool"
+        args={{}}
+        result={longResult}
+        status={{ type: "complete" }}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: /test_tool/i });
+    fireEvent.click(trigger);
+
+    const expandBtn = screen.getByRole("button", { name: /show|more|chat\.tool_show_full/i });
+    expect(expandBtn.closest("pre")).toBeNull();
+  });
+
+  it("clicking expand button shows full output", () => {
+    render(
+      <ToolCallPartView
+        toolName="test_tool"
+        args={{}}
+        result={longResult}
+        status={{ type: "complete" }}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: /test_tool/i });
+    fireEvent.click(trigger);
+
+    const expandBtn = screen.getByRole("button", { name: /show|more|chat\.tool_show_full/i });
+    fireEvent.click(expandBtn);
+
+    // After expand, pre should contain the full text (no truncation)
+    const pre = document.querySelector("pre:last-of-type");
+    expect(pre?.textContent).toBe(longResult);
   });
 });

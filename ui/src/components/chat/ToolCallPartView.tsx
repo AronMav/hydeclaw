@@ -6,6 +6,8 @@ import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/component
 import { ChevronRight } from "lucide-react";
 import { truncateOutput } from "@/lib/format";
 
+export const TOOL_OUTPUT_MAX_CHARS = 10_000;
+
 export const ToolCallPartView = memo(function ToolCallPartView({ toolName, args, result, status }: {
   toolName: string;
   args: Record<string, unknown>;
@@ -36,7 +38,6 @@ export const ToolCallPartView = memo(function ToolCallPartView({ toolName, args,
     ? JSON.stringify(args, null, 2)
     : null;
 
-  const TOOL_OUTPUT_MAX_CHARS = 10_000;
   const resultRaw = result
     ? typeof result === "string" ? result : JSON.stringify(result, null, 2)
     : "";
@@ -103,24 +104,24 @@ export const ToolCallPartView = memo(function ToolCallPartView({ toolName, args,
           )}
           {(isComplete || hasError || isDenied) && (
             <div className="p-3">
-              <div className="flex items-center gap-2 mb-1.5">
+              <div className="flex items-center justify-between mb-1.5">
                 <span className={`font-mono text-[10px] font-bold uppercase tracking-wider ${
                   hasError || isDenied ? "text-destructive" : "text-success"
                 }`}>
                   {hasError ? t("chat.tool_error") : isDenied ? t("chat.tool_denied") : t("chat.tool_result")}
                 </span>
-              </div>
-              <pre className="max-h-[300px] overflow-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-foreground/90 dark:text-foreground/70">
-                {resultDisplay}
                 {resultTruncated && (
                   <button
                     type="button"
                     onClick={() => setShowFullOutput(true)}
-                    className="mt-2 text-xs text-primary/70 hover:text-primary underline underline-offset-2"
+                    className="text-xs text-primary/70 hover:text-primary underline underline-offset-2"
                   >
-                    Show {Math.round(resultHiddenChars / 1000)}K more characters…
+                    {t("chat.tool_show_full", { chars: Math.round(resultHiddenChars / 1000) })}
                   </button>
                 )}
+              </div>
+              <pre className="max-h-[300px] overflow-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-foreground/90 dark:text-foreground/70">
+                {resultDisplay}
               </pre>
             </div>
           )}
