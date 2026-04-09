@@ -18,6 +18,28 @@ function hasMathContent(content: string): boolean {
   return MATH_PATTERN.test(content)
 }
 
+// ── Block Key & Fence Detection ────────────────────────────────────────────
+
+/** Fast djb2 hash of first 32 chars — sub-microsecond, no import needed */
+export function blockKey(blockId: string, index: number, content: string): string {
+  let hash = 5381
+  const len = Math.min(content.length, 32)
+  for (let i = 0; i < len; i++) {
+    hash = ((hash << 5) + hash) ^ content.charCodeAt(i)
+  }
+  return `${blockId}-${index}-${(hash >>> 0).toString(36)}`
+}
+
+/**
+ * Returns true if `raw` is an unclosed code fence (streaming partial block).
+ * marked.lexer() emits `code` tokens even for unclosed fences — raw does NOT
+ * end with closing backtick fence in that case.
+ */
+export function isUnclosedCodeBlock(raw: string): boolean {
+  const trimmed = raw.trimEnd()
+  return trimmed.startsWith('```') && !trimmed.endsWith('```')
+}
+
 // ── Types & Helpers ────────────────────────────────────────────────────────
 
 export type MarkdownProps = {
@@ -25,6 +47,7 @@ export type MarkdownProps = {
   id?: string
   className?: string
   components?: Partial<Components>
+  isStreaming?: boolean
 }
 
 function parseMarkdownIntoBlocks(markdown: string): string[] {
@@ -38,54 +61,69 @@ function extractLanguage(className?: string): string {
   return match ? match[1] : "plaintext"
 }
 
-const INITIAL_COMPONENTS: Partial<Components> = {
-  code: function CodeComponent({ className, children, ...props }) {
-    const isInline =
-      !props.node?.position?.start.line ||
-      props.node?.position?.start.line === props.node?.position?.end.line
+// ── Components Factory ─────────────────────────────────────────────────────
 
-    if (isInline) {
+function createComponents(isStreamingCode = false): Partial<Components> {
+  return {
+    code: function CodeComponent({ className, children, ...props }) {
+      const isInline =
+        !props.node?.position?.start.line ||
+        props.node?.position?.start.line === props.node?.position?.end.line
+
+      if (isInline) {
+        return (
+          <span
+            className={cn(
+              "bg-muted rounded-sm px-1 font-mono text-sm",
+              className
+            )}
+            {...props}
+          >
+            {children}
+          </span>
+        )
+      }
+
+      const language = extractLanguage(className)
+
+      if (language === "mermaid") {
+        return <MermaidBlock code={String(children).trim()} />
+      }
+
+      const codeStr = children as string
+      const lineCount = codeStr ? codeStr.split('\n').length : 0
+
       return (
-        <span
-          className={cn(
-            "bg-muted rounded-sm px-1 font-mono text-sm",
-            className
-          )}
-          {...props}
-        >
-          {children}
-        </span>
+        <CodeBlock className={className} language={language} isStreaming={isStreamingCode}>
+          <CodeBlockCode
+            code={codeStr}
+            language={language}
+            showLineNumbers={lineCount > 10}
+            isStreaming={isStreamingCode}
+          />
+        </CodeBlock>
       )
-    }
-
-    const language = extractLanguage(className)
-
-    if (language === "mermaid") {
-      return <MermaidBlock code={String(children).trim()} />
-    }
-
-    const codeStr = children as string
-    const lineCount = codeStr ? codeStr.split('\n').length : 0
-
-    return (
-      <CodeBlock className={className} language={language}>
-        <CodeBlockCode code={codeStr} language={language} showLineNumbers={lineCount > 10} />
-      </CodeBlock>
-    )
-  },
-  pre: function PreComponent({ children }) {
-    return <>{children}</>
-  },
+    },
+    pre: function PreComponent({ children }) {
+      return <>{children}</>
+    },
+  }
 }
+
+// Stable references for the common cases — avoids object recreation on each render
+const INITIAL_COMPONENTS = createComponents(false)
+const STREAMING_COMPONENTS = createComponents(true)
 
 // ── Standard Markdown Block (no math) ──────────────────────────────────────
 
 const MemoizedMarkdownBlock = memo(
   function MarkdownBlock({
     content,
+    isStreamingCode = false,
     components = INITIAL_COMPONENTS,
   }: {
     content: string
+    isStreamingCode?: boolean
     components?: Partial<Components>
   }) {
     return (
@@ -99,6 +137,7 @@ const MemoizedMarkdownBlock = memo(
   },
   function propsAreEqual(prevProps, nextProps) {
     return prevProps.content === nextProps.content
+      && prevProps.isStreamingCode === nextProps.isStreamingCode
   }
 )
 
@@ -166,7 +205,8 @@ function MarkdownComponent({
   children,
   id,
   className,
-  components = INITIAL_COMPONENTS,
+  isStreaming = false,
+  components,
 }: MarkdownProps) {
   const generatedId = useId()
   const blockId = id ?? generatedId
@@ -174,21 +214,33 @@ function MarkdownComponent({
 
   return (
     <div className={className}>
-      {blocks.map((block, index) =>
-        hasMathContent(block) ? (
+      {blocks.map((block, index) => {
+        const isLastBlock = index === blocks.length - 1
+        // Fence detection is authoritative — unclosed fence = streaming code regardless of isStreaming flag.
+        // isStreaming is used by CodeBlockCode to decide whether to skip Shiki.
+        // Here we only check fence state to determine which components object to pass.
+        const isStreamingCode = isLastBlock && isUnclosedCodeBlock(block)
+
+        // Use stable INITIAL_COMPONENTS for non-streaming blocks.
+        // Use STREAMING_COMPONENTS only for the last block with an unclosed fence.
+        // If caller provides custom components, always use those.
+        const resolvedComponents = components ?? (isStreamingCode ? STREAMING_COMPONENTS : INITIAL_COMPONENTS)
+
+        return hasMathContent(block) ? (
           <MemoizedMathBlock
-            key={`${blockId}-block-${index}`}
+            key={blockKey(blockId, index, block)}
             content={block}
-            components={components}
+            components={resolvedComponents}
           />
         ) : (
           <MemoizedMarkdownBlock
-            key={`${blockId}-block-${index}`}
+            key={blockKey(blockId, index, block)}
             content={block}
-            components={components}
+            isStreamingCode={isStreamingCode}
+            components={resolvedComponents}
           />
         )
-      )}
+      })}
     </div>
   )
 }
