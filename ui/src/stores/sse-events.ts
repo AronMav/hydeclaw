@@ -17,7 +17,7 @@ export type SseEvent =
   | { type: "tool-input-available"; toolCallId: string; input: unknown }
   | { type: "tool-output-available"; toolCallId: string; output: unknown }
   | { type: "file"; url: string; mediaType?: string }
-  | { type: "rich-card"; cardType: "table" | "metric" | "agent-turn"; data: Record<string, unknown> }
+  | { type: "rich-card"; cardType: string; data: Record<string, unknown> }
   | { type: "sync"; content: string; toolCalls: unknown[]; status: string; error?: string }
   | { type: "step-start"; stepId: string }
   | { type: "step-finish"; stepId: string; finishReason: string }
@@ -72,7 +72,7 @@ export function parseSseEvent(raw: string): SseEvent | null {
       if (typeof e.url !== "string") return null;
       return { type, url: e.url, mediaType: typeof e.mediaType === "string" ? e.mediaType : undefined };
     case "rich-card":
-      return { type, cardType: e.cardType as "table" | "metric" | "agent-turn", data: (e.data as Record<string, unknown>) ?? {} };
+      return { type, cardType: typeof e.cardType === "string" ? e.cardType : "unknown", data: (e.data as Record<string, unknown>) ?? {} };
     case "sync":
       return {
         type,

@@ -71,7 +71,7 @@ export function TableCard({ data }: { data: Record<string, unknown> }) {
   );
 }
 
-function MetricCard({ data }: { data: Record<string, unknown> }) {
+export function MetricCard({ data }: { data: Record<string, unknown> }) {
   const title = data.title as string | undefined;
   const value = data.value as string | undefined;
   const label = data.label as string | undefined;

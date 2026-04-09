@@ -30,7 +30,7 @@ export { AgentTurnSeparator } from "@/components/chat/AgentTurnSeparator";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { BarsLoader } from "@/components/ui/loader";
 import { Button } from "@/components/ui/button";
-import { RichCard } from "@/components/ui/rich-card";
+import { GenerativeUISlot } from "@/components/ui/card-registry";
 import { SlashMenu } from "./parts/SlashMenu";
 import { MessageList, MessageSkeleton } from "./MessageList";
 import { ReconnectingIndicator } from "@/components/chat/ReconnectingIndicator";
@@ -153,8 +153,7 @@ export function RichCardDataPartView({ data }: { data: Record<string, unknown> }
   if (cardType === "agent-turn" && typeof rest.agentName === "string") {
     return <AgentTurnSeparator data={{ agentName: rest.agentName, reason: typeof rest.reason === "string" ? rest.reason : "" }} animate={false} />;
   }
-  const validCardType = cardType === "table" || cardType === "metric" ? cardType : "table";
-  return <RichCard part={{ type: "rich-card", cardType: validCardType, data: rest }} />;
+  return <GenerativeUISlot cardType={String(cardType ?? "unknown")} data={rest} />;
 }
 
 // ── Empty state ──────────────────────────────────────────────────────────────
