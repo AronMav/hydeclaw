@@ -210,23 +210,11 @@ vi.mock("@/lib/format", () => ({
   formatMessageTime: () => "12:00",
 }));
 
-vi.mock("./MessageActions", () => ({
-  MessageActions: () => null,
-}), { virtual: true });
-
 vi.mock("@/app/(authenticated)/chat/MessageActions", () => ({
   MessageActions: () => null,
 }));
 
 // Mock heavy rendering dependencies
-vi.mock("./parts/TextPart", () => ({
-  TextPart: ({ text }: { text: string }) => React.createElement("span", { "data-testid": "text-part" }, text),
-}), { virtual: true });
-
-vi.mock("./parts/ReasoningPart", () => ({
-  ReasoningPart: ({ text }: { text: string }) => React.createElement("span", { "data-testid": "reasoning-part" }, text),
-}), { virtual: true });
-
 vi.mock("@/app/(authenticated)/chat/parts/TextPart", () => ({
   TextPart: ({ text }: { text: string }) => React.createElement("span", { "data-testid": "text-part" }, text),
 }));
