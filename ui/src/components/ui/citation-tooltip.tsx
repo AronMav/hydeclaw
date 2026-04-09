@@ -10,16 +10,15 @@ import {
 
 // ── Footnote Extraction ───────────────────────────────────────────────────
 
-const FOOTNOTE_DEF_RE = /^\[\^([^\]]+)\]:\s*(.+)$/gm
-
 /**
  * Extract footnote definitions from raw markdown.
  * Returns a Map of footnote id -> definition text.
  */
 export function extractFootnotes(markdown: string): Map<string, string> {
+  const re = /^\[\^([^\]]+)\]:\s*(.+)$/gm
   const map = new Map<string, string>()
   let match: RegExpExecArray | null
-  while ((match = FOOTNOTE_DEF_RE.exec(markdown)) !== null) {
+  while ((match = re.exec(markdown)) !== null) {
     map.set(match[1], match[2])
   }
   return map

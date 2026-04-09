@@ -11,9 +11,9 @@ interface BranchNavigatorProps {
 }
 
 export function BranchNavigator({ parentMessageId, siblings, currentIndex }: BranchNavigatorProps) {
-  if (siblings.length <= 1) return null;
-
   const switchBranch = useChatStore((s) => s.switchBranch);
+
+  if (siblings.length <= 1) return null;
 
   return (
     <div className="flex items-center gap-0.5 text-xs text-muted-foreground">

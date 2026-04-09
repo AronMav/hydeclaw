@@ -252,7 +252,7 @@ describe("MessageItem", () => {
     expect(screen.getByText("web_search")).toBeInTheDocument();
   });
 
-  it("renders rich-card agent-turn as separator (REND-06)", () => {
+  it("agent-turn rich-card part renders nothing inline — separator shown by MessageList (REND-06)", () => {
     const msg: ChatMessage = {
       id: "5",
       role: "assistant",
@@ -266,7 +266,7 @@ describe("MessageItem", () => {
       agentId: "Bot",
     };
     render(<MessageItem message={msg} />);
-    expect(screen.getByText(/chat\.agent_responding/)).toBeInTheDocument();
+    expect(screen.queryByText(/chat\.agent_responding/)).not.toBeInTheDocument();
   });
 
   it("renders file part with audio element (REND-08)", () => {

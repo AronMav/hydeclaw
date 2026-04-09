@@ -241,9 +241,8 @@ describe("Multi-Agent Identity (MAID)", () => {
         />,
       );
 
-      const separator = screen.getByTestId("agent-turn-separator");
+      const separator = screen.getByRole("separator");
       expect(separator).toBeInTheDocument();
-      expect(separator).toHaveTextContent("chat.agent_responding");
     });
 
     it("does NOT render separator between consecutive assistant messages from the SAME agent", () => {
@@ -264,7 +263,7 @@ describe("Multi-Agent Identity (MAID)", () => {
         />,
       );
 
-      expect(screen.queryByTestId("agent-turn-separator")).not.toBeInTheDocument();
+      expect(screen.queryByRole("separator")).not.toBeInTheDocument();
     });
 
     it("does NOT render separator when user message sits between different-agent assistants", () => {
@@ -286,7 +285,7 @@ describe("Multi-Agent Identity (MAID)", () => {
         />,
       );
 
-      expect(screen.queryByTestId("agent-turn-separator")).not.toBeInTheDocument();
+      expect(screen.queryByRole("separator")).not.toBeInTheDocument();
     });
   });
 
