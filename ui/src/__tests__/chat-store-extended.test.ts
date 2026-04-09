@@ -180,3 +180,249 @@ describe("saveLastSession / getLastSessionId", () => {
     expect(getLastSessionId("Unknown")).toBeUndefined();
   });
 });
+
+// ── STATE-01: history to live transition ────────────────────────────────────
+
+describe("STATE-01: history to live transition", () => {
+  it("sendMessage from history does not set viewMode live before startStream populates liveMessages", async () => {
+    const { useChatStore } = await import("@/stores/chat-store");
+
+    // Set up agent in history mode with an active session
+    useChatStore.setState((s) => {
+      s.currentAgent = "TestAgent";
+      if (!s.agents["TestAgent"]) {
+        s.agents["TestAgent"] = {
+          activeSessionId: "sess-history",
+          liveMessages: [],
+          viewMode: "history",
+          streamStatus: "idle",
+          streamError: null,
+          forceNewSession: false,
+          thinkingSessionId: null,
+          activeSessionIds: [],
+          renderLimit: 100,
+          modelOverride: null,
+          pendingTargetAgent: null,
+          agentTurns: [],
+          turnCount: 0,
+          turnLimitMessage: null,
+        };
+      } else {
+        s.agents["TestAgent"].viewMode = "history";
+        s.agents["TestAgent"].activeSessionId = "sess-history";
+        s.agents["TestAgent"].liveMessages = [];
+        s.agents["TestAgent"].streamStatus = "idle";
+      }
+    });
+
+    // Record all states during sendMessage
+    const stateSnapshots: Array<{ viewMode: string; liveMessages: unknown[] }> = [];
+    const unsub = useChatStore.subscribe((state) => {
+      const ag = state.agents["TestAgent"];
+      if (ag) {
+        stateSnapshots.push({ viewMode: ag.viewMode, liveMessages: [...ag.liveMessages] });
+      }
+    });
+
+    // Mock fetch to prevent actual network calls
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(new ReadableStream(), { status: 200 })
+    );
+
+    useChatStore.getState().sendMessage("hello");
+
+    unsub();
+    fetchSpy.mockRestore();
+
+    // After sendMessage, every state transition to "live" must have non-empty liveMessages.
+    // The early flip (viewMode:"live" before startStream) would produce an empty-liveMessages snapshot.
+    const liveTransitions = stateSnapshots.filter((s) => s.viewMode === "live");
+    for (const snap of liveTransitions) {
+      expect(snap.liveMessages.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("chat-store.ts sendMessage has no early viewMode flip before startStream", async () => {
+    // Static analysis: the three early `update(agent, { viewMode: "live" })` calls
+    // in sendMessage/regenerate/regenerateFrom must be removed.
+    const fs = await import("node:fs");
+    const src = fs.readFileSync(
+      new URL("../../stores/chat-store.ts", import.meta.url).pathname,
+      "utf8"
+    );
+
+    // sendMessage block — from "sendMessage: " to "stopStream:"
+    const sendMessageBlock = src.slice(
+      src.indexOf("sendMessage: (text: string)"),
+      src.indexOf("stopStream:")
+    );
+    expect(sendMessageBlock).not.toMatch(/update\(agent,\s*\{\s*viewMode:\s*["']live["']\s*\}/);
+
+    // regenerate block — from "regenerate: () =>" to "regenerateFrom:"
+    const regenerateBlock = src.slice(
+      src.indexOf("regenerate: ()"),
+      src.indexOf("regenerateFrom:")
+    );
+    expect(regenerateBlock).not.toMatch(/update\(agent,\s*\{\s*viewMode:\s*["']live["']\s*\}/);
+
+    // regenerateFrom block — find the block after regenerate
+    const regenerateFromStart = src.indexOf("regenerateFrom: (messageId");
+    const regenerateFromEnd = src.indexOf("stopStream:", regenerateFromStart);
+    const regenerateFromBlock = src.slice(regenerateFromStart, regenerateFromEnd);
+    expect(regenerateFromBlock).not.toMatch(/update\(agent,\s*\{\s*viewMode:\s*["']live["']\s*\}/);
+  });
+});
+
+// ── STATE-02: beforeunload flush ─────────────────────────────────────────────
+
+describe("STATE-02: beforeunload flush", () => {
+  it("chat-store.ts registers beforeunload on window", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync(
+      new URL("../../stores/chat-store.ts", import.meta.url).pathname,
+      "utf8"
+    );
+    expect(src).toContain("beforeunload");
+    expect(src).toContain("keepalive: true");
+  });
+
+  it("beforeunload fires keepalive fetch with correct session payload", async () => {
+    // Capture the beforeunload handler registered when module loads
+    let capturedHandler: (() => void) | null = null;
+    const origAdd = window.addEventListener.bind(window);
+    const addEventSpy = vi
+      .spyOn(window, "addEventListener")
+      .mockImplementation((type: string, handler: EventListenerOrEventListenerObject, ...rest) => {
+        if (type === "beforeunload") {
+          capturedHandler = handler as () => void;
+        }
+        return origAdd(type, handler, ...(rest as []));
+      });
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response());
+
+    vi.resetModules();
+    vi.mock("@/lib/query-client", () => ({
+      queryClient: { invalidateQueries: vi.fn(), getQueryData: vi.fn(() => undefined) },
+    }));
+    vi.mock("@/lib/api", () => ({
+      apiGet: vi.fn(),
+      apiDelete: vi.fn(),
+      apiPatch: vi.fn(),
+      getToken: vi.fn(() => "bearer-xyz"),
+    }));
+
+    const { useChatStore } = await import("@/stores/chat-store");
+
+    // Set up agent state with active session
+    useChatStore.setState((s) => {
+      s.currentAgent = "Alpha";
+      if (!s.agents["Alpha"]) {
+        s.agents["Alpha"] = {
+          activeSessionId: "sess-abc",
+          liveMessages: [],
+          viewMode: "live",
+          streamStatus: "idle",
+          streamError: null,
+          forceNewSession: false,
+          thinkingSessionId: null,
+          activeSessionIds: [],
+          renderLimit: 100,
+          modelOverride: null,
+          pendingTargetAgent: null,
+          agentTurns: [],
+          turnCount: 0,
+          turnLimitMessage: null,
+        };
+      } else {
+        s.agents["Alpha"].activeSessionId = "sess-abc";
+        s.agents["Alpha"].viewMode = "live";
+        s.agents["Alpha"].streamStatus = "idle";
+      }
+    });
+
+    expect(capturedHandler).not.toBeNull();
+    capturedHandler!();
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/sessions/sess-abc",
+      expect.objectContaining({
+        method: "PATCH",
+        keepalive: true,
+      })
+    );
+
+    const callArgs = fetchSpy.mock.calls[0][1] as RequestInit;
+    expect(callArgs.keepalive).toBe(true);
+    const body = JSON.parse(callArgs.body as string);
+    expect(body.ui_state).toBeDefined();
+    expect(body.ui_state.viewMode).toBe("live");
+
+    addEventSpy.mockRestore();
+    fetchSpy.mockRestore();
+  });
+
+  it("beforeunload cancels pending saveUiState timer", async () => {
+    const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response());
+
+    let capturedHandler: (() => void) | null = null;
+    const origAdd = window.addEventListener.bind(window);
+    const addEventSpy = vi
+      .spyOn(window, "addEventListener")
+      .mockImplementation((type: string, handler: EventListenerOrEventListenerObject, ...rest) => {
+        if (type === "beforeunload") {
+          capturedHandler = handler as () => void;
+        }
+        return origAdd(type, handler, ...(rest as []));
+      });
+
+    vi.resetModules();
+    vi.mock("@/lib/query-client", () => ({
+      queryClient: { invalidateQueries: vi.fn(), getQueryData: vi.fn(() => undefined) },
+    }));
+    vi.mock("@/lib/api", () => ({
+      apiGet: vi.fn(),
+      apiDelete: vi.fn(),
+      apiPatch: vi.fn(),
+      getToken: vi.fn(() => "tok"),
+    }));
+
+    const { useChatStore } = await import("@/stores/chat-store");
+    useChatStore.setState((s) => {
+      s.currentAgent = "Beta";
+      if (!s.agents["Beta"]) {
+        s.agents["Beta"] = {
+          activeSessionId: "sess-beta",
+          liveMessages: [],
+          viewMode: "history",
+          streamStatus: "idle",
+          streamError: null,
+          forceNewSession: false,
+          thinkingSessionId: null,
+          activeSessionIds: [],
+          renderLimit: 100,
+          modelOverride: null,
+          pendingTargetAgent: null,
+          agentTurns: [],
+          turnCount: 0,
+          turnLimitMessage: null,
+        };
+      } else {
+        s.agents["Beta"].activeSessionId = "sess-beta";
+        s.agents["Beta"].viewMode = "history";
+        s.agents["Beta"].streamStatus = "idle";
+      }
+    });
+
+    expect(capturedHandler).not.toBeNull();
+    capturedHandler!();
+
+    // clearTimeout should have been called (to cancel any pending debounced save)
+    expect(clearSpy).toHaveBeenCalled();
+
+    addEventSpy.mockRestore();
+    fetchSpy.mockRestore();
+    clearSpy.mockRestore();
+  });
+});
