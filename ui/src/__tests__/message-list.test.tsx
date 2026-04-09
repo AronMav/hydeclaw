@@ -387,3 +387,89 @@ describe("Turn animations", () => {
     expect(el.className).not.toContain("animate-in");
   });
 });
+
+// ── Virtualization stress (UI-04) ─────────────────────────────────────────
+
+function generateToolMessages(count: number): ChatMessage[] {
+  const OLD_TIMESTAMP = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // 10 min ago — no animation
+  const msgs: ChatMessage[] = [];
+  for (let i = 0; i < count; i++) {
+    if (i % 5 === 0) {
+      // Every 5th message is a user message
+      msgs.push({
+        id: `stress-${i}`,
+        role: "user",
+        parts: [{ type: "text", text: `User message ${i}` }],
+        createdAt: OLD_TIMESTAMP,
+      });
+    } else {
+      // Assistant message with 1–3 tool parts
+      const toolCount = (i % 3) + 1;
+      const parts: ChatMessage["parts"] = [];
+      for (let t = 0; t < toolCount; t++) {
+        parts.push({
+          type: "tool",
+          toolCallId: `tc-${i}-${t}`,
+          toolName: "web_search",
+          state: "output-available" as const,
+          input: { query: "test" },
+          output: "result",
+        });
+      }
+      // Every 10th assistant message also gets a rich-card part
+      if (i % 10 === 3) {
+        parts.push({
+          type: "rich-card",
+          cardType: "agent-turn",
+          data: { agentName: `SubAgent${i}`, reason: "delegated" },
+        });
+      }
+      msgs.push({
+        id: `stress-${i}`,
+        role: "assistant",
+        parts,
+        agentId: "TestAgent",
+        createdAt: OLD_TIMESTAMP,
+      });
+    }
+  }
+  return msgs;
+}
+
+describe("Virtualization stress (UI-04)", () => {
+  it("renders 200 messages with tool calls without crashing (UI-04)", () => {
+    const msgs = generateToolMessages(200);
+    render(
+      <MessageList
+        messages={msgs}
+        isStreaming={false}
+        showThinking={false}
+        isLoadingHistory={false}
+        emptyState={null}
+        hiddenCount={0}
+        onLoadEarlier={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("virtuoso-mock")).toBeInTheDocument();
+    expect(screen.getAllByText("web_search").length).toBeGreaterThan(0);
+  });
+
+  it("renders 500 messages without timeout (UI-04)", () => {
+    const msgs = generateToolMessages(500);
+    const start = performance.now();
+    render(
+      <MessageList
+        messages={msgs}
+        isStreaming={false}
+        showThinking={false}
+        isLoadingHistory={false}
+        emptyState={null}
+        hiddenCount={0}
+        onLoadEarlier={() => {}}
+      />,
+    );
+    const elapsed = performance.now() - start;
+    expect(elapsed).toBeLessThan(5000);
+    expect(screen.getByTestId("virtuoso-mock")).toBeInTheDocument();
+  });
+});
