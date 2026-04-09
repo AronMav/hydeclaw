@@ -2,6 +2,7 @@
 //! Extracted from engine_execution.rs for readability.
 
 use super::*;
+use crate::agent::tool_executor::ToolExecutor;
 
 impl AgentEngine {
     /// Handle message via SSE: emits StreamEvents for AI SDK UI Message Stream Protocol v1.
@@ -16,7 +17,7 @@ impl AgentEngine {
         let _chat_guard = crate::graph_worker::ChatActiveGuard::new();
 
         // Hook: BeforeMessage
-        if let crate::agent::hooks::HookAction::Block(reason) = self.hooks.fire(&crate::agent::hooks::HookEvent::BeforeMessage) {
+        if let crate::agent::hooks::HookAction::Block(reason) = self.hooks().fire(&crate::agent::hooks::HookEvent::BeforeMessage) {
             anyhow::bail!("blocked by hook: {}", reason);
         }
 
@@ -43,9 +44,9 @@ impl AgentEngine {
             self.build_context(msg, true, resume_session_id, force_new_session).await?;
 
         // Store session_id for tool handlers that need session context (e.g., handoff)
-        *self.processing_session_id.lock().await = Some(session_id);
+        *self.processing_session_id().lock().await = Some(session_id);
         // Store event_tx so subagent handlers can emit SSE events (e.g., subagent-complete RichCard)
-        *self.sse_event_tx.lock().await = Some(event_tx.clone());
+        *self.sse_event_tx().lock().await = Some(event_tx.clone());
 
         // Lifecycle tracking: mark running, RAII guard marks 'failed' on early exit
         let sm = SessionManager::new(self.db.clone());
@@ -576,8 +577,8 @@ impl AgentEngine {
         lifecycle_guard.done().await;
 
         // Clear processing session context
-        *self.processing_session_id.lock().await = None;
-        *self.sse_event_tx.lock().await = None;
+        *self.processing_session_id().lock().await = None;
+        *self.sse_event_tx().lock().await = None;
 
         // Post-session graph extraction (background)
         if self.memory_store.is_available() && messages.len() >= 5 {

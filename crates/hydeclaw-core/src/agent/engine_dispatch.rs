@@ -44,7 +44,7 @@ impl AgentEngine {
             };
 
             // Hook: AfterToolResult (fire-and-forget, non-blocking)
-            self.hooks.fire(&crate::agent::hooks::HookEvent::AfterToolResult {
+            self.hooks().fire(&crate::agent::hooks::HookEvent::AfterToolResult {
                 agent: self.agent.name.clone(),
                 tool_name: name.to_string(),
                 duration_ms: duration_ms as u64,
@@ -182,7 +182,7 @@ impl AgentEngine {
                 // Create oneshot channel for waiting
                 let (result_tx, result_rx) = tokio::sync::oneshot::channel();
                 {
-                    let mut waiters = self.approval_waiters.write().await;
+                    let mut waiters = self.approval_waiters().write().await;
                     // Opportunistic cleanup: remove expired entries (>5 min).
                     // Dropping the sender causes RecvError on the receiver, handled as "cancelled" below.
                     let cutoff = std::time::Instant::now() - std::time::Duration::from_secs(300);
@@ -209,7 +209,7 @@ impl AgentEngine {
                     }
                     Ok(Err(_)) => {
                         // Sender dropped — cleanup waiter
-                        let mut waiters = self.approval_waiters.write().await;
+                        let mut waiters = self.approval_waiters().write().await;
                         waiters.remove(&approval_id);
                         return format!("Tool `{}` approval was cancelled.", name);
                     }
@@ -220,7 +220,7 @@ impl AgentEngine {
                             &self.db, approval_id, "timeout", "system",
                         ).await.unwrap_or(false);
 
-                        let mut waiters = self.approval_waiters.write().await;
+                        let mut waiters = self.approval_waiters().write().await;
                         waiters.remove(&approval_id);
 
                         if !was_pending {
@@ -237,7 +237,7 @@ impl AgentEngine {
             }
 
             // Hook: BeforeToolCall
-            if let crate::agent::hooks::HookAction::Block(reason) = self.hooks.fire(&crate::agent::hooks::HookEvent::BeforeToolCall {
+            if let crate::agent::hooks::HookAction::Block(reason) = self.hooks().fire(&crate::agent::hooks::HookEvent::BeforeToolCall {
                 agent: self.agent.name.clone(),
                 tool_name: name.to_string(),
             }) {
@@ -558,9 +558,9 @@ impl AgentEngine {
                 let oauth_ctx = self.make_oauth_context();
                 // Internal endpoints (toolgate, searxng, browser-renderer) bypass SSRF filtering
                 let client = if crate::tools::ssrf::is_internal_endpoint(&yaml_tool.endpoint) {
-                    &self.http_client
+                    self.http_client()
                 } else {
-                    &self.ssrf_http_client
+                    self.ssrf_http_client()
                 };
                 return match yaml_tool.execute_oauth(arguments, client, Some(&resolver), oauth_ctx.as_ref()).await {
                     Ok(result) => {
@@ -576,7 +576,7 @@ impl AgentEngine {
             }
 
             // 3. MCP tools (via MCP)
-            if let Some(ref mcp) = self.mcp
+            if let Some(mcp) = self.mcp()
                 && let Some(mcp_name) = mcp.find_mcp_for_tool(name).await {
                     return match mcp.call_tool(&mcp_name, name, arguments).await {
                         Ok(result) => result,

@@ -20,11 +20,11 @@ impl AgentEngine {
             .unwrap_or_default();
 
         // Privileged agents without Docker sandbox execute directly on host
-        if self.agent.base && self.sandbox.is_none() {
+        if self.agent.base && self.sandbox().is_none() {
             return self.execute_host_code(code, language, &packages).await;
         }
 
-        let sandbox = match &self.sandbox {
+        let sandbox = match self.sandbox() {
             Some(s) => s.clone(),
             None => return "Error: Docker sandbox unavailable.".to_string(),
         };
@@ -133,7 +133,7 @@ impl AgentEngine {
         let pid = child.id();
 
         {
-            let mut procs = self.bg_processes.lock().await;
+            let mut procs = self.tex().bg_processes.lock().await;
             procs.insert(process_id.clone(), crate::agent::engine::BgProcess {
                 process_id: process_id.clone(),
                 command: command.clone(),
@@ -154,7 +154,7 @@ impl AgentEngine {
     pub(super) async fn handle_process_status(&self, args: &serde_json::Value) -> String {
         // Clean up finished processes on access
         {
-            let mut procs = self.bg_processes.lock().await;
+            let mut procs = self.tex().bg_processes.lock().await;
             procs.retain(|_id, p| {
                 p.pid.is_some_and(|pid| std::path::Path::new(&format!("/proc/{}", pid)).exists())
             });
@@ -166,7 +166,7 @@ impl AgentEngine {
         };
 
         let (pid, log_path) = {
-            let procs = self.bg_processes.lock().await;
+            let procs = self.tex().bg_processes.lock().await;
             match procs.get(&process_id) {
                 Some(p) => (p.pid, p.log_path.clone()),
                 None => return format!("Error: process '{}' not found", process_id),
@@ -200,7 +200,7 @@ impl AgentEngine {
         let tail_lines = args.get("tail_lines").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
 
         let log_path = {
-            let procs = self.bg_processes.lock().await;
+            let procs = self.tex().bg_processes.lock().await;
             match procs.get(&process_id) {
                 Some(p) => p.log_path.clone(),
                 None => return format!("Error: process '{}' not found", process_id),
@@ -224,7 +224,7 @@ impl AgentEngine {
         };
 
         let pid = {
-            let procs = self.bg_processes.lock().await;
+            let procs = self.tex().bg_processes.lock().await;
             match procs.get(&process_id) {
                 Some(p) => p.pid,
                 None => return format!("Error: process '{}' not found", process_id),
@@ -252,7 +252,7 @@ impl AgentEngine {
         let yaml_tools = crate::tools::yaml_tools::load_yaml_tools(&self.workspace_dir, false).await;
         let mut raw_tools = self.internal_tool_definitions();
         raw_tools.extend(yaml_tools.into_iter().map(|t| t.to_tool_definition()));
-        if let Some(ref mcp) = self.mcp {
+        if let Some(mcp) = self.mcp() {
             raw_tools.extend(mcp.all_tool_definitions().await);
         }
         let available_tools = self.filter_tools_by_policy(raw_tools);
@@ -276,7 +276,7 @@ impl AgentEngine {
                     .await
                     .unwrap_or_default();
 
-            let mcp_schemas: Vec<String> = if let Some(ref mcp) = self.mcp {
+            let mcp_schemas: Vec<String> = if let Some(mcp) = self.mcp() {
                 let defs = mcp.all_tool_definitions().await;
                 defs.iter()
                     .map(|t| {
@@ -299,7 +299,7 @@ impl AgentEngine {
                 has_cron: self.scheduler.is_some(),
                 has_yaml_tools: true,
                 has_browser: Self::browser_renderer_url() != "disabled",
-                has_host_exec: self.agent.base && self.sandbox.is_none(),
+                has_host_exec: self.agent.base && self.sandbox().is_none(),
                 is_base: self.agent.base,
             };
 

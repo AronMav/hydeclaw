@@ -23,14 +23,14 @@ impl AgentEngine {
     /// Build a SecretsEnvResolver for YAML tool env resolution.
     pub(super) fn make_resolver(&self) -> SecretsEnvResolver {
         SecretsEnvResolver {
-            secrets: self.secrets.clone(),
+            secrets: self.secrets().clone(),
             agent_name: self.agent.name.clone(),
         }
     }
 
     /// Build OAuthContext for provider-based YAML tool auth (e.g. `oauth_provider: github`).
     pub(super) fn make_oauth_context(&self) -> Option<crate::tools::yaml_tools::OAuthContext> {
-        self.oauth.as_ref().map(|mgr| crate::tools::yaml_tools::OAuthContext {
+        self.oauth().as_ref().map(|mgr| crate::tools::yaml_tools::OAuthContext {
             manager: mgr.clone(),
             agent_id: self.agent.name.clone(),
         })

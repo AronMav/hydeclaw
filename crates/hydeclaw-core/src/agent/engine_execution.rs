@@ -2,6 +2,7 @@
 //! Extracted from engine.rs for readability.
 
 use super::*;
+use crate::agent::tool_executor::ToolExecutor;
 
 impl AgentEngine {
     /// Handle with optional status callback for real-time phase updates.
@@ -14,7 +15,7 @@ impl AgentEngine {
     ) -> Result<String> {
         // Sweep stale approval waiters (older than 10 minutes)
         {
-            let mut waiters = self.approval_waiters.write().await;
+            let mut waiters = self.approval_waiters().write().await;
             let now = std::time::Instant::now();
             waiters.retain(|id, (_, created)| {
                 let stale = now.duration_since(*created) > std::time::Duration::from_secs(600);
@@ -29,7 +30,7 @@ impl AgentEngine {
         let _chat_guard = crate::graph_worker::ChatActiveGuard::new();
 
         // Hook: BeforeMessage
-        if let crate::agent::hooks::HookAction::Block(reason) = self.hooks.fire(&crate::agent::hooks::HookEvent::BeforeMessage) {
+        if let crate::agent::hooks::HookAction::Block(reason) = self.hooks().fire(&crate::agent::hooks::HookEvent::BeforeMessage) {
             anyhow::bail!("blocked by hook: {}", reason);
         }
 
@@ -37,7 +38,7 @@ impl AgentEngine {
             self.build_context(msg, true, None, false).await?;
 
         // Store session_id for tool handlers that need session context (e.g., handoff)
-        *self.processing_session_id.lock().await = Some(session_id);
+        *self.processing_session_id().lock().await = Some(session_id);
 
         // Mark session as running — watchdog and startup cleanup use this
         let sm = SessionManager::new(self.db.clone());
@@ -455,7 +456,7 @@ impl AgentEngine {
         lifecycle_guard.done().await;
 
         // Clear processing session context
-        *self.processing_session_id.lock().await = None;
+        *self.processing_session_id().lock().await = None;
 
         // Post-session graph extraction (background, non-blocking)
         if self.memory_store.is_available() && messages.len() >= 5 {

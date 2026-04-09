@@ -52,7 +52,7 @@ impl AgentEngine {
         }
 
         // 5. Add participant to session (reuse invite_agent pattern, D-03)
-        let session_id = match *self.processing_session_id.lock().await {
+        let session_id = match *self.processing_session_id().lock().await {
             Some(id) => id,
             None => return "Error: no active session".to_string(),
         };

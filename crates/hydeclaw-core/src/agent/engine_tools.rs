@@ -174,9 +174,9 @@ impl AgentEngine {
         let start = std::time::Instant::now();
         // Internal endpoints (toolgate, searxng, etc.) bypass SSRF filtering
         let client = if crate::tools::ssrf::is_internal_endpoint(&tool.endpoint) {
-            &self.http_client
+            self.http_client()
         } else {
-            &self.ssrf_http_client
+            self.ssrf_http_client()
         };
         let result = tool.execute_oauth(&params, client, Some(&resolver), oauth_ctx.as_ref()).await;
         let elapsed_ms = start.elapsed().as_millis();
@@ -287,7 +287,7 @@ impl AgentEngine {
                 if content.len() > CANVAS_MAX_BYTES {
                     return format!("Error: content too large ({} bytes, max {CANVAS_MAX_BYTES})", content.len());
                 }
-                *self.canvas_state.write().await = Some(CanvasContent {
+                *self.tex().canvas_state.write().await = Some(CanvasContent {
                     content_type: ct.to_string(),
                     content: content.to_string(),
                     title: title.map(|s| s.to_string()),
@@ -304,7 +304,7 @@ impl AgentEngine {
                 "Canvas updated".to_string()
             }
             "clear" => {
-                *self.canvas_state.write().await = None;
+                *self.tex().canvas_state.write().await = None;
                 self.broadcast_ui_event(serde_json::json!({
                     "type": "canvas_update",
                     "agent": self.agent.name,
@@ -329,7 +329,7 @@ impl AgentEngine {
     /// POST JSON to browser-renderer and return the parsed response body.
     pub(super) async fn br_post(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value, String> {
         let br_url = Self::browser_renderer_url();
-        let resp = self.http_client
+        let resp = self.http_client()
             .post(format!("{br_url}{path}"))
             .json(&body)
             .send()
@@ -346,7 +346,7 @@ impl AgentEngine {
 
     /// Resolve the navigable URL for the current canvas content.
     pub(super) async fn canvas_resolve_url(&self) -> Result<String, String> {
-        let state_guard = self.canvas_state.read().await;
+        let state_guard = self.tex().canvas_state.read().await;
         let state = state_guard.as_ref()
             .ok_or_else(|| "Error: no content on canvas. Use canvas(action='present') first.".to_string())?
             .clone();
@@ -396,7 +396,7 @@ impl AgentEngine {
         };
 
         let br_url = Self::browser_renderer_url();
-        let resp = match self.http_client
+        let resp = match self.http_client()
             .post(format!("{br_url}/screenshot"))
             .json(&serde_json::json!({"url": url, "timeout": 15}))
             .send()
@@ -470,9 +470,9 @@ impl AgentEngine {
         }
 
         let result = if global {
-            self.secrets.set(name, value, description).await
+            self.secrets().set(name, value, description).await
         } else {
-            self.secrets.set_scoped(name, &self.agent.name, value, description).await
+            self.secrets().set_scoped(name, &self.agent.name, value, description).await
         };
 
         match result {
@@ -611,7 +611,7 @@ impl AgentEngine {
         let prefix = args.get("prefix").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
         // Use SSRF-safe client to prevent LLM-directed requests to internal services
-        let spec_text = match self.ssrf_http_client
+        let spec_text = match self.ssrf_http_client()
             .get(&spec_url)
             .header("Accept", "application/json, application/yaml, */*")
             .timeout(std::time::Duration::from_secs(15))

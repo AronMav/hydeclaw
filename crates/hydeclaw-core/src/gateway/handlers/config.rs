@@ -20,7 +20,7 @@ pub(crate) async fn api_canvas_state(
         Some(e) => e,
         None => return Json(json!({"visible": false})).into_response(),
     };
-    let guard = engine.canvas_state.read().await;
+    let guard = engine.tex().canvas_state.read().await;
     match guard.as_ref() {
         Some(cs) => {
             let action = if cs.content_type == "json" { "push_data" } else { "present" };
@@ -42,7 +42,7 @@ pub(crate) async fn api_canvas_clear(
     axum::extract::Path(agent): axum::extract::Path<String>,
 ) -> StatusCode {
     if let Some(engine) = state.get_engine(&agent).await {
-        let mut guard = engine.canvas_state.write().await;
+        let mut guard = engine.tex().canvas_state.write().await;
         *guard = None;
     }
     StatusCode::NO_CONTENT

@@ -72,7 +72,7 @@ impl super::AgentEngine {
 
         // 3. Load YAML tools with 30s cache (avoid per-batch disk reads)
         let yaml_tools = {
-            let cache = self.yaml_tools_cache.read().await;
+            let cache = self.tex().yaml_tools_cache.read().await;
             if cache.0.elapsed() < std::time::Duration::from_secs(30) && !cache.1.is_empty() {
                 cache.1.clone()
             } else {
@@ -83,7 +83,7 @@ impl super::AgentEngine {
                         .into_iter()
                         .map(|t| (t.name.clone(), t))
                         .collect();
-                *self.yaml_tools_cache.write().await =
+                *self.tex().yaml_tools_cache.write().await =
                     (std::time::Instant::now(), tools.clone());
                 tools
             }

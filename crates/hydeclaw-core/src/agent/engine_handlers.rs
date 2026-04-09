@@ -220,9 +220,9 @@ impl AgentEngine {
         tracing::info!(tool = %tool.name, action = %ca.action, "executing channel action: calling tool endpoint");
         // Internal endpoints (toolgate, searxng, etc.) bypass SSRF filtering
         let client = if crate::tools::ssrf::is_internal_endpoint(&tool.endpoint) {
-            &self.http_client
+            self.http_client()
         } else {
-            &self.ssrf_http_client
+            self.ssrf_http_client()
         };
         let data_bytes = match tool.execute_binary(args, client, Some(&resolver), oauth_ctx.as_ref()).await {
             Ok(b) => b,

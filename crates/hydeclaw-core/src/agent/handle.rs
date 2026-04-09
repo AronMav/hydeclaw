@@ -20,11 +20,11 @@ impl AgentHandle {
         let agent_name = &self.engine.agent.name;
 
         // Cancel all running subagents (REL-05)
-        let all = self.engine.subagent_registry.list_summary().await;
+        let all = self.engine.subagent_registry().list_summary().await;
         let mut cancelled_count = 0u32;
         for sa in &all {
             if sa.status == crate::agent::subagent_state::SubagentStatus::Running
-                && let Some(handle) = self.engine.subagent_registry.get(&sa.id).await
+                && let Some(handle) = self.engine.subagent_registry().get(&sa.id).await
             {
                 let h = handle.read().await;
                 h.cancel.store(true, std::sync::atomic::Ordering::Relaxed);

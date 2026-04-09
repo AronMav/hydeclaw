@@ -93,7 +93,7 @@ impl AgentEngine {
         }
 
         // Search long-term memory (exclude L0 pinned chunks to avoid duplication)
-        let exclude = self.pinned_chunk_ids.lock().await.clone();
+        let exclude = self.tex().pinned_chunk_ids.lock().await.clone();
         match self.memory_store.search(query, limit, &exclude, category, topic).await {
             Ok((results, _)) if results.is_empty() && parts.is_empty() => {
                 return "No relevant memories found.".to_string();
@@ -323,7 +323,7 @@ impl AgentEngine {
         };
 
         // Atomic read-modify-write: hold lock for the entire operation
-        let _lock = self.memory_md_lock.lock().await;
+        let _lock = self.tex().memory_md_lock.lock().await;
 
         let memory_path = std::path::Path::new(&self.workspace_dir)
             .join("agents")

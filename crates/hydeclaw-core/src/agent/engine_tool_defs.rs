@@ -856,7 +856,7 @@ impl AgentEngine {
         // service_manage and service_exec removed — base agent uses code_exec on host
 
         // code_exec: for base agents runs on host; for others runs in Docker sandbox
-        if self.agent.base && self.sandbox.is_none() {
+        if self.agent.base && self.sandbox().is_none() {
             tools.push(ToolDefinition {
                 name: "code_exec".to_string(),
                 description: "Execute Python or bash code directly on the host (base agents only). Full access to filesystem, package managers (pip/apt/npm/bun), and all services. Use language='bash' for shell commands, language='python' for Python scripts. Working directory is the HydeClaw binary dir — use absolute paths or cd.".to_string(),
@@ -946,7 +946,7 @@ impl AgentEngine {
 
     /// Returns the code_exec tool definition when sandbox is available.
     pub(super) fn sandbox_tool_definitions(&self) -> Vec<ToolDefinition> {
-        if self.sandbox.is_none() {
+        if self.sandbox().is_none() {
             return vec![];
         }
         vec![ToolDefinition {

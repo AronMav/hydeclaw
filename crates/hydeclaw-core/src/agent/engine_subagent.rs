@@ -86,7 +86,7 @@ impl AgentEngine {
             crate::tools::ssrf::validate_url_scheme(url)?;
         }
 
-        let client = if is_local { &self.http_client } else { &self.ssrf_http_client };
+        let client = if is_local { self.http_client() } else { self.ssrf_http_client() };
         let resp = client
             .get(url)
             .header("User-Agent", "HydeClaw/0.1 (link-preview)")
@@ -171,7 +171,7 @@ impl AgentEngine {
         let toolgate_url = self.app_config.toolgate_url.clone()
             .unwrap_or_else(|| "http://localhost:9011".to_string());
         crate::agent::url_tools::auto_transcribe_audio(
-            &mut enriched, attachments, &toolgate_url, &self.agent.language, &self.http_client,
+            &mut enriched, attachments, &toolgate_url, &self.agent.language, self.http_client(),
         ).await;
 
         enriched
@@ -180,7 +180,7 @@ impl AgentEngine {
     /// Spawn an async subagent or wait for an existing one.
     pub(super) async fn handle_spawn_subagent(&self, args: &serde_json::Value) -> String {
         // Clean up old finished subagents (older than 1 hour)
-        self.subagent_registry.cleanup(chrono::Duration::hours(1)).await;
+        self.subagent_registry().cleanup(chrono::Duration::hours(1)).await;
 
         let task = args.get("task").and_then(|v| v.as_str()).unwrap_or("");
         let allowed_tools: Option<Vec<String>> = args.get("allowed_tools")
@@ -189,7 +189,7 @@ impl AgentEngine {
         // Lookup mode: return stored result from registry (subagent completed via push notification)
         if let Some(sid) = args.get("subagent_id").and_then(|v| v.as_str())
             && !sid.is_empty() {
-                return match self.subagent_registry.get(sid).await {
+                return match self.subagent_registry().get(sid).await {
                     Some(h) => {
                         let h = h.read().await;
                         match (&h.status, &h.result, &h.error) {
@@ -239,7 +239,7 @@ impl AgentEngine {
 
             // Acquire a fresh owned permit each attempt (moves into tokio::spawn).
             // Semaphore exhaustion is not a transient error — break without retrying.
-            let permit = match self.subagent_semaphore.clone().try_acquire_owned() {
+            let permit = match self.subagent_semaphore().clone().try_acquire_owned() {
                 Ok(p) => p,
                 Err(_) => {
                     return "Error: too many concurrent subagents. Use subagent_status to check.".to_string();
@@ -249,7 +249,7 @@ impl AgentEngine {
             // Clone allowed_tools for this attempt (consumed by spawn closure)
             let allowed_tools_attempt = allowed_tools.clone();
 
-            let (id, handle, cancel, completion_rx) = self.subagent_registry.register(task).await;
+            let (id, handle, cancel, completion_rx) = self.subagent_registry().register(task).await;
             last_id = id.clone();
 
             tracing::info!(subagent_id = %id, task_len = task.len(), attempt, "spawning async subagent");
@@ -329,7 +329,7 @@ impl AgentEngine {
                 } else {
                     result_str
                 };
-                if let Some(ref tx) = *self.sse_event_tx.lock().await {
+                if let Some(ref tx) = *self.sse_event_tx().lock().await {
                     let status_str = if succeeded { "completed" } else { "failed" };
                     let _ = tx.send(super::StreamEvent::RichCard {
                         card_type: "subagent-complete".to_string(),
@@ -355,7 +355,7 @@ impl AgentEngine {
         let final_str = augment_with_retry_count(&last_result_str, MAX_SUBAGENT_RETRIES);
 
         // Emit SSE event once for final failure
-        if let Some(ref tx) = *self.sse_event_tx.lock().await {
+        if let Some(ref tx) = *self.sse_event_tx().lock().await {
             let _ = tx.send(super::StreamEvent::RichCard {
                 card_type: "subagent-complete".to_string(),
                 data: serde_json::json!({
@@ -372,7 +372,7 @@ impl AgentEngine {
     /// Check status of one or all subagents.
     pub(super) async fn handle_subagent_status(&self, args: &serde_json::Value) -> String {
         if let Some(id) = args.get("subagent_id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
-            match self.subagent_registry.get(id).await {
+            match self.subagent_registry().get(id).await {
                 Some(h) => {
                     let h = h.read().await;
                     let dur = (h.finished_at.unwrap_or_else(chrono::Utc::now) - h.started_at).num_seconds();
@@ -385,7 +385,7 @@ impl AgentEngine {
                 None => format!("Subagent '{}' not found (registry is in-memory — cleared on service restart; the subagent was likely killed by restart)", id),
             }
         } else {
-            let all = self.subagent_registry.list_summary().await;
+            let all = self.subagent_registry().list_summary().await;
             if all.is_empty() { return "No active subagents (registry is empty — subagents from before a service restart are gone).".to_string(); }
             all.iter().map(|h| {
                 let dur = (h.finished_at.unwrap_or_else(chrono::Utc::now) - h.started_at).num_seconds();
@@ -398,7 +398,7 @@ impl AgentEngine {
     pub(super) async fn handle_subagent_logs(&self, args: &serde_json::Value) -> String {
         let id = args.get("subagent_id").and_then(|v| v.as_str()).unwrap_or("");
         let last_n = args.get("last_n").and_then(|v| v.as_u64()).map(|n| n as usize);
-        match self.subagent_registry.get(id).await {
+        match self.subagent_registry().get(id).await {
             Some(h) => {
                 let h = h.read().await;
                 let entries = match last_n {
@@ -419,7 +419,7 @@ impl AgentEngine {
     /// Kill a running subagent.
     pub(super) async fn handle_subagent_kill(&self, args: &serde_json::Value) -> String {
         let id = args.get("subagent_id").and_then(|v| v.as_str()).unwrap_or("");
-        match self.subagent_registry.get(id).await {
+        match self.subagent_registry().get(id).await {
             Some(h) => {
                 let h = h.read().await;
                 if h.status != subagent_state::SubagentStatus::Running {
@@ -460,7 +460,7 @@ impl AgentEngine {
             }
         }
 
-        let client = if is_local { &self.http_client } else { &self.ssrf_http_client };
+        let client = if is_local { self.http_client() } else { self.ssrf_http_client() };
         let resp = match client.get(url)
             .header("User-Agent", "HydeClaw/1.0")
             .timeout(std::time::Duration::from_secs(30))
@@ -537,7 +537,7 @@ impl AgentEngine {
             has_cron: self.scheduler.is_some(),
             has_yaml_tools: true,
             has_browser: Self::browser_renderer_url() != "disabled",
-            has_host_exec: self.agent.base && self.sandbox.is_none(),
+            has_host_exec: self.agent.base && self.sandbox().is_none(),
             is_base: self.agent.base,
         };
         let runtime = workspace::RuntimeContext {
@@ -574,7 +574,7 @@ impl AgentEngine {
 
         let mut available_tools = self.internal_tool_definitions_for_subagent(allowed_tools.as_deref());
         let yaml_tools: Vec<crate::tools::yaml_tools::YamlToolDef> = {
-            let cache = self.yaml_tools_cache.read().await;
+            let cache = self.tex().yaml_tools_cache.read().await;
             if cache.0.elapsed() < std::time::Duration::from_secs(30) && !cache.1.is_empty() {
                 cache.1.values().cloned().collect()
             } else {
@@ -582,12 +582,12 @@ impl AgentEngine {
                 let loaded = crate::tools::yaml_tools::load_yaml_tools(&self.workspace_dir, false).await;
                 let map: std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef> =
                     loaded.iter().cloned().map(|t| (t.name.clone(), t)).collect();
-                *self.yaml_tools_cache.write().await = (std::time::Instant::now(), map);
+                *self.tex().yaml_tools_cache.write().await = (std::time::Instant::now(), map);
                 loaded
             }
         };
         available_tools.extend(yaml_tools.into_iter().map(|t| t.to_tool_definition()));
-        if let Some(ref mcp) = self.mcp {
+        if let Some(mcp) = self.mcp() {
             available_tools.extend(mcp.all_tool_definitions().await);
         }
         available_tools = self.filter_tools_by_policy(available_tools);
@@ -739,7 +739,7 @@ impl AgentEngine {
         }
 
         // Get session_id from the processing context
-        let session_id = match *self.processing_session_id.lock().await {
+        let session_id = match *self.processing_session_id().lock().await {
             Some(id) => id,
             None => return "Error: no active session (invite_agent only works during chat processing)".to_string(),
         };
@@ -851,7 +851,7 @@ impl AgentEngine {
             let tool_text = format!("{} {}", tool.name, tool.description);
             let cache_key = format!("tool::{}", tool.name);
             let tool_vec = self
-                .tool_embed_cache
+                .tool_embed_cache()
                 .get_or_embed(&cache_key, &tool_text, self.memory_store.as_ref())
                 .await?;
             let sim = crate::tools::embedding::cosine_similarity(&query_vec, &tool_vec);

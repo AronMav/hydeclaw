@@ -537,61 +537,38 @@ pub async fn start_agent_from_config(
         }
     };
 
+    // Build the hooks registry (goes into DefaultToolExecutor, Phase 39-02)
+    let hooks_registry = {
+        let mut registry = crate::agent::hooks::HookRegistry::new();
+        if let Some(ref hc) = agent_cfg.agent.hooks {
+            if hc.log_all_tool_calls {
+                registry.register("log_tool_calls".into(), crate::agent::hooks::logging_hook());
+            }
+            if !hc.block_tools.is_empty() {
+                registry.register("block_tools".into(), crate::agent::hooks::block_tools_hook(hc.block_tools.clone()));
+            }
+        }
+        Arc::new(registry)
+    };
+
     let engine = Arc::new(AgentEngine {
         provider,
         agent: agent_cfg.agent.clone(),
         db: state.db.clone(),
         tools: state.tools.clone(),
-        mcp: deps.mcp.clone(),
         workspace_dir: deps.workspace_dir.clone(),
-        http_client: reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build()
-            .unwrap_or_default(),
-        ssrf_http_client: crate::tools::ssrf::ssrf_safe_client(
-            std::time::Duration::from_secs(30),
-        ),
         memory_store: state.memory_store.clone() as Arc<dyn crate::agent::memory_service::MemoryService>,
-        subagent_semaphore: Arc::new(tokio::sync::Semaphore::new(deps.subagent_max)),
-        subagent_registry: crate::agent::subagent_state::SubagentRegistry::new(),
         channel_router: Some(channel_router.clone()),
         scheduler: Some(state.scheduler.clone()),
-        // Privileged agents run code directly on host (no Docker sandbox)
-        sandbox: if agent_cfg.agent.base { None } else { deps.sandbox.clone() },
-        tool_embed_cache: deps.tool_embed_cache.clone(),
-        secrets: state.secrets.clone(),
         agent_map: Some(state.agents.clone()),
         self_ref: std::sync::OnceLock::new(),
-        approval_waiters: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         ui_event_tx: Some(state.ui_event_tx.clone()),
-        processing_session_id: Arc::new(tokio::sync::Mutex::new(None)),
-        sse_event_tx: Arc::new(tokio::sync::Mutex::new(None)),
         handoff_target: Arc::new(tokio::sync::Mutex::new(None)),
         processing_tracker: Some(state.processing_tracker.clone()),
         default_timezone,
-        memory_md_lock: tokio::sync::Mutex::new(()),
-        pinned_chunk_ids: tokio::sync::Mutex::new(vec![]),
         channel_formatting_prompt: tokio::sync::RwLock::new(None),
         channel_info_cache: tokio::sync::RwLock::new(None),
         thinking_level: std::sync::atomic::AtomicU8::new(0),
-        canvas_state: tokio::sync::RwLock::new(None),
-        yaml_tools_cache: tokio::sync::RwLock::new((std::time::Instant::now(), std::collections::HashMap::new())),
-        bg_processes: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
-        oauth: Some(state.oauth.clone()),
-        hooks: {
-            let mut registry = crate::agent::hooks::HookRegistry::new();
-            if let Some(ref hc) = agent_cfg.agent.hooks {
-                if hc.log_all_tool_calls {
-                    registry.register("log_tool_calls".into(), crate::agent::hooks::logging_hook());
-                }
-                if !hc.block_tools.is_empty() {
-                    registry.register("block_tools".into(), crate::agent::hooks::block_tools_hook(hc.block_tools.clone()));
-                }
-            }
-            Arc::new(registry)
-        },
-        penalty_cache: deps.penalty_cache.clone(),
-        search_cache: tokio::sync::RwLock::new(std::collections::HashMap::new()),
         app_config: std::sync::Arc::new(state.config.clone()),
         compaction_provider,
         context_builder: std::sync::OnceLock::new(),
@@ -599,7 +576,46 @@ pub async fn start_agent_from_config(
     });
     engine.set_self_ref(&engine);
     engine.set_context_builder(&engine);
-    engine.set_tool_executor(&engine);
+
+    // Build DefaultToolExecutor with its own fields (Phase 39-02: TOOL-04).
+    // These 20 fields are owned by the executor; engine accesses them via proxy methods (engine.tex()).
+    {
+        use crate::agent::tool_executor::{DefaultToolExecutor, DefaultToolExecutorFields, ToolExecutorDeps};
+        let deps_arc = engine.clone() as Arc<dyn ToolExecutorDeps>;
+        let executor = Arc::new(DefaultToolExecutor::new(
+            deps_arc,
+            DefaultToolExecutorFields {
+                // Privileged agents run code directly on host (no Docker sandbox)
+                sandbox: if agent_cfg.agent.base { None } else { deps.sandbox.clone() },
+                bg_processes: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+                yaml_tools_cache: tokio::sync::RwLock::new((std::time::Instant::now(), std::collections::HashMap::new())),
+                search_cache: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+                tool_embed_cache: deps.tool_embed_cache.clone(),
+                penalty_cache: deps.penalty_cache.clone(),
+                pinned_chunk_ids: tokio::sync::Mutex::new(vec![]),
+                memory_md_lock: tokio::sync::Mutex::new(()),
+                canvas_state: tokio::sync::RwLock::new(None),
+                ssrf_http_client: crate::tools::ssrf::ssrf_safe_client(
+                    std::time::Duration::from_secs(30),
+                ),
+                oauth: Some(state.oauth.clone()),
+                subagent_semaphore: Arc::new(tokio::sync::Semaphore::new(deps.subagent_max)),
+                subagent_registry: crate::agent::subagent_state::SubagentRegistry::new(),
+                // Shared fields (Phase 39-02 wave 2)
+                secrets: state.secrets.clone(),
+                mcp: deps.mcp.clone(),
+                http_client: reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(120))
+                    .build()
+                    .unwrap_or_default(),
+                hooks: hooks_registry,
+                approval_waiters: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+                processing_session_id: Arc::new(tokio::sync::Mutex::new(None)),
+                sse_event_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            },
+        ));
+        engine.set_tool_executor(executor);
+    }
     let workspace_dir = deps.workspace_dir.clone();
     drop(deps); // Release read lock before async operations
 
@@ -1354,7 +1370,7 @@ pub(crate) async fn api_agent_hooks(
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     if let Some(engine) = state.get_engine(&name).await {
-        let names = engine.hooks.names();
+        let names = engine.hooks().names();
         Json(json!({"agent": name, "hooks": names})).into_response()
     } else {
         (StatusCode::NOT_FOUND, Json(json!({"error": "agent not found"}))).into_response()

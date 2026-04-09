@@ -151,53 +151,26 @@ pub struct AgentEngine {
     pub agent: AgentSettings,
     pub db: PgPool,
     pub tools: ToolRegistry,
-    pub mcp: Option<Arc<McpRegistry>>,
     pub workspace_dir: String,
-    pub http_client: reqwest::Client,
-    /// SSRF-safe HTTP client for user-supplied URLs (custom DNS resolver blocks private IPs).
-    pub ssrf_http_client: reqwest::Client,
     /// Memory service abstraction (pgvector queries + external embedding endpoint).
     /// Held as a trait object so unit tests can inject a MockMemoryService.
     pub memory_store: Arc<dyn crate::agent::memory_service::MemoryService>,
-    /// Limits concurrent in-process subagents to prevent API token exhaustion.
-    pub subagent_semaphore: Arc<tokio::sync::Semaphore>,
-    /// Registry of async subagents for status/logs/kill management.
-    pub subagent_registry: super::subagent_state::SubagentRegistry,
     /// Multi-channel router for sending actions to channel adapters.
     pub channel_router: Option<ChannelActionRouter>,
     /// Scheduler for dynamic cron jobs.
     pub scheduler: Option<Arc<Scheduler>>,
-    /// Code execution sandbox (Docker). None when sandbox is disabled or Docker unavailable.
-    pub sandbox: Option<Arc<crate::containers::sandbox::CodeSandbox>>,
-    /// In-memory cache for tool embeddings (semantic top-K selection).
-    pub tool_embed_cache: Arc<crate::tools::embedding::ToolEmbeddingCache>,
-    /// Secrets vault for resolving auth keys in YAML tools.
-    pub secrets: Arc<crate::secrets::SecretsManager>,
     /// Map of all running agents for inter-agent communication (None for subagents).
     pub agent_map: Option<crate::gateway::AgentMap>,
     /// Weak self-reference for hot-scheduling cron jobs. Set once after Arc creation.
     pub self_ref: OnceLock<Weak<AgentEngine>>,
-    /// In-memory waiters for pending tool-call approvals (approval_id -> (result_sender, created_at)).
-    #[allow(clippy::type_complexity)]
-    pub approval_waiters: Arc<tokio::sync::RwLock<std::collections::HashMap<Uuid, (tokio::sync::oneshot::Sender<ApprovalResult>, std::time::Instant)>>>,
     /// Broadcast channel for UI events (agent_processing start/end).
     pub ui_event_tx: Option<tokio::sync::broadcast::Sender<String>>,
-    /// Current session ID being processed (set during handle_sse/handle_with_status, cleared on finish).
-    /// Used by tools that need session context (e.g., handoff).
-    pub processing_session_id: Arc<tokio::sync::Mutex<Option<Uuid>>>,
-    /// SSE event sender for the current streaming session. Set in handle_sse, cleared on finish.
-    /// Allows tool handlers (e.g. subagent) to emit SSE events without threading event_tx through call chains.
-    pub sse_event_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<StreamEvent>>>>,
     /// Set by handoff tool during execution; read and cleared by turn loop in chat.rs.
     pub handoff_target: Arc<tokio::sync::Mutex<Option<HandoffRequest>>>,
     /// Shared tracker for currently processing agents (for WS reconnection).
     pub processing_tracker: Option<crate::gateway::ProcessingTracker>,
     /// Default timezone parsed from USER.md at startup (fallback: Europe/Samara).
     pub default_timezone: String,
-    /// Mutex for atomic MEMORY.md read-modify-write operations.
-    pub memory_md_lock: tokio::sync::Mutex<()>,
-    /// IDs of L0 pinned chunks loaded in the current context build (for L2 dedup).
-    pub(crate) pinned_chunk_ids: tokio::sync::Mutex<Vec<String>>,
     /// Last formatting prompt received from a connected channel adapter (e.g. Telegram).
     /// Used by cron/heartbeat to format output correctly for the channel.
     pub channel_formatting_prompt: tokio::sync::RwLock<Option<String>>,
@@ -205,21 +178,6 @@ pub struct AgentEngine {
     pub channel_info_cache: tokio::sync::RwLock<Option<Vec<workspace::ChannelInfo>>>,
     /// Thinking display level (0=off, 1=minimal, 2=low, 3=medium, 4=high, 5=max).
     pub thinking_level: std::sync::atomic::AtomicU8,
-    /// Current canvas content for eval/snapshot (content_type, content, title).
-    pub canvas_state: tokio::sync::RwLock<Option<CanvasContent>>,
-    /// Cached YAML tool definitions with TTL (avoids per-batch disk reads in parallel execution).
-    pub yaml_tools_cache: tokio::sync::RwLock<(std::time::Instant, std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef>)>,
-    /// Background processes started by `process_start` tool (base agents only).
-    pub bg_processes: Arc<tokio::sync::Mutex<std::collections::HashMap<String, BgProcess>>>,
-    /// OAuth 2.0 connection manager for provider-based YAML tool auth.
-    pub oauth: Option<Arc<crate::oauth::OAuthManager>>,
-    /// Event hooks for policy enforcement and logging.
-    pub hooks: Arc<super::hooks::HookRegistry>,
-    /// Tool quality penalty cache for adaptive tool ranking.
-    pub penalty_cache: Arc<crate::db::tool_quality::PenaltyCache>,
-    /// Per-engine web search cache (query_hash → (result, expiry)).
-    /// TTL: 5 minutes. Prevents duplicate HTTP calls for identical queries.
-    pub(crate) search_cache: tokio::sync::RwLock<std::collections::HashMap<u64, (String, std::time::Instant)>>,
     /// Global app config for reading [agent.defaults] and other system-level settings.
     pub app_config: std::sync::Arc<crate::config::AppConfig>,
     /// Dedicated LLM provider for context compaction (cheap model). None = use primary provider.
@@ -228,9 +186,10 @@ pub struct AgentEngine {
     /// Initialized via `set_context_builder` after engine Arc creation (mirrors self_ref pattern).
     /// Holds `Arc<dyn ContextBuilder>` for testability (MockContextBuilder in plan 02).
     pub context_builder: OnceLock<Arc<dyn crate::agent::context_builder::ContextBuilder>>,
-    /// Tool executor — dispatches tool calls through trait boundary.
-    /// Initialized via `set_tool_executor` after engine Arc creation (mirrors context_builder).
-    pub tool_executor: OnceLock<Arc<dyn crate::agent::tool_executor::ToolExecutor>>,
+    /// Tool executor — owns tool-only state (sandbox, caches, subagent registry, etc.).
+    /// Stored as concrete `Arc<DefaultToolExecutor>` for direct field access in engine methods.
+    /// Initialized via `set_tool_executor` after engine Arc creation.
+    pub tool_executor: OnceLock<Arc<crate::agent::tool_executor::DefaultToolExecutor>>,
 }
 
 /// Snapshot of what's currently displayed on the canvas.
@@ -434,26 +393,111 @@ impl AgentEngine {
     }
 
     /// Initialize the tool executor after engine Arc creation.
-    /// Must be called once, mirrors `set_context_builder` pattern.
-    pub fn set_tool_executor(&self, arc: &Arc<AgentEngine>) {
-        use crate::agent::tool_executor::{DefaultToolExecutor, ToolExecutor, ToolExecutorDeps};
-        let deps = arc.clone() as Arc<dyn ToolExecutorDeps>;
-        let executor = Arc::new(DefaultToolExecutor::new(deps));
+    /// Accepts a pre-built Arc<DefaultToolExecutor> constructed in agents.rs with migrated fields.
+    pub fn set_tool_executor(&self, executor: Arc<crate::agent::tool_executor::DefaultToolExecutor>) {
+        use crate::agent::tool_executor::ToolExecutor;
         let executor_trait: Arc<dyn ToolExecutor> = executor.clone();
         executor.set_self_ref(&executor_trait);
-        let _ = self.tool_executor.set(executor_trait);
+        let _ = self.tool_executor.set(executor);
+    }
+
+    // ── Proxy accessors for fields migrated to DefaultToolExecutor ────────────
+    // Engine sub-modules (engine_*.rs) and providers_*.rs use these to access
+    // the migrated fields without direct struct field access.
+
+    #[inline]
+    pub(crate) fn tex(&self) -> &crate::agent::tool_executor::DefaultToolExecutor {
+        self.tool_executor.get().expect("tool_executor not initialized")
+    }
+
+    /// Sandbox accessor — delegates to DefaultToolExecutor.
+    #[inline]
+    pub(crate) fn sandbox(&self) -> &Option<Arc<crate::containers::sandbox::CodeSandbox>> {
+        &self.tex().sandbox
+    }
+
+    /// SSRF-safe HTTP client accessor — delegates to DefaultToolExecutor.
+    #[inline]
+    pub(crate) fn ssrf_http_client(&self) -> &reqwest::Client {
+        &self.tex().ssrf_http_client
+    }
+
+    /// Tool embed cache accessor — delegates to DefaultToolExecutor.
+    #[inline]
+    pub(crate) fn tool_embed_cache(&self) -> &Arc<crate::tools::embedding::ToolEmbeddingCache> {
+        &self.tex().tool_embed_cache
+    }
+
+    /// Subagent semaphore accessor — delegates to DefaultToolExecutor.
+    #[inline]
+    pub(crate) fn subagent_semaphore(&self) -> &Arc<tokio::sync::Semaphore> {
+        &self.tex().subagent_semaphore
+    }
+
+    /// Subagent registry accessor — delegates to DefaultToolExecutor.
+    #[inline]
+    pub(crate) fn subagent_registry(&self) -> &crate::agent::subagent_state::SubagentRegistry {
+        &self.tex().subagent_registry
+    }
+
+    /// OAuth manager accessor — delegates to DefaultToolExecutor.
+    #[inline]
+    pub(crate) fn oauth(&self) -> &Option<Arc<crate::oauth::OAuthManager>> {
+        &self.tex().oauth
+    }
+
+    /// Secrets vault accessor — delegates to DefaultToolExecutor.
+    #[inline]
+    pub(crate) fn secrets(&self) -> &Arc<crate::secrets::SecretsManager> {
+        &self.tex().secrets
+    }
+
+    /// MCP registry accessor — delegates to DefaultToolExecutor.
+    #[inline]
+    pub(crate) fn mcp(&self) -> &Option<Arc<McpRegistry>> {
+        &self.tex().mcp
+    }
+
+    /// Standard HTTP client accessor — delegates to DefaultToolExecutor.
+    #[inline]
+    pub(crate) fn http_client(&self) -> &reqwest::Client {
+        &self.tex().http_client
+    }
+
+    /// Hooks registry accessor — delegates to DefaultToolExecutor.
+    #[inline]
+    pub(crate) fn hooks(&self) -> &Arc<super::hooks::HookRegistry> {
+        &self.tex().hooks
+    }
+
+    /// Approval waiters accessor — delegates to DefaultToolExecutor.
+    #[inline]
+    pub(crate) fn approval_waiters(&self) -> &Arc<tokio::sync::RwLock<std::collections::HashMap<Uuid, (tokio::sync::oneshot::Sender<ApprovalResult>, std::time::Instant)>>> {
+        &self.tex().approval_waiters
+    }
+
+    /// Current processing session ID accessor — delegates to DefaultToolExecutor.
+    #[inline]
+    pub(crate) fn processing_session_id(&self) -> &Arc<tokio::sync::Mutex<Option<Uuid>>> {
+        &self.tex().processing_session_id
+    }
+
+    /// SSE event TX accessor — delegates to DefaultToolExecutor.
+    #[inline]
+    pub(crate) fn sse_event_tx(&self) -> &Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<StreamEvent>>>> {
+        &self.tex().sse_event_tx
     }
 
     /// Invalidate the cached YAML tool definitions so the next request reloads from disk.
     pub(crate) async fn invalidate_yaml_tools_cache(&self) {
-        *self.yaml_tools_cache.write().await = (
+        *self.tex().yaml_tools_cache.write().await = (
             std::time::Instant::now() - std::time::Duration::from_secs(60),
             std::collections::HashMap::new(),
         );
     }
 
     pub(crate) async fn check_search_cache(&self, query: &str) -> Option<String> {
-        let cache = self.search_cache.read().await;
+        let cache = self.tex().search_cache.read().await;
         if let Some((result, expiry)) = cache.get(&search_cache_key(query))
             && *expiry > std::time::Instant::now()
         {
@@ -464,7 +508,7 @@ impl AgentEngine {
     }
 
     pub(crate) async fn store_search_cache(&self, query: &str, result: &str) {
-        let mut cache = self.search_cache.write().await;
+        let mut cache = self.tex().search_cache.write().await;
         cache.insert(search_cache_key(query), (
             result.to_string(),
             std::time::Instant::now() + std::time::Duration::from_secs(300),
@@ -525,7 +569,7 @@ impl AgentEngine {
         }));
 
         // Wake up the waiting tool execution
-        let mut waiters = self.approval_waiters.write().await;
+        let mut waiters = self.approval_waiters().write().await;
         if let Some((tx, _created_at)) = waiters.remove(&approval_id) {
             let result = if approved {
                 ApprovalResult::Approved
@@ -605,7 +649,7 @@ impl AgentEngine {
     /// Used by cron dynamic jobs to prevent context accumulation across invocations.
     pub async fn handle_isolated(&self, msg: &IncomingMessage) -> Result<String> {
         // Hook: BeforeMessage
-        if let super::hooks::HookAction::Block(reason) = self.hooks.fire(&super::hooks::HookEvent::BeforeMessage) {
+        if let super::hooks::HookAction::Block(reason) = self.hooks().fire(&super::hooks::HookEvent::BeforeMessage) {
             anyhow::bail!("blocked by hook: {}", reason);
         }
 
@@ -703,7 +747,7 @@ impl AgentEngine {
                         }
                     }
                     tracing::error!(error = %e, iteration, "isolated LLM call failed, returning fallback");
-                    self.hooks.fire(&super::hooks::HookEvent::OnError);
+                    self.hooks().fire(&super::hooks::HookEvent::OnError);
                     final_response = error_classify::format_user_error(&e);
                     break;
                 }
@@ -899,7 +943,7 @@ impl AgentEngine {
             .await?;
 
         // Hook: AfterResponse
-        self.hooks.fire(&super::hooks::HookEvent::AfterResponse);
+        self.hooks().fire(&super::hooks::HookEvent::AfterResponse);
 
         Ok(final_response)
     }
@@ -1095,7 +1139,7 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
     }
 
     async fn mcp_tool_definitions(&self) -> Vec<hydeclaw_types::ToolDefinition> {
-        if let Some(ref mcp) = self.mcp {
+        if let Some(mcp) = self.mcp() {
             mcp.all_tool_definitions().await
         } else {
             vec![]
@@ -1119,7 +1163,7 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
     }
 
     fn sandbox_absent(&self) -> bool {
-        self.sandbox.is_none()
+        self.tex().sandbox.is_none()
     }
 
     fn runtime_context(&self, msg: &IncomingMessage) -> workspace::RuntimeContext {
@@ -1140,7 +1184,7 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
     }
 
     async fn store_pinned_chunk_ids(&self, ids: Vec<String>) {
-        *self.pinned_chunk_ids.lock().await = ids;
+        *self.tex().pinned_chunk_ids.lock().await = ids;
     }
 
     fn internal_tool_definitions(&self) -> Vec<hydeclaw_types::ToolDefinition> {
@@ -1148,7 +1192,7 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
     }
 
     async fn load_yaml_tools_cached(&self) -> Vec<crate::tools::yaml_tools::YamlToolDef> {
-        let cache = self.yaml_tools_cache.read().await;
+        let cache = self.tex().yaml_tools_cache.read().await;
         if cache.0.elapsed() < std::time::Duration::from_secs(30) && !cache.1.is_empty() {
             return cache.1.values().cloned().collect();
         }
@@ -1156,12 +1200,12 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
         let loaded = crate::tools::yaml_tools::load_yaml_tools(&self.workspace_dir, false).await;
         let map: std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef> =
             loaded.iter().cloned().map(|t| (t.name.clone(), t)).collect();
-        *self.yaml_tools_cache.write().await = (std::time::Instant::now(), map);
+        *self.tex().yaml_tools_cache.write().await = (std::time::Instant::now(), map);
         loaded
     }
 
     async fn tool_penalties(&self) -> std::collections::HashMap<String, f32> {
-        self.penalty_cache.get_penalties().await
+        self.tex().penalty_cache.get_penalties().await
     }
 
     fn filter_tools_by_policy(&self, tools: Vec<hydeclaw_types::ToolDefinition>) -> Vec<hydeclaw_types::ToolDefinition> {
