@@ -76,13 +76,28 @@ export interface RichCardPart {
   data: Record<string, unknown>;
 }
 
+export interface ContinuationSeparatorPart {
+  type: "continuation-separator";
+}
+
+export interface StepGroupPart {
+  type: "step-group";
+  stepId: string;
+  toolParts: ToolPart[];
+  finishReason?: string;
+  /** True while step is still receiving events */
+  isStreaming: boolean;
+}
+
 export type MessagePart =
   | TextPart
   | ReasoningPart
   | FilePart
   | SourceUrlPart
   | ToolPart
-  | RichCardPart;
+  | RichCardPart
+  | ContinuationSeparatorPart
+  | StepGroupPart;
 
 export interface ChatMessage {
   id: string;
@@ -725,6 +740,8 @@ export const useChatStore = create<ChatStore>()(
     let parts: MessagePart[] = [];
     const incrementalParser = new IncrementalParser();
     const toolInputChunks = new Map<string, string[]>();
+    let currentStepId: string | null = null;
+    let currentStepGroup: StepGroupPart | null = null;
     let receivedSessionId: string | null = knownSessionId ?? null;
     // Track finish event to distinguish natural end from connection drop
     let receivedFinishEvent = false;
@@ -913,6 +930,34 @@ export const useChatStore = create<ChatStore>()(
               break;
             }
 
+            case "step-start": {
+              currentStepId = event.stepId;
+              currentStepGroup = {
+                type: "step-group",
+                stepId: event.stepId,
+                toolParts: [],
+                isStreaming: true,
+              };
+              break;
+            }
+
+            case "step-finish": {
+              if (currentStepGroup) {
+                currentStepGroup.finishReason = event.finishReason;
+                currentStepGroup.isStreaming = false;
+                // Only push step-group part if it has tool calls.
+                // Text-only steps (no tools) pass through as normal text.
+                if (currentStepGroup.toolParts.length > 0) {
+                  flushText();
+                  parts.push(currentStepGroup);
+                  scheduleUpdate();
+                }
+              }
+              currentStepId = null;
+              currentStepGroup = null;
+              break;
+            }
+
             case "tool-input-start": {
               flushText();
               const { toolCallId: tcId, toolName: tcName } = event;
@@ -924,6 +969,9 @@ export const useChatStore = create<ChatStore>()(
                 state: "input-streaming",
                 input: {},
               });
+              if (currentStepGroup) {
+                currentStepGroup.toolParts.push(parts[parts.length - 1] as ToolPart);
+              }
               scheduleUpdate();
               break;
             }
@@ -1056,15 +1104,22 @@ export const useChatStore = create<ChatStore>()(
               cancelScheduledUpdate();
               flushText(); // Snapshot remaining text into parts at correct position
               pushUpdate(); // Final render with all parts in correct order
-              // FSM-04: Reset incremental parser state so next agent turn starts clean.
-              // Prevents reasoning state from leaking from one agent's output to the next.
-              incrementalParser.reset();
-              // CRITICAL for multi-agent turn loop: reset state for next agent turn.
-              // Without this, events between finish and next start (e.g. agent-turn rich card)
-              // would overwrite the finalized message with wrong agentId.
-              assistantId = uuid();
-              assistantCreatedAt = new Date().toISOString();
-              parts = [];
+
+              if (event.continuation) {
+                // Continuation: do NOT reset state — keep accumulating into same message.
+                // Push a separator part so UI renders the visual break.
+                parts.push({ type: "continuation-separator" });
+                incrementalParser.reset();
+                // Do NOT reset assistantId, parts, or createdAt — message continues.
+              } else {
+                // Normal finish: reset for next agent turn (existing behavior).
+                // FSM-04: Reset incremental parser state so next agent turn starts clean.
+                incrementalParser.reset();
+                // CRITICAL for multi-agent turn loop: reset state for next agent turn.
+                assistantId = uuid();
+                assistantCreatedAt = new Date().toISOString();
+                parts = [];
+              }
               break;
             }
 
