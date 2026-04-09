@@ -36,7 +36,7 @@ Covered: core platform stability, providers, channels, memory, tools, orchestrat
 - [x] **Phase 47: Scroll & Virtualization** - CSS overflow-anchor, smart sticky logic, floating scroll button, viewport-aware DOM capping (completed 2026-04-09)
 - [x] **Phase 48: Optimistic & Responsive UI** - Instant thinking indicator, agent-switch skeletons, live-to-history hash sync, reference stability (completed 2026-04-09)
 - [x] **Phase 49: Network Resilience** - Last-Event-ID resume on reconnect, reconnecting phase UI (completed 2026-04-09)
-- [ ] **Phase 50: SSE Protocol Extensions** - Automatic continuations, step grouping events, agent handoff mid-stream
+- [x] **Phase 50: SSE Protocol Extensions** - Automatic continuations, step grouping events, agent handoff mid-stream (completed 2026-04-09)
 - [ ] **Phase 51: Human-in-the-Loop** - Inline approve/reject with SSE heartbeat, tool args editor
 - [ ] **Phase 52: Citations & Generative UI** - Source footnote tooltips, CARD_REGISTRY, first registered components
 - [ ] **Phase 53: Message Branching** - DB migration, fork endpoint, MessageTree store, branch navigation UI
@@ -207,7 +207,7 @@ Plans:
 Plans:
 - [x] 50-01-PLAN.md — Backend: continuation field on Finish, forward StepStart/StepFinish as SSE events
 - [x] 50-02-PLAN.md — Frontend: SSE event parsing, continuation stitching, step group collection
-- [ ] 50-03-PLAN.md — UI components (ContinuationSeparator, StepGroup, HandoffDivider) + human verify
+- [x] 50-03-PLAN.md — UI components (ContinuationSeparator, StepGroup, HandoffDivider) + human verify
 
 **UI hint**: yes
 
@@ -273,7 +273,7 @@ Plans:
 | 47. Scroll & Virtualization | v0.13.0 | 4/4 | Complete    | 2026-04-09 |
 | 48. Optimistic & Responsive UI | v0.13.0 | 3/3 | Complete    | 2026-04-09 |
 | 49. Network Resilience | v0.13.0 | 3/3 | Complete    | 2026-04-09 |
-| 50. SSE Protocol Extensions | v0.13.0 | 2/3 | In Progress|  |
+| 50. SSE Protocol Extensions | v0.13.0 | 3/1 | Complete   | 2026-04-09 |
 | 51. Human-in-the-Loop | v0.13.0 | 0/? | Not started | - |
 | 52. Citations & Generative UI | v0.13.0 | 0/? | Not started | - |
 | 53. Message Branching | v0.13.0 | 0/? | Not started | - |
