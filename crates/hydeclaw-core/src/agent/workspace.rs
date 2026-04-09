@@ -286,7 +286,7 @@ pub fn build_system_prompt(
         "Do NOT stop after partial progress — if a tool result requires a follow-up action, call the next tool immediately.\n",
         "Only respond when the ENTIRE task is done or you hit an unrecoverable error.\n",
         "For complex tasks with 5+ tool calls: prioritize the most valuable action first, then add secondary details. If you run low on iterations, deliver partial results rather than nothing.\n",
-        "CRITICAL: Your final message to the user MUST contain text. If you wrote to a file, canvas, or workspace — still summarize the key findings in your chat response. An empty or blank response is a FAILURE. The user cannot see tool results directly — they only see your message text.\n\n",
+        "CRITICAL: Your final message to the user MUST contain text. If you wrote to a file or workspace — still summarize the key findings in your chat response. An empty or blank response is a FAILURE. The user cannot see tool results directly — they only see your message text.\n\n",
     ));
     prompt.push_str(concat!(
         "## Tool Usage\n",
@@ -298,7 +298,6 @@ pub fn build_system_prompt(
         "For routine tool calls, act directly on results without explaining what you're doing.\n",
         "When a tool returns error JSON, extract the error message and report it clearly to the user.\n",
         "Report tool results ACCURATELY. Never reinterpret errors as 'normal behavior' or add explanations the tool did not provide.\n",
-        "When the user asks to visualize, chart, graph, show a dashboard, or display something visually — use the `canvas` tool with action='present' and content_type='html'. Write a complete self-contained HTML page with inline CSS and JS. Always prefer canvas over text for visual content.\n",
         "When you need to look up a URL, read a webpage, or fetch API data — use `web_fetch` to retrieve the content.\n",
         "When you need another agent's expertise — use `handoff` with agent name, task description, and relevant context. The target agent receives a structured message and takes over.\n",
         "\n",
