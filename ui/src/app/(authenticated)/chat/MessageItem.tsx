@@ -20,6 +20,8 @@ import {
   SourceUrlDataPartView,
   RichCardDataPartView,
 } from "./ChatThread";
+import { ContinuationSeparator } from "@/components/chat/ContinuationSeparator";
+import { StepGroup } from "@/components/chat/StepGroup";
 
 
 // ── Parts render cache (PERF-03) ───────────────────────────────────────────
@@ -59,13 +61,15 @@ function EmptyPartView() {
 
 // ── Part renderer dispatch ──────────────────────────────────────────────────
 
-function renderPart(part: MessagePart, index: number) {
+function renderPart(part: MessagePart, index: number, _meta?: { stepGroupToolIds?: Set<string>; parts?: MessagePart[] }) {
   switch (part.type) {
     case "text":
       return <TextPart key={index} text={part.text} />;
     case "reasoning":
       return <ReasoningPart key={index} text={part.text} />;
     case "tool": {
+      // Skip standalone tool parts that are inside a step group (dedup)
+      if (_meta?.stepGroupToolIds?.has(part.toolCallId)) return null;
       return (
         <ToolCallPartView
           key={index}
@@ -81,7 +85,19 @@ function renderPart(part: MessagePart, index: number) {
     case "source-url":
       return <SourceUrlDataPartView key={index} data={{ url: part.url, title: part.title }} />;
     case "rich-card":
+      // Skip agent-turn rich cards — HandoffDivider in ChatThread replaces this
+      if (part.cardType === "agent-turn") return null;
       return <RichCardDataPartView key={index} data={{ cardType: part.cardType, ...part.data }} />;
+    case "continuation-separator":
+      return <ContinuationSeparator key={`cont-${index}`} />;
+    case "step-group":
+      return (
+        <StepGroup
+          key={`step-${part.stepId}`}
+          stepGroup={part}
+          isLastGroup={!_meta?.parts?.slice(index + 1).some(p => p.type === "step-group")}
+        />
+      );
     default:
       return null;
   }
@@ -145,6 +161,16 @@ function ToolCallGroup({ parts }: { parts: ToolPart[] }) {
 function renderPartsWithGrouping(parts: MessagePart[]) {
   const result: ReactNode[] = [];
 
+  // Collect tool IDs that are inside step groups (to avoid double-rendering)
+  const stepGroupToolIds = new Set<string>();
+  for (const p of parts) {
+    if (p.type === "step-group") {
+      for (const tp of p.toolParts) stepGroupToolIds.add(tp.toolCallId);
+    }
+  }
+
+  const meta = { stepGroupToolIds, parts };
+
   // Stage 2 & 3 Fix: Pre-filter empty/whitespace-only text parts that could break tool grouping
   const effectiveParts = parts.filter(p => {
     if (p.type === "text") return p.text.trim().length > 0;
@@ -156,9 +182,19 @@ function renderPartsWithGrouping(parts: MessagePart[]) {
     const part = effectiveParts[i];
 
     if (part.type === "tool") {
-      // Collect consecutive tool parts
+      // Skip tool parts already inside a step group
+      if (stepGroupToolIds.has(part.toolCallId)) {
+        i++;
+        continue;
+      }
+
+      // Collect consecutive non-step-grouped tool parts
       const toolRun: ToolPart[] = [];
-      while (i < effectiveParts.length && effectiveParts[i].type === "tool") {
+      while (
+        i < effectiveParts.length &&
+        effectiveParts[i].type === "tool" &&
+        !stepGroupToolIds.has((effectiveParts[i] as ToolPart).toolCallId)
+      ) {
         const p = effectiveParts[i];
         if (p.type === "tool") toolRun.push(p);
         i++;
@@ -182,7 +218,7 @@ function renderPartsWithGrouping(parts: MessagePart[]) {
         });
       }
     } else {
-      result.push(renderPart(part, i));
+      result.push(renderPart(part, i, meta));
       i++;
     }
   }
