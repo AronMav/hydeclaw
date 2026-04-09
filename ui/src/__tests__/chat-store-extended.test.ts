@@ -41,6 +41,8 @@ function makeRow(overrides: Partial<MessageRow>): MessageRow {
     status: "done",
     feedback: 0,
     edited_at: null,
+    parent_message_id: null,
+    branch_from_message_id: null,
     ...overrides,
   };
 }
@@ -263,6 +265,7 @@ describe("STATE-01: history to live transition", () => {
           turnCount: 0,
           turnLimitMessage: null,
           streamGeneration: 0,
+          selectedBranches: {},
         };
       } else {
         s.agents["TestAgent"].messageSource = { mode: "history", sessionId: "sess-history" };
