@@ -450,21 +450,21 @@ export const useChatStore = create<ChatStore>()(
     const controller = new AbortController();
     agentAbortControllers[agent] = controller;
 
-    // Stage 4: Set persistence flag so UI shows thinking indicator instantly after reload
-    sessionStorage.setItem(`hydeclaw.streaming.${agent}`, "true");
-
-    // Preserve existing live messages if available, otherwise seed from history cache
+    // Seed with history from React Query cache so UI shows messages immediately (Fix A).
+    // Read getCachedHistoryMessages BEFORE the update() call — never call get() inside set().
+    // Use the passed sessionId parameter directly: activeSessionId may not be set yet in store
+    // (e.g. first render after F5 before WS delivers session state).
     const existingSt = get().agents[agent];
-    const existingMessages = existingSt?.messageSource.mode === "live"
+    const seedMessages = existingSt?.messageSource.mode === "live"
       ? existingSt.messageSource.messages
-      : getCachedHistoryMessages(existingSt?.activeSessionId ?? null);
+      : getCachedHistoryMessages(sessionId);
 
     update(agent, {
       streamStatus: "streaming",
       streamError: null,
       connectionPhase: "streaming",
       connectionError: null,
-      messageSource: { mode: "live", messages: existingMessages },
+      messageSource: { mode: "live", messages: seedMessages },
     });
 
     const token = getToken();
@@ -476,8 +476,9 @@ export const useChatStore = create<ChatStore>()(
     })
       .then((resp) => {
         if (resp.status === 204) {
-          // No active stream — engine already finished
-          update(agent, { streamStatus: "idle", connectionPhase: "idle" });
+          // No active stream — engine already finished.
+          // Transition to history mode so useSessionMessages fetches fresh data (Fix B).
+          update(agent, { streamStatus: "idle", connectionPhase: "idle", messageSource: { mode: "history", sessionId } });
           return;
         }
         if (!resp.ok) {
