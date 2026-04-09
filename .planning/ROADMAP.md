@@ -21,7 +21,7 @@ Covered: core platform stability, providers, channels, memory, tools, orchestrat
 - [x] **Phase 40: SseConnection Extraction** - Extract SSE transport into a standalone testable class (completed 2026-04-09)
 - [x] **Phase 41: ConnectionPhase FSM** - Replace 4-signal thinking indicator with single state machine (completed 2026-04-09)
 - [x] **Phase 42: History & MessageSource** - Fix F5 restore; replace viewMode with discriminated union (completed 2026-04-09)
-- [ ] **Phase 43: Reconnect & Optimistic UI** - Exponential backoff reconnect + React 19 useOptimistic
+- [x] **Phase 43: Reconnect & Optimistic UI** - Exponential backoff reconnect + React 19 useOptimistic (completed 2026-04-09)
 - [ ] **Phase 44: UX Polish** - Draft persistence, scroll behavior, error state UI
 - [ ] **Phase 45: Cleanup** - Remove deprecated flags, move module-globals into AgentState
 
@@ -81,7 +81,7 @@ Plans:
   2. After max retries are exhausted, the UI shows an explicit connection-lost error with a retry button — no silent failure
   3. Sending a message shows the user bubble immediately before the server confirms receipt
   4. If the send fails (server error or network timeout), the optimistic user bubble is rolled back and an error indicator appears inline
-**Plans:** 1/2 plans executed
+**Plans:** 1/2 plans complete
 Plans:
 - [x] 43-01-PLAN.md — Add reconnect with exponential backoff to SseConnection and wire into chat-store
 - [ ] 43-02-PLAN.md — Optimistic user message status tracking with error rollback UI
@@ -95,7 +95,10 @@ Plans:
   1. Typing a message, navigating away, and returning restores the draft text in the input field
   2. During streaming, the message list auto-scrolls to follow new tokens; when the user scrolls up manually, auto-scroll pauses and resumes when the user scrolls back to the bottom
   3. Connection lost, API error, and timeout each show a distinct error UI with a labeled retry button — no generic "Stream failed" banner
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 44-01-PLAN.md — Draft persistence in localStorage + consolidate scroll to single followOutput authority
+- [ ] 44-02-PLAN.md — Classified error state UI with distinct icons, labels, and retry actions
 **UI hint**: yes
 
 ### Phase 45: Cleanup
@@ -116,6 +119,6 @@ Plans:
 | 40. SseConnection Extraction | v0.12.0 | 1/1 | Complete    | 2026-04-09 |
 | 41. ConnectionPhase FSM | v0.12.0 | 2/2 | Complete    | 2026-04-09 |
 | 42. History & MessageSource | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
-| 43. Reconnect & Optimistic UI | v0.12.0 | 1/2 | In Progress|  |
-| 44. UX Polish | v0.12.0 | 0/TBD | Not started | - |
+| 43. Reconnect & Optimistic UI | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
+| 44. UX Polish | v0.12.0 | 0/2 | Not started | - |
 | 45. Cleanup | v0.12.0 | 0/TBD | Not started | - |
