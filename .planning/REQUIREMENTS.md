@@ -38,8 +38,8 @@ Requirements for Chat UX Evolution milestone. Stability, responsiveness, advance
 
 ### SSE Protocol
 
-- [ ] **SSE-01**: Automatic Continuations — ContinuationStart SSE event + frontend separator при finish_reason=length
-- [ ] **SSE-02**: Data Stream Protocol — start-step/finish-step events для структурированной группировки шагов
+- [x] **SSE-01**: Automatic Continuations — ContinuationStart SSE event + frontend separator при finish_reason=length
+- [x] **SSE-02**: Data Stream Protocol — start-step/finish-step events для структурированной группировки шагов
 
 ### Agent UX
 
@@ -99,8 +99,8 @@ Requirements for Chat UX Evolution milestone. Stability, responsiveness, advance
 | OPTI-04 | Phase 48 | Pending |
 | NET-01 | Phase 49 | Pending |
 | NET-02 | Phase 49 | Complete |
-| SSE-01 | Phase 50 | Pending |
-| SSE-02 | Phase 50 | Pending |
+| SSE-01 | Phase 50 | Complete |
+| SSE-02 | Phase 50 | Complete |
 | AGNT-01 | Phase 50 | Pending |
 | HITL-01 | Phase 51 | Pending |
 | HITL-02 | Phase 51 | Pending |

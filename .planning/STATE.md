@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.13.0
 milestone_name: Chat UX Evolution
 status: executing
-stopped_at: Completed 49-03-PLAN.md
-last_updated: "2026-04-09T17:57:00.343Z"
+stopped_at: Completed 50-01-PLAN.md
+last_updated: "2026-04-09T18:39:26.624Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 14
   completed_phases: 6
-  total_plans: 23
-  completed_plans: 19
+  total_plans: 26
+  completed_plans: 20
 ---
 
 # Project State
@@ -20,11 +20,11 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-09)
 
 **Core value:** Стабильная и безопасная AI-платформа с self-hosted фокусом
-**Current focus:** Phase 49 — network-resilience
+**Current focus:** Phase 50 — sse-protocol-extensions
 
 ## Current Position
 
-Phase: 49 (network-resilience) — EXECUTING
+Phase: 50 (sse-protocol-extensions) — EXECUTING
 Plan: 2 of 3
 Status: Ready to execute
 Last activity: 2026-04-09
@@ -42,6 +42,7 @@ Progress bar: `░░░░░░░░░░░░░░░░░░░░` 0% 
 | Phase 46-streaming-performance P02 | 210 | 2 tasks | 5 files |
 | Phase 47-scroll-virtualization P01 | 5 | 1 tasks | 1 files |
 | Phase 49 P03 | 2min | 1 tasks | 3 files |
+| Phase 50 P01 | 4min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -84,6 +85,8 @@ Progress bar: `░░░░░░░░░░░░░░░░░░░░` 0% 
 - [Phase 46-02]: Two stable component objects (INITIAL_COMPONENTS, STREAMING_COMPONENTS) replace dynamic creation per block — threads isStreamingCode via closure without object churn
 - [Phase 47-scroll-virtualization]: overflow-anchor applied inside ResizeObserver useEffect after querySelector (idempotent), atBottomThreshold 150→100 (SCRL-02), increaseViewportBy {top:500,bottom:200} for asymmetric media preload (VIRT-01)
 - [Phase 49]: ReconnectingIndicator placed between MessageList and ErrorBanner in ChatThread layout
+- [Phase 50]: StepFinish emitted before continuation Finish in auto-continue path
+- [Phase 50]: continuation field is bool not Option<bool> for simpler frontend consumption
 
 ### Pending Todos
 
@@ -97,6 +100,6 @@ Progress bar: `░░░░░░░░░░░░░░░░░░░░` 0% 
 
 ## Session Continuity
 
-Last session: 2026-04-09T17:57:00.340Z
-Stopped at: Completed 49-03-PLAN.md
+Last session: 2026-04-09T18:39:26.621Z
+Stopped at: Completed 50-01-PLAN.md
 Resume with: `/gsd:plan-phase 46`
