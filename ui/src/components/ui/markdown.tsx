@@ -6,6 +6,7 @@ import { memo, useEffect, useId, useMemo, useState } from "react"
 import ReactMarkdown, { Components } from "react-markdown"
 import remarkBreaks from "remark-breaks"
 import remarkGfm from "remark-gfm"
+import { extractFootnotes, FootnoteProvider, createFootnoteComponents } from "./citation-tooltip"
 import { CodeBlock, CodeBlockCode } from "./code-block"
 import { MermaidBlock } from "./mermaid-block"
 
@@ -38,7 +39,10 @@ function extractLanguage(className?: string): string {
   return match ? match[1] : "plaintext"
 }
 
+const FOOTNOTE_COMPONENTS = createFootnoteComponents()
+
 const INITIAL_COMPONENTS: Partial<Components> = {
+  ...FOOTNOTE_COMPONENTS,
   code: function CodeComponent({ className, children, ...props }) {
     const isInline =
       !props.node?.position?.start.line ||
@@ -171,8 +175,10 @@ function MarkdownComponent({
   const generatedId = useId()
   const blockId = id ?? generatedId
   const blocks = useMemo(() => parseMarkdownIntoBlocks(children), [children])
+  const footnoteMap = useMemo(() => extractFootnotes(children), [children])
+  const hasFootnotes = footnoteMap.size > 0
 
-  return (
+  const content = (
     <div className={className}>
       {blocks.map((block, index) =>
         hasMathContent(block) ? (
@@ -191,6 +197,12 @@ function MarkdownComponent({
       )}
     </div>
   )
+
+  if (hasFootnotes) {
+    return <FootnoteProvider footnotes={footnoteMap}>{content}</FootnoteProvider>
+  }
+
+  return content
 }
 
 const Markdown = memo(MarkdownComponent)
