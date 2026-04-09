@@ -56,7 +56,7 @@ impl AgentEngine {
             Some(id) => id,
             None => return "Error: no active session".to_string(),
         };
-        let _ = crate::db::sessions::add_participant(&self.db, session_id, target).await;
+        let _ = SessionManager::new(self.db.clone()).add_participant(session_id, target).await;
 
         // 6. Set handoff target (consumed by turn loop in chat.rs)
         *self.handoff_target.lock().await = Some(HandoffRequest {

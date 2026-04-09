@@ -120,7 +120,7 @@ impl AgentEngine {
         }
         let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(20).min(100);
 
-        match crate::db::sessions::search_messages(&self.db, &self.agent.name, query, limit).await {
+        match SessionManager::new(self.db.clone()).search_messages(&self.agent.name, query, limit).await {
             Ok(results) if results.is_empty() => format!("No messages matching \"{}\".", query),
             Ok(results) => {
                 let mut out = format!("Found {} messages matching \"{}\":\n\n", results.len(), query);
@@ -156,9 +156,10 @@ impl AgentEngine {
             Err(_) => return "Error: no session_id available in current context".to_string(),
         };
 
-        match crate::db::sessions::get_session(&self.db, session_id).await {
+        let sm = SessionManager::new(self.db.clone());
+        match sm.get_session(session_id).await {
             Ok(Some(s)) => {
-                let msg_count = crate::db::sessions::count_messages(&self.db, session_id)
+                let msg_count = sm.count_messages(session_id)
                     .await
                     .unwrap_or(0);
                 format!(
@@ -228,7 +229,7 @@ impl AgentEngine {
             Err(_) => return "Error: invalid session_id (expected UUID)".to_string(),
         };
 
-        match crate::db::sessions::load_messages(&self.db, session_id, Some(500)).await {
+        match SessionManager::new(self.db.clone()).load_messages(session_id, Some(500)).await {
             Ok(msgs) if msgs.is_empty() => "No messages found in session.".to_string(),
             Ok(msgs) => {
                 if format == "json" {

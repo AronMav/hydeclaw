@@ -745,7 +745,7 @@ impl AgentEngine {
         };
 
         // Add to session participants
-        match crate::db::sessions::add_participant(&self.db, session_id, agent_name).await {
+        match SessionManager::new(self.db.clone()).add_participant(session_id, agent_name).await {
             Ok(participants) => {
                 // Broadcast join event to WebSocket (UI sidebar refresh + live notification)
                 self.broadcast_ui_event(serde_json::json!({

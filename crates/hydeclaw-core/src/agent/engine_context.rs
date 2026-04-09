@@ -183,9 +183,10 @@ impl AgentEngine {
                     );
 
                     // Persist synthetic rows to DB (narrowed — no session-wide scan)
-                    if let Err(e) = crate::db::sessions::insert_missing_tool_results(
-                        &self.db, session_id, &missing_ids
-                    ).await {
+                    if let Err(e) = SessionManager::new(self.db.clone())
+                        .insert_missing_tool_results(session_id, &missing_ids)
+                        .await
+                    {
                         tracing::warn!(error = %e, "failed to insert synthetic tool results");
                     }
 
@@ -433,7 +434,7 @@ impl AgentEngine {
     /// Compact a specific session's messages via API.
     /// Returns `(facts_extracted, new_message_count)`.
     pub async fn compact_session(&self, session_id: uuid::Uuid) -> Result<(usize, usize)> {
-        let rows = crate::db::sessions::load_messages(&self.db, session_id, Some(2000)).await?;
+        let rows = SessionManager::new(self.db.clone()).load_messages(session_id, Some(2000)).await?;
         if rows.len() < 4 {
             anyhow::bail!("session too short to compact ({} messages)", rows.len());
         }

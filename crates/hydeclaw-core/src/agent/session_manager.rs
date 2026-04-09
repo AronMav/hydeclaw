@@ -179,6 +179,47 @@ impl SessionManager {
     pub async fn trim_messages(&self, session_id: Uuid, max: u32) -> Result<u64> {
         crate::db::sessions::trim_session_messages(&self.db, session_id, max).await
     }
+
+    /// Insert synthetic tool results for missing call IDs (crash-recovery, ENG-01).
+    pub async fn insert_missing_tool_results(
+        &self,
+        session_id: Uuid,
+        call_ids: &[String],
+    ) -> Result<()> {
+        crate::db::sessions::insert_missing_tool_results(&self.db, session_id, call_ids).await
+    }
+
+    /// Full-text search messages across all sessions for the given agent.
+    pub async fn search_messages(
+        &self,
+        agent_id: &str,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<crate::db::sessions::SearchResult>> {
+        crate::db::sessions::search_messages(&self.db, agent_id, query, limit).await
+    }
+
+    /// Get session metadata by ID.
+    pub async fn get_session(
+        &self,
+        session_id: Uuid,
+    ) -> Result<Option<crate::db::sessions::Session>> {
+        crate::db::sessions::get_session(&self.db, session_id).await
+    }
+
+    /// Count messages in a session.
+    pub async fn count_messages(&self, session_id: Uuid) -> Result<i64> {
+        crate::db::sessions::count_messages(&self.db, session_id).await
+    }
+
+    /// Add an agent to the session's participants list (idempotent).
+    pub async fn add_participant(
+        &self,
+        session_id: Uuid,
+        agent_name: &str,
+    ) -> Result<Vec<String>> {
+        crate::db::sessions::add_participant(&self.db, session_id, agent_name).await
+    }
 }
 
 // ── SessionLifecycleGuard ───────────────────────────────────────────────────
