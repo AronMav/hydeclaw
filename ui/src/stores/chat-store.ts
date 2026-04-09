@@ -333,7 +333,12 @@ export function convertHistory(rows: MessageRow[]): ChatMessage[] {
     );
 }
 
-/** Get history messages from React Query cache, or empty array if not cached. */
+/**
+ * Read-through cache peek — called from Zustand store actions where React hooks
+ * are unavailable. Components access this data via useSessionMessages() hook.
+ * See ARCH-02 audit (phase 34): queryClient.getQueryData is intentional here and
+ * in sendMessage(); no React component calls getQueryData directly.
+ */
 function getCachedHistoryMessages(sessionId: string | null): ChatMessage[] {
   if (!sessionId) return [];
   const cached = queryClient.getQueryData<{ messages: MessageRow[] }>(qk.sessionMessages(sessionId));

@@ -101,8 +101,10 @@ export const useAuthStore = create<AuthState>()(
         {
           name: "hydeclaw.auth.token",
           partialize: (state) => ({ token: state.token }),
-          // Use sessionStorage so the token is cleared when the browser tab/window is closed.
-          // This limits the exposure window for a stolen token compared to localStorage.
+          // Security: auth token stored in sessionStorage (not localStorage) to limit
+          // exposure window. Legacy migration below moves any old localStorage token
+          // to sessionStorage and removes it. Audited in ARCH-03 (phase 34):
+          // localStorage contains only UI preferences (lastSession, wizard progress) — no credentials.
           storage: createJSONStorage(() => {
             // One-time migration: move token from localStorage to sessionStorage
             const key = "hydeclaw.auth.token";
