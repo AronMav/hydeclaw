@@ -99,7 +99,7 @@ pub enum StreamEvent {
     RichCard { card_type: String, data: serde_json::Value },
     /// File/media attachment (image, audio, etc.) — displayed inline in UI chat.
     File { url: String, media_type: String },
-    Finish { finish_reason: String },
+    Finish { finish_reason: String, continuation: bool },
     /// Internal event: signals that a different agent is now responding (multi-agent turn loop).
     /// Converter task updates current_responding_agent; no SSE is emitted to the client.
     AgentSwitch { agent_name: String },

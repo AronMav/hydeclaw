@@ -952,7 +952,7 @@ pub(crate) async fn api_chat_sse(
                     current_responding_agent = new_agent;
                     continue; // Internal event — don't emit SSE
                 }
-                StreamEvent::Finish { finish_reason: _ } => {
+                StreamEvent::Finish { finish_reason: _, continuation: _ } => {
                     // Send any pending text-end first
                     if let Some(text_id) = pending_text_end.take() {
                         let end_data = json!({"type": sse_types::TEXT_END, "id": text_id}).to_string();
