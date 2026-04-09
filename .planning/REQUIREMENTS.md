@@ -15,8 +15,8 @@ Requirements for Chat UX Evolution milestone. Stability, responsiveness, advance
 
 ### Scroll & Navigation
 
-- [ ] **SCRL-01**: CSS `overflow-anchor: auto` на контейнере чата
-- [ ] **SCRL-02**: Smart sticky logic — авто-скролл отключается при ручном скролле вверх >100px
+- [x] **SCRL-01**: CSS `overflow-anchor: auto` на контейнере чата
+- [x] **SCRL-02**: Smart sticky logic — авто-скролл отключается при ручном скролле вверх >100px
 - [ ] **SCRL-03**: Floating "scroll to bottom" кнопка с индикатором новых токенов
 
 ### Optimistic & Responsive UI
@@ -28,7 +28,7 @@ Requirements for Chat UX Evolution milestone. Stability, responsiveness, advance
 
 ### Virtualization
 
-- [ ] **VIRT-01**: `increaseViewportBy` для плавной подгрузки медиа при скролле вверх
+- [x] **VIRT-01**: `increaseViewportBy` для плавной подгрузки медиа при скролле вверх
 - [ ] **VIRT-02**: DOM node capping — тяжёлые элементы (Rich Cards, iframes) заменяются заглушками при уходе из viewport
 
 ### Network Resilience
@@ -88,10 +88,10 @@ Requirements for Chat UX Evolution milestone. Stability, responsiveness, advance
 | PERF-01 | Phase 46 | Complete |
 | PERF-02 | Phase 46 | Complete |
 | PERF-03 | Phase 46 | Complete |
-| SCRL-01 | Phase 47 | Pending |
-| SCRL-02 | Phase 47 | Pending |
+| SCRL-01 | Phase 47 | Complete |
+| SCRL-02 | Phase 47 | Complete |
 | SCRL-03 | Phase 47 | Pending |
-| VIRT-01 | Phase 47 | Pending |
+| VIRT-01 | Phase 47 | Complete |
 | VIRT-02 | Phase 47 | Pending |
 | OPTI-01 | Phase 48 | Pending |
 | OPTI-02 | Phase 48 | Pending |

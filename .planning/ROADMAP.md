@@ -156,11 +156,11 @@ Plans:
   3. A floating "scroll to bottom" button appears when the user is not at the bottom and shows a badge with the count of new tokens received while scrolled away
   4. Media-heavy messages (images, rich cards) outside the visible viewport load lazily without triggering layout shifts for on-screen content
   5. Rich cards and iframes that scroll out of view are replaced with lightweight placeholders — DOM node count stays bounded for conversations exceeding 200 messages
-**Plans:** 4 plans
+**Plans:** 2/4 plans executed
 Plans:
-- [ ] 47-01-PLAN.md — CSS overflow-anchor + atBottomThreshold 100 + increaseViewportBy VIRT-01
+- [x] 47-01-PLAN.md — CSS overflow-anchor + atBottomThreshold 100 + increaseViewportBy VIRT-01
 - [ ] 47-02-PLAN.md — New-token badge counter on ScrollToBottomButton
-- [ ] 47-03-PLAN.md — content-visibility on RichCard + loading=lazy on images
+- [x] 47-03-PLAN.md — content-visibility on RichCard + loading=lazy on images
 - [ ] 47-04-PLAN.md — Human verify: browser scroll UX check
 **UI hint**: yes
 
@@ -245,7 +245,7 @@ Plans:
 | 44. UX Polish | v0.12.0 | 1/2 | Complete | 2026-04-09 |
 | 45. Cleanup | v0.12.0 | 1/1 | Complete | 2026-04-09 |
 | 46. Streaming Performance | v0.13.0 | 3/3 | Complete    | 2026-04-09 |
-| 47. Scroll & Virtualization | v0.13.0 | 0/4 | Not started | - |
+| 47. Scroll & Virtualization | v0.13.0 | 2/4 | In Progress|  |
 | 48. Optimistic & Responsive UI | v0.13.0 | 0/? | Not started | - |
 | 49. Network Resilience | v0.13.0 | 0/? | Not started | - |
 | 50. SSE Protocol Extensions | v0.13.0 | 0/? | Not started | - |

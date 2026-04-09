@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.13.0
 milestone_name: Chat UX Evolution
 status: executing
-stopped_at: Completed 46-02-PLAN.md
-last_updated: "2026-04-09T15:09:32.891Z"
+stopped_at: Completed 47-01-PLAN.md
+last_updated: "2026-04-09T15:56:37.001Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 14
-  completed_phases: 3
-  total_plans: 13
-  completed_plans: 9
+  completed_phases: 4
+  total_plans: 17
+  completed_plans: 12
 ---
 
 # Project State
@@ -20,12 +20,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-09)
 
 **Core value:** Стабильная и безопасная AI-платформа с self-hosted фокусом
-**Current focus:** Phase 46 — Streaming Performance
+**Current focus:** Phase 47 — Scroll & Virtualization
 
 ## Current Position
 
-Phase: 46 (Streaming Performance) — EXECUTING
-Plan: 3 of 3
+Phase: 47 (Scroll & Virtualization) — EXECUTING
+Plan: 2 of 4
 Status: Ready to execute
 Last activity: 2026-04-09
 
@@ -40,6 +40,7 @@ Progress bar: `░░░░░░░░░░░░░░░░░░░░` 0% 
 | Plans complete | 0 |
 | Phase 46-streaming-performance P01 | 5 | 1 tasks | 1 files |
 | Phase 46-streaming-performance P02 | 210 | 2 tasks | 5 files |
+| Phase 47-scroll-virtualization P01 | 5 | 1 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -80,6 +81,7 @@ Progress bar: `░░░░░░░░░░░░░░░░░░░░` 0% 
 - [Phase 46-01]: PERF-02/03 use placeholder RED tests to document exact contracts Plan 02 must implement (blockKey, isStreamingCode, isUnclosedCodeBlock)
 - [Phase 46-02]: isStreamingCode determined by fence detection alone (isUnclosedCodeBlock), not isStreaming flag — fence state is authoritative
 - [Phase 46-02]: Two stable component objects (INITIAL_COMPONENTS, STREAMING_COMPONENTS) replace dynamic creation per block — threads isStreamingCode via closure without object churn
+- [Phase 47-scroll-virtualization]: overflow-anchor applied inside ResizeObserver useEffect after querySelector (idempotent), atBottomThreshold 150→100 (SCRL-02), increaseViewportBy {top:500,bottom:200} for asymmetric media preload (VIRT-01)
 
 ### Pending Todos
 
@@ -93,6 +95,6 @@ Progress bar: `░░░░░░░░░░░░░░░░░░░░` 0% 
 
 ## Session Continuity
 
-Last session: 2026-04-09T15:09:32.888Z
-Stopped at: Completed 46-02-PLAN.md
+Last session: 2026-04-09T15:56:36.997Z
+Stopped at: Completed 47-01-PLAN.md
 Resume with: `/gsd:plan-phase 46`
