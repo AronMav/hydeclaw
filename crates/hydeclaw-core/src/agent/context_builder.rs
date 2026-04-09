@@ -385,6 +385,59 @@ impl ContextBuilder for DefaultContextBuilder {
     }
 }
 
+// ── MockContextBuilder (test-only) ────────────────────────────────────────────
+
+#[cfg(test)]
+pub mod mock {
+    use super::*;
+
+    /// Test-only mock — returns a canned `ContextSnapshot` without DB, filesystem, or LLM.
+    /// Follows the same pattern as `MockMemoryService` in memory_service.rs.
+    pub struct MockContextBuilder {
+        pub session_id: Uuid,
+        pub messages: Vec<Message>,
+        pub tools: Vec<ToolDefinition>,
+    }
+
+    impl MockContextBuilder {
+        /// Create a mock that returns a minimal empty snapshot on every `build()` call.
+        #[allow(dead_code)]
+        pub fn new() -> Self {
+            Self {
+                session_id: Uuid::new_v4(),
+                messages: vec![],
+                tools: vec![],
+            }
+        }
+
+        /// Create a mock with specific canned data.
+        pub fn with_snapshot(
+            session_id: Uuid,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Self {
+            Self { session_id, messages, tools }
+        }
+    }
+
+    #[async_trait]
+    impl ContextBuilder for MockContextBuilder {
+        async fn build(
+            &self,
+            _msg: &IncomingMessage,
+            _include_tools: bool,
+            _resume_session_id: Option<Uuid>,
+            _force_new_session: bool,
+        ) -> Result<ContextSnapshot> {
+            Ok(ContextSnapshot {
+                session_id: self.session_id,
+                messages: self.messages.clone(),
+                tools: self.tools.clone(),
+            })
+        }
+    }
+}
+
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 /// Strip `<minimax:tool_call>…</minimax:tool_call>` blocks from a string.
@@ -449,4 +502,65 @@ fn prune_old_tool_outputs(messages: &[hydeclaw_types::Message], keep_turns: usiz
             }
         })
         .collect()
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::mock::MockContextBuilder;
+    use super::*;
+    use chrono::Utc;
+
+    fn make_incoming_message() -> IncomingMessage {
+        IncomingMessage {
+            user_id: "test-user".to_string(),
+            context: serde_json::Value::Null,
+            text: Some("hello".to_string()),
+            attachments: vec![],
+            agent_id: "test-agent".to_string(),
+            channel: "test-channel".to_string(),
+            timestamp: Utc::now(),
+            formatting_prompt: None,
+            tool_policy_override: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_context_builder_returns_canned_snapshot() {
+        let sid = Uuid::new_v4();
+        let mock = MockContextBuilder::with_snapshot(sid, vec![], vec![]);
+
+        let msg = make_incoming_message();
+        let snap = mock.build(&msg, true, None, false).await.unwrap();
+
+        assert_eq!(snap.session_id, sid);
+        assert!(snap.messages.is_empty());
+        assert!(snap.tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mock_context_builder_with_messages() {
+        let sid = Uuid::new_v4();
+        let msgs = vec![hydeclaw_types::Message {
+            role: hydeclaw_types::MessageRole::System,
+            content: "You are a test agent.".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            thinking_blocks: vec![],
+        }];
+        let mock = MockContextBuilder::with_snapshot(sid, msgs, vec![]);
+
+        let msg = make_incoming_message();
+        let snap = mock.build(&msg, false, None, false).await.unwrap();
+
+        assert_eq!(snap.messages.len(), 1);
+        assert_eq!(snap.messages[0].content, "You are a test agent.");
+    }
+
+    #[test]
+    fn mock_context_builder_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<MockContextBuilder>();
+    }
 }
