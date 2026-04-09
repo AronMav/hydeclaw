@@ -2,16 +2,15 @@
 gsd_state_version: 1.0
 milestone: v0.13.0
 milestone_name: Chat UX Evolution
-status: defining
-stopped_at: null
-last_updated: "2026-04-09"
+status: executing
+stopped_at: Completed 46-01-PLAN.md
+last_updated: "2026-04-09T15:03:53.176Z"
 last_activity: 2026-04-09
 progress:
-  total_phases: 0
-  completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  total_phases: 14
+  completed_phases: 3
+  total_plans: 13
+  completed_plans: 8
 ---
 
 # Project State
@@ -21,14 +20,25 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-09)
 
 **Core value:** Стабильная и безопасная AI-платформа с self-hosted фокусом
-**Current focus:** Defining requirements
+**Current focus:** Phase 46 — Streaming Performance
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-04-09 — Milestone v0.13.0 started
+Phase: 46 (Streaming Performance) — EXECUTING
+Plan: 2 of 3
+Status: Ready to execute
+Last activity: 2026-04-09
+
+Progress bar: `░░░░░░░░░░░░░░░░░░░░` 0% (0/8 phases)
+
+## Performance Metrics
+
+| Metric | Value |
+|--------|-------|
+| Phases defined | 8 |
+| Requirements mapped | 26/26 |
+| Plans complete | 0 |
+| Phase 46-streaming-performance P01 | 5 | 1 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -60,19 +70,26 @@ Last activity: 2026-04-09 — Milestone v0.13.0 started
 - [Phase 44-ux-polish]: totalPartsCount Stage 3 Fix useEffect removed — followOutput callback is single scroll authority
 - [Phase 45-cleanup]: CLN-01: StreamStatus/isActiveStream removed — ConnectionPhase/isActivePhase are sole stream-state authorities
 - [Phase 45-cleanup]: CLN-02: AbortController/timers in private Maps not Immer state; streamGeneration moved to AgentState as plain number
+- [Roadmap v0.13.0]: Copy-to-clipboard and ResizeObserver scroll anchoring from v0.11.2 are ALREADY DONE — must verify before implementing PERF/SCRL work
+- [Roadmap v0.13.0]: BRNC is isolated last — only phase requiring DB migration, highest risk
+- [Roadmap v0.13.0]: HITL depends on SSE heartbeat (Phase 50) to survive nginx 60s timeout
+- [Roadmap v0.13.0]: Phase 50 SSE events (ContinuationStart, HandoffMetadata, start-step/finish-step) are additive — no breaking changes to backend
+- [Phase 46-01]: STREAM_THROTTLE_MS is exported from chat-store.ts — PERF-01 test imports it directly for regression guard
+- [Phase 46-01]: scheduleUpdate/pushUpdate are closure-private, so PERF-01 tests replicate closure logic inline as pure unit tests
+- [Phase 46-01]: PERF-02/03 use placeholder RED tests to document exact contracts Plan 02 must implement (blockKey, isStreamingCode, isUnclosedCodeBlock)
 
 ### Pending Todos
 
-None.
+- Verify which PERF/SCRL items from v0.11.2 are already done before starting Phase 46
+- NET-01 Last-Event-ID needs backend support for resuming from position (verify current backend capability)
 
 ### Blockers/Concerns
 
-- No backend changes required for this milestone — all changes are frontend only
-- `sync` event reconciliation during reconnect: verify `assistantId` reset behavior (open question from ARCHITECTURE.md)
-- Optimistic user message UUID reconciliation strategy must be decided during Phase 43 planning
+- HITL (Phase 51): nginx 60-second timeout kills SSE during approval wait — Phase 50 heartbeat must land first
+- BRNC (Phase 53): DB migration is the only schema change in this milestone — must be last, isolated, with rollback plan
 
 ## Session Continuity
 
-Last session: 2026-04-09T13:07:39.887Z
-Stopped at: Completed 45-01-PLAN.md
-Resume with: `/gsd:plan-phase 40`
+Last session: 2026-04-09T15:03:53.173Z
+Stopped at: Completed 46-01-PLAN.md
+Resume with: `/gsd:plan-phase 46`
