@@ -7,6 +7,7 @@ import ReactMarkdown, { Components } from "react-markdown"
 import remarkBreaks from "remark-breaks"
 import remarkGfm from "remark-gfm"
 import { CodeBlock, CodeBlockCode } from "./code-block"
+import { extractFootnotes, FootnoteProvider, createFootnoteComponents } from "./citation-tooltip"
 import { MermaidBlock } from "./mermaid-block"
 
 // ── Math Detection ─────────────────────────────────────────────────────────
@@ -111,8 +112,9 @@ function createComponents(isStreamingCode = false): Partial<Components> {
 }
 
 // Stable references for the common cases — avoids object recreation on each render
-const INITIAL_COMPONENTS = createComponents(false)
-const STREAMING_COMPONENTS = createComponents(true)
+const FOOTNOTE_COMPONENTS = createFootnoteComponents()
+const INITIAL_COMPONENTS = { ...createComponents(false), ...FOOTNOTE_COMPONENTS }
+const STREAMING_COMPONENTS = { ...createComponents(true), ...FOOTNOTE_COMPONENTS }
 
 // ── Standard Markdown Block (no math) ──────────────────────────────────────
 
@@ -211,8 +213,9 @@ function MarkdownComponent({
   const generatedId = useId()
   const blockId = id ?? generatedId
   const blocks = useMemo(() => parseMarkdownIntoBlocks(children), [children])
+  const footnoteMap = useMemo(() => extractFootnotes(children), [children])
 
-  return (
+  const content = (
     <div className={className}>
       {blocks.map((block, index) => {
         const isLastBlock = index === blocks.length - 1
@@ -243,6 +246,10 @@ function MarkdownComponent({
       })}
     </div>
   )
+
+  return footnoteMap.size > 0
+    ? <FootnoteProvider footnotes={footnoteMap}>{content}</FootnoteProvider>
+    : content
 }
 
 const Markdown = memo(MarkdownComponent)
