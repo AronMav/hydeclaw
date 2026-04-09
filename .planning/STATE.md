@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v0.12.0
 milestone_name: Chat Redesign
-status: executing
-stopped_at: Completed 41-01-PLAN.md
-last_updated: "2026-04-09T11:42:53.442Z"
+status: verifying
+stopped_at: Completed 41-02-PLAN.md tasks 1-2, checkpoint at task 3
+last_updated: "2026-04-09T11:48:21.402Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 6
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 3
-  completed_plans: 1
+  completed_plans: 3
   percent: 0
 ---
 
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 
 Phase: 41 (ConnectionPhase FSM) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-04-09
 
 Progress: ░░░░░░░░░░ 0% (0/6 phases)
@@ -42,6 +42,7 @@ Progress: ░░░░░░░░░░ 0% (0/6 phases)
 | Coverage             | 100%  |
 | Phase 40-sseconnection-extraction P01 | 8 | 2 tasks | 3 files |
 | Phase 41-connectionphase-fsm P01 | 25 | 2 tasks | 3 files |
+| Phase 41-connectionphase-fsm P02 | 8 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -63,6 +64,7 @@ Progress: ░░░░░░░░░░ 0% (0/6 phases)
 - [Phase 41]: ConnectionPhase runs in parallel with StreamStatus (Phase 45 CLN-01 removes it)
 - [Phase 41]: IncrementalParser.reset() called on finish events to prevent reasoning state leaking between agent turns
 - [Phase 41]: sessionStorage streaming flag cleared atomically in finish handler (not just sync)
+- [Phase 41]: showThinking = connectionPhase === submitted || engineRunning (removed 4-signal expression and sessionStorage fallback)
 
 ### Pending Todos
 
@@ -76,6 +78,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-09T11:42:53.439Z
-Stopped at: Completed 41-01-PLAN.md
+Last session: 2026-04-09T11:48:21.398Z
+Stopped at: Completed 41-02-PLAN.md tasks 1-2, checkpoint at task 3
 Resume with: `/gsd:plan-phase 40`
