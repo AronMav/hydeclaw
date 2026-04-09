@@ -521,6 +521,7 @@ describe("COMP-01/COMP-02/COMP-03 — composer hardening", () => {
 
   it("COMP-03e: mention trigger fires for 'hello @agent' (whitespace before @)", async () => {
     const { ChatThread } = await import("@/app/(authenticated)/chat/ChatThread");
+    const { act } = await import("@testing-library/react");
     render(
       <ChatThread
         streamError={null}
@@ -532,9 +533,14 @@ describe("COMP-01/COMP-02/COMP-03 — composer hardening", () => {
     const composerContainer = document.querySelector("[data-composer-input]");
     const textarea = composerContainer?.querySelector("textarea") as HTMLTextAreaElement;
 
-    fireEvent.input(textarea, { target: { value: "hello @Agent" } });
+    // Set value directly on the native textarea before dispatching
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    await act(async () => {
+      nativeSetter?.call(textarea, "hello @Bo");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
 
-    // MentionAutocomplete shows @Agent1 (partial match against "Agent")
-    expect(screen.queryByText("@Agent1")).toBeInTheDocument();
+    // MentionAutocomplete shows @Bob (partial match against "Bo", current agent "Agent1" is filtered out)
+    expect(screen.queryByText("@Bob")).toBeInTheDocument();
   });
 });

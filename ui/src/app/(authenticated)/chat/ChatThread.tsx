@@ -44,6 +44,7 @@ import {
   User,
   RotateCcw,
   X,
+  Loader2,
 } from "lucide-react";
 
 const EMPTY_LIVE_MESSAGES: ChatMessage[] = [];
@@ -290,6 +291,8 @@ function ChatComposer() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [hasInput, setHasInput] = useState(false);
+  const [uploadingCount, setUploadingCount] = useState(0);
+  const isUploading = uploadingCount > 0;
 
   // Focus textarea on desktop only (avoid opening mobile keyboard on page load)
   useEffect(() => {
@@ -298,11 +301,11 @@ function ChatComposer() {
     }
   }, []);
 
-  // Auto-resize textarea
+  // Auto-resize textarea — use "0px" reset instead of "auto" to prevent flicker on paste
   const autoResize = useCallback(() => {
     const ta = textareaRef.current;
     if (!ta) return;
-    ta.style.height = "auto";
+    ta.style.height = "0px";
     ta.style.height = `${ta.scrollHeight}px`;
   }, []);
 
@@ -312,7 +315,7 @@ function ChatComposer() {
     setHasInput(!!ta.value.trim());
     autoResize();
     const val = ta.value;
-    if (val.startsWith("/") && !val.includes(" ")) {
+    if (val.startsWith("/") && !val.includes(" ") && !val.includes("\n") && !val.slice(1).includes("/")) {
       setSlashQuery(val);
       setMentionQuery(null);
     } else {
@@ -379,24 +382,29 @@ function ChatComposer() {
   }, []);
 
   const handleFileAdd = useCallback(async (file: File) => {
-    const formData = new FormData();
-    formData.append("file", file);
-    const resp = await fetch("/api/media/upload", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${getToken()}` },
-      body: formData,
-    });
-    if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`);
-    const result = await resp.json();
-    setAttachments((prev) => [
-      ...prev,
-      {
-        id: crypto.randomUUID(),
-        name: file.name,
-        file,
-        content: [{ type: "file", data: result.url as string, mimeType: file.type, filename: file.name }],
-      },
-    ]);
+    setUploadingCount(c => c + 1);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const resp = await fetch("/api/media/upload", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${getToken()}` },
+        body: formData,
+      });
+      if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`);
+      const result = await resp.json();
+      setAttachments((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          name: file.name,
+          file,
+          content: [{ type: "file", data: result.url as string, mimeType: file.type, filename: file.name }],
+        },
+      ]);
+    } finally {
+      setUploadingCount(c => c - 1);
+    }
   }, []);
 
   const handleSubmit = useCallback((e: React.FormEvent<HTMLFormElement>) => {
@@ -589,10 +597,13 @@ function ChatComposer() {
               <Button
                 type="submit"
                 size="icon"
-                disabled={!hasInput && attachments.length === 0}
+                disabled={(!hasInput && attachments.length === 0) || isUploading}
                 className="h-11 w-11 md:h-10 md:w-10 rounded-xl border border-primary/30 bg-primary/15 text-primary hover:bg-primary/25 hover:border-primary/50 shadow-sm disabled:opacity-30 disabled:shadow-none group/send animate-in fade-in zoom-in-90"
               >
-                <Send className="h-4 w-4 transition-transform duration-200 group-hover/send:translate-x-0.5 group-hover/send:-translate-y-0.5" />
+                {isUploading
+                  ? <Loader2 className="h-4 w-4 animate-spin" />
+                  : <Send className="h-4 w-4 transition-transform duration-200 group-hover/send:translate-x-0.5 group-hover/send:-translate-y-0.5" />
+                }
               </Button>
             </div>
           </div>
