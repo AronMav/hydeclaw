@@ -62,8 +62,32 @@ export interface ToolPart {
 
 export interface RichCardPart {
   type: "rich-card";
-  cardType: "table" | "metric" | "agent-turn";
+  cardType: string;
   data: Record<string, unknown>;
+}
+
+export interface ContinuationSeparatorPart {
+  type: "continuation-separator";
+}
+
+export interface StepGroupPart {
+  type: "step-group";
+  stepId: string;
+  toolParts: ToolPart[];
+  finishReason?: string;
+  /** True while step is still receiving events */
+  isStreaming: boolean;
+}
+
+export interface ApprovalPart {
+  type: "approval";
+  approvalId: string;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  timeoutMs: number;
+  receivedAt: number;
+  status: "pending" | "approved" | "rejected" | "timeout_rejected";
+  modifiedInput?: Record<string, unknown>;
 }
 
 export type MessagePart =
@@ -72,7 +96,10 @@ export type MessagePart =
   | FilePart
   | SourceUrlPart
   | ToolPart
-  | RichCardPart;
+  | RichCardPart
+  | ContinuationSeparatorPart
+  | StepGroupPart
+  | ApprovalPart;
 
 export interface ChatMessage {
   id: string;
@@ -83,6 +110,10 @@ export interface ChatMessage {
   agentId?: string;
   /** Optimistic send status (SSE-03). Undefined means confirmed (from history/sync). */
   status?: "sending" | "confirmed" | "failed";
+  /** Parent message ID in the tree (null for root/trunk messages). */
+  parentMessageId?: string;
+  /** The message this branch was forked from (set on fork-created user messages). */
+  branchFromMessageId?: string;
 }
 
 // ── Connection phase FSM (FSM-01) ────────────────────────────────────────────
@@ -148,6 +179,12 @@ export interface AgentState {
   turnLimitMessage: string | null;
   /** Per-agent stream generation counter (CLN-02 HIST-03) — detects stale SSE deltas. */
   streamGeneration: number;
+  /** NET-02: Current reconnect attempt count (0 when not reconnecting). */
+  reconnectAttempt: number;
+  /** NET-02: Max reconnect attempts (exposed for UI indicator). */
+  maxReconnectAttempts: number;
+  /** Branch selection state: parentMessageId -> selectedChildId. */
+  selectedBranches: Record<string, string>;
 }
 
 // ── Store interface ─────────────────────────────────────────────────────────
@@ -169,6 +206,8 @@ export interface ChatStore {
   stopStream: () => void;
   regenerate: () => void;
   regenerateFrom: (messageId: string) => void;
+  switchBranch: (parentMessageId: string, selectedChildId: string) => void;
+  forkAndRegenerate: (messageId: string, newContent: string) => void;
 
   resumeStream: (agent: string, sessionId: string) => void;
   setThinking: (agent: string, sessionId: string | null) => void;
@@ -202,5 +241,8 @@ export function emptyAgentState(): AgentState {
     turnCount: 0,
     turnLimitMessage: null,
     streamGeneration: 0,
+    reconnectAttempt: 0,
+    maxReconnectAttempts: 3,
+    selectedBranches: {},
   };
 }
