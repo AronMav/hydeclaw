@@ -1,12 +1,25 @@
 use axum::{
+    Router,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Json},
+    routing::{get, post, put, delete},
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
 use super::super::AppState;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/tool-definitions", get(api_tool_definitions))
+        .route("/api/tools", get(api_list_tools).post(api_tool_service_create))
+        .route("/api/tools/{name}", put(api_tool_service_update).delete(api_tool_service_delete))
+        .route("/api/mcp", get(api_list_mcp).post(api_mcp_create))
+        .route("/api/mcp/{name}", put(api_mcp_update).delete(api_mcp_delete))
+        .route("/api/mcp/{name}/reload", post(api_mcp_reload))
+        .route("/api/mcp/{name}/toggle", post(api_mcp_toggle))
+}
 
 // ── Tools & Skills API ──
 

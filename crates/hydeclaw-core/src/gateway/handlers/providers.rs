@@ -1,7 +1,9 @@
 use axum::{
+    Router,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
+    routing::{get, post, put, patch, delete},
     Json,
 };
 use serde::Deserialize;
@@ -17,6 +19,19 @@ use crate::db::providers::{self, CreateProvider, UpdateProvider, ProviderRow};
 use crate::gateway::AppState;
 use crate::secrets::SecretsManager;
 use super::secrets::mask_secret_value;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/provider-types", get(api_list_provider_types))
+        .route("/api/media-drivers", get(api_list_media_drivers))
+        .route("/api/media-config", get(api_media_config_export))
+        .route("/api/providers", get(api_list_providers).post(api_create_provider))
+        .route("/api/providers/{id}", get(api_get_provider).put(api_update_provider).delete(api_delete_provider).patch(api_patch_cli_options))
+        .route("/api/providers/{id}/models", get(api_unified_provider_models))
+        .route("/api/providers/{id}/resolve", get(api_provider_resolve))
+        .route("/api/providers/{id}/test-cli", post(api_test_cli))
+        .route("/api/provider-active", get(api_list_provider_active).put(api_set_provider_active))
+}
 
 // ── Constants ───────────────────────────────────────────────────────────────
 const VALID_TYPES: &[&str] = &["text", "stt", "tts", "vision", "imagegen", "embedding"];

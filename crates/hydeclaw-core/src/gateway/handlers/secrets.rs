@@ -1,12 +1,20 @@
 use axum::{
+    Router,
     extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
+    routing::{get, post, delete},
 };
 use serde::Deserialize;
 use serde_json::json;
 
 use super::super::AppState;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/secrets", get(list_secrets).post(set_secret))
+        .route("/api/secrets/{name}", get(get_secret).delete(delete_secret))
+}
 
 pub(crate) async fn list_secrets(State(state): State<AppState>) -> impl IntoResponse {
     match state.secrets.list().await {

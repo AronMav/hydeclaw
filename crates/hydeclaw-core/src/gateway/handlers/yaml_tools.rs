@@ -1,11 +1,25 @@
 use axum::{
+    Router,
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Json},
+    routing::{get, post, put, delete},
 };
 use serde_json::{json, Value};
 
 use super::super::AppState;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/yaml-tools", get(api_yaml_tools_list_global).post(api_yaml_tool_create_global))
+        .route("/api/yaml-tools/{tool}/verify", post(api_yaml_tool_verify_global))
+        .route("/api/yaml-tools/{tool}/disable", post(api_yaml_tool_disable_global))
+        .route("/api/yaml-tools/{tool}/enable", post(api_yaml_tool_enable_global))
+        .route("/api/yaml-tools/{tool}", get(api_yaml_tool_get_global).put(api_yaml_tool_update_global).delete(api_yaml_tool_delete_global))
+        .route("/api/agents/{name}/yaml-tools", get(api_yaml_tools_list))
+        .route("/api/agents/{name}/yaml-tools/{tool}/verify", post(api_yaml_tool_verify))
+        .route("/api/agents/{name}/yaml-tools/{tool}/disable", post(api_yaml_tool_disable))
+}
 
 /// GET /api/yaml-tools — global, not per-agent.
 pub(crate) async fn api_yaml_tools_list_global(State(_state): State<AppState>) -> impl IntoResponse {

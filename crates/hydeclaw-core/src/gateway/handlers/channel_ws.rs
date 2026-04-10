@@ -1,10 +1,12 @@
 use axum::{
+    Router,
     extract::{
         State, WebSocketUpgrade,
         ws::{Message as WsMessage, WebSocket},
     },
     http::StatusCode,
     response::{IntoResponse, Json},
+    routing::get,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -13,6 +15,12 @@ use std::sync::Arc;
 
 use super::super::AppState;
 use crate::db::outbound;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/ws", get(ws_handler))
+        .route("/ws/channel/{agent_name}", get(channel_ws_handler))
+}
 
 /// Serialize a value to a WebSocket text frame.
 /// Logs and returns a fallback error frame on failure — never panics.
@@ -977,6 +985,7 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                             timestamp: chrono::Utc::now(),
                             formatting_prompt: None,
                             tool_policy_override: None,
+                            leaf_message_id: None,
                         };
 
                         let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel::<String>();

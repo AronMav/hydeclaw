@@ -67,6 +67,7 @@ vi.mock("@/lib/api", () => ({
   apiPost: vi.fn(),
   apiDelete: vi.fn(),
   getToken: () => "test-token",
+  assertToken: () => "test-token",
 }));
 
 // ── Mock: @/lib/sanitize-url ───────────────────────────────────────────────

@@ -4,7 +4,7 @@
 
 import { parseSSELines, parseSseEvent, parseContentParts } from "@/stores/sse-events";
 import { IncrementalParser } from "@/lib/message-parser";
-import { apiPatch, getToken } from "@/lib/api";
+import { apiPatch, assertToken } from "@/lib/api";
 import { queryClient } from "@/lib/query-client";
 import { qk } from "@/lib/queries";
 import type { SessionRow } from "@/types/api";
@@ -126,7 +126,7 @@ export function createStreamingRenderer(store: StoreAccess) {
       messageSource: { mode: "live", messages: seedMessages },
     });
 
-    const token = getToken();
+    const token = assertToken();
 
     fetch(`/api/chat/${sessionId}/stream`, {
       method: "GET",
@@ -234,7 +234,7 @@ export function createStreamingRenderer(store: StoreAccess) {
       update(agent, { forceNewSession: false });
     }
 
-    const token = getToken();
+    const token = assertToken();
 
     fetch("/api/chat", {
       method: "POST",

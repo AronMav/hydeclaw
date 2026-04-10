@@ -1,7 +1,9 @@
 use axum::{
+    Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
+    routing::{get, post, delete},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -9,6 +11,14 @@ use uuid::Uuid;
 
 use super::super::AppState;
 use crate::tasks;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/tasks", get(api_list_tasks).post(api_create_task_endpoint))
+        .route("/api/tasks/audit", get(api_task_audit))
+        .route("/api/tasks/{id}", get(api_get_task).delete(api_delete_task))
+        .route("/api/tasks/{id}/steps", get(api_task_steps))
+}
 
 // ── Tasks API ──
 

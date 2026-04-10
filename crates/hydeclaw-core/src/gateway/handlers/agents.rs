@@ -1,7 +1,9 @@
 use axum::{
+    Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
+    routing::{get, post, put, delete},
 };
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
@@ -25,6 +27,18 @@ use super::super::AppState;
 use crate::agent::handle::AgentHandle;
 use crate::channels::access::AccessGuard;
 use crate::config::AgentConfig;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/agents", get(api_agents).post(api_create_agent))
+        .route("/api/agents/{name}", get(api_get_agent).put(api_update_agent).delete(api_delete_agent))
+        .route("/api/agents/{name}/tasks", get(api_agent_tasks))
+        .route("/api/agents/{name}/model-override", post(super::chat::set_model_override))
+        .route("/api/approvals", get(api_list_approvals))
+        .route("/api/approvals/{id}/resolve", post(api_resolve_approval))
+        .route("/api/approvals/allowlist", get(api_list_allowlist).post(api_add_to_allowlist))
+        .route("/api/approvals/allowlist/{id}", delete(api_delete_from_allowlist))
+}
 
 pub(crate) async fn api_agents(State(state): State<AppState>) -> Json<Value> {
     // Read configs from disk (source of truth)

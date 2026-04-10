@@ -1,11 +1,23 @@
 use axum::{
+    Router,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Json},
+    routing::{get, post},
 };
 use serde_json::json;
 
 use super::super::AppState;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/uploads/{filename}", get(api_media_serve))
+        .merge(
+            Router::new()
+                .route("/api/media/upload", post(api_media_upload))
+                .layer(axum::extract::DefaultBodyLimit::max(20 * 1024 * 1024)) // 20 MB
+        )
+}
 
 /// POST /api/media/upload — multipart upload, saves to workspace/uploads/{uuid}.{ext}
 pub(crate) async fn api_media_upload(

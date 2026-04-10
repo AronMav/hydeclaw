@@ -9,6 +9,7 @@ vi.mock("@/lib/api", () => ({
   apiDelete: vi.fn(),
   apiPatch: vi.fn(),
   getToken: vi.fn(() => "test-token"),
+  assertToken: vi.fn(() => "test-token"),
 }));
 
 import {

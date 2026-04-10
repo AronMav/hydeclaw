@@ -1,8 +1,10 @@
 use axum::{
+    Router,
     body::Body,
     extract::State,
     http::{Request, StatusCode},
     response::{IntoResponse, Json},
+    routing::{get, post, put, delete},
 };
 use dashmap::DashMap;
 use serde::Deserialize;
@@ -12,6 +14,14 @@ use std::time::Instant;
 use subtle::ConstantTimeEq;
 
 use super::super::AppState;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/webhooks", get(api_list_webhooks).post(api_create_webhook))
+        .route("/api/webhooks/{id}", put(api_update_webhook).delete(api_delete_webhook))
+        .route("/api/webhooks/{id}/regenerate-secret", post(api_regenerate_webhook_secret))
+        .route("/webhook/{name}", post(webhook_handler))
+}
 
 // ── Webhook auth throttling ──
 
@@ -465,6 +475,7 @@ pub(crate) async fn webhook_handler(
         timestamp: chrono::Utc::now(),
         formatting_prompt: None,
         tool_policy_override: None,
+        leaf_message_id: None,
     };
 
     tracing::info!(webhook = %name, agent = %wh.agent_id, is_async, "webhook triggered");

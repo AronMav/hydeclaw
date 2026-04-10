@@ -20,7 +20,7 @@ if (!AbortSignal.any) {
 // Dynamic token for per-test control
 let mockToken = "test-token";
 
-import { apiGet, apiPost, apiPut, apiPatch, apiDelete, getToken, _resetRedirecting } from "@/lib/api";
+import { apiGet, apiPost, apiPut, apiPatch, apiDelete, getToken, assertToken, _resetRedirecting } from "@/lib/api";
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -138,6 +138,27 @@ describe("apiDelete", () => {
   it("throws on error response", async () => {
     mockFetch.mockResolvedValue(jsonResponse({ error: "Forbidden" }, 403));
     await expect(apiDelete("/api/items/1")).rejects.toThrow("Forbidden");
+  });
+});
+
+describe("assertToken", () => {
+  it("returns token when store has one", () => {
+    expect(assertToken()).toBe("test-token");
+  });
+
+  it("throws Session expired when token is empty", () => {
+    mockToken = "";
+    expect(() => assertToken()).toThrow("Session expired");
+    expect(mockLogout).toHaveBeenCalledOnce();
+  });
+
+  it("throws Session expired when already redirecting", () => {
+    // Trigger redirecting state by calling assertToken with empty token first
+    mockToken = "";
+    expect(() => assertToken()).toThrow("Session expired");
+    // Now even with a valid token, it should throw because redirecting is true
+    mockToken = "valid-token";
+    expect(() => assertToken()).toThrow("Session expired");
   });
 });
 

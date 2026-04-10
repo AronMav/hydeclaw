@@ -55,6 +55,9 @@ impl AgentEngine {
         if let Err(e) = sm.set_run_status(session_id, "running").await {
             tracing::warn!(session_id = %session_id, error = %e, "failed to mark SSE session as running");
         }
+        if let Err(e) = sm.log_wal_event(session_id, "running", None).await {
+            tracing::warn!(session_id = %session_id, error = %e, "failed to log WAL running event");
+        }
         let mut lifecycle_guard = SessionLifecycleGuard::new(self.db.clone(), session_id);
 
         // Emit session ID so the UI can track which session is active

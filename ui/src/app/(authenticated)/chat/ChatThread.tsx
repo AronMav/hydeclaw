@@ -3,7 +3,7 @@
 import React, { Component, useState, useCallback, useRef, useEffect, useMemo } from "react";
 import type { ErrorInfo, ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { getToken } from "@/lib/api";
+import { assertToken } from "@/lib/api";
 import { useChatStore, isActivePhase, convertHistory } from "@/stores/chat-store";
 import { sanitizeUrl } from "@/lib/sanitize-url";
 import { useVisualViewport } from "@/hooks/use-visual-viewport";
@@ -425,7 +425,7 @@ function ChatComposer() {
       formData.append("file", file);
       const resp = await fetch("/api/media/upload", {
         method: "POST",
-        headers: { Authorization: `Bearer ${getToken()}` },
+        headers: { Authorization: `Bearer ${assertToken()}` },
         body: formData,
       });
       if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`);

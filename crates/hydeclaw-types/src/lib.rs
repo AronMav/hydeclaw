@@ -100,6 +100,9 @@ pub struct IncomingMessage {
     /// Optional tool policy override (used by cron jobs).
     /// When set, merged on top of the agent's tool policy before the engine runs.
     pub tool_policy_override: Option<serde_json::Value>,
+    /// When set, engine builds LLM context from the branch chain ending at this message
+    /// instead of the flat chronological history. Used for branching sessions.
+    pub leaf_message_id: Option<uuid::Uuid>,
 }
 
 // ── Tool definitions for LLM ──
@@ -263,6 +266,7 @@ impl IncomingMessageDto {
             timestamp: self.timestamp,
             formatting_prompt,
             tool_policy_override: None,
+            leaf_message_id: None,
         }
     }
 }

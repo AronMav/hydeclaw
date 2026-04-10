@@ -1,6 +1,11 @@
-use axum::{extract::State, response::IntoResponse, Json};
+use axum::{Router, extract::State, response::IntoResponse, routing::post, Json};
 use serde_json::json;
 use super::super::AppState;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/auth/ws-ticket", post(api_create_ws_ticket))
+}
 
 const TICKET_TTL_SECS: u64 = 30;
 

@@ -1,11 +1,22 @@
 use axum::{
+    Router,
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Json},
+    routing::{get, post, delete},
 };
 use serde_json::{json, Value};
 
 use super::super::AppState;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/access/{agent}/pending", get(api_access_pending))
+        .route("/api/access/{agent}/approve/{code}", post(api_access_approve))
+        .route("/api/access/{agent}/reject/{code}", post(api_access_reject))
+        .route("/api/access/{agent}/users", get(api_access_list_users))
+        .route("/api/access/{agent}/users/{user_id}", delete(api_access_remove_user))
+}
 
 pub(crate) async fn api_access_pending(
     State(state): State<AppState>,

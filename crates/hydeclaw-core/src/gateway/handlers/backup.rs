@@ -1,8 +1,10 @@
 use anyhow::Result;
 use axum::{
+    Router,
     extract::{Path, State},
     http::{header, StatusCode},
     response::{IntoResponse, Json},
+    routing::{get, post, delete},
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -16,6 +18,17 @@ use sqlx::Row;
 
 use super::super::AppState;
 use crate::secrets::{PlaintextSecret, SecretsManager};
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/backup", post(api_create_backup).get(api_list_backups))
+        .route("/api/backup/{filename}", get(api_download_backup).delete(api_delete_backup))
+        .merge(
+            Router::new()
+                .route("/api/restore", post(api_restore))
+                .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024)) // 100 MB
+        )
+}
 
 const BACKUP_DIR: &str = "backups";
 const RETENTION_DAYS: i64 = 7;

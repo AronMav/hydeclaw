@@ -1,7 +1,6 @@
 use axum::{
     Router,
     middleware as axum_mw,
-    routing::{delete, get, patch, post, put},
 };
 use tower_http::services::{ServeDir, ServeFile};
 use serde::{Deserialize, Serialize};
@@ -13,7 +12,6 @@ pub mod state;
 mod handlers;
 pub use state::*;
 use middleware::*;
-use handlers::*;
 // Re-export for use by main.rs
 pub use handlers::agents::start_agent_from_config;
 pub use handlers::email_triggers::renew_expiring_gmail_watches;
@@ -36,10 +34,6 @@ mod sse_types {
     pub const RICH_CARD: &str = "rich-card";
     pub const FILE: &str = "file";
     pub const SYNC: &str = "sync";
-    pub const STEP_START: &str = "step-start";
-    pub const STEP_FINISH: &str = "step-finish";
-    pub const TOOL_APPROVAL_NEEDED: &str = "tool-approval-needed";
-    pub const TOOL_APPROVAL_RESOLVED: &str = "tool-approval-resolved";
     pub const FINISH: &str = "finish";
     pub const ERROR: &str = "error";
 }
@@ -73,220 +67,33 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
         .and_then(|env_name| std::env::var(env_name).ok());
 
     let app = Router::new()
-        .route("/health", get(health))
-        .route("/api/mcp/callback", post(mcp_callback))
-        .route("/v1/chat/completions", post(chat_completions))
-        .route("/v1/models", get(list_models))
-        .route("/v1/embeddings", post(embeddings_proxy))
-        .route("/api/chat", post(api_chat_sse))
-        .route("/api/chat/{id}/stream", get(api_chat_resume_stream))
-        .route("/api/chat/{id}/abort", post(api_chat_abort))
-        .route("/ws", get(ws_handler))
-        // Channel connector WebSocket (external adapters: Telegram, Discord, etc.)
-        .route("/ws/channel/{agent_name}", get(channel_ws_handler))
-        // WS ticket-based auth (one-time ticket to avoid exposing static token in WS URL)
-        .route("/api/auth/ws-ticket", post(api_create_ws_ticket))
-        // Secrets vault CRUD
-        .route("/api/secrets", get(list_secrets))
-        .route("/api/secrets", post(set_secret))
-        .route("/api/secrets/{name}", get(get_secret))
-        .route("/api/secrets/{name}", delete(delete_secret))
-        // Setup / onboarding
-        .route("/api/setup/status", get(api_setup_status))
-        .route("/api/setup/requirements", get(api_setup_requirements))
-        .merge(
-            Router::new()
-                .route("/api/setup/complete", post(api_setup_complete))
-                .layer(axum_mw::from_fn_with_state(state.clone(), setup_guard_middleware))
-        )
-        // UI monitoring endpoints
-        .route("/api/status", get(api_status))
-        .route("/api/agents", get(api_agents))
-        .route("/api/agents", post(api_create_agent))
-        .route("/api/agents/{name}", get(api_get_agent))
-        .route("/api/agents/{name}", put(api_update_agent))
-        .route("/api/agents/{name}", delete(api_delete_agent))
-        .route("/api/agents/{name}/tasks", get(handlers::agents::api_agent_tasks))
-        .route("/api/agents/{name}/model-override", post(set_model_override))
-        // Unified providers
-        .route("/api/provider-types", get(handlers::providers::api_list_provider_types))
-        .route("/api/media-drivers", get(handlers::providers::api_list_media_drivers))
-        .route("/api/media-config", get(handlers::providers::api_media_config_export))
-        .route("/api/providers", get(handlers::providers::api_list_providers).post(handlers::providers::api_create_provider))
-        .route("/api/providers/{id}", get(handlers::providers::api_get_provider).put(handlers::providers::api_update_provider).delete(handlers::providers::api_delete_provider).patch(handlers::providers::api_patch_cli_options))
-        .route("/api/providers/{id}/models", get(handlers::providers::api_unified_provider_models))
-        .route("/api/providers/{id}/resolve", get(handlers::providers::api_provider_resolve))
-        .route("/api/providers/{id}/test-cli", post(handlers::providers::api_test_cli))
-        .route("/api/provider-active", get(handlers::providers::api_list_provider_active).put(handlers::providers::api_set_provider_active))
-        .route("/api/watchdog/status", get(api_watchdog_status))
-        .route("/api/watchdog/config", get(api_watchdog_config).put(api_watchdog_config_update))
-        .route("/api/watchdog/settings", get(api_watchdog_settings).put(api_watchdog_settings_update))
-        .route("/api/watchdog/restart/{name}", post(api_watchdog_restart_check))
-        .route("/api/stats", get(api_stats))
-        .route("/api/usage", get(api_usage))
-        .route("/api/usage/daily", get(api_usage_daily))
-        .route("/api/usage/sessions", get(api_usage_sessions))
-        .route("/api/doctor", get(api_doctor))
-        .route("/api/network/addresses", get(api_network_addresses))
-        // Sessions & messages
-        .route("/api/sessions", get(api_list_sessions))
-        .route("/api/sessions", delete(api_delete_all_sessions))
-        .route("/api/sessions/latest", get(api_latest_session))
-        .route("/api/sessions/search", get(api_search_sessions))
-        .route("/api/sessions/{id}", delete(api_delete_session).patch(api_patch_session))
-        .route("/api/sessions/{id}/compact", post(api_compact_session))
-        .route("/api/sessions/{id}/export", get(api_export_session))
-        .route("/api/sessions/{id}/invite", post(handlers::sessions::api_invite_to_session))
-        .route("/api/sessions/{id}/documents", post(handlers::sessions::api_session_upload_document))
-        .route("/api/sessions/{id}/messages", get(api_session_messages))
-        .route("/api/sessions/{id}/fork", post(handlers::sessions::api_fork_session))
-        .route("/api/messages/{id}", delete(api_delete_message).patch(api_patch_message))
-        .route("/api/messages/{id}/feedback", post(api_message_feedback))
-        // Audit
-        .route("/api/audit", get(api_audit_events))
-        .route("/api/audit/tools", get(api_tool_audit))
-        // Tasks (multi-step execution pipeline)
-        .route("/api/tasks", get(api_list_tasks).post(api_create_task_endpoint))
-        .route("/api/tasks/audit", get(api_task_audit))
-        .route("/api/tasks/{id}", get(api_get_task).delete(api_delete_task))
-        .route("/api/tasks/{id}/steps", get(api_task_steps))
-        // Approvals
-        .route("/api/approvals", get(api_list_approvals))
-        .route("/api/approvals/{id}/resolve", post(api_resolve_approval))
-        .route("/api/approvals/allowlist", get(api_list_allowlist).post(api_add_to_allowlist))
-        .route("/api/approvals/allowlist/{id}", delete(api_delete_from_allowlist))
-        // Notifications
-        // Note: /read-all must be registered BEFORE /{id} to prevent "read-all" matching as UUID path param
-        .route("/api/notifications", get(api_list_notifications))
-        .route("/api/notifications/read-all", post(api_mark_all_notifications_read))
-        .route("/api/notifications/clear", delete(api_clear_all_notifications))
-        .route("/api/notifications/{id}", patch(api_mark_notification_read))
-        // Cron jobs CRUD
-        .route("/api/cron", get(api_list_cron))
-        .route("/api/cron", post(api_create_cron))
-        .route("/api/cron/{id}", put(api_update_cron))
-        .route("/api/cron/{id}", delete(api_delete_cron))
-        .route("/api/cron/{id}/run", post(api_run_cron))
-        .route("/api/cron/{id}/runs", get(api_cron_runs))
-        .route("/api/cron/runs", get(api_cron_runs_all))
-        // Memory
-        .route("/api/memory", get(api_list_memory).post(api_create_memory))
-        .route("/api/memory/stats", get(api_memory_stats))
-        .route("/api/memory/graph", get(api_memory_graph))
-        .route("/api/memory/export", get(api_export_memory))
-        .route("/api/memory/fts-language", get(api_get_fts_language).put(api_set_fts_language))
-        .route("/api/memory/{id}", delete(api_delete_memory))
-        .route("/api/memory/{id}", patch(api_patch_memory))
-        // Memory documents (document-level view)
-        .route("/api/memory/tasks", get(api_memory_tasks))
-        .route("/api/memory/extraction-queue", get(api_extraction_queue))
-        .route("/api/memory/categories", get(api_memory_categories))
-        .route("/api/memory/topics", get(api_memory_topics))
-        .route("/api/memory/documents", get(api_list_documents))
-        .route("/api/memory/documents/{id}", get(api_get_document).patch(api_patch_document).delete(api_delete_memory))
-        // Tools & MCP
-        .route("/api/tool-definitions", get(api_tool_definitions))
-        .route("/api/tools", get(api_list_tools).post(api_tool_service_create))
-        .route("/api/tools/{name}", put(api_tool_service_update).delete(api_tool_service_delete))
-        .route("/api/mcp", get(api_list_mcp).post(api_mcp_create))
-        .route("/api/mcp/{name}", put(api_mcp_update).delete(api_mcp_delete))
-        .route("/api/mcp/{name}/reload", post(api_mcp_reload))
-        .route("/api/mcp/{name}/toggle", post(api_mcp_toggle))
-        // YAML tool management (global shared)
-        .route("/api/yaml-tools", get(api_yaml_tools_list_global).post(api_yaml_tool_create_global))
-        .route("/api/yaml-tools/{tool}/verify", post(api_yaml_tool_verify_global))
-        .route("/api/yaml-tools/{tool}/disable", post(api_yaml_tool_disable_global))
-        .route("/api/yaml-tools/{tool}/enable", post(api_yaml_tool_enable_global))
-        .route("/api/yaml-tools/{tool}", get(api_yaml_tool_get_global).put(api_yaml_tool_update_global).delete(api_yaml_tool_delete_global))
-        // YAML tool management (per-agent, kept for compat)
-        .route("/api/agents/{name}/yaml-tools", get(api_yaml_tools_list))
-        .route("/api/agents/{name}/yaml-tools/{tool}/verify", post(api_yaml_tool_verify))
-        .route("/api/agents/{name}/yaml-tools/{tool}/disable", post(api_yaml_tool_disable))
-        // Skills management (global — skills are shared across all agents)
-        .route("/api/skills", get(api_skills_list_global))
-        .route("/api/skills/{skill}", get(api_skill_get_global).put(api_skill_upsert_global).delete(api_skill_delete_global))
-        // Skills management (per-agent, kept for compat)
-        .route("/api/agents/{name}/skills", get(api_skills_list))
-        .route("/api/agents/{name}/skills/{skill}", get(api_skill_get).put(api_skill_upsert).delete(api_skill_delete))
-        // Workspace file browser (flat: workspace/ is root, agents are subdirs)
-        .route("/api/workspace", get(api_workspace_browse))
-        .route("/api/workspace/{*path}", get(api_workspace_browse))
-        .route("/api/workspace/{*path}", put(api_workspace_write))
-        .route("/api/workspace/{*path}", delete(api_workspace_delete))
-        // TTS
-        .route("/api/tts/voices", get(api_tts_voices))
-        .route("/api/tts/synthesize", post(api_tts_synthesize))
-        // Config
-        .route("/api/config/schema", get(api_get_config_schema))
-        .route("/api/config", get(api_get_config))
-        .route("/api/config", put(api_update_config))
-        .route("/api/config/export", get(api_export_config))
-        .route("/api/config/import", post(api_import_config))
-        // Backup & restore
-        .route("/api/backup", post(api_create_backup).get(api_list_backups))
-        .route("/api/backup/{filename}", get(api_download_backup).delete(api_delete_backup))
-        .merge(
-            Router::new()
-                .route("/api/restore", post(api_restore))
-                .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024)) // 100 MB — backups can be large
-        )
-        // Restart core process (systemd will restart it)
-        .route("/api/restart", post(api_restart))
-        // Docker service management (rebuild/restart whitelisted services)
-        .route("/api/services", get(api_list_services))
-        .route("/api/services/{name}/{action}", post(api_service_action))
-        .route("/api/containers/{name}/restart", post(api_container_restart))
-        // Access control (pairing + allowlist)
-        .route("/api/access/{agent}/pending", get(api_access_pending))
-        .route("/api/access/{agent}/approve/{code}", post(api_access_approve))
-        .route("/api/access/{agent}/reject/{code}", post(api_access_reject))
-        .route("/api/access/{agent}/users", get(api_access_list_users))
-        .route("/api/access/{agent}/users/{user_id}", delete(api_access_remove_user))
-        // Webhooks — CRUD + POST /webhook/{name} dispatches payload to configured agent
-        .route("/api/webhooks", get(api_list_webhooks).post(api_create_webhook))
-        .route("/api/webhooks/{id}", put(api_update_webhook).delete(api_delete_webhook))
-        .route("/api/webhooks/{id}/regenerate-secret", post(api_regenerate_webhook_secret))
-        .route("/webhook/{name}", post(webhook_handler))
-        // Channel management (per-agent + global)
-        .route("/api/channels", get(api_list_all_channels))
-        .route("/api/channels/active", get(api_channels_active))
-        .route("/api/channels/notify", post(api_channel_notify))
-        .route("/api/agents/{name}/hooks", get(api_agent_hooks))
-        .route("/api/agents/{name}/channels", get(api_channels_list).post(api_channel_create))
-        .route("/api/agents/{name}/channels/{id}", delete(api_channel_delete).put(api_channel_update))
-        .route("/api/agents/{name}/channels/{id}/restart", post(api_channel_restart))
-        .route("/api/agents/{name}/channels/{id}/ack", post(api_channel_ack))
-        .route("/api/agents/{name}/channels/{id}/status", get(api_channel_status))
-        // Canvas state (current content for a given agent)
-        .route("/api/canvas/{agent}", get(api_canvas_state).delete(api_canvas_clear))
-        // Media upload (channel adapters download media → upload here for stable URLs)
-        .route("/uploads/{filename}", get(api_media_serve))
-        .merge(
-            Router::new()
-                .route("/api/media/upload", post(api_media_upload))
-                .layer(axum::extract::DefaultBodyLimit::max(20 * 1024 * 1024)) // 20 MB — only for upload
-        )
-        // OAuth 2.0 — callback is public (exempted in auth_middleware)
-        .route("/api/oauth/callback", get(api_oauth_callback))
-        // OAuth accounts CRUD (must come BEFORE any /api/oauth/{provider} to avoid path conflicts)
-        .route("/api/oauth/accounts", get(api_oauth_accounts_list).post(api_oauth_account_create))
-        .route("/api/oauth/accounts/{id}", delete(api_oauth_account_delete))
-        .route("/api/oauth/accounts/{id}/connect", post(api_oauth_account_connect))
-        .route("/api/oauth/accounts/{id}/revoke", post(api_oauth_account_revoke))
-        // OAuth — backward compat
-        .route("/api/oauth/providers", get(api_oauth_providers))
-        // Agent OAuth bindings
-        .route("/api/agents/{name}/oauth/bindings", get(api_oauth_bindings_list).post(api_oauth_binding_create))
-        .route("/api/agents/{name}/oauth/bindings/{provider}", delete(api_oauth_binding_delete))
-        // Gmail Pub/Sub triggers — push is public (Google calls without our Bearer token)
-        // Note: /push must be registered BEFORE /{id} to avoid "push" matching as UUID path param
-        .route("/api/triggers/email/push", post(gmail_push_handler))
-        // Gmail trigger CRUD — authenticated
-        .route("/api/triggers/email", get(api_list_gmail_triggers).post(api_create_gmail_trigger))
-        .route("/api/triggers/email/{id}", delete(api_delete_gmail_trigger))
-        // GitHub repo allowlist (per-agent)
-        .route("/api/agents/{name}/github/repos", get(handlers::github_repos::api_list_github_repos).post(handlers::github_repos::api_add_github_repo))
-        .route("/api/agents/{name}/github/repos/{id}", delete(handlers::github_repos::api_delete_github_repo));
+        .merge(handlers::chat::routes())           // /health, /api/chat, /v1/chat/completions, /v1/models, /v1/embeddings, /api/mcp/callback
+        .merge(handlers::auth::routes())            // /api/auth/ws-ticket
+        .merge(handlers::channel_ws::routes())      // /ws, /ws/channel/{agent_name}
+        .merge(handlers::agents::routes())          // /api/agents/*, /api/approvals/*
+        .merge(handlers::sessions::routes())        // /api/sessions/*, /api/messages/*
+        .merge(handlers::monitoring::routes(&state))// /api/setup/*, /api/status, /api/stats, /api/usage/*, /api/doctor, /api/audit/*, /api/watchdog/*
+        .merge(handlers::providers::routes())       // /api/providers/*, /api/provider-types, /api/media-drivers, /api/media-config, /api/provider-active
+        .merge(handlers::network::routes())         // /api/network/addresses
+        .merge(handlers::secrets::routes())         // /api/secrets/*
+        .merge(handlers::memory::routes())          // /api/memory/*
+        .merge(handlers::cron::routes())            // /api/cron/*
+        .merge(handlers::tools::routes())           // /api/tool-definitions, /api/tools/*, /api/mcp/*
+        .merge(handlers::yaml_tools::routes())      // /api/yaml-tools/*, /api/agents/*/yaml-tools/*
+        .merge(handlers::skills::routes())          // /api/skills/*, /api/agents/*/skills/*
+        .merge(handlers::channels::routes())        // /api/channels/*, /api/agents/*/channels/*, /api/agents/*/hooks
+        .merge(handlers::config::routes())          // /api/config/*, /api/restart, /api/tts/*, /api/canvas/*
+        .merge(handlers::backup::routes())          // /api/backup/*, /api/restore
+        .merge(handlers::services::routes())        // /api/services/*, /api/containers/*
+        .merge(handlers::webhooks::routes())        // /api/webhooks/*, /webhook/*
+        .merge(handlers::oauth::routes())           // /api/oauth/*, /api/agents/*/oauth/*
+        .merge(handlers::email_triggers::routes())  // /api/triggers/email/*
+        .merge(handlers::github_repos::routes())    // /api/agents/*/github/repos/*
+        .merge(handlers::access::routes())          // /api/access/*
+        .merge(handlers::tasks::routes())           // /api/tasks/*
+        .merge(handlers::notifications::routes())   // /api/notifications/*
+        .merge(handlers::media::routes())           // /uploads/*, /api/media/*
+        .merge(handlers::workspace::routes());      // /api/workspace/*
 
     // Auth middleware — REQUIRED. Refuse to start without a token.
     let app = if let Some(token) = auth_token {
@@ -330,6 +137,11 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
             for iface in get_local_ipv4_addrs() {
                 if let Ok(v) = format!("http://{}:{}", iface, port).parse() { origins.push(v); }
                 if let Ok(v) = format!("http://{}:5173", iface).parse() { origins.push(v); }
+            }
+            // Add Docker subnet gateway IPs for CORS
+            for gw in get_docker_subnet_gateways(&state.config.gateway.cors_docker_subnets) {
+                if let Ok(v) = format!("http://{}:{}", gw, port).parse() { origins.push(v); }
+                if let Ok(v) = format!("http://{}:5173", gw).parse() { origins.push(v); }
             }
         }
         // Also add public_url origin if configured
@@ -410,6 +222,20 @@ fn get_local_ipv4_addrs() -> Vec<String> {
                     return vec![local.ip().to_string()];
                 }
     Vec::new()
+}
+
+/// Parse CIDR subnets and return their gateway IPs (.1 address).
+/// e.g. "172.17.0.0/16" -> "172.17.0.1"
+fn get_docker_subnet_gateways(subnets: &[String]) -> Vec<String> {
+    subnets.iter().filter_map(|cidr| {
+        let ip_part = cidr.split('/').next()?;
+        let octets: Vec<&str> = ip_part.split('.').collect();
+        if octets.len() == 4 {
+            Some(format!("{}.{}.{}.1", octets[0], octets[1], octets[2]))
+        } else {
+            None
+        }
+    }).collect()
 }
 
 #[cfg(test)]
@@ -544,5 +370,37 @@ mod tests {
             skill_safe_name("file:name*bad?\"<>|"),
             "file-name-bad-----"
         );
+    }
+
+    // ── docker_subnet_gateways ──────────────────────────────────────────────
+
+    #[test]
+    fn docker_subnet_gateway_basic() {
+        let subnets = vec!["172.17.0.0/16".to_string()];
+        let gws = super::get_docker_subnet_gateways(&subnets);
+        assert_eq!(gws, vec!["172.17.0.1"]);
+    }
+
+    #[test]
+    fn docker_subnet_gateway_multiple() {
+        let subnets = vec![
+            "172.17.0.0/16".to_string(),
+            "172.18.0.0/16".to_string(),
+        ];
+        let gws = super::get_docker_subnet_gateways(&subnets);
+        assert_eq!(gws, vec!["172.17.0.1", "172.18.0.1"]);
+    }
+
+    #[test]
+    fn docker_subnet_gateway_empty() {
+        let gws = super::get_docker_subnet_gateways(&[]);
+        assert!(gws.is_empty());
+    }
+
+    #[test]
+    fn docker_subnet_gateway_invalid() {
+        let subnets = vec!["not-a-cidr".to_string()];
+        let gws = super::get_docker_subnet_gateways(&subnets);
+        assert!(gws.is_empty());
     }
 }

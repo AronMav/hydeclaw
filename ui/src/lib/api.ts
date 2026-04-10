@@ -16,6 +16,17 @@ function handleUnauthorized() {
   window.location.href = "/login";
 }
 
+/** Get token with validation — throws if missing. Use in one-shot fetch calls. */
+export function assertToken(): string {
+  if (redirecting) throw new Error("Session expired");
+  const token = getToken();
+  if (!token) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+  return token;
+}
+
 async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   // If already redirecting to login, don't make more requests (prevents rate limit lockout)
   if (redirecting) {

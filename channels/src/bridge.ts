@@ -303,29 +303,22 @@ export class BridgeHandle {
   /** List allowed users via core HTTP API. */
   async listUsers(): Promise<UserEntry[]> {
     const url = `${this.coreHttpUrl}/api/access/${this.agentName}/users`;
-    try {
-      const resp = await fetch(url, {
-        headers: { Authorization: `Bearer ${this.authToken}` },
-      });
-      if (!resp.ok) return [];
-      return (await resp.json()) as UserEntry[];
-    } catch {
-      return [];
-    }
+    const resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${this.authToken}` },
+    });
+    if (!resp.ok) throw new Error(`listUsers failed: HTTP ${resp.status}`);
+    return (await resp.json()) as UserEntry[];
   }
 
   /** Revoke a user via core HTTP API. */
   async revokeUser(userId: string): Promise<boolean> {
     const url = `${this.coreHttpUrl}/api/access/${this.agentName}/users/${userId}`;
-    try {
-      const resp = await fetch(url, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${this.authToken}` },
-      });
-      return resp.ok;
-    } catch {
-      return false;
-    }
+    const resp = await fetch(url, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${this.authToken}` },
+    });
+    if (!resp.ok) throw new Error(`revokeUser failed: HTTP ${resp.status}`);
+    return true;
   }
 
   /** Upload media: download from sourceUrl then upload to core. */
@@ -333,33 +326,29 @@ export class BridgeHandle {
     sourceUrl: string,
     filename: string,
     authHeader?: string,
-  ): Promise<string | null> {
-    try {
-      const headers: Record<string, string> = {};
-      if (authHeader) headers.Authorization = authHeader;
+  ): Promise<string> {
+    const headers: Record<string, string> = {};
+    if (authHeader) headers.Authorization = authHeader;
 
-      const dlResp = await fetch(sourceUrl, { headers });
-      if (!dlResp.ok) return null;
-      const blob = await dlResp.blob();
+    const dlResp = await fetch(sourceUrl, { headers });
+    if (!dlResp.ok) throw new Error(`uploadMedia download failed: HTTP ${dlResp.status}`);
+    const blob = await dlResp.blob();
 
-      const form = new FormData();
-      form.append("file", blob, filename);
+    const form = new FormData();
+    form.append("file", blob, filename);
 
-      const uploadResp = await fetch(
-        `${this.coreHttpUrl}/api/media/upload`,
-        {
-          method: "POST",
-          headers: { Authorization: `Bearer ${this.authToken}` },
-          body: form,
-        },
-      );
-      if (!uploadResp.ok) return null;
+    const uploadResp = await fetch(
+      `${this.coreHttpUrl}/api/media/upload`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${this.authToken}` },
+        body: form,
+      },
+    );
+    if (!uploadResp.ok) throw new Error(`uploadMedia upload failed: HTTP ${uploadResp.status}`);
 
-      const data = (await uploadResp.json()) as { url?: string };
-      return data.url ?? null;
-    } catch {
-      return null;
-    }
+    const data = (await uploadResp.json()) as { url?: string };
+    return data.url ?? "";
   }
 
   private send(msg: Record<string, unknown>): void {

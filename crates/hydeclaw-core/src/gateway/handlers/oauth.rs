@@ -1,11 +1,25 @@
 use axum::{
+    Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json, Redirect},
+    routing::{get, post, delete},
 };
 use serde::Deserialize;
 use std::collections::HashMap;
 use crate::gateway::AppState;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/oauth/callback", get(api_oauth_callback))
+        .route("/api/oauth/accounts", get(api_oauth_accounts_list).post(api_oauth_account_create))
+        .route("/api/oauth/accounts/{id}", delete(api_oauth_account_delete))
+        .route("/api/oauth/accounts/{id}/connect", post(api_oauth_account_connect))
+        .route("/api/oauth/accounts/{id}/revoke", post(api_oauth_account_revoke))
+        .route("/api/oauth/providers", get(api_oauth_providers))
+        .route("/api/agents/{name}/oauth/bindings", get(api_oauth_bindings_list).post(api_oauth_binding_create))
+        .route("/api/agents/{name}/oauth/bindings/{provider}", delete(api_oauth_binding_delete))
+}
 
 // ---------------------------------------------------------------------------
 // Helpers

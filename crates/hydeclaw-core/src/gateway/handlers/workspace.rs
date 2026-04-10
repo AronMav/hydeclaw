@@ -1,9 +1,19 @@
 use axum::{
+    Router,
     http::StatusCode,
     response::{IntoResponse, Json},
+    routing::{get, put, delete},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+
+use super::super::AppState;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/workspace", get(api_workspace_browse))
+        .route("/api/workspace/{*path}", get(api_workspace_browse).put(api_workspace_write).delete(api_workspace_delete))
+}
 
 /// Resolve and validate a path within the workspace/ directory.
 /// Returns (base_dir, target_path) where target is guaranteed strictly inside workspace.

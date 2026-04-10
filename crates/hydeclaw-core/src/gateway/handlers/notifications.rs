@@ -1,12 +1,22 @@
 use axum::{
+    Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
+    routing::{get, post, delete, patch},
 };
 use serde::Deserialize;
 use uuid::Uuid;
 
 use super::super::AppState;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/notifications", get(api_list_notifications))
+        .route("/api/notifications/read-all", post(api_mark_all_notifications_read))
+        .route("/api/notifications/clear", delete(api_clear_all_notifications))
+        .route("/api/notifications/{id}", patch(api_mark_notification_read))
+}
 
 // ── Query params ────────────────────────────────────────────────
 

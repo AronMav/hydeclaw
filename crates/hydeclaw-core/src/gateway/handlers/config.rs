@@ -1,12 +1,26 @@
 use axum::{
+    Router,
     body::Body,
     extract::{FromRequest, State},
     http::{Request, StatusCode},
     response::{IntoResponse, Json},
+    routing::{get, post, put, delete},
 };
 use serde_json::{json, Value};
 
 use super::super::AppState;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/config/schema", get(api_get_config_schema))
+        .route("/api/config", get(api_get_config).put(api_update_config))
+        .route("/api/config/export", get(api_export_config))
+        .route("/api/config/import", post(api_import_config))
+        .route("/api/restart", post(api_restart))
+        .route("/api/tts/voices", get(api_tts_voices))
+        .route("/api/tts/synthesize", post(api_tts_synthesize))
+        .route("/api/canvas/{agent}", get(api_canvas_state).delete(api_canvas_clear))
+}
 
 /// Shared reqwest client for Toolgate HTTP calls (voices + synthesize).
 static TOOLGATE_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();

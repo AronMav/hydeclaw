@@ -25,6 +25,7 @@ vi.mock("@/lib/message-parser", () => ({
 vi.mock("@/lib/api", () => ({
   apiPatch: vi.fn(() => Promise.resolve()),
   getToken: vi.fn(() => "test-token"),
+  assertToken: vi.fn(() => "test-token"),
 }));
 
 vi.mock("@/lib/query-client", () => ({

@@ -1,13 +1,39 @@
 use axum::{
+    Router,
     extract::{Query, State},
     http::StatusCode,
+    middleware as axum_mw,
     response::{IntoResponse, Json},
+    routing::{get, post, put},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::super::AppState;
 use crate::agent::cli_backend::CLI_PRESETS;
+
+pub(crate) fn routes(state: &AppState) -> Router<AppState> {
+    Router::new()
+        .route("/api/setup/status", get(api_setup_status))
+        .route("/api/setup/requirements", get(api_setup_requirements))
+        .merge(
+            Router::new()
+                .route("/api/setup/complete", post(api_setup_complete))
+                .layer(axum_mw::from_fn_with_state(state.clone(), setup_guard_middleware))
+        )
+        .route("/api/status", get(api_status))
+        .route("/api/stats", get(api_stats))
+        .route("/api/usage", get(api_usage))
+        .route("/api/usage/daily", get(api_usage_daily))
+        .route("/api/usage/sessions", get(api_usage_sessions))
+        .route("/api/doctor", get(api_doctor))
+        .route("/api/audit", get(api_audit_events))
+        .route("/api/audit/tools", get(api_tool_audit))
+        .route("/api/watchdog/status", get(api_watchdog_status))
+        .route("/api/watchdog/config", get(api_watchdog_config).put(api_watchdog_config_update))
+        .route("/api/watchdog/settings", get(api_watchdog_settings).put(api_watchdog_settings_update))
+        .route("/api/watchdog/restart/{name}", post(api_watchdog_restart_check))
+}
 
 // ── Doctor check types ──────────────────────────────────────────────────────
 

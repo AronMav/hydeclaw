@@ -169,6 +169,7 @@ vi.mock("@/lib/api", () => ({
   apiPatch: vi.fn().mockResolvedValue({}),
   apiDelete: vi.fn().mockResolvedValue(undefined),
   getToken: () => "test-token",
+  assertToken: () => "test-token",
 }));
 
 // ── Mock: @/lib/ws ─────────────────────────────────────────────────────────

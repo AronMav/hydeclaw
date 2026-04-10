@@ -1,8 +1,12 @@
-use axum::extract::State;
-use axum::Json;
+use axum::{Router, extract::State, Json, routing::get};
 use serde_json::json;
 
 use crate::gateway::state::{AppState, WanIpCache};
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/network/addresses", get(api_network_addresses))
+}
 
 // ── CGNAT / RFC-1918 classification ──────────────────────────────────────────
 

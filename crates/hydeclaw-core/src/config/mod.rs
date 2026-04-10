@@ -112,6 +112,11 @@ pub struct GatewayConfig {
     /// Allowed CORS origins. If empty, derives from listen address.
     #[serde(default)]
     pub cors_origins: Vec<String>,
+    /// Additional subnets whose gateway IPs should be added to auto-derived CORS origins.
+    /// Useful for Docker bridge networks (e.g. ["172.17.0.0/16", "172.18.0.0/16"]).
+    /// Only used when cors_origins is empty (auto-derivation mode).
+    #[serde(default)]
+    pub cors_docker_subnets: Vec<String>,
 }
 
 fn default_listen() -> String {

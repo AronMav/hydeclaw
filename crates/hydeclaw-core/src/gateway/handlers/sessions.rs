@@ -1,7 +1,9 @@
 use axum::{
+    Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
+    routing::{get, post, delete, patch},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -9,6 +11,21 @@ use std::collections::HashMap;
 
 use crate::db::sessions;
 use super::super::AppState;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/sessions", get(api_list_sessions).delete(api_delete_all_sessions))
+        .route("/api/sessions/latest", get(api_latest_session))
+        .route("/api/sessions/search", get(api_search_sessions))
+        .route("/api/sessions/{id}", delete(api_delete_session).patch(api_patch_session))
+        .route("/api/sessions/{id}/compact", post(api_compact_session))
+        .route("/api/sessions/{id}/export", get(api_export_session))
+        .route("/api/sessions/{id}/invite", post(api_invite_to_session))
+        .route("/api/sessions/{id}/documents", post(api_session_upload_document))
+        .route("/api/sessions/{id}/messages", get(api_session_messages))
+        .route("/api/messages/{id}", delete(api_delete_message).patch(api_patch_message))
+        .route("/api/messages/{id}/feedback", post(api_message_feedback))
+}
 
 // ── Latest Session endpoint ──
 
@@ -790,4 +807,81 @@ fn chunk_text(text: &str, target_size: usize) -> Vec<String> {
         chunks.push(current.trim().to_string());
     }
     chunks
+}
+
+// ── Branching endpoints ──────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub(crate) struct ActivePathQuery {
+    leaf: Option<uuid::Uuid>,
+}
+
+/// GET /api/sessions/{id}/active-path -- resolve the linear message chain for display.
+pub(crate) async fn api_active_path(
+    State(state): State<AppState>,
+    Path(session_id): Path<uuid::Uuid>,
+    Query(q): Query<ActivePathQuery>,
+) -> impl IntoResponse {
+    match sessions::resolve_active_path(&state.db, session_id, q.leaf).await {
+        Ok(msgs) => {
+            let messages: Vec<Value> = msgs.iter().map(|m| {
+                json!({
+                    "id": m.id,
+                    "role": m.role,
+                    "content": m.content,
+                    "tool_calls": m.tool_calls,
+                    "tool_call_id": m.tool_call_id,
+                    "created_at": m.created_at.to_rfc3339(),
+                    "agent_id": m.agent_id,
+                    "feedback": m.feedback.unwrap_or(0),
+                    "edited_at": m.edited_at.map(|t| t.to_rfc3339()),
+                    "status": m.status,
+                    "parent_message_id": m.parent_message_id,
+                    "branch_from_message_id": m.branch_from_message_id,
+                })
+            }).collect();
+            Json(json!({ "messages": messages })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ForkRequest {
+    /// The message to fork from (will become `branch_from_message_id`).
+    branch_from_message_id: uuid::Uuid,
+    /// Optional parent message for tree continuity.
+    parent_message_id: Option<uuid::Uuid>,
+    /// The role of the new branched message (usually "user").
+    #[serde(default = "default_role")]
+    role: String,
+    /// Content of the new message at the branch point.
+    content: String,
+}
+
+fn default_role() -> String {
+    "user".to_string()
+}
+
+/// POST /api/sessions/{id}/fork -- create a branched message in an existing session.
+pub(crate) async fn api_fork_session(
+    State(state): State<AppState>,
+    Path(session_id): Path<uuid::Uuid>,
+    Json(req): Json<ForkRequest>,
+) -> impl IntoResponse {
+    match sessions::save_message_branched(
+        &state.db,
+        session_id,
+        &req.role,
+        &req.content,
+        None,
+        None,
+        None,
+        None,
+        req.parent_message_id,
+        Some(req.branch_from_message_id),
+    ).await {
+        Ok(msg_id) => Json(json!({ "id": msg_id })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
 }
