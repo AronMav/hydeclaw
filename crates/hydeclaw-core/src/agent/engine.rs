@@ -165,8 +165,8 @@ pub struct AgentEngine {
     pub self_ref: OnceLock<Weak<AgentEngine>>,
     /// Broadcast channel for UI events (agent_processing start/end).
     pub ui_event_tx: Option<tokio::sync::broadcast::Sender<String>>,
-    /// Set by handoff tool during execution; read and cleared by turn loop in chat.rs.
-    pub handoff_target: Arc<tokio::sync::Mutex<Option<HandoffRequest>>>,
+    /// Async handoffs dispatched by `handoff` tool, awaited in turn loop after handle_sse.
+    pub pending_handoffs: Arc<tokio::sync::Mutex<Vec<PendingHandoff>>>,
     /// Shared tracker for currently processing agents (for WS reconnection).
     pub processing_tracker: Option<crate::gateway::ProcessingTracker>,
     /// Default timezone parsed from USER.md at startup (fallback: Europe/Samara).
@@ -200,12 +200,12 @@ pub struct CanvasContent {
     pub title: Option<String>,
 }
 
-/// Handoff request set by `handoff` tool, consumed by turn loop in chat.rs.
-#[derive(Debug, Clone)]
-pub struct HandoffRequest {
-    pub target_agent: String,
-    pub task: String,
-    pub context: String,
+/// Async handoff dispatched by `handoff` tool, awaited in turn loop after handle_sse.
+#[derive(Debug)]
+pub struct PendingHandoff {
+    pub subagent_id: String,
+    pub target_name: String,
+    pub completion_rx: tokio::sync::oneshot::Receiver<crate::agent::subagent_state::SubagentResult>,
 }
 
 /// Maximum canvas content size (5 MB) to protect constrained environments.
@@ -344,9 +344,9 @@ impl AgentEngine {
         self.provider.clone()
     }
 
-    /// Take the pending handoff request, if any (clears the stored value).
-    pub async fn take_handoff(&self) -> Option<HandoffRequest> {
-        self.handoff_target.lock().await.take()
+    /// Drain all pending handoff receivers. Called by turn loop after handle_sse.
+    pub async fn take_pending_handoffs(&self) -> Vec<PendingHandoff> {
+        std::mem::take(&mut *self.pending_handoffs.lock().await)
     }
 
     /// Read the current channel formatting prompt.
