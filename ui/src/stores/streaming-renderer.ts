@@ -457,6 +457,7 @@ export function createStreamingRenderer(store: StoreAccess) {
               assistantId = newId;
               assistantCreatedAt = new Date().toISOString();
               parts = [];
+              incrementalParser.reset(); // CRITICAL: Reset parser to avoid text leakage from previous agent
               if (event.agentName) currentRespondingAgent = event.agentName;
               // Dedup: remove resume placeholder and seeded message with same ID
               const stNow = store.get().agents[agent];
@@ -612,9 +613,36 @@ export function createStreamingRenderer(store: StoreAccess) {
             case "rich-card": {
               flushText();
               if (event.cardType === "agent-turn" && event.data?.agentName) {
-                currentRespondingAgent = event.data.agentName as string;
+                const nextAgent = event.data.agentName as string;
+                currentRespondingAgent = nextAgent;
                 const currentTurnCount = store.get().agents[agent]?.turnCount ?? 0;
-                update(agent, { pendingTargetAgent: currentRespondingAgent, turnCount: currentTurnCount + 1 });
+                
+                // Get messages from the agent that just finished its turn
+                const currentMessages = store.get().agents[agent]?.messageSource.mode === "live" 
+                  ? [...store.get().agents[agent].messageSource.messages] 
+                  : [];
+
+                // Sync store currentAgent if this is an inter-agent turn loop in active view
+                if (store.get().currentAgent === agent) {
+                  store.set((draft: any) => {
+                    draft.currentAgent = nextAgent;
+                    if (!draft.agents[nextAgent]) draft.agents[nextAgent] = emptyAgentState();
+                    
+                    // Transfer the entire live message history to the new agent's state
+                    // This ensures the UI doesn't "flicker" or show an empty/stale list
+                    draft.agents[nextAgent].messageSource = { 
+                      mode: "live", 
+                      messages: currentMessages 
+                    };
+                    
+                    draft.agents[nextAgent].activeSessionId = receivedSessionId;
+                    draft.agents[nextAgent].connectionPhase = "streaming";
+                    draft.agents[nextAgent].turnCount = currentTurnCount + 1;
+                    draft.agents[nextAgent].pendingTargetAgent = null;
+                  });
+                } else {
+                  update(agent, { pendingTargetAgent: currentRespondingAgent, turnCount: currentTurnCount + 1 });
+                }
                 break;
               }
               parts.push({
@@ -658,10 +686,17 @@ export function createStreamingRenderer(store: StoreAccess) {
                 
                 if (existingIdx >= 0) {
                   const existingMsg = liveMessages[existingIdx];
-                  // If message is already marked complete, don't revert it to streaming (Fix SYNC-01)
+                  // Merge content: keep local text if it's ahead of sync (prevents flicker)
+                  // but accept sync if it's significantly different (recon from scratch)
+                  const localTextLen = existingMsg.parts.filter((p: MessagePart) => p.type === "text").reduce((acc: number, p: MessagePart) => acc + ((p as any).text?.length ?? 0), 0);
+                  const syncTextLen = syncParts.filter((p: MessagePart) => p.type === "text").reduce((acc: number, p: MessagePart) => acc + ((p as any).text?.length ?? 0), 0);
+
+                  if (syncTextLen > localTextLen || Math.abs(syncTextLen - localTextLen) > 50) {
+                     existingMsg.parts = syncParts;
+                  }
+                  
                   if (existingMsg.status !== "complete") {
-                    existingMsg.parts = syncParts;
-                    existingMsg.status = syncStatus === "done" ? "complete" : "streaming";
+                    existingMsg.status = (syncStatus === "done" || syncStatus === "finished") ? "complete" : "streaming";
                   }
                 } else {
                   liveMessages.push({
@@ -670,11 +705,13 @@ export function createStreamingRenderer(store: StoreAccess) {
                     parts: syncParts,
                     createdAt: assistantCreatedAt,
                     agentId: currentRespondingAgent ?? undefined,
-                    status: syncStatus === "done" ? "complete" : "streaming",
+                    status: (syncStatus === "done" || syncStatus === "finished") ? "complete" : "streaming",
                   });
                 }
-                if (st.connectionPhase !== "error" && syncStatus !== "done") st.connectionPhase = "streaming";
-                if (syncStatus === "done") {
+                
+                if (st.connectionPhase !== "error" && syncStatus !== "done" && syncStatus !== "finished") {
+                  st.connectionPhase = "streaming";
+                } else if (syncStatus === "done" || syncStatus === "finished") {
                   st.connectionPhase = "idle";
                 }
               });
