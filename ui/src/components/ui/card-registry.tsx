@@ -17,14 +17,14 @@ function SubagentCompleteCard({ data }: { data: Record<string, unknown> }) {
   const isOk = status === "completed";
 
   return (
-    <div className={`rounded-lg border px-3 py-2 text-sm ${isOk ? "border-success/30 bg-success/5" : "border-destructive/30 bg-destructive/5"}`}>
-      <div className="flex items-center gap-2">
-        <span className={`h-2 w-2 rounded-full ${isOk ? "bg-success" : "bg-destructive"}`} />
+    <details className={`rounded-lg border px-3 py-2 text-sm ${isOk ? "border-success/30 bg-success/5" : "border-destructive/30 bg-destructive/5"}`}>
+      <summary className="flex items-center gap-2 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+        <span className={`h-2 w-2 rounded-full shrink-0 ${isOk ? "bg-success" : "bg-destructive"}`} />
         <span className="font-medium">{agent}</span>
         <span className="text-muted-foreground">{status}</span>
-      </div>
-      {task && <p className="mt-1 text-muted-foreground text-xs whitespace-pre-wrap">{task}</p>}
-    </div>
+      </summary>
+      {task && <p className="mt-2 text-muted-foreground text-xs whitespace-pre-wrap border-t border-border/20 pt-2">{task}</p>}
+    </details>
   );
 }
 
