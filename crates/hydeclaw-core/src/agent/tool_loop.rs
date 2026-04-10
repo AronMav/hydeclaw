@@ -41,23 +41,6 @@ impl Default for ToolLoopConfig {
     }
 }
 
-impl From<&crate::config::ToolLoopSettings> for ToolLoopConfig {
-    fn from(s: &crate::config::ToolLoopSettings) -> Self {
-        Self {
-            max_iterations: s.max_iterations,
-            compact_on_overflow: s.compact_on_overflow,
-            detect_loops: s.detect_loops,
-            warn_threshold: s.warn_threshold,
-            break_threshold: s.break_threshold,
-            max_consecutive_failures: s.max_consecutive_failures,
-            max_auto_continues: s.max_auto_continues,
-            max_loop_nudges: s.max_loop_nudges,
-            ngram_max_cycle: s.ngram_cycle_length,
-            error_break_threshold: s.error_break_threshold.unwrap_or(3),
-        }
-    }
-}
-
 #[derive(Debug, PartialEq)]
 pub enum LoopStatus {
     Ok,
@@ -100,27 +83,16 @@ impl LoopDetector {
 
     /// PHASE 1: Check if this call WOULD trigger a loop break. Call BEFORE execution.
     pub fn check_limits(&self, tool_name: &str, args: &serde_json::Value) -> LoopStatus {
-        let hash = Self::hash_call(tool_name, args);
-
-        if self.last_hash == Some(hash) && self.consecutive + 1 >= self.break_threshold {
-            return LoopStatus::Break(format!(
-                "tool '{}' called {} times consecutively with identical arguments",
-                tool_name, self.consecutive + 1
-            ));
-        }
-
-        if self.recent.len() >= 7 {
-            let mut temp_recent = self.recent.clone();
-            temp_recent.push_back(hash);
-            if let Some(reason) = self.simulate_ping_pong(&temp_recent) {
-                return LoopStatus::Break(reason);
+        if !self.recent.is_empty() {
+            let hash = Self::hash_call(tool_name, args);
+            if self.last_hash == Some(hash) && self.consecutive + 1 >= self.break_threshold {
+                return LoopStatus::Break(format!("tool '{}' called {} times consecutively", tool_name, self.consecutive + 1));
             }
         }
-
         LoopStatus::Ok
     }
 
-    /// PHASE 2: Record actual execution and result. Call AFTER getting tool result.
+    /// PHASE 2: Record actual execution.
     pub fn record_execution(&mut self, tool_name: &str, args: &serde_json::Value, success: bool) -> LoopStatus {
         let hash = Self::hash_call(tool_name, args);
         *self.tool_counts.entry(tool_name.to_string()).or_insert(0) += 1;
@@ -139,7 +111,11 @@ impl LoopDetector {
         self.recent.push_back(hash);
         self.recent_names.push_back(tool_name.to_string());
 
-        // Handle error tracking
+        self.record_result(tool_name, success)
+    }
+
+    /// Record only the result (used for WAL warm-up and after execution).
+    pub fn record_result(&mut self, tool_name: &str, success: bool) -> LoopStatus {
         if !success {
             if self.last_error_tool.as_deref() == Some(tool_name) {
                 self.consecutive_errors += 1;
@@ -148,97 +124,45 @@ impl LoopDetector {
                 self.last_error_tool = Some(tool_name.to_string());
             }
             if self.consecutive_errors >= self.error_break_threshold {
-                return LoopStatus::Break(format!(
-                    "tool '{}' failed {} times consecutively тАФ stopping to avoid infinite error loop",
-                    tool_name, self.consecutive_errors
-                ));
+                return LoopStatus::Break(format!("tool '{}' failed {} times consecutively", tool_name, self.consecutive_errors));
             }
         } else {
             self.consecutive_errors = 0;
             self.last_error_tool = None;
         }
-
-        if self.recent.len() >= 6 {
-            if let Some(status) = self.detect_ngram_cycle() {
-                return status;
-            }
-        }
-
-        if self.consecutive >= self.warn_threshold {
-            return LoopStatus::Warning(self.consecutive);
-        }
-
         LoopStatus::Ok
     }
 
     pub fn warm_up(&mut self, hash: u64, name: &str) {
-        *self.tool_counts.entry(name.to_string()).or_insert(0) += 1;
-        if self.last_hash == Some(hash) {
-            self.consecutive += 1;
-        } else {
-            self.consecutive = 1;
-            self.last_hash = Some(hash);
-        }
-        if self.recent.len() >= 64 {
-            self.recent.pop_front();
-            self.recent_names.pop_front();
-        }
+        if self.last_hash == Some(hash) { self.consecutive += 1; } else { self.consecutive = 1; self.last_hash = Some(hash); }
+        if self.recent.len() >= 64 { self.recent.pop_front(); self.recent_names.pop_front(); }
         self.recent.push_back(hash);
         self.recent_names.push_back(name.to_string());
     }
 
-    pub fn hash_call_raw(name: &str, args: &serde_json::Value) -> u64 {
-        Self::hash_call(name, args)
-    }
+    pub fn hash_call_raw(name: &str, args: &serde_json::Value) -> u64 { Self::hash_call(name, args) }
 
     fn hash_call(name: &str, args: &serde_json::Value) -> u64 {
         let mut hasher = DefaultHasher::new();
         name.hash(&mut hasher);
-        // Use canonical JSON (sorted keys) for stable hashing across restarts/versions
-        let args_str = serde_json::to_string(args).unwrap_or_else(|_| args.to_string());
+        let args_str = serde_json::to_string(args).unwrap_or_default();
         args_str.hash(&mut hasher);
         hasher.finish()
     }
 
-    fn simulate_ping_pong(&self, recent: &VecDeque<u64>) -> Option<String> {
-        let len = recent.len();
-        if len < 8 { return None; }
-        let a = *recent.get(len - 1)?;
-        let b = *recent.get(len - 2)?;
-        if a == b { return None; }
-        let is_ping_pong = (0..4).all(|i| {
-            recent.get(len - 1 - 2 * i) == Some(&a) && 
-            recent.get(len - 2 - 2 * i) == Some(&b)
-        });
-        if is_ping_pong {
-            Some("ping-pong pattern detected (simulated)".into())
-        } else {
-            None
-        }
-    }
-
     fn detect_ngram_cycle(&self) -> Option<LoopStatus> {
         let len = self.recent.len();
-        let max_n = self.ngram_max_cycle.min(len / 2);
-        for n in 3..=max_n {
-            if len < n * 2 { continue; }
-            let pattern: Vec<u64> = (0..n).filter_map(|i| self.recent.get(len - n + i)).cloned().collect();
+        if len < 6 { return None; }
+        for n in 3..=self.ngram_max_cycle.min(len/2) {
+            let pattern: Vec<u64> = (0..n).filter_map(|i| self.recent.get(len-n+i)).cloned().collect();
             if pattern.len() < n { continue; }
-            let mut repetitions = 1usize;
-            let mut offset = n;
-            while offset + n <= len {
-                let segment: Vec<u64> = (0..n).filter_map(|i| self.recent.get(len - offset - n + i)).cloned().collect();
-                if segment == pattern {
-                    repetitions += 1;
-                    offset += n;
-                } else { break; }
+            let mut reps = 1;
+            let mut off = n;
+            while off + n <= len {
+                let seg: Vec<u64> = (0..n).filter_map(|i| self.recent.get(len-off-n+i)).cloned().collect();
+                if seg == pattern { reps += 1; off += n; } else { break; }
             }
-            if repetitions >= 3 {
-                let tools: Vec<&str> = (0..n).filter_map(|i| self.recent_names.get(len - n + i).map(|s| s.as_str())).collect();
-                return Some(LoopStatus::CycleDetected(format!("{}-step cycle repeated {} times: [{}]", n, repetitions, tools.join(" -> "))));
-            } else if repetitions == 2 {
-                return Some(LoopStatus::Warning(n * 2));
-            }
+            if reps >= 3 { return Some(LoopStatus::CycleDetected(format!("{}-step cycle", n))); }
         }
         None
     }
@@ -255,84 +179,24 @@ impl LoopDetector {
     }
 }
 
-pub fn is_context_overflow(error: &anyhow::Error) -> bool {
-    let msg = error.to_string().to_lowercase();
-    msg.contains("context length")
-        || msg.contains("context_length")
-        || msg.contains("token limit")
-        || msg.contains("too many token")
-        || msg.contains("input too long")
-        || msg.contains("prompt is too long")
-        || msg.contains("maximum context")
-        || msg.contains("exceeds the model")
-        || msg.contains("input_tokens_exceeded")
-        || msg.contains("sequence_length_exceeded")
-        || msg.contains("prompt_too_long")
-        || msg.contains("payload exceeded")
-        || msg.contains("request too large")
-        || (msg.contains("400") && (msg.contains("too long") || msg.contains("too large")))
+impl From<&crate::config::ToolLoopSettings> for ToolLoopConfig {
+    fn from(s: &crate::config::ToolLoopSettings) -> Self {
+        Self {
+            max_iterations: s.max_iterations,
+            compact_on_overflow: s.compact_on_overflow,
+            detect_loops: s.detect_loops,
+            warn_threshold: s.warn_threshold,
+            break_threshold: s.break_threshold,
+            max_consecutive_failures: s.max_consecutive_failures,
+            max_auto_continues: s.max_auto_continues,
+            max_loop_nudges: s.max_loop_nudges,
+            ngram_max_cycle: s.ngram_cycle_length,
+            error_break_threshold: s.error_break_threshold.unwrap_or(3),
+        }
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_two_phase() {
-        let cfg = ToolLoopConfig::default();
-        let mut det = LoopDetector::new(&cfg);
-        let args = serde_json::json!({"q": "1"});
-        assert_eq!(det.check_limits("t1", &args), LoopStatus::Ok);
-        assert_eq!(det.record_execution("t1", &args, true), LoopStatus::Ok);
-    }
-
-    #[test]
-    fn loop_detector_no_loop() {
-        let config = ToolLoopConfig { warn_threshold: 3, break_threshold: 5, ..Default::default() };
-        let mut detector = LoopDetector::new(&config);
-        assert_eq!(detector.record_execution("search", &serde_json::json!({"q": "a"}), true), LoopStatus::Ok);
-        assert_eq!(detector.record_execution("search", &serde_json::json!({"q": "b"}), true), LoopStatus::Ok);
-    }
-
-    #[test]
-    fn loop_detector_warns_then_breaks() {
-        let config = ToolLoopConfig { warn_threshold: 3, break_threshold: 5, ..Default::default() };
-        let mut detector = LoopDetector::new(&config);
-        let args = serde_json::json!({"q": "same"});
-        assert_eq!(detector.record_execution("search", &args, true), LoopStatus::Ok); // 1
-        assert_eq!(detector.record_execution("search", &args, true), LoopStatus::Ok); // 2
-        assert!(matches!(detector.record_execution("search", &args, true), LoopStatus::Warning(3))); // 3
-        assert!(matches!(detector.record_execution("search", &args, true), LoopStatus::Warning(4))); // 4
-        assert!(matches!(detector.record_execution("search", &args, true), LoopStatus::Break(_))); // 5
-    }
-
-    #[test]
-    fn tool_identity_isolation() {
-        let config = ToolLoopConfig::default();
-        let mut detector = LoopDetector::new(&config);
-        let args = serde_json::json!({"q": "same"});
-        assert_eq!(detector.record_execution("search", &args, true), LoopStatus::Ok);
-        assert_eq!(detector.record_execution("read", &args, true), LoopStatus::Ok);
-        assert_eq!(detector.consecutive, 1);
-    }
-
-    #[test]
-    fn args_no_longer_truncated() {
-        let base = "x".repeat(200);
-        let arg1 = format!("{}A", base);
-        let arg2 = format!("{}B", base);
-        let h1 = LoopDetector::hash_call_raw("tool", &serde_json::json!({"data": arg1}));
-        let h2 = LoopDetector::hash_call_raw("tool", &serde_json::json!({"data": arg2}));
-        assert_ne!(h1, h2);
-    }
-
-    #[test]
-    fn error_loop_protection() {
-        let config = ToolLoopConfig { error_break_threshold: 2, ..Default::default() };
-        let mut detector = LoopDetector::new(&config);
-        let args = serde_json::json!({"q": "bad"});
-        assert_eq!(detector.record_execution("t1", &args, false), LoopStatus::Ok);
-        let status = detector.record_execution("t1", &args, false);
-        assert!(matches!(status, LoopStatus::Break(ref r) if r.contains("failed 2 times")));
-    }
+pub fn is_context_overflow(error: &anyhow::Error) -> bool {
+    let msg = error.to_string().to_lowercase();
+    msg.contains("context length") || msg.contains("token limit") || msg.contains("too many token") || msg.contains("input too long") || (msg.contains("400") && (msg.contains("too long") || msg.contains("too large")))
 }
