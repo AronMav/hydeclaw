@@ -1,11 +1,12 @@
 "use client";
 
+import { memo } from "react";
 import { cleanContent } from "@/lib/format";
 import { MessageContent } from "@/components/ui/message";
 import { useChatStore } from "@/stores/chat-store";
 import { useSmoothedText } from "@/hooks/use-smoothed-text";
 
-export function TextPart({ text }: { text: string }) {
+export const TextPart = memo(function TextPart({ text }: { text: string }) {
   const currentAgent = useChatStore((s) => s.currentAgent)
   const isStreaming = useChatStore(
     (s) => s.agents[currentAgent]?.connectionPhase === "streaming"
@@ -27,4 +28,4 @@ export function TextPart({ text }: { text: string }) {
       {smoothed}
     </MessageContent>
   );
-}
+});

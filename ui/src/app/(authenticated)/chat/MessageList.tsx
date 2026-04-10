@@ -383,8 +383,9 @@ export function MessageList({
             prev.agentId != null &&
             msg.agentId != null;
 
-          // Only animate messages that arrived AFTER streaming stopped and are very recent
-          const isNew = !isStreaming && isNewMessage(msg);
+          // Only animate messages that arrived AFTER streaming stopped and are very recent.
+          // ALSO animate the first message of a new agent after a handoff.
+          const isNew = (!isStreaming && isNewMessage(msg)) || (showSeparator && isStreaming);
 
           return (
             <div className="mx-auto w-full max-w-4xl px-3 md:px-6">
@@ -392,8 +393,8 @@ export function MessageList({
                 <HandoffDivider agentName={msg.agentId!} />
               )}
               <div className={cn(
-                isNew && "animate-in fade-in slide-in-from-bottom-2 duration-200 ease-out",
-                isStreaming && index === messages.length - 1 && msg.role === "assistant" && "streaming-message",
+                isNew && "animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out",
+                isStreaming && index === virtualItems.length - 1 && msg.role === "assistant" && "streaming-message",
               )}>
                 <MessageItem message={msg} sessionChannel={sessionChannel} sessionUserId={sessionUserId} />
               </div>
