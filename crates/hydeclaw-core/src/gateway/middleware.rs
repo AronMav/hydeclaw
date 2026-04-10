@@ -265,8 +265,8 @@ pub(crate) async fn auth_middleware(
         .and_then(|v| v.to_str().ok());
 
     if let Some(header) = auth_header
-        && header.starts_with("Bearer ")
-        && header.as_bytes()[7..].ct_eq(expected_token.as_bytes()).into() {
+        && let Some(token) = header.strip_prefix("Bearer ")
+        && token.as_bytes().ct_eq(expected_token.as_bytes()).into() {
             rate_limiter.record_success(&client_ip).await;
             return next.run(req).await;
         }
