@@ -33,7 +33,7 @@ function SubagentCompleteCard({ data }: { data: Record<string, unknown> }) {
 export const CARD_REGISTRY = new Map<string, CardComponent>([
   ["table", TableCard],
   ["metric", MetricCard],
-  ["subagent-complete", SubagentCompleteCard],
+  // "subagent-complete" intentionally not registered — info already visible in subagent tool call
 ]);
 
 // ── Error boundary ─────────────────────────────────────────────────────────
@@ -86,7 +86,12 @@ interface GenerativeUISlotProps {
   data: Record<string, unknown>;
 }
 
+// Card types to silently skip (info already shown elsewhere)
+const HIDDEN_CARD_TYPES = new Set(["subagent-complete", "agent-turn"]);
+
 export function GenerativeUISlot({ cardType, data }: GenerativeUISlotProps) {
+  if (HIDDEN_CARD_TYPES.has(cardType)) return null;
+
   const CardComp = CARD_REGISTRY.get(cardType);
 
   return (

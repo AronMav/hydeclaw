@@ -1,69 +1,56 @@
 "use client";
 
-import { useRef, useState, useEffect, useCallback } from "react";
+import { useRef, useState, useEffect } from "react";
 
 /**
- * CharacterInterpolator hook — smoothly "prints" text at a constant rate,
- * absorbing network jitter from SSE streaming.
- *
- * @param rawText - The full text received so far from the stream
- * @param isStreaming - Whether the stream is still active
- * @param charsPerFrame - Characters to reveal per animation frame (~60fps)
- * @returns The smoothed text to display
+ * CharacterInterpolator — обеспечивает идеально плавный вывод текста.
+ * Адаптирует скорость печати под размер буфера (чем больше текста накопилось, тем быстрее вывод).
  */
-export function useSmoothedText(
-  rawText: string,
-  isStreaming: boolean,
-  charsPerFrame = 3,
-): string {
-  const [displayed, setDisplayed] = useState("");
-  const targetRef = useRef(rawText);
-  const displayedRef = useRef("");
-  const rafRef = useRef<number | null>(null);
-
-  targetRef.current = rawText;
-
-  const tick = useCallback(() => {
-    const target = targetRef.current;
-    const current = displayedRef.current;
-
-    if (current.length < target.length) {
-      // Reveal next chunk of characters
-      const nextLen = Math.min(current.length + charsPerFrame, target.length);
-      const next = target.slice(0, nextLen);
-      displayedRef.current = next;
-      setDisplayed(next);
-      rafRef.current = requestAnimationFrame(tick);
-    } else {
-      rafRef.current = null;
-    }
-  }, [charsPerFrame]);
-
+export function useSmoothedText(rawText: string, isStreaming: boolean) {
+  const [displayedText, setDisplayValue] = useState(rawText);
+  const queueRef = useRef("");
+  const frameRef = useRef<number | null>(null);
+  
+  // Синхронизируем очередь при получении новых данных
   useEffect(() => {
-    // When raw text grows, start the animation loop
-    if (rawText.length > displayedRef.current.length && !rafRef.current) {
-      rafRef.current = requestAnimationFrame(tick);
-    }
-  }, [rawText, tick]);
-
-  useEffect(() => {
-    // When streaming ends, instantly show everything (no trailing delay)
     if (!isStreaming) {
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-      displayedRef.current = rawText;
-      setDisplayed(rawText);
+      setDisplayValue(rawText);
+      queueRef.current = "";
+      return;
     }
-  }, [isStreaming, rawText]);
 
-  // Cleanup on unmount
+    // Если rawText стал короче (регенерация), сбрасываем всё
+    if (rawText.length < displayedText.length) {
+      setDisplayValue(rawText);
+      queueRef.current = "";
+      return;
+    }
+
+    queueRef.current = rawText.slice(displayedText.length);
+  }, [rawText, isStreaming, displayedText.length]);
+
   useEffect(() => {
-    return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    };
-  }, []);
+    if (!isStreaming && queueRef.current.length === 0) return;
 
-  return isStreaming ? displayed : rawText;
+    const animate = () => {
+      if (queueRef.current.length > 0) {
+        // Адаптивная скорость: минимум 1 символ, максимум 10% очереди за кадр
+        const jump = Math.ceil(queueRef.current.length * 0.15);
+        const charsToShow = Math.min(queueRef.current.length, jump);
+        
+        const nextPart = queueRef.current.slice(0, charsToShow);
+        queueRef.current = queueRef.current.slice(charsToShow);
+        
+        setDisplayValue((prev) => prev + nextPart);
+      }
+      frameRef.current = requestAnimationFrame(animate);
+    };
+
+    frameRef.current = requestAnimationFrame(animate);
+    return () => {
+      if (frameRef.current) cancelAnimationFrame(frameRef.current);
+    };
+  }, [isStreaming]);
+
+  return displayedText;
 }
