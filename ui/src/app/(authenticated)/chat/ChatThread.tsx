@@ -21,12 +21,9 @@ import {
 } from "@/components/ui/select";
 
 import type { SessionRow } from "@/types/api";
-import { AgentTurnSeparator } from "@/components/chat/AgentTurnSeparator";
-
 // ── Re-exports for backward compatibility ────────────────────────────────────
 export { ToolCallPartView } from "@/components/chat/ToolCallPartView";
 export { FileDataPartView } from "@/components/chat/FileDataPartView";
-export { AgentTurnSeparator } from "@/components/chat/AgentTurnSeparator";
 
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { BarsLoader } from "@/components/ui/loader";
@@ -150,9 +147,8 @@ export function SourceUrlDataPartView({ data }: { data: { url: string; title?: s
 
 export function RichCardDataPartView({ data }: { data: Record<string, unknown> }) {
   const { cardType, ...rest } = data;
-  // Render agent-turn cards as visual separators instead of generic rich cards
-  if (cardType === "agent-turn" && typeof rest.agentName === "string") {
-    return <AgentTurnSeparator data={{ agentName: rest.agentName, reason: typeof rest.reason === "string" ? rest.reason : "" }} animate={false} />;
+  if (cardType === "agent-turn") {
+    return null; // Deprecated: async delegation replaced agent-turn cards
   }
   return <GenerativeUISlot cardType={String(cardType ?? "unknown")} data={rest} />;
 }
@@ -911,8 +907,7 @@ export function ChatThread({
 
   // Show thinking indicator when waiting for a response.
   // Cases: (1) just submitted, (2) streaming but no assistant text yet,
-  //        (3) engine running server-side (e.g. during handoff — no SSE stream, but agent is working)
-  // Do NOT show if the last message is from a different agent (handoff already happened — that agent shows its own thinking).
+  //        (3) engine running server-side (e.g. during delegation — no SSE stream, but agent is working)
   const lastMsg = sourceMessages[sourceMessages.length - 1];
   const hasAssistantContent = lastMsg?.role === "assistant" && lastMsg.parts.length > 0;
   const lastMsgIsOtherAgent = lastMsg?.role === "assistant" && lastMsg.agentId && lastMsg.agentId !== currentAgent;
