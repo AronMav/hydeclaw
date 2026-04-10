@@ -114,12 +114,20 @@ Plans:
 - [x] 45-01-PLAN.md — Remove deprecated fields (CLN-01) and module-scope globals (CLN-02)
 **UI hint**: yes
 
-### 🚧 v0.13.0 Chat UX Evolution (In Progress)
-
-**Milestone Goal:** Message branching support -- users can edit past messages and navigate conversation branches.
-
-- [x] **Phase 53-01: Message Branching Backend** - Migration 012, fork endpoint, branch-aware queries (completed 2026-04-09)
-- [ ] **Phase 53-02: Message Branching Frontend** - MessageTree store, branch navigation UI
+### Phase 54: Chat-Store Decomposition
+**Goal**: Split chat-store.ts god object into focused modules under 500 lines each
+**Depends on**: Phase 45
+**Requirements**: ARCH-01, PERF-02, MEM-01
+**Success Criteria** (what must be TRUE):
+  1. chat-store.ts is under 500 lines after decomposition
+  2. At least 3 extracted modules (types, history, streaming)
+  3. All existing tests pass after refactoring
+**Plans:** 1/3 plans complete
+Plans:
+- [x] 54-01-PLAN.md — Extract types, constants, and pure functions into chat-types.ts and chat-history.ts
+- [ ] 54-02-PLAN.md
+- [ ] 54-03-PLAN.md
+**UI hint**: no
 
 ## Progress
 
@@ -131,4 +139,4 @@ Plans:
 | 43. Reconnect & Optimistic UI | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
 | 44. UX Polish | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
 | 45. Cleanup | v0.12.0 | 1/1 | Complete    | 2026-04-09 |
-| 53. Message Branching | v0.13.0 | 1/2 | In Progress | — |
+| 54. Chat-Store Decomposition | v0.13.0 | 1/3 | In Progress | — |
