@@ -367,7 +367,7 @@ mod tests {
         let mut det = LoopDetector::new(&cfg);
         for (tool, n) in counts {
             for _ in 0..*n {
-                det.record(tool, &serde_json::json!({}));
+                det.record_execution(tool, &serde_json::json!({}), true);
             }
         }
         det

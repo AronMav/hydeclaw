@@ -16,6 +16,39 @@ pub struct PendingToolCall {
     pub tool_name: String,
 }
 
+/// Reconstruct LoopDetector state for a session from the WAL.
+pub async fn warm_up_detector(
+    db: &PgPool,
+    session_id: Uuid,
+    detector: &mut crate::agent::tool_loop::LoopDetector,
+) -> Result<()> {
+    // Get last 64 tool_start events (buffer size of detector)
+    let rows = sqlx::query(
+        "SELECT payload FROM session_events \
+         WHERE session_id = $1 AND event_type = 'tool_start' \
+         ORDER BY created_at DESC LIMIT 64",
+    )
+    .bind(session_id)
+    .fetch_all(db)
+    .await?;
+
+    // Apply in chronological order (reverse of the query result)
+    for row in rows.into_iter().rev() {
+        let payload: Option<serde_json::Value> = sqlx::Row::try_get(&row, "payload").ok();
+        if let Some(payload) = payload {
+            let name = payload.get("tool_name").and_then(|v| v.as_str());
+            let hash_hex = payload.get("args_hash").and_then(|v| v.as_str());
+            
+            if let (Some(n), Some(h_str)) = (name, hash_hex) {
+                if let Ok(h) = u64::from_str_radix(h_str, 16) {
+                    detector.warm_up(h, n);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Log a session lifecycle event to the WAL.
 pub async fn log_event(
     db: &PgPool,
