@@ -225,7 +225,7 @@ export const useChatStore = create<ChatStore>()(
 
     resumeStream: (agent: string, sessionId: string) => renderer.resumeStream(agent, sessionId),
 
-    sendMessage: (text: string) => {
+    sendMessage: (text: string, attachments?: Array<any>) => {
       const store = get();
       const agent = store.currentAgent;
       const st = store.agents[agent] ?? emptyAgentState();
@@ -248,7 +248,7 @@ export const useChatStore = create<ChatStore>()(
         seedMessages = st.messageSource.messages;
       }
 
-      renderer.startStream(agent, sessionId, seedMessages, text);
+      renderer.startStream(agent, sessionId, seedMessages, text, attachments);
     },
 
     stopStream: () => {

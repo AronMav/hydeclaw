@@ -448,7 +448,7 @@ function ChatComposer() {
     e.preventDefault();
     const text = textareaRef.current?.value?.trim() ?? "";
     if (!text && attachments.length === 0) return;
-    useChatStore.getState().sendMessage(text);
+    useChatStore.getState().sendMessage(text, attachments);
     clearDraft(useChatStore.getState().currentAgent);
     setAttachments([]);
     setHasInput(false);

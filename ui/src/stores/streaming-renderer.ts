@@ -204,18 +204,45 @@ export function createStreamingRenderer(store: StoreAccess) {
 
   // ── SSE stream handler ──────────────────────────────────────────────────
 
-  function startStream(agent: string, sessionId: string | null, messages: ChatMessage[], userText: string) {
+  function startStream(agent: string, sessionId: string | null, messages: ChatMessage[], userText: string, attachments?: Array<any>) {
     abortActiveStream(agent);
     update(agent, { streamGeneration: (store.get().agents[agent]?.streamGeneration ?? 0) + 1 });
     const myGeneration = store.get().agents[agent]?.streamGeneration ?? 1;
     const controller = new AbortController();
     setAbortCtrl(agent, controller);
 
+    const userParts: MessagePart[] = [];
+    if (userText) userParts.push({ type: "text", text: userText });
+    
+    const apiAttachments: any[] = [];
+    if (attachments && attachments.length > 0) {
+      for (const att of attachments) {
+        for (const content of att.content) {
+          userParts.push({
+            type: "file",
+            url: content.data,
+            mediaType: content.mimeType,
+          } as any);
+          
+          apiAttachments.push({
+            url: content.data,
+            media_type: content.mimeType.startsWith("image/") ? "image" : "document",
+            file_name: content.filename ?? att.name,
+            mime_type: content.mimeType,
+          });
+        }
+      }
+    }
+    
+    if (userParts.length === 0) {
+      userParts.push({ type: "text", text: "" });
+    }
+
     // Build user message -- optimistic status: "sending" until data-session-id confirms receipt
     const userMsg: ChatMessage = {
       id: uuid(),
       role: "user",
-      parts: [{ type: "text", text: userText }],
+      parts: userParts,
       createdAt: new Date().toISOString(),
       status: "sending",
     };
@@ -239,6 +266,9 @@ export function createStreamingRenderer(store: StoreAccess) {
       agent,
       messages: [{ role: "user", content: userText }],
     };
+    if (apiAttachments.length > 0) {
+      body.attachments = apiAttachments;
+    }
     if (sessionId) body.session_id = sessionId;
     if (forceNew) {
       body.force_new_session = true;
