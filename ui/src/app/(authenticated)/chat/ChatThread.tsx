@@ -881,9 +881,16 @@ export function ChatThread({
     return historyMessages;
   }, [messageSource, historyMessages]);
 
-  // Filter out inter-agent turn loop messages (internal routing artifacts)
+  // Filter out inter-agent routing messages (internal handoff context passed between agents).
+  // These have role="user" with content starting with "[Handoff from" or "[Response from".
+  // Keep the original user message (no agentId or agentId matching current agent).
   const allMessages = useMemo(() => {
-    const filtered = sourceMessages.filter(m => !(m.role === "user" && m.agentId));
+    const filtered = sourceMessages.filter(m => {
+      if (m.role !== "user" || !m.agentId) return true;
+      // Keep if it's from the session's primary agent (real user proxy)
+      const content = m.parts[0]?.type === "text" ? (m.parts[0] as { text: string }).text : "";
+      return !content.startsWith("[Handoff from") && !content.startsWith("[Response from");
+    });
     return filtered.length > renderLimit ? filtered.slice(-renderLimit) : filtered;
   }, [sourceMessages, renderLimit]);
 
