@@ -825,7 +825,6 @@ pub async fn resolve_active_path(
     let leaf_row = sqlx::query(
         "SELECT m.id FROM messages m \
          WHERE m.session_id = $1 \
-           AND m.parent_message_id IS NOT NULL \
            AND NOT EXISTS (SELECT 1 FROM messages c WHERE c.parent_message_id = m.id AND c.session_id = $1) \
          ORDER BY m.created_at DESC LIMIT 1",
     )
