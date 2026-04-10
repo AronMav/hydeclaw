@@ -2,265 +2,21 @@ import { create } from "zustand";
 import { devtools } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 
-import { apiGet, apiPost, apiDelete, apiPatch, getToken } from "@/lib/api";
-import { parseSSELines, parseSseEvent, parseContentParts, extractSseEventId } from "@/stores/sse-events";
+import { apiDelete, apiPatch, getToken } from "@/lib/api";
+import { parseSSELines, parseSseEvent, parseContentParts } from "@/stores/sse-events";
 import { IncrementalParser } from "@/lib/message-parser";
-import type { SessionRow, MessageRow } from "@/types/api";
+import type { SessionRow } from "@/types/api";
 import { queryClient } from "@/lib/query-client";
 import { qk } from "@/lib/queries";
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+import { uuid, STREAM_THROTTLE_MS, isActivePhase, emptyAgentState, getLiveMessages } from "./chat-types";
+import type { ChatMessage, MessagePart, TextPart, ToolPart, ConnectionPhase, MessageSource, AgentState } from "./chat-types";
+import { getCachedHistoryMessages } from "./chat-history";
 
-/** Generate UUID v4 — crypto.randomUUID in secure contexts, fallback for plain HTTP */
-function uuid(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  // Fallback for non-secure contexts (HTTP, not HTTPS)
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
-  });
-}
-
-// ── Constants ────────────────────────────────────────────────────────────────
-
-const SESSIONS_PAGE_SIZE = 40;
-const MESSAGES_HISTORY_LIMIT = 100;
-export const MAX_INPUT_LENGTH = 32_000;
-export const STREAM_THROTTLE_MS = 50;
-// ── Message types (replaces AI SDK UIMessage dependency) ────────────────────
-
-export interface TextPart {
-  type: "text";
-  text: string;
-}
-
-export interface ReasoningPart {
-  type: "reasoning";
-  text: string;
-}
-
-export interface FilePart {
-  type: "file";
-  url: string;
-  mediaType: string;
-}
-
-export interface SourceUrlPart {
-  type: "source-url";
-  url: string;
-  title?: string;
-}
-
-export type ToolPartState =
-  | "input-streaming"
-  | "input-available"
-  | "output-available"
-  | "output-error"
-  | "output-denied";
-
-export interface ToolPart {
-  type: "tool";
-  toolCallId: string;
-  toolName: string;
-  state: ToolPartState;
-  input: Record<string, unknown>;
-  output?: unknown;
-  errorText?: string;
-}
-
-export interface RichCardPart {
-  type: "rich-card";
-  cardType: string;
-  data: Record<string, unknown>;
-}
-
-export interface ContinuationSeparatorPart {
-  type: "continuation-separator";
-}
-
-export interface StepGroupPart {
-  type: "step-group";
-  stepId: string;
-  toolParts: ToolPart[];
-  finishReason?: string;
-  /** True while step is still receiving events */
-  isStreaming: boolean;
-}
-
-export interface ApprovalPart {
-  type: "approval";
-  approvalId: string;
-  toolName: string;
-  toolInput: Record<string, unknown>;
-  timeoutMs: number;
-  receivedAt: number;
-  status: "pending" | "approved" | "rejected" | "timeout_rejected";
-  modifiedInput?: Record<string, unknown>;
-}
-
-export type MessagePart =
-  | TextPart
-  | ReasoningPart
-  | FilePart
-  | SourceUrlPart
-  | ToolPart
-  | RichCardPart
-  | ContinuationSeparatorPart
-  | StepGroupPart
-  | ApprovalPart;
-
-export interface ChatMessage {
-  id: string;
-  role: "user" | "assistant";
-  parts: MessagePart[];
-  createdAt?: string;
-  /** Per-message agent identity (for multi-agent sessions). */
-  agentId?: string;
-  /** Optimistic send status (SSE-03). Undefined means confirmed (from history/sync). */
-  status?: "sending" | "confirmed" | "failed";
-  /** Parent message ID in the tree (null for root/trunk messages). */
-  parentMessageId?: string;
-  /** The message this branch was forked from (set on fork-created user messages). */
-  branchFromMessageId?: string;
-}
-
-// ── Connection phase FSM (FSM-01) ────────────────────────────────────────────
-
-/**
- * Single authoritative phase enum for stream lifecycle state.
- * FSM-01: authoritative connection phase enum.
- * "complete" is a transient phase between finish event and finalizeStream.
- * "reconnecting" is set when stream drops mid-run and backoff retry is pending.
- */
-export type ConnectionPhase = "idle" | "submitted" | "streaming" | "reconnecting" | "complete" | "error";
-
-export function isActivePhase(phase: ConnectionPhase | undefined): boolean {
-  return phase === "submitted" || phase === "streaming" || phase === "reconnecting";
-}
-
-// ── MessageSource discriminated union (HIST-02) ─────────────────────────────
-
-/**
- * Discriminated union for message source mode.
- * Replaces the dual-semantics of viewMode + liveMessages fields.
- * - "new-chat": no session selected, no messages
- * - "live": active or recently completed stream, messages held in store
- * - "history": viewing a DB session snapshot, messages fetched via React Query
- */
-export type MessageSource =
-  | { mode: "new-chat" }
-  | { mode: "live"; messages: ChatMessage[] }
-  | { mode: "history"; sessionId: string };
-
-/** Helper: extract live messages from a MessageSource union. */
-function getLiveMessages(source: MessageSource): ChatMessage[] {
-  return source.mode === "live" ? source.messages : [];
-}
-
-// ── OPTI-03: Content hash reconciliation ────────────────────────────────────
-
-/**
- * Fast djb2-style hash of a ChatMessage array.
- * Compares id + role + text content of parts — intentionally ignores createdAt
- * (timestamps differ between live SSE messages and DB history rows).
- * Used for render-optimization, not security.
- */
-export function contentHash(messages: ChatMessage[]): string {
-  let hash = 0;
-  for (const m of messages) {
-    const str =
-      m.id +
-      m.role +
-      m.parts
-        .map((p) =>
-          p.type === "text"
-            ? p.text
-            : p.type + ("toolCallId" in p ? (p as { toolCallId: string }).toolCallId : ""),
-        )
-        .join("|");
-    for (let i = 0; i < str.length; i++) {
-      hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
-    }
-  }
-  return hash.toString(36);
-}
-
-/**
- * OPTI-03: Compare live messages with freshly-fetched history.
- * Returns null if content is identical (skip re-render), or returns history
- * messages when they differ (history has extra data or server post-processing).
- */
-export function reconcileLiveWithHistory(
-  live: ChatMessage[],
-  history: ChatMessage[],
-): ChatMessage[] | null {
-  if (live.length === history.length && contentHash(live) === contentHash(history)) {
-    return null; // identical — skip re-render
-  }
-  return history;
-}
-
-// ── Per-agent state ─────────────────────────────────────────────────────────
-
-interface AgentState {
-  activeSessionId: string | null;
-  /** Discriminated union replacing the old liveMessages + viewMode duality. */
-  messageSource: MessageSource;
-  streamError: string | null;
-  /** FSM-01: authoritative connection phase enum. */
-  connectionPhase: ConnectionPhase;
-  connectionError: string | null;
-  /** When true, next sendMessage will force backend to create a new session. */
-  forceNewSession: boolean;
-  /** Server-driven list of session IDs currently being processed.
-   *  Updated ONLY from WS agent_processing events — never optimistically.
-   *  Array (not Set) because Immer doesn't support Set without enableMapSet(). */
-  activeSessionIds: string[];
-  /** How many messages to show at once (user can load more). */
-  renderLimit: number;
-  /** Per-session model override (null = use agent default). */
-  modelOverride: string | null;
-  /** Agent that will respond to the current message (from @-mention parsing). */
-  pendingTargetAgent: string | null;
-  /** Ordered list of agent names per assistant message turn (for multi-agent identity). */
-  agentTurns: string[];
-  /** Turn counter for multi-agent turn loop (incremented on each agent-turn event). */
-  turnCount: number;
-  /** Inline message when turn limit or cycle detection stops the loop. */
-  turnLimitMessage: string | null;
-  /** Per-agent stream generation counter (CLN-02 HIST-03) — detects stale SSE deltas. */
-  streamGeneration: number;
-  /** NET-02: Current reconnect attempt count (0 when not reconnecting). */
-  reconnectAttempt: number;
-  /** NET-02: Max reconnect attempts (exposed for UI indicator). */
-  maxReconnectAttempts: number;
-  /** Branch selection state: parentMessageId -> selectedChildId. */
-  selectedBranches: Record<string, string>;
-}
-
-function emptyAgentState(): AgentState {
-  return {
-    activeSessionId: null,
-    messageSource: { mode: "new-chat" },
-    streamError: null,
-    connectionPhase: "idle",
-    connectionError: null,
-    forceNewSession: false,
-    activeSessionIds: [],
-    renderLimit: 100,
-    modelOverride: null,
-    pendingTargetAgent: null,
-    agentTurns: [],
-    turnCount: 0,
-    turnLimitMessage: null,
-    streamGeneration: 0,
-    reconnectAttempt: 0,
-    maxReconnectAttempts: MAX_RECONNECT_ATTEMPTS,
-    selectedBranches: {},
-  };
-}
+// ── Re-exports for backward compatibility ───────────────────────────────────
+export type { ChatMessage, MessagePart, TextPart, ToolPart, ToolPartState, RichCardPart, FilePart, SourceUrlPart, ReasoningPart, ConnectionPhase, MessageSource } from "./chat-types";
+export { isActivePhase, MAX_INPUT_LENGTH, STREAM_THROTTLE_MS } from "./chat-types";
+export { convertHistory, getCachedHistoryMessages } from "./chat-history";
 
 // ── Store interface ─────────────────────────────────────────────────────────
 
@@ -286,12 +42,6 @@ function getReconnectTimer(agent: string): ReturnType<typeof setTimeout> | null 
 function setReconnectTimer(agent: string, timer: ReturnType<typeof setTimeout> | null): void {
   _reconnectTimers.set(agent, timer);
 }
-
-// ── NET-02: Last event ID tracking for SSE resume ──────────────────────────
-const _agentLastEventIds = new Map<string, string>();
-function getLastEventId(agent: string): string | null { return _agentLastEventIds.get(agent) ?? null; }
-function setLastEventId(agent: string, id: string) { _agentLastEventIds.set(agent, id); }
-function clearLastEventId(agent: string) { _agentLastEventIds.delete(agent); }
 
 // ── Reconnect constants (SSE-02) ─────────────────────────────────────────────
 const MAX_RECONNECT_ATTEMPTS = 3;
@@ -320,10 +70,6 @@ interface ChatStore {
   stopStream: () => void;
   regenerate: () => void;
   regenerateFrom: (messageId: string) => void;
-  /** Switch branch at a fork point (client-side only, no server roundtrip). */
-  switchBranch: (parentMessageId: string, selectedChildId: string) => void;
-  /** Fork a user message and start a new stream with the edited content. */
-  forkAndRegenerate: (messageId: string, newContent: string) => void;
 
   resumeStream: (agent: string, sessionId: string) => void;
   setThinking: (agent: string, sessionId: string | null) => void;
@@ -373,225 +119,6 @@ function loadLastSession(): { agent?: string; sessions?: Record<string, string>;
   return {};
 }
 
-
-// ── Tree-aware path resolution (BRNC-03) ────────────────────────────────────
-
-/**
- * Given all messages (including all branches) and the user's branch selections,
- * returns the linear path of messages to display.
- *
- * Algorithm:
- * 1. Find root messages (parent_message_id === null). For trunk sessions, all
- *    messages are roots -- fall back to created_at order.
- * 2. Build a children map: parentId -> children sorted by created_at.
- * 3. Walk from root: at each node, if multiple children exist, pick the selected
- *    one (from selectedBranches) or default to the latest.
- * 4. Continue until no more children.
- */
-export function resolveActivePath(
-  rows: MessageRow[],
-  selectedBranches: Record<string, string>,
-): MessageRow[] {
-  // If no rows have parent_message_id set, this is a trunk session -- return rows sorted by created_at
-  // Use != null (loose) to treat both null AND undefined (missing field) as "no parent"
-  const hasBranching = rows.some(r => r.parent_message_id != null);
-  if (!hasBranching) {
-    return [...rows].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-  }
-
-  // Build children map
-  const childrenOf = new Map<string, MessageRow[]>();
-  const roots: MessageRow[] = [];
-
-  for (const r of rows) {
-    if (r.parent_message_id == null) {
-      roots.push(r);
-    } else {
-      const siblings = childrenOf.get(r.parent_message_id) ?? [];
-      siblings.push(r);
-      childrenOf.set(r.parent_message_id, siblings);
-    }
-  }
-
-  // Sort children by created_at within each group
-  for (const [, children] of childrenOf) {
-    children.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-  }
-
-  // There should be exactly one root for a well-formed session; pick first by created_at
-  roots.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-  if (roots.length === 0) return [];
-
-  const path: MessageRow[] = [];
-  let current: MessageRow | undefined = roots[0];
-
-  while (current) {
-    path.push(current);
-    const children = childrenOf.get(current.id);
-    if (!children || children.length === 0) break;
-
-    // Pick selected child or default to latest
-    const selectedId: string | undefined = selectedBranches[current.id];
-    current = selectedId
-      ? children.find(c => c.id === selectedId) ?? children[children.length - 1]
-      : children[children.length - 1];
-  }
-
-  return path;
-}
-
-/** Find all sibling messages (sharing the same parent, same role). */
-export function findSiblings(rows: MessageRow[], messageId: string): { siblings: MessageRow[]; index: number } {
-  const msg = rows.find(r => r.id === messageId);
-  if (!msg || !msg.parent_message_id) return { siblings: msg ? [msg] : [], index: 0 };
-
-  const siblings = rows
-    .filter(r => r.parent_message_id === msg.parent_message_id && r.role === msg.role)
-    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-
-  return { siblings, index: siblings.findIndex(s => s.id === messageId) };
-}
-
-// ── History conversion (MessageRow[] → ChatMessage[]) ───────────────────────
-
-/**
- * Converts flat database rows into structured ChatMessage objects.
- * Implements "Virtual Merging" (Stage 2): consecutive assistant/tool blocks
- * from the same agent are merged into a single visual message to ensure
- * stable tool grouping and consistent identity.
- */
-export function convertHistory(
-  rows: MessageRow[],
-  isAgentStreaming?: boolean,
-  selectedBranches?: Record<string, string>,
-): ChatMessage[] {
-  // When branching data exists and selectedBranches provided, resolve active path first
-  const resolved = selectedBranches && rows.some(r => r.parent_message_id != null)
-    ? resolveActivePath(rows, selectedBranches)
-    : rows;
-
-  // Filter out streaming placeholder messages ONLY if we have an active live stream
-  // that will provide the same content. If not, show them as fallback (history).
-  const filtered = resolved.filter(m => {
-    if (m.status === "streaming" && isAgentStreaming) return false;
-    return true;
-  });
-
-  const messages: ChatMessage[] = [];
-  let lastAssistantMsg: ChatMessage | null = null;
-  let lastAgentId: string | undefined = undefined;
-
-  // Tool call map for resolving tool names/inputs from the main assistant record
-  const toolCallMap = new Map<string, { name: string; arguments: unknown }>();
-  for (const m of filtered) {
-    if (m.role === "assistant" && m.tool_calls) {
-      const calls = m.tool_calls as Array<{ id: string; name: string; arguments?: unknown }>;
-      if (Array.isArray(calls)) {
-        for (const tc of calls) {
-          if (tc.id) toolCallMap.set(tc.id, { name: tc.name || "tool", arguments: tc.arguments ?? {} });
-        }
-      }
-    }
-  }
-
-  for (const m of filtered) {
-    if (m.role === "user") {
-      // Finalize any pending assistant message before starting a user block
-      if (lastAssistantMsg) {
-        messages.push(lastAssistantMsg);
-        lastAssistantMsg = null;
-      }
-      if (m.agent_id) lastAgentId = m.agent_id;
-      messages.push({
-        id: m.id,
-        role: "user",
-        parts: [{ type: "text", text: m.content || "" }],
-        createdAt: m.created_at,
-        agentId: m.agent_id ?? undefined,
-        parentMessageId: m.parent_message_id ?? undefined,
-        branchFromMessageId: m.branch_from_message_id ?? undefined,
-      });
-    } else if (m.role === "assistant" && !m.tool_call_id) {
-      // Assistant text block
-      const assistantAgentId = m.agent_id ?? lastAgentId;
-      if (m.agent_id) lastAgentId = m.agent_id;
-
-      const newParts = parseContentParts(m.content || "");
-
-      // D-01: No merging. Each assistant DB row becomes its own ChatMessage.
-      // Virtual Merging was removed because it breaks tool call ordering —
-      // tools must appear between the assistant messages that invoked them.
-      if (lastAssistantMsg) messages.push(lastAssistantMsg);
-      lastAssistantMsg = {
-        id: m.id,
-        role: "assistant",
-        parts: newParts,
-        createdAt: m.created_at,
-        agentId: assistantAgentId,
-        parentMessageId: m.parent_message_id ?? undefined,
-        branchFromMessageId: m.branch_from_message_id ?? undefined,
-      };
-    } else if (m.role === "tool" && m.tool_call_id) {
-      // Tool result block — always attach to the latest assistant message
-      if (lastAssistantMsg) {
-        const tc = toolCallMap.get(m.tool_call_id);
-        
-        // Extract inline files (__file__: markers)
-        const lines = (m.content || "").split("\n");
-        const cleanLines: string[] = [];
-        for (const line of lines) {
-          if (line.startsWith("__file__:")) {
-            try {
-              const meta = JSON.parse(line.slice("__file__:".length));
-              if (meta.url) {
-                lastAssistantMsg.parts.push({
-                  type: "file",
-                  url: meta.url,
-                  mediaType: meta.mediaType || "image/png",
-                });
-              }
-            } catch { /* ignore */ }
-          } else {
-            cleanLines.push(line);
-          }
-        }
-
-        lastAssistantMsg.parts.push({
-          type: "tool",
-          toolCallId: m.tool_call_id,
-          toolName: tc?.name || "tool",
-          state: "output-available",
-          input: (tc?.arguments as Record<string, unknown>) ?? {},
-          output: cleanLines.join("\n"),
-        });
-      }
-    }
-  }
-  
-  if (lastAssistantMsg) messages.push(lastAssistantMsg);
-
-  // Final pass: filter empty messages and stabilize referential identity
-  return messages.filter(m => m.parts.length > 0);
-}
-
-/**
- * Read-through cache peek — called from Zustand store actions where React hooks
- * are unavailable. Components access this data via useSessionMessages() hook.
- * See ARCH-02 audit (phase 34): queryClient.getQueryData is intentional here and
- * in sendMessage(); no React component calls getQueryData directly.
- */
-function getCachedHistoryMessages(sessionId: string | null, selectedBranches?: Record<string, string>): ChatMessage[] {
-  if (!sessionId) return [];
-  const cached = queryClient.getQueryData<{ messages: MessageRow[] }>(qk.sessionMessages(sessionId));
-  return cached ? convertHistory(cached.messages, false, selectedBranches) : [];
-}
-
-/** Get all raw MessageRow[] from React Query cache for a session (for sibling discovery). */
-export function getCachedRawMessages(sessionId: string | null): MessageRow[] {
-  if (!sessionId) return [];
-  const cached = queryClient.getQueryData<{ messages: MessageRow[] }>(qk.sessionMessages(sessionId));
-  return cached?.messages ?? [];
-}
 
 // ── Store implementation ────────────────────────────────────────────────────
 
@@ -658,7 +185,7 @@ export const useChatStore = create<ChatStore>()(
     const existingSt = get().agents[agent];
     const seedMessages = existingSt?.messageSource.mode === "live"
       ? existingSt.messageSource.messages
-      : getCachedHistoryMessages(sessionId, existingSt?.selectedBranches);
+      : getCachedHistoryMessages(sessionId);
 
     update(agent, {
       streamError: null,
@@ -669,33 +196,16 @@ export const useChatStore = create<ChatStore>()(
 
     const token = getToken();
 
-    const resumeHeaders: Record<string, string> = { Authorization: `Bearer ${token}` };
-    const lastEid = getLastEventId(agent);
-    if (lastEid) {
-      resumeHeaders["Last-Event-ID"] = lastEid;
-    }
-
     fetch(`/api/chat/${sessionId}/stream`, {
       method: "GET",
-      headers: resumeHeaders,
+      headers: { Authorization: `Bearer ${token}` },
       signal: controller.signal,
     })
       .then((resp) => {
         if (resp.status === 204) {
           // No active stream — engine already finished.
           // Transition to history mode so useSessionMessages fetches fresh data (Fix B).
-          clearLastEventId(agent);
-          update(agent, { connectionPhase: "idle", messageSource: { mode: "history", sessionId }, reconnectAttempt: 0 });
-          return;
-        }
-        if (resp.status === 410) {
-          // Stream expired — fall back to history mode without error
-          clearLastEventId(agent);
-          update(agent, {
-            connectionPhase: "idle",
-            messageSource: { mode: "history", sessionId },
-            reconnectAttempt: 0,
-          });
+          update(agent, { connectionPhase: "idle", messageSource: { mode: "history", sessionId } });
           return;
         }
         if (!resp.ok) {
@@ -726,7 +236,7 @@ export const useChatStore = create<ChatStore>()(
     if (ctrl) {
       ctrl.abort();
       setAbortCtrl(agent, null);
-      update(agent, { connectionPhase: "idle", reconnectAttempt: 0 });
+      update(agent, { connectionPhase: "idle" });
     }
   }
 
@@ -748,7 +258,7 @@ export const useChatStore = create<ChatStore>()(
       });
       return;
     }
-    update(agent, { connectionPhase: "reconnecting", connectionError: null, reconnectAttempt: attempt + 1 });
+    update(agent, { connectionPhase: "reconnecting", connectionError: null });
     const delay = RECONNECT_DELAY_BASE_MS * Math.pow(2, attempt);
     setReconnectTimer(agent, setTimeout(() => {
       setReconnectTimer(agent, null);
@@ -760,8 +270,7 @@ export const useChatStore = create<ChatStore>()(
   // ── SSE stream handler ──
   function startStream(agent: string, sessionId: string | null, messages: ChatMessage[], userText: string) {
     abortActiveStream(agent);
-    clearLastEventId(agent);
-    update(agent, { streamGeneration: (get().agents[agent]?.streamGeneration ?? 0) + 1, reconnectAttempt: 0 });
+    update(agent, { streamGeneration: (get().agents[agent]?.streamGeneration ?? 0) + 1 });
     const myGeneration = get().agents[agent]?.streamGeneration ?? 1;
     const controller = new AbortController();
     setAbortCtrl(agent, controller);
@@ -861,8 +370,6 @@ export const useChatStore = create<ChatStore>()(
     let parts: MessagePart[] = [];
     const incrementalParser = new IncrementalParser();
     const toolInputChunks = new Map<string, string[]>();
-    let currentStepId: string | null = null;
-    let currentStepGroup: StepGroupPart | null = null;
     let receivedSessionId: string | null = knownSessionId ?? null;
     // Track finish event to distinguish natural end from connection drop
     let receivedFinishEvent = false;
@@ -954,24 +461,8 @@ export const useChatStore = create<ChatStore>()(
         const chunk = decoder.decode(value, { stream: true });
         const lines = parseSSELines(chunk, buffer);
 
-        let currentEventId: string | null = null;
-        let skipNextData = false;
         for (const line of lines) {
-          // NET-02: Extract SSE event IDs for dedup and Last-Event-ID header
-          const eid = extractSseEventId(line);
-          if (eid !== null) {
-            currentEventId = eid;
-            const lastId = getLastEventId(agent);
-            if (lastId !== null && parseInt(eid, 10) <= parseInt(lastId, 10)) {
-              skipNextData = true;
-            } else {
-              skipNextData = false;
-              setLastEventId(agent, eid);
-            }
-            continue;
-          }
           if (!line.startsWith("data:")) continue;
-          if (skipNextData) { skipNextData = false; continue; } // dedup
           const raw = line.slice(5).trim();
           if (raw === "[DONE]") continue;
 
@@ -1051,34 +542,6 @@ export const useChatStore = create<ChatStore>()(
               break;
             }
 
-            case "step-start": {
-              currentStepId = event.stepId;
-              currentStepGroup = {
-                type: "step-group",
-                stepId: event.stepId,
-                toolParts: [],
-                isStreaming: true,
-              };
-              break;
-            }
-
-            case "step-finish": {
-              if (currentStepGroup) {
-                currentStepGroup.finishReason = event.finishReason;
-                currentStepGroup.isStreaming = false;
-                // Only push step-group part if it has tool calls.
-                // Text-only steps (no tools) pass through as normal text.
-                if (currentStepGroup.toolParts.length > 0) {
-                  flushText();
-                  parts.push(currentStepGroup);
-                  scheduleUpdate();
-                }
-              }
-              currentStepId = null;
-              currentStepGroup = null;
-              break;
-            }
-
             case "tool-input-start": {
               flushText();
               const { toolCallId: tcId, toolName: tcName } = event;
@@ -1090,9 +553,6 @@ export const useChatStore = create<ChatStore>()(
                 state: "input-streaming",
                 input: {},
               });
-              if (currentStepGroup) {
-                currentStepGroup.toolParts.push(parts[parts.length - 1] as ToolPart);
-              }
               scheduleUpdate();
               break;
             }
@@ -1156,37 +616,6 @@ export const useChatStore = create<ChatStore>()(
                 cardType: event.cardType,
                 data: event.data,
               });
-              scheduleUpdate();
-              break;
-            }
-
-            case "tool-approval-needed": {
-              flushText();
-              parts.push({
-                type: "approval",
-                approvalId: event.approvalId,
-                toolName: event.toolName,
-                toolInput: event.toolInput,
-                timeoutMs: event.timeoutMs,
-                receivedAt: Date.now(),
-                status: "pending",
-              });
-              scheduleUpdate();
-              break;
-            }
-
-            case "tool-approval-resolved": {
-              const idx = parts.findIndex(
-                (p) => p.type === "approval" && p.approvalId === event.approvalId,
-              );
-              if (idx >= 0) {
-                const existing = parts[idx] as ApprovalPart;
-                parts[idx] = {
-                  ...existing,
-                  status: event.action,
-                  ...(event.modifiedInput != null ? { modifiedInput: event.modifiedInput } : {}),
-                };
-              }
               scheduleUpdate();
               break;
             }
@@ -1256,22 +685,15 @@ export const useChatStore = create<ChatStore>()(
               cancelScheduledUpdate();
               flushText(); // Snapshot remaining text into parts at correct position
               pushUpdate(); // Final render with all parts in correct order
-
-              if (event.continuation) {
-                // Continuation: do NOT reset state — keep accumulating into same message.
-                // Push a separator part so UI renders the visual break.
-                parts.push({ type: "continuation-separator" });
-                incrementalParser.reset();
-                // Do NOT reset assistantId, parts, or createdAt — message continues.
-              } else {
-                // Normal finish: reset for next agent turn (existing behavior).
-                // FSM-04: Reset incremental parser state so next agent turn starts clean.
-                incrementalParser.reset();
-                // CRITICAL for multi-agent turn loop: reset state for next agent turn.
-                assistantId = uuid();
-                assistantCreatedAt = new Date().toISOString();
-                parts = [];
-              }
+              // FSM-04: Reset incremental parser state so next agent turn starts clean.
+              // Prevents reasoning state from leaking from one agent's output to the next.
+              incrementalParser.reset();
+              // CRITICAL for multi-agent turn loop: reset state for next agent turn.
+              // Without this, events between finish and next start (e.g. agent-turn rich card)
+              // would overwrite the finalized message with wrong agentId.
+              assistantId = uuid();
+              assistantCreatedAt = new Date().toISOString();
+              parts = [];
               break;
             }
 
@@ -1322,40 +744,10 @@ export const useChatStore = create<ChatStore>()(
             connectionError: null,
             pendingTargetAgent: null,
             turnCount: 0,
-            reconnectAttempt: 0,
             // Keep messageSource as "live" with final messages — avoids flash when
-            // React Query hasn't yet fetched fresh history.
+            // React Query hasn't yet fetched fresh history. The live messages ARE
+            // the complete response. History mode will be set on next session select.
           });
-
-          // OPTI-03: Delayed transition to history mode.
-          // Live messages remain visible while React Query fetches fresh history.
-          // After 600ms (enough for cache invalidation + fetch), switch to history.
-          const sid = receivedSessionId ?? get().agents[agent]?.activeSessionId;
-          if (sid) {
-            setTimeout(() => {
-              const st = get().agents[agent];
-              // Only transition if still in live mode for this session (user hasn't navigated away)
-              if (st && st.messageSource.mode === "live" && st.activeSessionId === sid) {
-                const liveMessages = st.messageSource.messages;
-                const cachedData = queryClient.getQueryData<{ messages: MessageRow[] }>(
-                  qk.sessionMessages(sid),
-                );
-                if (cachedData?.messages) {
-                  const historyMessages = convertHistory(cachedData.messages);
-                  const result = reconcileLiveWithHistory(liveMessages, historyMessages);
-                  if (result === null) {
-                    // OPTI-03: Content identical — just flip mode without changing rendered messages.
-                    // This prevents any DOM mutation since message IDs match.
-                  }
-                  // History cache is populated — safe to transition
-                  update(agent, { messageSource: { mode: "history", sessionId: sid } });
-                }
-                // If cachedData is not yet available, do NOT transition — stay in live mode.
-                // React Query invalidation will eventually populate the cache, and
-                // ChatThread's sourceMessages fallback handles this gracefully.
-              }
-            }, 600);
-          }
         }
         saveUiState(agent);
         // Session status is server-driven via WS agent_processing events — no optimistic update needed.
@@ -1600,7 +992,7 @@ export const useChatStore = create<ChatStore>()(
       if (st.messageSource.mode === "history") {
         // Continue from history — get messages from React Query cache.
         // Do NOT flip messageSource here; startStream sets messageSource atomically.
-        seedMessages = getCachedHistoryMessages(sessionId, st.selectedBranches);
+        seedMessages = getCachedHistoryMessages(sessionId);
       } else if (st.messageSource.mode === "live" && st.messageSource.messages.length > 0) {
         seedMessages = st.messageSource.messages;
       }
@@ -1638,7 +1030,7 @@ export const useChatStore = create<ChatStore>()(
 
       if (st.messageSource.mode === "history") {
         // Do NOT flip messageSource here; startStream sets messageSource atomically.
-        messages = getCachedHistoryMessages(sessionId, st.selectedBranches);
+        messages = getCachedHistoryMessages(sessionId);
       } else {
         messages = getLiveMessages(st.messageSource);
       }
@@ -1678,7 +1070,7 @@ export const useChatStore = create<ChatStore>()(
 
       if (st.messageSource.mode === "history") {
         // Do NOT flip messageSource here; startStream sets messageSource atomically.
-        messages = getCachedHistoryMessages(sessionId, st.selectedBranches);
+        messages = getCachedHistoryMessages(sessionId);
       } else {
         messages = getLiveMessages(st.messageSource);
       }
@@ -1706,67 +1098,6 @@ export const useChatStore = create<ChatStore>()(
       const seedMessages = messages.slice(0, targetIdx);
 
       startStream(agent, sessionId, seedMessages, userText);
-    },
-
-    switchBranch: (parentMessageId: string, selectedChildId: string) => {
-      const agent = get().currentAgent;
-      const st = get().agents[agent];
-      if (!st) return;
-
-      set((draft) => {
-        const s = draft.agents[agent];
-        if (s) s.selectedBranches[parentMessageId] = selectedChildId;
-      });
-
-      // Re-resolve display messages from cached history rows
-      if (st.messageSource.mode === "history" && st.activeSessionId) {
-        // Invalidate React Query cache to trigger re-render with new branch selection
-        // The component useMemo will re-run convertHistory with updated selectedBranches
-        queryClient.invalidateQueries({ queryKey: qk.sessionMessages(st.activeSessionId) });
-      }
-    },
-
-    forkAndRegenerate: async (messageId: string, newContent: string) => {
-      const store = get();
-      const agent = store.currentAgent;
-      const st = store.agents[agent] ?? emptyAgentState();
-      const sessionId = st.activeSessionId;
-      if (!sessionId) return;
-
-      try {
-        const resp = await apiPost<{
-          message_id: string;
-          parent_message_id: string;
-          branch_from_message_id: string;
-        }>(`/api/sessions/${sessionId}/fork`, {
-          branch_from_message_id: messageId,
-          content: newContent,
-        });
-
-        // Build seed: active path up to (but not including) the forked message, then new user msg
-        const currentSt = get().agents[agent] ?? emptyAgentState();
-        let messages: ChatMessage[];
-        if (currentSt.messageSource.mode === "history") {
-          messages = getCachedHistoryMessages(sessionId, currentSt.selectedBranches);
-        } else {
-          messages = getLiveMessages(currentSt.messageSource);
-        }
-
-        const forkIdx = messages.findIndex((m) => m.id === messageId);
-        const seedMessages = forkIdx >= 0 ? messages.slice(0, forkIdx) : messages;
-
-        // Update selectedBranches to select the new branch
-        set((draft) => {
-          const s = draft.agents[agent];
-          if (s && resp.parent_message_id) {
-            s.selectedBranches[resp.parent_message_id] = resp.message_id;
-          }
-        });
-
-        startStream(agent, sessionId, seedMessages, newContent);
-      } catch (e) {
-        console.error("[fork] failed:", e);
-      }
     },
 
     renameSession: async (sessionId: string, title: string) => {
@@ -1841,7 +1172,7 @@ export const useChatStore = create<ChatStore>()(
 
       const messages = st.messageSource.mode === "live"
         ? st.messageSource.messages
-        : getCachedHistoryMessages(st.activeSessionId, st.selectedBranches);
+        : getCachedHistoryMessages(st.activeSessionId);
       if (messages.length === 0) return;
 
       const session = {
