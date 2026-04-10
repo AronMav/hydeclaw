@@ -10,7 +10,7 @@ import { useVisualViewport } from "@/hooks/use-visual-viewport";
 import type { ChatMessage } from "@/stores/chat-store";
 import { useTranslation } from "@/hooks/use-translation";
 import { useAuthStore } from "@/stores/auth-store";
-import { useSessionMessages, useAgents, useProviders, useProviderModels } from "@/lib/queries";
+import { useSessionMessages, useSessions, useAgents, useProviders, useProviderModels } from "@/lib/queries";
 import {
   Select,
   SelectContent,
@@ -831,7 +831,11 @@ export function ChatThread({
   const reconnectAttempt = useChatStore((s) => s.agents[s.currentAgent]?.reconnectAttempt ?? 0);
   const maxReconnectAttempts = useChatStore((s) => s.agents[s.currentAgent]?.maxReconnectAttempts ?? 3);
   const activeSessionIds = useChatStore((s) => s.agents[s.currentAgent]?.activeSessionIds ?? []);
-  const engineRunning = !isActivePhase(connectionPhase) && !!activeSessionId && activeSessionIds.includes(activeSessionId);
+  // Engine running: either WS says it's active, OR React Query sessions list says run_status=running
+  const { data: sessionsData } = useSessions(currentAgent);
+  const sessionRunStatus = sessionsData?.sessions?.find((s: { id: string }) => s.id === activeSessionId)?.run_status;
+  const engineRunning = !isActivePhase(connectionPhase) && !!activeSessionId
+    && (activeSessionIds.includes(activeSessionId) || sessionRunStatus === "running");
 
   // Auto-resume SSE stream after page reload when engine is still processing
   const resumedRef = useRef<string | null>(null);
