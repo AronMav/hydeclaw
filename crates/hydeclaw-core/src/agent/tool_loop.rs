@@ -116,7 +116,7 @@ impl LoopDetector {
     pub fn record(&mut self, tool_name: &str, args: &serde_json::Value) -> LoopStatus {
         let hash = Self::hash_call(tool_name, args);
 
-        // Track per-tool call counts (persists across reset)
+        // Track per-tool call counts
         *self.tool_counts.entry(tool_name.to_string()).or_insert(0) += 1;
 
         // Track consecutive identical calls
@@ -143,10 +143,11 @@ impl LoopDetector {
         }
 
         // Check for ping-pong pattern (A-B-A-B repeating)
-        if self.recent.len() >= 8
-            && let Some(reason) = self.detect_ping_pong() {
+        if self.recent.len() >= 8 {
+            if let Some(reason) = self.detect_ping_pong() {
                 return LoopStatus::Break(reason);
             }
+        }
 
         // Check for n-gram cycles (3..=ngram_max_cycle steps repeated)
         if self.recent.len() >= 6 {
@@ -164,8 +165,8 @@ impl LoopDetector {
 
     fn hash_call(name: &str, args: &serde_json::Value) -> u64 {
         let mut hasher = DefaultHasher::new();
+        // Hash name first to isolate tools even with same args
         name.hash(&mut hasher);
-        // Use full argument string to avoid false positives with long inputs
         let args_str = args.to_string();
         args_str.hash(&mut hasher);
         hasher.finish()
@@ -178,26 +179,29 @@ impl LoopDetector {
             return None;
         }
 
-        // Check if last 8 calls form a repeating 2-element pattern
-        let a = self.recent[len - 1];
-        let b = self.recent[len - 2];
+        // Safe indexing via get() to prevent panics
+        let a = *self.recent.get(len - 1)?;
+        let b = *self.recent.get(len - 2)?;
         if a == b {
-            return None; // Same call, not ping-pong
+            return None; 
         }
 
+        // Pattern: [..., B, A, B, A, B, A, B, A]
         let is_ping_pong = (0..4).all(|i| {
-            self.recent[len - 1 - 2 * i] == a && self.recent[len - 2 - 2 * i] == b
+            self.recent.get(len - 1 - 2 * i) == Some(&a) && 
+            self.recent.get(len - 2 - 2 * i) == Some(&b)
         });
 
         if is_ping_pong {
-            Some("ping-pong pattern detected: two tools alternating with identical arguments".into())
+            let name_a = self.recent_names.get(len - 1).map(|s| s.as_str()).unwrap_or("tool_a");
+            let name_b = self.recent_names.get(len - 2).map(|s| s.as_str()).unwrap_or("tool_b");
+            Some(format!("ping-pong pattern detected: alternating between '{}' and '{}' with identical arguments", name_a, name_b))
         } else {
             None
         }
     }
 
     /// Detect repeating n-gram cycles of length 3..=ngram_max_cycle.
-    /// Returns Warning at 2 repetitions, CycleDetected at 3 repetitions.
     fn detect_ngram_cycle(&self) -> Option<LoopStatus> {
         let len = self.recent.len();
         let max_n = self.ngram_max_cycle.min(len / 2);
@@ -207,14 +211,25 @@ impl LoopDetector {
                 continue;
             }
 
-            // The last `n` hashes form the "pattern"
-            let pattern: Vec<u64> = (0..n).map(|i| self.recent[len - n + i]).collect();
+            // Extract pattern safely
+            let mut pattern = Vec::with_capacity(n);
+            for i in 0..n {
+                if let Some(&h) = self.recent.get(len - n + i) {
+                    pattern.push(h);
+                }
+            }
+            if pattern.len() < n { continue; }
 
-            // Count how many times this pattern repeats going backward in the buffer
-            let mut repetitions = 1usize; // the pattern itself counts as 1
+            let mut repetitions = 1usize;
             let mut offset = n;
             while offset + n <= len {
-                let segment: Vec<u64> = (0..n).map(|i| self.recent[len - offset - n + i]).collect();
+                let mut segment = Vec::with_capacity(n);
+                for i in 0..n {
+                    if let Some(&h) = self.recent.get(len - offset - n + i) {
+                        segment.push(h);
+                    }
+                }
+                
                 if segment == pattern {
                     repetitions += 1;
                     offset += n;
@@ -224,15 +239,16 @@ impl LoopDetector {
             }
 
             if repetitions >= 3 {
-                // Build a description using the tool names from the last `n` calls
-                let tools: Vec<&str> = (0..n)
-                    .map(|i| self.recent_names[len - n + i].as_str())
-                    .collect();
-                let desc = format!("{}-step cycle repeated {} times: [{}]", n, repetitions, tools.join(" → "));
+                let mut tools = Vec::with_capacity(n);
+                for i in 0..n {
+                    if let Some(name) = self.recent_names.get(len - n + i) {
+                        tools.push(name.as_str());
+                    }
+                }
+                let desc = format!("{}-step cycle repeated {} times: [{}]", n, repetitions, tools.join(" -> "));
                 return Some(LoopStatus::CycleDetected(desc));
             } else if repetitions == 2 {
-                let count = n * 2;
-                return Some(LoopStatus::Warning(count));
+                return Some(LoopStatus::Warning(n * 2));
             }
         }
 

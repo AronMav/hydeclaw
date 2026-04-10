@@ -889,12 +889,13 @@ export function ChatThread({
 
   const isStreaming = isActivePhase(connectionPhase);
 
-  // Show thinking indicator only when actually waiting for a response.
-  // Guard: if the last message already has assistant content, the response has started — hide thinking.
+  // Show thinking indicator when waiting for a response.
+  // Cases: (1) just submitted, (2) streaming but no assistant text yet, (3) engine running server-side
   const lastMsg = sourceMessages[sourceMessages.length - 1];
   const hasAssistantContent = lastMsg?.role === "assistant" && lastMsg.parts.length > 0;
   const showThinking = messageSource.mode === "live"
-    && (connectionPhase === "submitted" || (engineRunning && !hasAssistantContent));
+    && !hasAssistantContent
+    && (connectionPhase === "submitted" || connectionPhase === "streaming" || connectionPhase === "reconnecting" || engineRunning);
 
   // Only show loading skeleton when there is truly no data to display (Fix D).
   // If we have seeded live messages (F5 resume) or cached history, skip the skeleton.
