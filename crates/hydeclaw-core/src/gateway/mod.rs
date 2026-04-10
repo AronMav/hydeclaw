@@ -100,7 +100,7 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
     // Auth middleware — REQUIRED. Refuse to start without a token.
     let app = if let Some(token) = auth_token {
         let shared_token: &'static str = Box::leak(token.into_boxed_str());
-        let rate_limiter: &'static AuthRateLimiter = Box::leak(Box::new(AuthRateLimiter::new(50, 60)));
+        let rate_limiter: &'static AuthRateLimiter = Box::leak(Box::new(AuthRateLimiter::new(500, 30)));
         let ws_tickets = state.ws_tickets.clone();
         app.layer(axum_mw::from_fn(move |req, next| {
             let ws_tickets = ws_tickets.clone();
