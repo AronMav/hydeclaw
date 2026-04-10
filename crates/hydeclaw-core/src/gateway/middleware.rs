@@ -190,6 +190,13 @@ pub(crate) async fn request_rate_limit_middleware(
         return next.run(req).await;
     }
 
+    // Exempt authenticated requests — rate limiting only protects against unauthenticated abuse.
+    // Authenticated users (single-user self-hosted) should never be rate limited.
+    let has_auth = req.headers().get("authorization").is_some();
+    if has_auth {
+        return next.run(req).await;
+    }
+
     match limiter.check(&client_ip).await {
         Ok(()) => next.run(req).await,
         Err(retry_after) => {
