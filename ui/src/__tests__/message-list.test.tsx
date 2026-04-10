@@ -194,7 +194,6 @@ vi.mock("@/components/ui/rich-card", () => ({
 
 import { MessageItem } from "@/app/(authenticated)/chat/MessageItem";
 import { MessageList } from "@/app/(authenticated)/chat/MessageList";
-import { AgentTurnSeparator } from "@/app/(authenticated)/chat/ChatThread";
 import type { ChatMessage } from "@/stores/chat-store";
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -251,23 +250,6 @@ describe("MessageItem", () => {
     };
     render(<MessageItem message={msg} />);
     expect(screen.getByText("web_search")).toBeInTheDocument();
-  });
-
-  it("agent-turn rich-card part renders nothing inline — separator shown by MessageList (REND-06)", () => {
-    const msg: ChatMessage = {
-      id: "5",
-      role: "assistant",
-      parts: [
-        {
-          type: "rich-card",
-          cardType: "agent-turn",
-          data: { agentName: "Helper", reason: "delegated" },
-        },
-      ],
-      agentId: "Bot",
-    };
-    render(<MessageItem message={msg} />);
-    expect(screen.queryByText(/chat\.agent_responding/)).not.toBeInTheDocument();
   });
 
   it("renders file part with audio element (REND-08)", () => {
@@ -376,17 +358,6 @@ describe("Turn animations", () => {
     expect(container.querySelector(".animate-in")).not.toBeInTheDocument();
   });
 
-  it("AgentTurnSeparator with animate=true has animate-in class (ANIM-02)", () => {
-    render(<AgentTurnSeparator data={{ agentName: "Helper", reason: "" }} animate={true} />);
-    const el = screen.getByTestId("agent-turn-separator");
-    expect(el.className).toContain("animate-in");
-  });
-
-  it("AgentTurnSeparator with animate=false does NOT have animate-in class (ANIM-02)", () => {
-    render(<AgentTurnSeparator data={{ agentName: "Helper", reason: "" }} animate={false} />);
-    const el = screen.getByTestId("agent-turn-separator");
-    expect(el.className).not.toContain("animate-in");
-  });
 });
 
 // ── Virtualization stress (UI-04) ─────────────────────────────────────────
@@ -421,8 +392,8 @@ function generateToolMessages(count: number): ChatMessage[] {
       if (i % 10 === 3) {
         parts.push({
           type: "rich-card",
-          cardType: "agent-turn",
-          data: { agentName: `SubAgent${i}`, reason: "delegated" },
+          cardType: "metric",
+          data: { label: `Metric${i}`, value: i },
         });
       }
       msgs.push({

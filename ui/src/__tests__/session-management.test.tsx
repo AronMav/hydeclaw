@@ -95,7 +95,6 @@ const mockChatStoreState: Record<string, unknown> = {
       messageSource: { mode: "new-chat" },
       streamError: null,
       inputText: "",
-      pendingTargetAgent: null,
     },
   },
   sessionParticipants: {},

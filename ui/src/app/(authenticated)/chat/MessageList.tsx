@@ -58,8 +58,7 @@ function MessageListSkeleton() {
 
 function ThinkingMessage() {
   const currentAgent = useChatStore((s) => s.currentAgent);
-  const pendingTarget = useChatStore((s) => s.agents[s.currentAgent]?.pendingTargetAgent);
-  const displayAgent = pendingTarget || currentAgent;
+  const displayAgent = currentAgent;
   const agentIcons = useAuthStore((s) => s.agentIcons);
   const agentIconUrl = displayAgent && agentIcons[displayAgent] ? `/uploads/${agentIcons[displayAgent]}` : null;
 

@@ -65,7 +65,6 @@ const mockChatStoreState: Record<string, unknown> = {
       messageSource: { mode: "new-chat" },
       streamError: null,
       inputText: "",
-      pendingTargetAgent: null,
     },
   },
 };
@@ -290,9 +289,9 @@ describe("Multi-Agent Identity (MAID)", () => {
     });
   });
 
-  // MAID-02: ThinkingMessage shows pendingTargetAgent name
+  // MAID-02: ThinkingMessage shows current agent name
   describe("MAID-02: ThinkingMessage agent display", () => {
-    it("renders ThinkingMessage with currentAgent name when no pendingTargetAgent", () => {
+    it("renders ThinkingMessage with currentAgent name", () => {
       render(
         <MessageList
           messages={[]}
@@ -362,11 +361,10 @@ describe("Multi-Agent Identity (MAID)", () => {
 
   // AGENT-01/AGENT-02: stable identity + visual distinction
   describe("AGENT-01/AGENT-02 — stable identity + visual distinction", () => {
-    // AGENT-01a: first SSE assistant message has agentId from primary agent when no pendingTargetAgent
-    it("AGENT-01a: assistant message agentId equals primary agent when no pendingTargetAgent override", () => {
-      // When no pendingTargetAgent is set, currentRespondingAgent should fall back to the primary
-      // agent name (not null/undefined). This test verifies the resulting message renders the
-      // correct agent name instead of falling back to a generic placeholder.
+    // AGENT-01a: first SSE assistant message has agentId from primary agent
+    it("AGENT-01a: assistant message agentId equals primary agent", () => {
+      // currentRespondingAgent falls back to the primary agent name (not null/undefined).
+      // This test verifies the resulting message renders the correct agent name.
       const msg = makeMsg({
         id: "sse-1",
         role: "assistant",
@@ -377,15 +375,6 @@ describe("Multi-Agent Identity (MAID)", () => {
       render(<MessageItem message={msg} />);
       // Agent name "TestAgent" must appear — confirms agentId is set from primary agent name
       expect(screen.getByText("TestAgent")).toBeInTheDocument();
-    });
-
-    // AGENT-01b: startStream clears pendingTargetAgent
-    it("AGENT-01b: startStream update includes pendingTargetAgent: null to clear stale target", () => {
-      // Verify the store mock reflects that pendingTargetAgent starts null (simulating post-startStream state)
-      // This is a contract test: store state after a new stream starts must have pendingTargetAgent=null
-      const storeState = mockChatStoreState.agents as Record<string, { pendingTargetAgent: string | null }>;
-      // After startStream, pendingTargetAgent must be null (cleared for fresh stream)
-      expect(storeState["TestAgent"].pendingTargetAgent).toBeNull();
     });
 
     // AGENT-02: inter-agent sender message renders with distinct visual treatment
