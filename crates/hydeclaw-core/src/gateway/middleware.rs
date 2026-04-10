@@ -271,9 +271,11 @@ pub(crate) async fn auth_middleware(
             return next.run(req).await;
         }
 
-    // Only block unauthenticated requests from locked IPs
-    if !exempt_from_lockout && rate_limiter.is_locked(&client_ip).await {
-        tracing::warn!(ip = %client_ip, path = %path, "auth rate limit: locked");
+    // Only block fully unauthenticated requests (no header at all) from locked IPs.
+    // If the request HAS an Authorization header (even invalid), return 401 not 429 —
+    // the frontend will redirect to login, and the next valid-token request clears lockout.
+    if !exempt_from_lockout && rate_limiter.is_locked(&client_ip).await && auth_header.is_none() {
+        tracing::warn!(ip = %client_ip, path = %path, "auth rate limit: locked (no auth header)");
         return (StatusCode::TOO_MANY_REQUESTS, "Too many failed attempts. Try again later.").into_response();
     }
 
