@@ -196,7 +196,9 @@ async fn main() -> Result<()> {
     {
         let watchdog_binary = std::path::Path::new("hydeclaw-watchdog");
         if watchdog_binary.exists() {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+            let home = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_else(|_| "/root".into());
             let unit_path = std::path::PathBuf::from(&home)
                 .join(".config/systemd/user/hydeclaw-watchdog.service");
             if !unit_path.exists() {
@@ -233,7 +235,9 @@ async fn main() -> Result<()> {
     {
         let worker_binary = std::path::Path::new("hydeclaw-memory-worker");
         if worker_binary.exists() {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+            let home = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_else(|_| "/root".into());
             let unit_path = std::path::PathBuf::from(&home)
                 .join(".config/systemd/user/hydeclaw-memory-worker.service");
             if !unit_path.exists() {
