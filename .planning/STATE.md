@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.12.0
 milestone_name: Chat Redesign
 status: executing
-stopped_at: Phase 60 UI-SPEC approved
-last_updated: "2026-04-10T21:00:39.510Z"
-last_activity: 2026-04-10 -- Phase 60 execution started
+stopped_at: Completed 60-02-PLAN.md
+last_updated: "2026-04-10T21:36:38.527Z"
+last_activity: 2026-04-10
 progress:
   total_phases: 11
-  completed_phases: 6
-  total_plans: 18
-  completed_plans: 12
+  completed_phases: 1
+  total_plans: 6
+  completed_plans: 14
 ---
 
 # Project State
@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 ## Current Position
 
 Phase: 60 (async-delegation) — EXECUTING
-Plan: 1 of 2
-Status: Executing Phase 60
-Last activity: 2026-04-10 -- Phase 60 execution started
+Plan: 2 of 2
+Status: Ready to execute
+Last activity: 2026-04-10
 
 ## Accumulated Context
 
@@ -60,6 +60,8 @@ Last activity: 2026-04-10 -- Phase 60 execution started
 - [Phase 45-cleanup]: CLN-01: StreamStatus/isActiveStream removed — ConnectionPhase/isActivePhase are sole stream-state authorities
 - [Phase 45-cleanup]: CLN-02: AbortController/timers in private Maps not Immer state; streamGeneration moved to AgentState as plain number
 - [Phase 59]: assertToken() throws on empty token with redirect; getToken() kept backward-compatible for SSE callers
+- [Phase 60-02]: Keep agent-turn in HIDDEN_CARD_TYPES as defense-in-depth for old history
+- [Phase 60-02]: HandoffDivider kept as-is (works with msg.agentId, independent of removed handoff stack)
 
 ### Pending Todos
 
@@ -73,6 +75,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-10T20:46:25.752Z
-Stopped at: Phase 60 UI-SPEC approved
+Last session: 2026-04-10T21:36:38.524Z
+Stopped at: Completed 60-02-PLAN.md
 Resume with: Next phase
