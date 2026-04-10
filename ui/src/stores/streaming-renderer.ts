@@ -657,7 +657,12 @@ export function createStreamingRenderer(store: StoreAccess) {
                 const existingIdx = liveMessages.findIndex((m: ChatMessage) => m.id === assistantId);
                 
                 if (existingIdx >= 0) {
-                  liveMessages[existingIdx].parts = syncParts;
+                  const existingMsg = liveMessages[existingIdx];
+                  // If message is already marked complete, don't revert it to streaming (Fix SYNC-01)
+                  if (existingMsg.status !== "complete") {
+                    existingMsg.parts = syncParts;
+                    existingMsg.status = syncStatus === "done" ? "complete" : "streaming";
+                  }
                 } else {
                   liveMessages.push({
                     id: assistantId,
@@ -665,9 +670,13 @@ export function createStreamingRenderer(store: StoreAccess) {
                     parts: syncParts,
                     createdAt: assistantCreatedAt,
                     agentId: currentRespondingAgent ?? undefined,
+                    status: syncStatus === "done" ? "complete" : "streaming",
                   });
                 }
                 if (st.connectionPhase !== "error" && syncStatus !== "done") st.connectionPhase = "streaming";
+                if (syncStatus === "done") {
+                  st.connectionPhase = "idle";
+                }
               });
 
               if (syncStatus === "finished" || syncStatus === "error" || syncStatus === "interrupted") {

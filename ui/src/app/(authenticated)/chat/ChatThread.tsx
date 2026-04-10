@@ -834,17 +834,26 @@ export function ChatThread({
   // Engine running: either WS says it's active, OR React Query sessions list says run_status=running
   const { data: sessionsData } = useSessions(currentAgent);
   const sessionRunStatus = sessionsData?.sessions?.find((s: { id: string }) => s.id === activeSessionId)?.run_status;
-  const engineRunning = !isActivePhase(connectionPhase) && !!activeSessionId
-    && (activeSessionIds.includes(activeSessionId) || sessionRunStatus === "running");
+  
+  // CRITICAL: We are "running" if we're in an active connection phase OR the DB says so.
+  const engineRunning = !!activeSessionId && (
+    isActivePhase(connectionPhase) || 
+    activeSessionIds.includes(activeSessionId) || 
+    sessionRunStatus === "running"
+  );
 
   // Auto-resume SSE stream after page reload when engine is still processing
   const resumedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (engineRunning && activeSessionId && currentAgent && resumedRef.current !== activeSessionId) {
-      resumedRef.current = activeSessionId;
-      useChatStore.getState().resumeStream(currentAgent, activeSessionId);
+    // Only trigger resume if we are NOT currently connecting/streaming but the DB/WS says it's running
+    if (activeSessionId && !isActivePhase(connectionPhase) && (activeSessionIds.includes(activeSessionId) || sessionRunStatus === "running")) {
+      if (resumedRef.current !== activeSessionId) {
+        resumedRef.current = activeSessionId;
+        console.debug("[chat] Triggering auto-resume for session:", activeSessionId);
+        useChatStore.getState().resumeStream(currentAgent, activeSessionId);
+      }
     }
-  }, [engineRunning, activeSessionId, currentAgent]);
+  }, [activeSessionId, activeSessionIds, sessionRunStatus, connectionPhase, currentAgent]);
 
   // Always fetch session messages — even during streaming.
   // During live streaming, sourceMessages prefers live data, but history data
