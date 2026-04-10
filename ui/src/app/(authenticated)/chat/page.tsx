@@ -522,7 +522,7 @@ export default function ChatPage() {
                           >
                             {s.channel}
                           </span>
-                          {activeSessionIds.includes(s.id) ? (
+                          {(activeSessionIds.includes(s.id) || s.run_status === "running") ? (
                             <span className="ml-1.5 rounded px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider bg-success/15 text-success flex items-center gap-1 shrink-0">
                               <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
                               running

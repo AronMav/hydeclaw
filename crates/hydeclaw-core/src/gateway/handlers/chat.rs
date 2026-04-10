@@ -376,6 +376,9 @@ pub(crate) struct ChatSseRequest {
     /// When set, engine builds LLM context from the branch chain ending at this message.
     #[serde(default)]
     leaf_message_id: Option<String>,
+    /// Optional file attachments from the UI.
+    #[serde(default)]
+    attachments: Vec<hydeclaw_types::MediaAttachment>,
 }
 
 #[allow(unused_assignments)]
