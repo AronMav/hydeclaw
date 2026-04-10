@@ -17,14 +17,9 @@ export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean, s
   const resolvedRows = selectedBranches && rows.some(r => r.parent_message_id != null)
     ? resolveActivePath(rows, selectedBranches)
     : rows;
-  // Filter out streaming placeholder messages:
-  // - Always filter if we have an active live stream (stream provides the content)
-  // - Also filter empty streaming rows in history mode (ghost rows from interrupted streams)
-  const filtered = resolvedRows.filter(m => {
-    if (m.status === "streaming" && isAgentStreaming) return false;
-    if (m.status === "streaming" && !m.content && !m.tool_calls) return false;
-    return true;
-  });
+  // Filter out streaming rows — they are artifacts of incomplete SSE flushes.
+  // The complete version of the message is always saved separately.
+  const filtered = resolvedRows.filter(m => m.status !== "streaming");
 
   const messages: ChatMessage[] = [];
   let lastAssistantMsg: ChatMessage | null = null;
