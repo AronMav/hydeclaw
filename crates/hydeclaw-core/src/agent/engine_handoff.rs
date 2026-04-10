@@ -57,11 +57,34 @@ impl AgentEngine {
             "handoff tool: running target agent in isolated context"
         );
 
-        // 5. Run target agent as isolated subagent — own system prompt, own context.
-        // Target sees ONLY the task+context, not the initiator's full conversation.
+        // 5. Gather recent tool results from this session to enrich context.
+        // Target agent is isolated but needs key data (e.g., portfolio, search results).
+        let tool_results_context = if let Some(sid) = *self.processing_session_id().lock().await {
+            match crate::db::sessions::get_recent_tool_results(&self.db, sid, 5).await {
+                Ok(results) if !results.is_empty() => {
+                    let mut ctx = String::from("\n\nRecent tool results (from initiator's session):\n");
+                    for (name, output) in results {
+                        let truncated = if output.len() > 1000 {
+                            let mut end = 1000;
+                            while end > 0 && !output.is_char_boundary(end) { end -= 1; }
+                            format!("{}... [truncated]", &output[..end])
+                        } else {
+                            output
+                        };
+                        ctx.push_str(&format!("- {}: {}\n", name, truncated));
+                    }
+                    ctx
+                }
+                _ => String::new(),
+            }
+        } else {
+            String::new()
+        };
+
+        // 6. Run target agent as isolated subagent — own system prompt, own context.
         let full_task = format!(
-            "{}\n\nContext from {}:\n{}",
-            task, self.agent.name, context
+            "{}\n\nContext from {}:\n{}{}",
+            task, self.agent.name, context, tool_results_context
         );
 
         let timeout = std::time::Duration::from_secs(120);
