@@ -172,7 +172,7 @@ Plans:
   3. Completed subagent results injected as user messages in turn loop
   4. Frontend simplified: no handoff stack, no agent-turn switching in streaming-renderer
   5. All existing chat tests pass after refactoring
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 Plans:
 - [ ] 60-01-PLAN.md — Backend: async handoff spawn + turn loop result injection
 - [ ] 60-02-PLAN.md — Frontend: remove handoff state fields, AgentTurnSeparator, update tests
@@ -192,4 +192,4 @@ Plans:
 | 55. Gateway Sub-Router Extraction | v0.13.0 | 1/1 | Complete | 2026-04-10 |
 | 56. Backend Channels Hardening | v0.13.0 | 0/1 | In Progress | — |
 | 58. Channels Bridge Errors | v0.13.0 | 0/1 | Not Started | — |
-| 60. Async Delegation | v0.14.0 | 0/2 | Not Started | — |
+| 60. Async Delegation | v0.14.0 | 0/2 | Complete    | 2026-04-10 |
