@@ -646,21 +646,7 @@ export default function ChatPage() {
             <ParticipantBar sessionId={activeSessionId} currentAgent={currentAgent} />
             <ChatCanvasTabs />
           </div>
-          {viewingHistory && (
-            <div className="ml-auto flex items-center gap-2">
-              <div className="rounded-md border border-primary/30 bg-primary/10 px-3 py-1 font-mono text-[10px] font-semibold uppercase tracking-widest text-primary/70">
-                {t("chat.history")}
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => useChatStore.getState().newChat()}
-                className="text-xs text-primary"
-              >
-                {t("chat.return_to_live")}
-              </Button>
-            </div>
-          )}
+          {/* HISTORY / Return to live badge removed — confusing for users during handoff */}
           {streamError && (
             <div className="ml-auto flex items-center gap-1 text-destructive/60">
               <div className="h-2 w-2 rounded-full bg-destructive/60 animate-pulse" />
