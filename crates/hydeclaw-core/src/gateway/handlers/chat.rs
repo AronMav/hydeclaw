@@ -786,7 +786,7 @@ pub(crate) async fn api_chat_sse(
             // Truncate context to max_handoff_context_chars (same as handoff path)
             let max_ctx = state.config.limits.max_handoff_context_chars;
             let truncated = if last_response.len() > max_ctx {
-                format!("{}...(truncated)", &last_response[..last_response.floor_char_boundary(max_ctx)])
+                format!("{}... [truncated]", &last_response[..last_response.floor_char_boundary(max_ctx)])
             } else {
                 last_response.clone()
             };
@@ -807,7 +807,7 @@ pub(crate) async fn api_chat_sse(
                 timestamp: chrono::Utc::now(),
                 formatting_prompt: None,
                 tool_policy_override: None,
-                leaf_message_id: None,
+                leaf_message_id: current_leaf_id,
             };
             current_engine = next_engine;
             current_session_id = Some(sid);
