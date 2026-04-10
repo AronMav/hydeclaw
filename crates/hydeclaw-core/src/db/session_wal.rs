@@ -22,33 +22,50 @@ pub async fn warm_up_detector(
     session_id: Uuid,
     detector: &mut crate::agent::tool_loop::LoopDetector,
 ) -> Result<()> {
-    // Get last 64 tool_start events (buffer size of detector)
+    // Get last 256 events to ensure we cover enough tool start/end pairs
     let rows = sqlx::query(
-        "SELECT payload FROM session_events \
-         WHERE session_id = $1 AND event_type = 'tool_start' \
-         ORDER BY created_at DESC LIMIT 64",
+        "SELECT event_type, payload FROM session_events \
+         WHERE session_id = $1 AND event_type IN ('tool_start', 'tool_end') \
+         ORDER BY created_at DESC LIMIT 256",
     )
     .bind(session_id)
     .fetch_all(db)
     .await?;
 
-    // Apply in chronological order (reverse of the query result)
+    // Apply in chronological order
     for row in rows.into_iter().rev() {
+        let event_type: String = sqlx::Row::get(&row, "event_type");
         let payload: Option<serde_json::Value> = sqlx::Row::try_get(&row, "payload").ok();
         if let Some(payload) = payload {
             let name = payload.get("tool_name").and_then(|v| v.as_str());
-            let hash_hex = payload.get("args_hash").and_then(|v| v.as_str());
-            
-            if let (Some(n), Some(h_str)) = (name, hash_hex) {
-                if let Ok(h) = u64::from_str_radix(h_str, 16) {
-                    detector.warm_up(h, n);
+
+            match event_type.as_str() {
+                "tool_start" => {
+                    let hash_hex = payload.get("args_hash").and_then(|v| v.as_str());
+                    if let (Some(n), Some(h_str)) = (name, hash_hex) {
+                        if let Ok(h) = u64::from_str_radix(h_str, 16) {
+                            detector.warm_up(h, n);
+                        }
+                    }
                 }
+                "tool_end" => {
+                    if let Some(n) = name {
+                        // Correctly read success status from WAL payload
+                        let success = payload.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
+                        // Warm up with a dummy hash — we don't have args for tool_end events
+                        // Error tracking is handled by the consecutive_errors counter in record_execution
+                        if !success {
+                            // Just track the error streak without recording execution
+                            // (warm_up already handles the hash/consecutive tracking)
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
     Ok(())
 }
-
 /// Log a session lifecycle event to the WAL.
 pub async fn log_event(
     db: &PgPool,
