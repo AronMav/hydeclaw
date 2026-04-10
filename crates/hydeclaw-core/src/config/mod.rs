@@ -499,6 +499,8 @@ pub struct ToolLoopSettings {
     /// Maximum cycle length to detect in n-gram check (3..=N, default: 6).
     #[serde(default = "default_ngram_cycle_length")]
     pub ngram_cycle_length: usize,
+    /// Consecutive errors on same tool before breaking (default: 3).
+    pub error_break_threshold: Option<usize>,
 }
 
 fn default_tool_loop_max() -> usize { 50 }
@@ -1271,6 +1273,7 @@ model = "m2.5"
                     max_auto_continues: 5,
                     max_loop_nudges: 3,
                     ngram_cycle_length: 6,
+                    error_break_threshold: None,
                 }),
                 base: false,
                 watchdog: None,

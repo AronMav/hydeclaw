@@ -379,6 +379,7 @@ pub(crate) struct ToolLoopPayload {
     pub max_auto_continues: Option<u8>,
     pub max_loop_nudges: Option<usize>,
     pub ngram_cycle_length: Option<usize>,
+    pub error_break_threshold: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -460,6 +461,7 @@ pub(crate) fn build_agent_config(name: String, p: AgentCreatePayload) -> AgentCo
                 max_auto_continues: tl.max_auto_continues.unwrap_or(5),
                 max_loop_nudges: tl.max_loop_nudges.unwrap_or(3),
                 ngram_cycle_length: tl.ngram_cycle_length.unwrap_or(6),
+                error_break_threshold: tl.error_break_threshold,
             }),
             watchdog: p.watchdog.flatten().map(|w| crate::config::WatchdogConfig {
                 inactivity_secs: w.inactivity_secs.unwrap_or(600),
@@ -952,6 +954,7 @@ pub(crate) async fn api_update_agent(
                 max_auto_continues: Some(tl.max_auto_continues),
                 max_loop_nudges: Some(tl.max_loop_nudges),
                 ngram_cycle_length: Some(tl.ngram_cycle_length),
+                error_break_threshold: tl.error_break_threshold,
             }));
         }
         if payload.icon.is_none() { payload.icon = a.icon.clone(); }
