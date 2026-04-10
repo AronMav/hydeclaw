@@ -607,6 +607,12 @@ pub(crate) async fn api_chat_sse(
             };
 
             // ── Routing: check handoff tool first, then @-mention fallback ──
+            tracing::info!(
+                agent = %current_agent_name,
+                has_initiator = handoff_initiator.is_some(),
+                turn = turn_count,
+                "turn loop: routing check"
+            );
 
             // Priority 1: Structured handoff (D-06, D-07)
             let handoff = current_engine.take_handoff().await;
@@ -696,7 +702,11 @@ pub(crate) async fn api_chat_sse(
                         text: Some(format!(
                             "[Response from {}]\n{}",
                             current_agent_name,
-                            if last_response.len() > 2000 { format!("{}...", &last_response[..2000]) } else { last_response.clone() }
+                            if last_response.len() > 2000 {
+                            let mut end = 2000;
+                            while end > 0 && !last_response.is_char_boundary(end) { end -= 1; }
+                            format!("{}...", &last_response[..end])
+                        } else { last_response.clone() }
                         )),
                         attachments: vec![],
                         agent_id: initiator_name.clone(),
