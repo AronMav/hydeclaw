@@ -91,30 +91,55 @@ export interface ChatMessage {
   createdAt?: string;
   /** Per-message agent identity (for multi-agent sessions). */
   agentId?: string;
+  /** Optimistic send status (SSE-03). Undefined means confirmed (from history/sync). */
+  status?: "sending" | "confirmed" | "failed";
 }
 
-// ── Stream status ───────────────────────────────────────────────────────────
+// ── Connection phase FSM (FSM-01) ────────────────────────────────────────────
 
-export type StreamStatus = "idle" | "submitted" | "streaming" | "error";
+/**
+ * Single authoritative phase enum for stream lifecycle state.
+ * FSM-01: authoritative connection phase enum.
+ * "complete" is a transient phase between finish event and finalizeStream.
+ * "reconnecting" is set when stream drops mid-run and backoff retry is pending.
+ */
+export type ConnectionPhase = "idle" | "submitted" | "streaming" | "reconnecting" | "complete" | "error";
 
-export function isActiveStream(status: StreamStatus | undefined): boolean {
-  return status === "submitted" || status === "streaming";
+export function isActivePhase(phase: ConnectionPhase | undefined): boolean {
+  return phase === "submitted" || phase === "streaming" || phase === "reconnecting";
+}
+
+// ── MessageSource discriminated union (HIST-02) ─────────────────────────────
+
+/**
+ * Discriminated union for message source mode.
+ * Replaces the dual-semantics of viewMode + liveMessages fields.
+ * - "new-chat": no session selected, no messages
+ * - "live": active or recently completed stream, messages held in store
+ * - "history": viewing a DB session snapshot, messages fetched via React Query
+ */
+export type MessageSource =
+  | { mode: "new-chat" }
+  | { mode: "live"; messages: ChatMessage[] }
+  | { mode: "history"; sessionId: string };
+
+/** Helper: extract live messages from a MessageSource union. */
+function getLiveMessages(source: MessageSource): ChatMessage[] {
+  return source.mode === "live" ? source.messages : [];
 }
 
 // ── Per-agent state ─────────────────────────────────────────────────────────
 
 interface AgentState {
   activeSessionId: string | null;
-  /** Messages from the current live stream (including seeded history). */
-  liveMessages: ChatMessage[];
-  /** Whether we're viewing a DB snapshot (true) or live stream (false). */
-  viewMode: "history" | "live";
-  streamStatus: StreamStatus;
+  /** Discriminated union replacing the old liveMessages + viewMode duality. */
+  messageSource: MessageSource;
   streamError: string | null;
+  /** FSM-01: authoritative connection phase enum. */
+  connectionPhase: ConnectionPhase;
+  connectionError: string | null;
   /** When true, next sendMessage will force backend to create a new session. */
   forceNewSession: boolean;
-  /** Session ID when agent is processing from another channel (Telegram, cron). */
-  thinkingSessionId: string | null;
   /** Server-driven list of session IDs currently being processed.
    *  Updated ONLY from WS agent_processing events — never optimistically.
    *  Array (not Set) because Immer doesn't support Set without enableMapSet(). */
@@ -131,17 +156,18 @@ interface AgentState {
   turnCount: number;
   /** Inline message when turn limit or cycle detection stops the loop. */
   turnLimitMessage: string | null;
+  /** Per-agent stream generation counter (CLN-02 HIST-03) — detects stale SSE deltas. */
+  streamGeneration: number;
 }
 
 function emptyAgentState(): AgentState {
   return {
     activeSessionId: null,
-    liveMessages: [],
-    viewMode: "live",
-    streamStatus: "idle",
+    messageSource: { mode: "new-chat" },
     streamError: null,
+    connectionPhase: "idle",
+    connectionError: null,
     forceNewSession: false,
-    thinkingSessionId: null,
     activeSessionIds: [],
     renderLimit: 100,
     modelOverride: null,
@@ -149,6 +175,7 @@ function emptyAgentState(): AgentState {
     agentTurns: [],
     turnCount: 0,
     turnLimitMessage: null,
+    streamGeneration: 0,
   };
 }
 
@@ -156,12 +183,30 @@ function emptyAgentState(): AgentState {
 
 const LAST_SESSION_KEY = "hydeclaw.chat.lastSession";
 
-// Per-agent abort controllers (keyed by agent name, not module-scoped)
-const agentAbortControllers: Record<string, AbortController | null> = {};
+// ── CLN-02: Encapsulated non-serializable state ──────────────────────────────
+// AbortController and setTimeout handles are not plain objects — Immer cannot
+// proxy or freeze them. They live in private Maps behind accessor helpers so
+// no bare module-scope mutable Records remain.
 
-// Stream generation counter — prevents stale SSE deltas from writing to wrong session
-// after session switch. Incremented on each startStream(), checked in pushUpdate().
-let streamGeneration = 0;
+const _abortControllers = new Map<string, AbortController | null>();
+const _reconnectTimers = new Map<string, ReturnType<typeof setTimeout> | null>();
+
+function getAbortCtrl(agent: string): AbortController | null {
+  return _abortControllers.get(agent) ?? null;
+}
+function setAbortCtrl(agent: string, ctrl: AbortController | null): void {
+  _abortControllers.set(agent, ctrl);
+}
+function getReconnectTimer(agent: string): ReturnType<typeof setTimeout> | null {
+  return _reconnectTimers.get(agent) ?? null;
+}
+function setReconnectTimer(agent: string, timer: ReturnType<typeof setTimeout> | null): void {
+  _reconnectTimers.set(agent, timer);
+}
+
+// ── Reconnect constants (SSE-02) ─────────────────────────────────────────────
+const MAX_RECONNECT_ATTEMPTS = 3;
+const RECONNECT_DELAY_BASE_MS = 1000;
 
 interface ChatStore {
   /** Per-agent state map. */
@@ -388,9 +433,8 @@ export const useChatStore = create<ChatStore>()(
     uiStateSaveTimers[agent] = setTimeout(() => {
       const st = get().agents[agent];
       if (!st?.activeSessionId) return;
-      const streamStatus = st.streamStatus === "submitted" ? "streaming" : st.streamStatus;
       apiPatch(`/api/sessions/${st.activeSessionId}`, {
-        ui_state: { viewMode: st.viewMode, streamStatus },
+        ui_state: { connectionPhase: st.connectionPhase },
       }).catch((e) => { console.warn("[chat] save failed:", e); });
     }, 500);
   }
@@ -402,24 +446,37 @@ export const useChatStore = create<ChatStore>()(
    * Resume an active backend stream after page reload.
    * Connects to GET /api/chat/{sessionId}/stream and processes replay + live events.
    */
-  function resumeStream(agent: string, sessionId: string) {
-    // Don't resume if already streaming
+  function resumeStream(agent: string, sessionId: string, reconnectAttempt = 0) {
+    // Don't resume if already streaming (but allow reconnect path even in "reconnecting" phase)
     const st = get().agents[agent];
-    if (st && isActiveStream(st.streamStatus)) return;
+    if (st && st.connectionPhase === "streaming") return;
 
+    // Clear any existing reconnect timer before starting a new stream
+    const existingTimer = getReconnectTimer(agent);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      setReconnectTimer(agent, null);
+    }
     abortActiveStream(agent);
-    streamGeneration++;
-    const myGeneration = streamGeneration;
+    update(agent, { streamGeneration: (get().agents[agent]?.streamGeneration ?? 0) + 1 });
+    const myGeneration = get().agents[agent]?.streamGeneration ?? 1;
     const controller = new AbortController();
-    agentAbortControllers[agent] = controller;
+    setAbortCtrl(agent, controller);
 
-    // Stage 4: Set persistence flag so UI shows thinking indicator instantly after reload
-    sessionStorage.setItem(`hydeclaw.streaming.${agent}`, "true");
+    // Seed with history from React Query cache so UI shows messages immediately (Fix A).
+    // Read getCachedHistoryMessages BEFORE the update() call — never call get() inside set().
+    // Use the passed sessionId parameter directly: activeSessionId may not be set yet in store
+    // (e.g. first render after F5 before WS delivers session state).
+    const existingSt = get().agents[agent];
+    const seedMessages = existingSt?.messageSource.mode === "live"
+      ? existingSt.messageSource.messages
+      : getCachedHistoryMessages(sessionId);
 
     update(agent, {
-      streamStatus: "streaming",
       streamError: null,
-      viewMode: "live",
+      connectionPhase: "streaming",
+      connectionError: null,
+      messageSource: { mode: "live", messages: seedMessages },
     });
 
     const token = getToken();
@@ -431,51 +488,89 @@ export const useChatStore = create<ChatStore>()(
     })
       .then((resp) => {
         if (resp.status === 204) {
-          // No active stream — engine already finished
-          update(agent, { streamStatus: "idle" });
+          // No active stream — engine already finished.
+          // Transition to history mode so useSessionMessages fetches fresh data (Fix B).
+          update(agent, { connectionPhase: "idle", messageSource: { mode: "history", sessionId } });
           return;
         }
         if (!resp.ok) {
           return resp.text().then((t) => { throw new Error(t || `HTTP ${resp.status}`); });
         }
-        return processSSEStream(agent, resp.body!, controller.signal, myGeneration);
+        return processSSEStream(agent, resp.body!, controller.signal, myGeneration, sessionId, reconnectAttempt);
       })
       .catch((err) => {
         if (err.name === "AbortError") return;
-        update(agent, { streamStatus: "idle" });
+        // Network error during reconnect — schedule next retry
+        if (reconnectAttempt < MAX_RECONNECT_ATTEMPTS) {
+          scheduleReconnect(agent, sessionId, reconnectAttempt);
+        } else {
+          update(agent, { connectionPhase: "idle" });
+        }
       });
   }
 
   /** Abort active stream for an agent and reset status. */
   function abortActiveStream(agent: string) {
-    if (agentAbortControllers[agent]) {
-      agentAbortControllers[agent].abort();
-      agentAbortControllers[agent] = null;
-      update(agent, { streamStatus: "idle" });
+    // Clear any pending reconnect timer first — prevents reconnect after abort
+    const timer = getReconnectTimer(agent);
+    if (timer) {
+      clearTimeout(timer);
+      setReconnectTimer(agent, null);
     }
+    const ctrl = getAbortCtrl(agent);
+    if (ctrl) {
+      ctrl.abort();
+      setAbortCtrl(agent, null);
+      update(agent, { connectionPhase: "idle" });
+    }
+  }
+
+  // ── Reconnect scheduling (SSE-02) ────────────────────────────────────────────
+  /**
+   * Schedule an exponential-backoff reconnect for an agent.
+   * Called when processSSEStream exits without receiving a finish event.
+   * Cleared by abortActiveStream/stopStream (user-initiated aborts must NOT retry).
+   */
+  function scheduleReconnect(agent: string, sessionId: string, attempt: number) {
+    if (attempt >= MAX_RECONNECT_ATTEMPTS) {
+      update(agent, {
+        streamError: "Connection lost after retries",
+        connectionPhase: "error",
+        connectionError: "Connection lost after retries",
+      });
+      return;
+    }
+    update(agent, { connectionPhase: "reconnecting", connectionError: null });
+    const delay = RECONNECT_DELAY_BASE_MS * Math.pow(2, attempt);
+    setReconnectTimer(agent, setTimeout(() => {
+      setReconnectTimer(agent, null);
+      // resumeStream handles 204 (engine finished) gracefully
+      resumeStream(agent, sessionId, attempt + 1);
+    }, delay));
   }
 
   // ── SSE stream handler ──
   function startStream(agent: string, sessionId: string | null, messages: ChatMessage[], userText: string) {
     abortActiveStream(agent);
-    streamGeneration++;
-    const myGeneration = streamGeneration;
+    update(agent, { streamGeneration: (get().agents[agent]?.streamGeneration ?? 0) + 1 });
+    const myGeneration = get().agents[agent]?.streamGeneration ?? 1;
     const controller = new AbortController();
-    agentAbortControllers[agent] = controller;
+    setAbortCtrl(agent, controller);
 
-    // Build user message
+    // Build user message — optimistic status: "sending" until data-session-id confirms receipt
     const userMsg: ChatMessage = {
       id: uuid(),
       role: "user",
       parts: [{ type: "text", text: userText }],
       createdAt: new Date().toISOString(),
+      status: "sending",
     };
     const allMessages = [...messages, userMsg];
     update(agent, {
-      liveMessages: allMessages,
-      viewMode: "live",
-      streamStatus: "submitted",
+      messageSource: { mode: "live", messages: allMessages },
       streamError: null,
+      connectionPhase: "submitted",
+      connectionError: null,
       agentTurns: [],  // Reset for new stream
       turnCount: 0,
       turnLimitMessage: null,
@@ -517,9 +612,23 @@ export const useChatStore = create<ChatStore>()(
       })
       .catch((err) => {
         if (err.name === "AbortError") return;
+        const errMsg = err.message || "Stream failed";
+        // SSE-03: Mark the optimistic user message as failed so the UI shows an error indicator.
+        set((draft) => {
+          const st = draft.agents[agent];
+          if (!st || st.messageSource.mode !== "live") return;
+          const msgs = st.messageSource.messages;
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].role === "user" && msgs[i].status === "sending") {
+              msgs[i].status = "failed";
+              break;
+            }
+          }
+        });
         update(agent, {
-          streamStatus: "error",
-          streamError: err.message || "Stream failed",
+          streamError: errMsg,
+          connectionPhase: "error",
+          connectionError: errMsg,
         });
         saveUiState(agent);
       });
@@ -530,6 +639,8 @@ export const useChatStore = create<ChatStore>()(
     body: ReadableStream<Uint8Array>,
     signal: AbortSignal,
     generation: number,
+    knownSessionId?: string,
+    reconnectAttempt = 0,
   ) {
     const reader = body.getReader();
     const decoder = new TextDecoder();
@@ -541,7 +652,9 @@ export const useChatStore = create<ChatStore>()(
     let parts: MessagePart[] = [];
     const incrementalParser = new IncrementalParser();
     const toolInputChunks = new Map<string, string[]>();
-    let receivedSessionId: string | null = null;
+    let receivedSessionId: string | null = knownSessionId ?? null;
+    // Track finish event to distinguish natural end from connection drop
+    let receivedFinishEvent = false;
     // Initialize from pendingTargetAgent so first render shows correct avatar.
     // Fall back to primary agent name so single-agent sessions never produce undefined agentId.
     let currentRespondingAgent: string | null = get().agents[agent]?.pendingTargetAgent ?? agent;
@@ -552,26 +665,31 @@ export const useChatStore = create<ChatStore>()(
 
     function pushUpdate() {
       // Guard: stale stream — a newer stream has started, discard updates
-      if (generation !== streamGeneration) return;
+      if (generation !== (get().agents[agent]?.streamGeneration ?? 0)) return;
       // Guard: don't update store after abort (prevents race with stopStream)
       if (signal.aborted) return;
-      
+
       const contentParts = incrementalParser.processDelta(""); // trigger emit of what's ready
-      
+
       set((draft) => {
         const st = draft.agents[agent];
         if (!st) return;
-        const existing = st.liveMessages.findIndex((m: ChatMessage) => m.id === assistantId);
-        
+        // Ensure messageSource is in live mode (it should be from startStream)
+        if (st.messageSource.mode !== "live") {
+          st.messageSource = { mode: "live", messages: [] };
+        }
+        const liveMessages = st.messageSource.messages;
+        const existing = liveMessages.findIndex((m: ChatMessage) => m.id === assistantId);
+
         // Merge incremental text/reasoning parts with other parts (tools, files)
         const allParts = [...contentParts, ...parts.filter(p => p.type !== "text" && p.type !== "reasoning")];
 
         if (existing >= 0) {
-          const msg = st.liveMessages[existing];
+          const msg = liveMessages[existing];
           msg.parts = allParts;
           msg.agentId = currentRespondingAgent ?? undefined;
         } else {
-          st.liveMessages.push({
+          liveMessages.push({
             id: assistantId,
             role: "assistant",
             parts: allParts,
@@ -579,7 +697,7 @@ export const useChatStore = create<ChatStore>()(
             agentId: currentRespondingAgent ?? undefined,
           });
         }
-        if (st.streamStatus !== "error") st.streamStatus = "streaming";
+        if (st.connectionPhase !== "error") st.connectionPhase = "streaming";
       });
     }
 
@@ -623,8 +741,21 @@ export const useChatStore = create<ChatStore>()(
           switch (event.type) {
             case "data-session-id": {
               const sid = event.data.sessionId;
-              if (sid && generation === streamGeneration) {
+              if (sid && generation === (get().agents[agent]?.streamGeneration ?? 0)) {
                 receivedSessionId = sid;
+                // SSE-03: Confirm the optimistic user message — server has accepted it.
+                // Find the last "sending" user message and mark it confirmed.
+                set((draft) => {
+                  const st = draft.agents[agent];
+                  if (!st || st.messageSource.mode !== "live") return;
+                  const msgs = st.messageSource.messages;
+                  for (let i = msgs.length - 1; i >= 0; i--) {
+                    if (msgs[i].role === "user" && msgs[i].status === "sending") {
+                      msgs[i].status = "confirmed";
+                      break;
+                    }
+                  }
+                });
                 update(agent, { activeSessionId: sid });
                 saveLastSession(agent, sid);
                 // Session status is now server-driven via WS agent_processing events.
@@ -651,12 +782,13 @@ export const useChatStore = create<ChatStore>()(
               // Dedup: remove resume placeholder (id starts with "resume-") and any
               // seeded message with same ID to prevent duplicates on stream resume
               const stNow = get().agents[agent];
-              if (stNow) {
-                const deduped = stNow.liveMessages.filter(
+              if (stNow && stNow.messageSource.mode === "live") {
+                const currentMessages = stNow.messageSource.messages;
+                const deduped = currentMessages.filter(
                   (m) => m.id !== newId && !m.id.startsWith("resume-")
                 );
-                if (deduped.length !== stNow.liveMessages.length) {
-                  update(agent, { liveMessages: deduped });
+                if (deduped.length !== currentMessages.length) {
+                  update(agent, { messageSource: { mode: "live", messages: deduped } });
                 }
               }
               break;
@@ -778,21 +910,25 @@ export const useChatStore = create<ChatStore>()(
               set((draft) => {
                 const st = draft.agents[agent];
                 if (!st) return;
-                
-                const existingIdx = st.liveMessages.findIndex(m => m.id === assistantId);
+                // Ensure we're in live mode for sync updates
+                if (st.messageSource.mode !== "live") {
+                  st.messageSource = { mode: "live", messages: [] };
+                }
+                const liveMessages = st.messageSource.messages;
+                const existingIdx = liveMessages.findIndex(m => m.id === assistantId);
                 if (existingIdx >= 0) {
                   // Differential update: preserves user messages and other assistant messages
-                  st.liveMessages[existingIdx].parts = syncParts;
+                  liveMessages[existingIdx].parts = syncParts;
                 } else {
                   // Fallback: if not found, it might be a clean resume, so we seed
-                  const userMsgs = st.liveMessages.filter(m => m.role === "user");
-                  st.liveMessages = [...userMsgs, {
+                  const userMsgs = liveMessages.filter(m => m.role === "user");
+                  st.messageSource = { mode: "live", messages: [...userMsgs, {
                     id: assistantId,
                     role: "assistant",
                     parts: syncParts,
                     createdAt: assistantCreatedAt,
                     agentId: currentRespondingAgent ?? undefined,
-                  }];
+                  }] };
                 }
               });
 
@@ -800,17 +936,20 @@ export const useChatStore = create<ChatStore>()(
                 const errorText = syncStatus === "error" ? (event.error ?? null) : null;
                 const inTurnLoop = !!get().agents[agent]?.pendingTargetAgent;
                 if (syncStatus === "error" || !inTurnLoop) {
+                  const newPhase: ConnectionPhase = syncStatus === "error" ? "error" : "idle";
                   update(agent, {
-                    streamStatus: syncStatus === "error" ? "error" : "idle",
                     streamError: errorText,
+                    connectionPhase: newPhase,
+                    connectionError: errorText,
                   });
-                  sessionStorage.removeItem(`hydeclaw.streaming.${agent}`);
                 }
               }
               break;
             }
 
             case "finish": {
+              // Mark natural end — distinguishes from connection drop in finally block
+              receivedFinishEvent = true;
               // Cancel any pending update and do synchronous update
               cancelScheduledUpdate();
               flushText();
@@ -826,6 +965,9 @@ export const useChatStore = create<ChatStore>()(
                 parts.push(...normalizedTextParts, ...nonTextParts);
               }
               pushUpdate();
+              // FSM-04: Reset incremental parser state so next agent turn starts clean.
+              // Prevents reasoning state from leaking from one agent's output to the next.
+              incrementalParser.reset();
               // CRITICAL for multi-agent turn loop: reset state for next agent turn.
               // Without this, events between finish and next start (e.g. agent-turn rich card)
               // would overwrite the finalized message with wrong agentId.
@@ -841,7 +983,11 @@ export const useChatStore = create<ChatStore>()(
                 // Turn management message — show inline as info card, not as error banner
                 update(agent, { turnLimitMessage: errText, turnCount: 0 });
               } else {
-                update(agent, { streamStatus: "error", streamError: errText });
+                update(agent, {
+                  streamError: errText,
+                  connectionPhase: "error",
+                  connectionError: errText,
+                });
               }
               break;
             }
@@ -861,16 +1007,30 @@ export const useChatStore = create<ChatStore>()(
       if (!signal.aborted) {
         // Only push if there's content — avoids phantom empty message after finish reset
         if (parts.length > 0) pushUpdate();
+
+        // SSE-02: Detect connection drop (stream ended without finish event).
+        // If we have a session ID and haven't been aborted, schedule reconnect.
+        const isError = get().agents[agent]?.connectionPhase === "error";
+        if (!isError && !receivedFinishEvent && receivedSessionId) {
+          // Connection dropped mid-stream — schedule exponential backoff reconnect
+          scheduleReconnect(agent, receivedSessionId, reconnectAttempt);
+          return;
+        }
+
         // Preserve error status if error event was already received
-        const isError = get().agents[agent]?.streamStatus === "error";
         if (!isError) {
-          update(agent, { streamStatus: "idle", pendingTargetAgent: null, turnCount: 0 });
+          update(agent, {
+            connectionPhase: "idle",
+            connectionError: null,
+            pendingTargetAgent: null,
+            turnCount: 0,
+          });
         }
         saveUiState(agent);
         // Session status is server-driven via WS agent_processing events — no optimistic update needed.
       } else if (parts.length > 0) {
-        // On abort: save partial response to liveMessages but keep idle status
-        // (stopStream already set streamStatus to "idle")
+        // On abort: save partial response to live messages but keep idle status
+        // (stopStream already set connectionPhase to "idle")
         const st = get().agents[agent];
         if (st) {
           const assistantMsg: ChatMessage = {
@@ -880,12 +1040,13 @@ export const useChatStore = create<ChatStore>()(
             createdAt: assistantCreatedAt,
             agentId: currentRespondingAgent ?? undefined,
           };
-          const existing = st.liveMessages.findIndex((m) => m.id === assistantId);
+          const currentMessages = getLiveMessages(st.messageSource);
+          const existing = currentMessages.findIndex((m) => m.id === assistantId);
           const updated =
             existing >= 0
-              ? st.liveMessages.map((m, i) => (i === existing ? assistantMsg : m))
-              : [...st.liveMessages, assistantMsg];
-          update(agent, { liveMessages: updated });
+              ? currentMessages.map((m, i) => (i === existing ? assistantMsg : m))
+              : [...currentMessages, assistantMsg];
+          update(agent, { messageSource: { mode: "live", messages: updated } });
         }
       }
     }
@@ -931,9 +1092,8 @@ export const useChatStore = create<ChatStore>()(
           ensure(name);
           update(name, {
             activeSessionId,
-            liveMessages: prevState?.liveMessages ?? [],
-            viewMode: prevState?.viewMode ?? "live",
-            streamStatus: prevState?.streamStatus ?? "idle",
+            messageSource: prevState?.messageSource ?? { mode: "new-chat" },
+            connectionPhase: prevState?.connectionPhase ?? "idle",
           });
           set({ currentAgent: name });
           saveLastSession(name, activeSessionId);
@@ -942,20 +1102,21 @@ export const useChatStore = create<ChatStore>()(
       }
 
       // Abort stream for the agent being left
-      if (agentAbortControllers[prev]) {
-        agentAbortControllers[prev].abort();
-        agentAbortControllers[prev] = null;
-        update(prev, { streamStatus: "idle" });
+      const prevCtrl = getAbortCtrl(prev);
+      if (prevCtrl) {
+        prevCtrl.abort();
+        setAbortCtrl(prev, null);
+        update(prev, { connectionPhase: "idle" });
       }
       ensure(name);
       // Immediately reset to new-chat state so no stale session is shown during render.
       // The restore effect in page.tsx may later select a server-active session.
       update(name, {
         activeSessionId: null,
-        viewMode: "live",
-        liveMessages: [],
-        streamStatus: "idle",
+        messageSource: { mode: "new-chat" },
         streamError: null,
+        connectionPhase: "idle",
+        connectionError: null,
         forceNewSession: true,
       });
       set({ currentAgent: name });
@@ -973,8 +1134,8 @@ export const useChatStore = create<ChatStore>()(
 
       // If re-selecting the same session that's currently streaming, just switch to live view
       const currentState = get().agents[agent];
-      if (currentState?.activeSessionId === sessionId && isActiveStream(currentState.streamStatus)) {
-        update(agent, { viewMode: "live" });
+      if (currentState?.activeSessionId === sessionId && isActivePhase(currentState.connectionPhase)) {
+        // Already in live mode — no change needed (messageSource should already be live)
         return;
       }
 
@@ -982,9 +1143,8 @@ export const useChatStore = create<ChatStore>()(
 
       update(agent, {
         activeSessionId: sessionId,
-        viewMode: "history",
+        messageSource: { mode: "history", sessionId },
         forceNewSession: false,
-        liveMessages: [],
         renderLimit: 100,
       });
       saveLastSession(agent, sessionId);
@@ -997,16 +1157,16 @@ export const useChatStore = create<ChatStore>()(
       set({ currentAgent: agent });
       ensure(agent);
       // Abort any active stream for this agent
-      if (agentAbortControllers[agent]) {
-        agentAbortControllers[agent].abort();
-        agentAbortControllers[agent] = null;
+      const sbiCtrl = getAbortCtrl(agent);
+      if (sbiCtrl) {
+        sbiCtrl.abort();
+        setAbortCtrl(agent, null);
       }
       update(agent, {
         activeSessionId: sessionId,
-        viewMode: "history",
+        messageSource: { mode: "history", sessionId },
         forceNewSession: false,
-        liveMessages: [],
-        streamStatus: "idle",
+        connectionPhase: "idle",
       });
       saveLastSession(agent, sessionId);
       // Data fetching handled by useSessionMessages() React Query hook
@@ -1014,14 +1174,14 @@ export const useChatStore = create<ChatStore>()(
 
     newChat: () => {
       const agent = get().currentAgent;
-      agentAbortControllers[agent]?.abort();
-      agentAbortControllers[agent] = null;
+      getAbortCtrl(agent)?.abort();
+      setAbortCtrl(agent, null);
       update(agent, {
         activeSessionId: null,
-        viewMode: "live",
-        liveMessages: [],
-        streamStatus: "idle",
+        messageSource: { mode: "new-chat" },
         streamError: null,
+        connectionPhase: "idle",
+        connectionError: null,
         forceNewSession: true,
       });
       saveLastSession(agent);
@@ -1039,7 +1199,7 @@ export const useChatStore = create<ChatStore>()(
 
     setThinking: (agent: string, sessionId: string | null) => {
       const st = get().agents[agent];
-      const updates: Partial<AgentState> = { thinkingSessionId: sessionId };
+      const updates: Partial<AgentState> = {};
 
       // On reload (before restore): Zustand activeSessionId is null — set it so
       // useSessionMessages can fetch and the DB streaming record is visible.
@@ -1048,7 +1208,7 @@ export const useChatStore = create<ChatStore>()(
         updates.activeSessionId = sessionId;
       }
 
-      update(agent, updates);
+      if (Object.keys(updates).length > 0) update(agent, updates);
     },
 
     setThinkingLevel: (level: number) => {
@@ -1093,7 +1253,7 @@ export const useChatStore = create<ChatStore>()(
       const agent = store.currentAgent;
       const st = store.agents[agent] ?? emptyAgentState();
 
-      if (isActiveStream(st.streamStatus)) return;
+      if (isActivePhase(st.connectionPhase)) return;
 
       // Parse @-mention to set pendingTargetAgent for thinking indicator
       const mentionMatch = text.match(/^@(\S+)/);
@@ -1103,12 +1263,12 @@ export const useChatStore = create<ChatStore>()(
       let sessionId = st.activeSessionId;
       let seedMessages: ChatMessage[] = [];
 
-      if (st.viewMode === "history") {
+      if (st.messageSource.mode === "history") {
         // Continue from history — get messages from React Query cache.
-        // Do NOT flip viewMode here; startStream sets viewMode + liveMessages atomically.
+        // Do NOT flip messageSource here; startStream sets messageSource atomically.
         seedMessages = getCachedHistoryMessages(sessionId);
-      } else if (st.liveMessages.length > 0) {
-        seedMessages = st.liveMessages;
+      } else if (st.messageSource.mode === "live" && st.messageSource.messages.length > 0) {
+        seedMessages = st.messageSource.messages;
       }
 
       startStream(agent, sessionId, seedMessages, text);
@@ -1116,9 +1276,15 @@ export const useChatStore = create<ChatStore>()(
 
     stopStream: () => {
       const agent = get().currentAgent;
-      agentAbortControllers[agent]?.abort();
-      agentAbortControllers[agent] = null;
-      update(agent, { streamStatus: "idle" });
+      // Clear any pending reconnect timer — user abort must not trigger reconnect
+      const stopTimer = getReconnectTimer(agent);
+      if (stopTimer) {
+        clearTimeout(stopTimer);
+        setReconnectTimer(agent, null);
+      }
+      getAbortCtrl(agent)?.abort();
+      setAbortCtrl(agent, null);
+      update(agent, { connectionPhase: "idle" });
     },
 
     regenerate: () => {
@@ -1127,20 +1293,20 @@ export const useChatStore = create<ChatStore>()(
       const st = store.agents[agent] ?? emptyAgentState();
 
       // Abort any active stream first
-      if (isActiveStream(st.streamStatus)) {
-        agentAbortControllers[agent]?.abort();
-        agentAbortControllers[agent] = null;
-        update(agent, { streamStatus: "idle" });
+      if (isActivePhase(st.connectionPhase)) {
+        getAbortCtrl(agent)?.abort();
+        setAbortCtrl(agent, null);
+        update(agent, { connectionPhase: "idle" });
       }
 
       let sessionId = st.activeSessionId;
       let messages: ChatMessage[];
 
-      if (st.viewMode === "history") {
-        // Do NOT flip viewMode here; startStream sets viewMode + liveMessages atomically.
+      if (st.messageSource.mode === "history") {
+        // Do NOT flip messageSource here; startStream sets messageSource atomically.
         messages = getCachedHistoryMessages(sessionId);
       } else {
-        messages = st.liveMessages;
+        messages = getLiveMessages(st.messageSource);
       }
 
       // Remove last assistant message
@@ -1167,20 +1333,20 @@ export const useChatStore = create<ChatStore>()(
       const agent = store.currentAgent;
       const st = store.agents[agent] ?? emptyAgentState();
 
-      if (isActiveStream(st.streamStatus)) {
-        agentAbortControllers[agent]?.abort();
-        agentAbortControllers[agent] = null;
-        update(agent, { streamStatus: "idle" });
+      if (isActivePhase(st.connectionPhase)) {
+        getAbortCtrl(agent)?.abort();
+        setAbortCtrl(agent, null);
+        update(agent, { connectionPhase: "idle" });
       }
 
       let sessionId = st.activeSessionId;
       let messages: ChatMessage[];
 
-      if (st.viewMode === "history") {
-        // Do NOT flip viewMode here; startStream sets viewMode + liveMessages atomically.
+      if (st.messageSource.mode === "history") {
+        // Do NOT flip messageSource here; startStream sets messageSource atomically.
         messages = getCachedHistoryMessages(sessionId);
       } else {
-        messages = st.liveMessages;
+        messages = getLiveMessages(st.messageSource);
       }
 
       // Find the target user message and truncate everything after it
@@ -1220,11 +1386,13 @@ export const useChatStore = create<ChatStore>()(
       const st = get().agents[agent];
       if (st?.activeSessionId === sessionId) {
         // Use captured `agent` — currentAgent may have changed during await
-        agentAbortControllers[agent]?.abort();
-        agentAbortControllers[agent] = null;
+        getAbortCtrl(agent)?.abort();
+        setAbortCtrl(agent, null);
         update(agent, {
-          activeSessionId: null, viewMode: "live", liveMessages: [],
-          streamStatus: "idle", streamError: null, forceNewSession: true,
+          activeSessionId: null, messageSource: { mode: "new-chat" },
+          streamError: null,
+          connectionPhase: "idle", connectionError: null,
+          forceNewSession: true,
         });
         saveLastSession(agent);
       }
@@ -1235,11 +1403,13 @@ export const useChatStore = create<ChatStore>()(
       const agent = get().currentAgent;
       await apiDelete(`/api/sessions?agent=${encodeURIComponent(agent)}`);
       // Use captured `agent` — currentAgent may have changed during await
-      agentAbortControllers[agent]?.abort();
-      agentAbortControllers[agent] = null;
+      getAbortCtrl(agent)?.abort();
+      setAbortCtrl(agent, null);
       update(agent, {
-        activeSessionId: null, viewMode: "live", liveMessages: [],
-        streamStatus: "idle", streamError: null, forceNewSession: true,
+        activeSessionId: null, messageSource: { mode: "new-chat" },
+        streamError: null,
+        connectionPhase: "idle", connectionError: null,
+        forceNewSession: true,
       });
       saveLastSession(agent);
       queryClient.invalidateQueries({ queryKey: qk.sessions(agent) });
@@ -1257,12 +1427,13 @@ export const useChatStore = create<ChatStore>()(
       await apiDelete(`/api/messages/${messageId}`);
       const st = get().agents[agent];
       if (!st) return;
-      if (st.viewMode === "history" && st.activeSessionId) {
+      if (st.messageSource.mode === "history" && st.activeSessionId) {
         // Invalidate React Query cache to reload history
         queryClient.invalidateQueries({ queryKey: qk.sessionMessages(st.activeSessionId) });
       } else {
+        const currentMessages = getLiveMessages(st.messageSource);
         update(agent, {
-          liveMessages: st.liveMessages.filter((m) => m.id !== messageId),
+          messageSource: { mode: "live", messages: currentMessages.filter((m) => m.id !== messageId) },
         });
       }
     },
@@ -1273,8 +1444,8 @@ export const useChatStore = create<ChatStore>()(
       const st = store.agents[agent];
       if (!st) return;
 
-      const messages = st.viewMode === "live"
-        ? st.liveMessages
+      const messages = st.messageSource.mode === "live"
+        ? st.messageSource.messages
         : getCachedHistoryMessages(st.activeSessionId);
       if (messages.length === 0) return;
 

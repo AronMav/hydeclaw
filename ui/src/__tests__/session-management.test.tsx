@@ -92,10 +92,8 @@ const mockChatStoreState: Record<string, unknown> = {
     Agent1: {
       activeSessionId: "s1",
       activeSessionIds: [],
-      viewMode: "live",
-      streamStatus: "idle",
+      messageSource: { mode: "new-chat" },
       streamError: null,
-      liveMessages: [],
       inputText: "",
       pendingTargetAgent: null,
     },
@@ -111,7 +109,7 @@ vi.mock("@/stores/chat-store", () => ({
     {
       getState: () => ({
         currentAgent: "Agent1",
-        agents: { Agent1: { activeSessionId: "s1", activeSessionIds: [], viewMode: "live", streamStatus: "idle" } },
+        agents: { Agent1: { activeSessionId: "s1", activeSessionIds: [], messageSource: { mode: "new-chat" }, connectionPhase: "idle" } },
         regenerate: vi.fn(),
         clearError: vi.fn(),
         sendMessage: vi.fn(),
@@ -121,7 +119,6 @@ vi.mock("@/stores/chat-store", () => ({
       }),
     },
   ),
-  isActiveStream: () => false,
   convertHistory: () => [],
   MAX_INPUT_LENGTH: 32000,
 }));
@@ -459,7 +456,7 @@ describe("Session Management (SESS)", () => {
       // The implementation (chat-store.ts lines 916-939):
       // 1. Gets activeSessionId from previous agent
       // 2. Checks sessionParticipants[activeSessionId].includes(newAgent)
-      // 3. If yes: carries over activeSessionId, liveMessages, viewMode, streamStatus
+      // 3. If yes: carries over activeSessionId, messageSource, connectionPhase
       // 4. If no: resets to new-chat state
 
       // We verify this by testing the store's setCurrentAgent function directly.
@@ -468,11 +465,11 @@ describe("Session Management (SESS)", () => {
       const { immer } = require("zustand/middleware/immer") as typeof import("zustand/middleware/immer");
 
       // Minimal recreation of the carry-over logic
+      type MessageSource = { mode: "new-chat" } | { mode: "live"; messages: unknown[] } | { mode: "history"; sessionId: string };
       type AgentState = {
         activeSessionId: string | null;
-        liveMessages: unknown[];
-        viewMode: string;
-        streamStatus: string;
+        messageSource: MessageSource;
+        connectionPhase: string;
       };
 
       type StoreState = {
@@ -488,9 +485,8 @@ describe("Session Management (SESS)", () => {
           agents: {
             AgentA: {
               activeSessionId: "s1",
-              liveMessages: [{ id: "msg1", text: "hello" }],
-              viewMode: "live",
-              streamStatus: "idle",
+              messageSource: { mode: "live", messages: [{ id: "msg1", text: "hello" }] },
+              connectionPhase: "idle",
             },
           },
           sessionParticipants: {
@@ -509,12 +505,11 @@ describe("Session Management (SESS)", () => {
                 // Carry over
                 set((draft) => {
                   if (!draft.agents[name]) {
-                    draft.agents[name] = { activeSessionId: null, liveMessages: [], viewMode: "live", streamStatus: "idle" };
+                    draft.agents[name] = { activeSessionId: null, messageSource: { mode: "new-chat" }, connectionPhase: "idle" };
                   }
                   draft.agents[name].activeSessionId = activeSessionId;
-                  draft.agents[name].liveMessages = prevState?.liveMessages ?? [];
-                  draft.agents[name].viewMode = prevState?.viewMode ?? "live";
-                  draft.agents[name].streamStatus = prevState?.streamStatus ?? "idle";
+                  draft.agents[name].messageSource = prevState?.messageSource ?? { mode: "new-chat" };
+                  draft.agents[name].connectionPhase = prevState?.connectionPhase ?? "idle";
                   draft.currentAgent = name;
                 });
                 return;
@@ -524,12 +519,11 @@ describe("Session Management (SESS)", () => {
             // No carry-over: reset
             set((draft) => {
               if (!draft.agents[name]) {
-                draft.agents[name] = { activeSessionId: null, liveMessages: [], viewMode: "live", streamStatus: "idle" };
+                draft.agents[name] = { activeSessionId: null, messageSource: { mode: "new-chat" }, connectionPhase: "idle" };
               }
               draft.agents[name].activeSessionId = null;
-              draft.agents[name].liveMessages = [];
-              draft.agents[name].viewMode = "live";
-              draft.agents[name].streamStatus = "idle";
+              draft.agents[name].messageSource = { mode: "new-chat" };
+              draft.agents[name].connectionPhase = "idle";
               draft.currentAgent = name;
             });
           },
@@ -541,18 +535,22 @@ describe("Session Management (SESS)", () => {
 
       expect(useTestStore.getState().currentAgent).toBe("AgentB");
       expect(useTestStore.getState().agents.AgentB.activeSessionId).toBe("s1");
-      expect(useTestStore.getState().agents.AgentB.liveMessages).toEqual([{ id: "msg1", text: "hello" }]);
+      const agentBSource = useTestStore.getState().agents.AgentB.messageSource;
+      expect(agentBSource.mode).toBe("live");
+      if (agentBSource.mode === "live") {
+        expect(agentBSource.messages).toEqual([{ id: "msg1", text: "hello" }]);
+      }
     });
 
     it("does NOT carry over session when new agent is NOT a participant", () => {
       const { create } = require("zustand") as typeof import("zustand");
       const { immer } = require("zustand/middleware/immer") as typeof import("zustand/middleware/immer");
 
+      type MessageSource = { mode: "new-chat" } | { mode: "live"; messages: unknown[] } | { mode: "history"; sessionId: string };
       type AgentState = {
         activeSessionId: string | null;
-        liveMessages: unknown[];
-        viewMode: string;
-        streamStatus: string;
+        messageSource: MessageSource;
+        connectionPhase: string;
       };
 
       type StoreState = {
@@ -568,9 +566,8 @@ describe("Session Management (SESS)", () => {
           agents: {
             AgentA: {
               activeSessionId: "s1",
-              liveMessages: [{ id: "msg1", text: "hello" }],
-              viewMode: "live",
-              streamStatus: "idle",
+              messageSource: { mode: "live", messages: [{ id: "msg1", text: "hello" }] },
+              connectionPhase: "idle",
             },
           },
           sessionParticipants: {
@@ -588,12 +585,11 @@ describe("Session Management (SESS)", () => {
               if (participants && participants.includes(name)) {
                 set((draft) => {
                   if (!draft.agents[name]) {
-                    draft.agents[name] = { activeSessionId: null, liveMessages: [], viewMode: "live", streamStatus: "idle" };
+                    draft.agents[name] = { activeSessionId: null, messageSource: { mode: "new-chat" }, connectionPhase: "idle" };
                   }
                   draft.agents[name].activeSessionId = activeSessionId;
-                  draft.agents[name].liveMessages = prevState?.liveMessages ?? [];
-                  draft.agents[name].viewMode = prevState?.viewMode ?? "live";
-                  draft.agents[name].streamStatus = prevState?.streamStatus ?? "idle";
+                  draft.agents[name].messageSource = prevState?.messageSource ?? { mode: "new-chat" };
+                  draft.agents[name].connectionPhase = prevState?.connectionPhase ?? "idle";
                   draft.currentAgent = name;
                 });
                 return;
@@ -602,12 +598,11 @@ describe("Session Management (SESS)", () => {
 
             set((draft) => {
               if (!draft.agents[name]) {
-                draft.agents[name] = { activeSessionId: null, liveMessages: [], viewMode: "live", streamStatus: "idle" };
+                draft.agents[name] = { activeSessionId: null, messageSource: { mode: "new-chat" }, connectionPhase: "idle" };
               }
               draft.agents[name].activeSessionId = null;
-              draft.agents[name].liveMessages = [];
-              draft.agents[name].viewMode = "live";
-              draft.agents[name].streamStatus = "idle";
+              draft.agents[name].messageSource = { mode: "new-chat" };
+              draft.agents[name].connectionPhase = "idle";
               draft.currentAgent = name;
             });
           },
@@ -619,18 +614,18 @@ describe("Session Management (SESS)", () => {
 
       expect(useTestStore.getState().currentAgent).toBe("AgentC");
       expect(useTestStore.getState().agents.AgentC.activeSessionId).toBeNull();
-      expect(useTestStore.getState().agents.AgentC.liveMessages).toEqual([]);
+      expect(useTestStore.getState().agents.AgentC.messageSource).toEqual({ mode: "new-chat" });
     });
 
     it("no-ops when switching to the same agent", () => {
       const { create } = require("zustand") as typeof import("zustand");
       const { immer } = require("zustand/middleware/immer") as typeof import("zustand/middleware/immer");
 
+      type MessageSource = { mode: "new-chat" } | { mode: "live"; messages: unknown[] } | { mode: "history"; sessionId: string };
       type AgentState = {
         activeSessionId: string | null;
-        liveMessages: unknown[];
-        viewMode: string;
-        streamStatus: string;
+        messageSource: MessageSource;
+        connectionPhase: string;
       };
 
       type StoreState = {
@@ -646,9 +641,8 @@ describe("Session Management (SESS)", () => {
           agents: {
             AgentA: {
               activeSessionId: "s1",
-              liveMessages: [{ id: "msg1", text: "hello" }],
-              viewMode: "live",
-              streamStatus: "idle",
+              messageSource: { mode: "live", messages: [{ id: "msg1", text: "hello" }] },
+              connectionPhase: "idle",
             },
           },
           sessionParticipants: { s1: ["AgentA"] },

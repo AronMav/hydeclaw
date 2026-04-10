@@ -95,8 +95,7 @@ vi.mock("@/stores/chat-store", () => ({
       const agentState = {
         activeSessionId: null,
         activeSessionIds: [],
-        viewMode: "live",
-        streamStatus: "idle",
+        messageSource: { mode: "new-chat" },
         streamError: null,
         messages: [],
         inputText: "",
@@ -106,7 +105,6 @@ vi.mock("@/stores/chat-store", () => ({
         agents: { main: agentState },
         currentSessionId: null,
         messages: [],
-        streamStatus: "idle",
         sessions: [],
         inputText: "",
         setCurrentAgent: vi.fn(),
@@ -124,7 +122,7 @@ vi.mock("@/stores/chat-store", () => ({
     {
       getState: () => ({
         currentAgent: "main",
-        agents: { main: { activeSessionId: null, activeSessionIds: [], viewMode: "live", streamStatus: "idle" } },
+        agents: { main: { activeSessionId: null, activeSessionIds: [], messageSource: { mode: "new-chat" }, connectionPhase: "idle" } },
         setCurrentAgent: vi.fn(),
         selectSession: vi.fn(),
         newChat: vi.fn(),
@@ -136,7 +134,7 @@ vi.mock("@/stores/chat-store", () => ({
       }),
     },
   ),
-  isActiveStream: () => false,
+  isActivePhase: () => false,
   getInitialAgent: (agents: string[]) => agents[0] || "main",
   getLastSessionId: () => undefined,
   MAX_INPUT_LENGTH: 32000,
