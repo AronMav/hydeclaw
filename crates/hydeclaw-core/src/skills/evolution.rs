@@ -35,7 +35,9 @@ pub async fn analyze_and_evolve(
     } else {
         skills_used.join(", ")
     };
-    let response_preview = &response[..response.len().min(1000)];
+    let mut end = response.len().min(1000);
+    while end > 0 && !response.is_char_boundary(end) { end -= 1; }
+    let response_preview = &response[..end];
 
     let analysis_prompt = format!(
         "You are a skill evolution analyzer. A scheduled task just completed.\n\n\

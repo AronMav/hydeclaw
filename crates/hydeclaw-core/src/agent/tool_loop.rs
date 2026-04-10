@@ -165,9 +165,14 @@ impl LoopDetector {
     fn hash_call(name: &str, args: &serde_json::Value) -> u64 {
         let mut hasher = DefaultHasher::new();
         name.hash(&mut hasher);
-        // Truncate args to first 200 chars to avoid penalizing minor arg variations.
+        // Truncate args to first ~200 bytes to avoid penalizing minor arg variations.
+        // Walk backward from byte 200 to find a valid UTF-8 char boundary.
         let args_str = args.to_string();
-        let truncated = &args_str[..args_str.len().min(200)];
+        let mut end = args_str.len().min(200);
+        while end > 0 && !args_str.is_char_boundary(end) {
+            end -= 1;
+        }
+        let truncated = &args_str[..end];
         truncated.hash(&mut hasher);
         hasher.finish()
     }
