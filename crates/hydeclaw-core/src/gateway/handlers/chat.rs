@@ -545,40 +545,9 @@ pub(crate) async fn api_chat_sse(
             };
 
             turn_count += 1;
-            let effective_limit = current_engine.max_agent_turns()
-                .unwrap_or(global_max_agent_turns);
-            if turn_count >= effective_limit {
-                tracing::info!(
-                    limit = effective_limit,
-                    "Agent turn limit reached, stopping turn loop"
-                );
-                break;
-            }
 
-            // Cycle detection: stop if any agent appears 3+ times in the turn chain
-            {
-                let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-                let mut cycle_detected = false;
-                for name in &turn_chain {
-                    let count = counts.entry(name.as_str()).or_insert(0);
-                    *count += 1;
-                    if *count >= 3 {
-                        cycle_detected = true;
-                        break;
-                    }
-                }
-                if cycle_detected {
-                    tracing::warn!(
-                        chain = ?turn_chain,
-                        "Cycle detected in agent turn loop, stopping"
-                    );
-                    event_tx.send(StreamEvent::Error(
-                        format!("Agent turn loop stopped: cycle detected (agents: {})",
-                            turn_chain.join(" -> "))
-                    )).ok();
-                    break;
-                }
-            }
+            // Turn limit and cycle detection moved AFTER handoff routing checks (below)
+            // to allow a final return-to-initiator before stopping.
 
             // Get session_id for turn loop. handle_sse clears processing_session_id
             // on return, so we read it BEFORE it's cleared by capturing it from the
@@ -680,7 +649,7 @@ pub(crate) async fn api_chat_sse(
                     timestamp: chrono::Utc::now(),
                     formatting_prompt: None,
                     tool_policy_override: None,
-                    leaf_message_id: None,
+                    leaf_message_id: current_leaf_id,
                 };
                 // Push initiator onto stack so we can return control after target responds
                 handoff_stack.push((current_agent_name.clone(), current_engine.clone()));
@@ -704,10 +673,11 @@ pub(crate) async fn api_chat_sse(
 
                     event_tx.send(StreamEvent::AgentSwitch { agent_name: initiator_name.clone() }).ok();
 
-                    let truncated_response = if last_response.len() > 2000 {
-                        let mut end = 2000;
+                    let max_ctx = state.config.limits.max_handoff_context_chars;
+                    let truncated_response = if last_response.len() > max_ctx {
+                        let mut end = max_ctx;
                         while end > 0 && !last_response.is_char_boundary(end) { end -= 1; }
-                        format!("{}...", &last_response[..end])
+                        format!("{}... [truncated]", &last_response[..end])
                     } else {
                         last_response.clone()
                     };
@@ -726,12 +696,48 @@ pub(crate) async fn api_chat_sse(
                         timestamp: chrono::Utc::now(),
                         formatting_prompt: None,
                         tool_policy_override: None,
-                        leaf_message_id: None,
+                        leaf_message_id: current_leaf_id,
                     };
                     current_engine = initiator_engine;
                     current_session_id = Some(sid);
                     current_force_new = false;
                     continue;
+                }
+            }
+
+            // Check turn limit and cycle detection AFTER routing checks to allow one last return
+            let effective_limit = current_engine.max_agent_turns()
+                .unwrap_or(global_max_agent_turns);
+            if turn_count >= effective_limit {
+                tracing::info!(
+                    limit = effective_limit,
+                    "Agent turn limit reached, stopping turn loop"
+                );
+                break;
+            }
+
+            // Cycle detection: stop if any agent appears 5+ times (slower but safer for complex tasks)
+            {
+                let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+                let mut cycle_detected = false;
+                for name in &turn_chain {
+                    let count = counts.entry(name.as_str()).or_insert(0);
+                    *count += 1;
+                    if *count >= 5 {
+                        cycle_detected = true;
+                        break;
+                    }
+                }
+                if cycle_detected {
+                    tracing::warn!(
+                        chain = ?turn_chain,
+                        "Cycle detected in agent turn loop, stopping"
+                    );
+                    event_tx.send(StreamEvent::Error(
+                        format!("Agent turn loop stopped: cycle detected (agents: {})",
+                            turn_chain.join(" -> "))
+                    )).ok();
+                    break;
                 }
             }
 
