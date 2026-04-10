@@ -380,7 +380,9 @@ pub async fn extract_entities_for_chunk(
     use hydeclaw_types::{Message, MessageRole};
 
     let chunk_uuid: Uuid = chunk_id.parse()?;
-    let text = &content[..content.len().min(3000)];
+    let mut end = content.len().min(3000);
+    while end > 0 && !content.is_char_boundary(end) { end -= 1; }
+    let text = &content[..end];
 
     let prompt = format!(
         "Extract entities and relations from this text. Return JSON only:\n\
