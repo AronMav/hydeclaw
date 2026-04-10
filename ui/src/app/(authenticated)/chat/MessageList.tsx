@@ -333,10 +333,12 @@ export function MessageList({
         data={virtualItems}
         computeItemKey={(index, item) => item.id}
         defaultItemHeight={120}
+        alignToBottom
         skipAnimationFrameInResizeObserver
         followOutput={() => {
-          // During streaming: always follow unless user explicitly scrolled up
-          if (isStreaming && !userScrolledUpRef.current) return "smooth";
+          // During streaming: always follow unless user explicitly scrolled up.
+          // Use "auto" (instant) not "smooth" — smooth animation lags behind rapid token updates.
+          if (isStreaming && !userScrolledUpRef.current) return "auto";
           // Not streaming: follow only if at bottom
           return isAtBottomRef.current ? "smooth" : false;
         }}
