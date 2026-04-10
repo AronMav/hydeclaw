@@ -367,7 +367,7 @@ function ChatComposer() {
       const mentionPattern = new RegExp(`@${prev}\\b`);
       return mentionPattern.test(val) ? prev : null;
     });
-  }, [autoResize]);
+  }, [autoResize, currentAgent]);
 
   const handleMentionSelect = useCallback((name: string) => {
     setMentionQuery(null);
