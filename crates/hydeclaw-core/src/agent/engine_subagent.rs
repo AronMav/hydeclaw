@@ -222,7 +222,7 @@ impl AgentEngine {
         let task_owned = task.to_string();
         let loop_max = self.tool_loop_config().effective_max_iterations();
         let timeout_dur = parse_subagent_timeout(&self.app_config.subagents.in_process_timeout);
-        let task_preview: String = task.chars().take(80).collect();
+        let task_preview: String = task.chars().take(500).collect();
 
         let mut last_result_str = String::new();
         let mut last_id = String::new();
