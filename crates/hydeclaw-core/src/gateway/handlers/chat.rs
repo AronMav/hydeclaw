@@ -452,6 +452,7 @@ pub(crate) async fn api_chat_sse(
         .and_then(|s| uuid::Uuid::from_str(s).ok());
     let force_new_session = req.force_new_session && session_id.is_none();
     let user_text_for_title = user_text.clone();
+    let user_text_for_engine_title = user_text.clone();
 
     // ── @-mention routing ──────────────────────────────────────────
     // If user message contains @AgentName, route to that agent instead.
@@ -816,15 +817,27 @@ pub(crate) async fn api_chat_sse(
             current_engine = next_engine;
             current_session_id = Some(sid);
             current_force_new = false;
-        }
 
-        // Notify UI about session update so sidebar refreshes
-        let event = serde_json::json!({
-            "type": "session_updated",
-            "agent": agent_for_broadcast,
-            "channel": crate::agent::channel_kind::channel::UI,
-        });
-        ui_tx.send(event.to_string()).ok();
+            // Notify UI about session update after each agent turn (for real-time sidebar refresh)
+            let event = serde_json::json!({
+                "type": "session_updated",
+                "agent": agent_for_broadcast,
+                "channel": crate::agent::channel_kind::channel::UI,
+            });
+            ui_tx.send(event.to_string()).ok();
+
+            // Auto-title on first response for immediate user feedback
+            if turn_count == 1 {
+                let title_db = current_engine.db_pool().clone();
+                let sid_copy = sid;
+                let text_copy = user_text_for_engine_title.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = crate::db::sessions::auto_title_session(&title_db, sid_copy, &text_copy).await {
+                        tracing::debug!(error = %e, "auto-title failed");
+                    }
+                });
+            }
+        }
     });
 
     // Converter task: StreamEvent → SSE JSON events (Vercel AI SDK v3 UI format)

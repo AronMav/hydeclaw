@@ -182,11 +182,21 @@ export default function ChatPage() {
   // Refresh session list and currently viewed session when backend finishes processing
   useWsSubscription("session_updated", useCallback(() => {
     const s = useChatStore.getState();
-    queryClient.invalidateQueries({ queryKey: qk.sessions(s.currentAgent) });
     const agentState = s.agents[s.currentAgent];
-    // Silently refresh history messages (no loading indicator to avoid flicker)
-    if (agentState?.messageSource?.mode === "history" && agentState.activeSessionId && !isActivePhase(agentState.connectionPhase)) {
-      s.refreshHistory(agentState.activeSessionId);
+    
+    // Always refresh the session list to show latest snippet/timestamp
+    queryClient.invalidateQueries({ queryKey: qk.sessions(s.currentAgent) });
+    
+    // If we're looking at the updated session, sync our local state with DB
+    if (agentState?.activeSessionId) {
+      // Invalidate message cache so useSessionMessages() picks up the changes
+      queryClient.invalidateQueries({ queryKey: qk.sessionMessages(agentState.activeSessionId) });
+      
+      // If NOT actively streaming, force a refresh of the history to ensure consistency
+      // between live SSE-built state and final DB state.
+      if (!isActivePhase(agentState.connectionPhase)) {
+        s.refreshHistory(agentState.activeSessionId);
+      }
     }
   }, []));
 
