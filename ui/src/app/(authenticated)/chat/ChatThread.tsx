@@ -904,7 +904,8 @@ export function ChatThread({
   const showThinking = isLiveOrHistory
     && !hasAssistantContent
     && !lastMsgIsOtherAgent
-    && (connectionPhase === "submitted" || connectionPhase === "streaming" || connectionPhase === "reconnecting" || engineRunning);
+    && (connectionPhase === "submitted" || connectionPhase === "streaming" || connectionPhase === "reconnecting"
+        || engineRunning || sessionRunStatus === "running");
 
   // Only show loading skeleton when there is truly no data to display (Fix D).
   // If we have seeded live messages (F5 resume) or cached history, skip the skeleton.
