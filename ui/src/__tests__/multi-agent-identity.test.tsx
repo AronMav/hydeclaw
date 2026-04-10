@@ -199,6 +199,8 @@ vi.mock("@/components/ui/markdown", () => ({
 
 vi.mock("@/components/ui/rich-card", () => ({
   RichCard: ({ part }: { part: unknown }) => <div data-testid="rich-card">{JSON.stringify(part)}</div>,
+  TableCard: ({ data }: { data: unknown }) => <div data-testid="table-card">{JSON.stringify(data)}</div>,
+  MetricCard: ({ data }: { data: unknown }) => <div data-testid="metric-card">{JSON.stringify(data)}</div>,
 }));
 
 // ── Import components under test ───────────────────────────────────────────
@@ -239,9 +241,8 @@ describe("Multi-Agent Identity (MAID)", () => {
         />,
       );
 
-      const separator = screen.getByTestId("agent-turn-separator");
+      const separator = screen.getByRole("separator");
       expect(separator).toBeInTheDocument();
-      expect(separator).toHaveTextContent("chat.agent_responding");
     });
 
     it("does NOT render separator between consecutive assistant messages from the SAME agent", () => {
@@ -262,7 +263,7 @@ describe("Multi-Agent Identity (MAID)", () => {
         />,
       );
 
-      expect(screen.queryByTestId("agent-turn-separator")).not.toBeInTheDocument();
+      expect(screen.queryByRole("separator")).not.toBeInTheDocument();
     });
 
     it("does NOT render separator when user message sits between different-agent assistants", () => {
@@ -284,7 +285,7 @@ describe("Multi-Agent Identity (MAID)", () => {
         />,
       );
 
-      expect(screen.queryByTestId("agent-turn-separator")).not.toBeInTheDocument();
+      expect(screen.queryByRole("separator")).not.toBeInTheDocument();
     });
   });
 

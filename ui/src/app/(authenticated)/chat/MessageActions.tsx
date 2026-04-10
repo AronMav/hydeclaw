@@ -276,27 +276,10 @@ function EditButton({ message }: { message: ChatMessage }) {
     setEditText("");
   }, []);
 
-  const handleSubmit = useCallback(async () => {
-    try {
-      const resp = await fetch(`/api/messages/${message.id}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${getToken()}`,
-        },
-        body: JSON.stringify({ content: editText }),
-      });
-      if (!resp.ok) {
-        console.error("[edit] failed to patch message:", resp.status);
-        return;
-      }
-    } catch (e) {
-      console.error("[edit] failed to patch message:", e);
-      return;
-    }
+  const handleSubmit = useCallback(() => {
     setEditing(false);
     setEditText("");
-    useChatStore.getState().regenerateFrom(message.id);
+    useChatStore.getState().forkAndRegenerate(message.id, editText);
   }, [message.id, editText]);
 
   if (editing) {

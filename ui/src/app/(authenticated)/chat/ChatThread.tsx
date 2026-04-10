@@ -30,9 +30,10 @@ export { AgentTurnSeparator } from "@/components/chat/AgentTurnSeparator";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { BarsLoader } from "@/components/ui/loader";
 import { Button } from "@/components/ui/button";
-import { RichCard } from "@/components/ui/rich-card";
+import { GenerativeUISlot } from "@/components/ui/card-registry";
 import { SlashMenu } from "./parts/SlashMenu";
-import { MessageList } from "./MessageList";
+import { MessageList, MessageSkeleton } from "./MessageList";
+import { ReconnectingIndicator } from "@/components/chat/ReconnectingIndicator";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import {
   Bot,
@@ -152,8 +153,7 @@ export function RichCardDataPartView({ data }: { data: Record<string, unknown> }
   if (cardType === "agent-turn" && typeof rest.agentName === "string") {
     return <AgentTurnSeparator data={{ agentName: rest.agentName, reason: typeof rest.reason === "string" ? rest.reason : "" }} animate={false} />;
   }
-  const validCardType = cardType === "table" || cardType === "metric" ? cardType : "table";
-  return <RichCard part={{ type: "rich-card", cardType: validCardType, data: rest }} />;
+  return <GenerativeUISlot cardType={String(cardType ?? "unknown")} data={rest} />;
 }
 
 // ── Empty state ──────────────────────────────────────────────────────────────
@@ -828,6 +828,8 @@ export function ChatThread({
   const currentAgent = useChatStore((s) => s.currentAgent);
   const activeSessionId = useChatStore((s) => s.agents[s.currentAgent]?.activeSessionId ?? null);
   const connectionPhase = useChatStore((s) => s.agents[s.currentAgent]?.connectionPhase ?? "idle");
+  const reconnectAttempt = useChatStore((s) => s.agents[s.currentAgent]?.reconnectAttempt ?? 0);
+  const maxReconnectAttempts = useChatStore((s) => s.agents[s.currentAgent]?.maxReconnectAttempts ?? 3);
   const activeSessionIds = useChatStore((s) => s.agents[s.currentAgent]?.activeSessionIds ?? []);
   const engineRunning = !isActivePhase(connectionPhase) && !!activeSessionId && activeSessionIds.includes(activeSessionId);
 
@@ -849,11 +851,13 @@ export function ChatThread({
   const liveMessages = messageSource.mode === "live" ? messageSource.messages : EMPTY_LIVE_MESSAGES;
   const loadEarlierMessages = useChatStore((s) => s.loadEarlierMessages);
 
+  const selectedBranches = useChatStore((s) => s.agents[s.currentAgent]?.selectedBranches ?? {});
+
   // Build the resolved message array for rendering
   const historyMessages = useMemo(() => {
     if (!activeSessionId || !sessionMessagesData?.messages) return [];
-    return convertHistory(sessionMessagesData.messages);
-  }, [activeSessionId, sessionMessagesData]);
+    return convertHistory(sessionMessagesData.messages, false, selectedBranches);
+  }, [activeSessionId, sessionMessagesData, selectedBranches]);
 
   // messageSource.mode is the single authority for message source selection (Fix C).
   // "live" mode: use live stream messages (may be seeded with history for F5 resume).
@@ -882,7 +886,12 @@ export function ChatThread({
 
   const isStreaming = isActivePhase(connectionPhase);
 
-  const showThinking = connectionPhase === "submitted" || engineRunning;
+  // Show thinking indicator only when actually waiting for a response.
+  // Guard: if the last message already has assistant content, the response has started — hide thinking.
+  const lastMsg = sourceMessages[sourceMessages.length - 1];
+  const hasAssistantContent = lastMsg?.role === "assistant" && lastMsg.parts.length > 0;
+  const showThinking = messageSource.mode === "live"
+    && (connectionPhase === "submitted" || (engineRunning && !hasAssistantContent));
 
   // Only show loading skeleton when there is truly no data to display (Fix D).
   // If we have seeded live messages (F5 resume) or cached history, skip the skeleton.
@@ -890,14 +899,7 @@ export function ChatThread({
     return (
       <div className="flex flex-1 flex-col gap-6 p-6 max-w-4xl mx-auto">
         {[1, 2, 3].map((i) => (
-          <div key={i} className="flex gap-3">
-            <div className="h-9 w-9 rounded-xl bg-muted/50 animate-pulse shrink-0" />
-            <div className="flex-1 space-y-2">
-              <div className="h-3 w-20 rounded bg-muted/50 animate-pulse" />
-              <div className="h-4 w-full rounded bg-muted/40 animate-pulse" />
-              <div className="h-4 w-3/4 rounded bg-muted/30 animate-pulse" />
-            </div>
-          </div>
+          <MessageSkeleton key={i} />
         ))}
       </div>
     );
@@ -918,6 +920,15 @@ export function ChatThread({
         hiddenCount={hiddenCount}
         onLoadEarlier={() => loadEarlierMessages(currentAgent)}
       />
+
+      {/* Reconnecting indicator */}
+      {connectionPhase === "reconnecting" && (
+        <ReconnectingIndicator
+          attempt={reconnectAttempt}
+          maxAttempts={maxReconnectAttempts}
+          className="my-4"
+        />
+      )}
 
       {/* Error banner */}
       {streamError && !isReadOnly && messageSource.mode !== "history" && (

@@ -7,15 +7,46 @@ import ReactMarkdown, { Components } from "react-markdown"
 import remarkBreaks from "remark-breaks"
 import remarkGfm from "remark-gfm"
 import { CodeBlock, CodeBlockCode } from "./code-block"
+import { extractFootnotes, FootnoteProvider, createFootnoteComponents } from "./citation-tooltip"
 import { MermaidBlock } from "./mermaid-block"
 
 // ── Math Detection ─────────────────────────────────────────────────────────
 
-// Detect math content: $...$, $$...$$, \(...\), \[...\]
-const MATH_PATTERN = /\$\$[\s\S]+?\$\$|\$[^\s$].*?[^\s$]\$|\\[([]\s*[\s\S]*?\s*\\[\])]/
+// Detect math content: $$...$$, \(...\), \[...\], and inline $...$ only when
+// the content between $ signs contains at least one LaTeX operator (\, ^, _, {, })
+// to avoid false positives on currency ($100) or Cyrillic text near $ signs.
+const DISPLAY_MATH = /\$\$[\s\S]+?\$\$|\\[([]\s*[\s\S]*?\s*\\[\])]/
+const INLINE_MATH = /\$[^\s$].*?[^\s$]\$/
 
 function hasMathContent(content: string): boolean {
-  return MATH_PATTERN.test(content)
+  if (DISPLAY_MATH.test(content)) return true
+  const m = content.match(INLINE_MATH)
+  if (!m) return false
+  // Only treat inline $...$ as math if it contains a LaTeX operator
+  const inner = m[0].slice(1, -1)
+  return /[\\^_{}]/.test(inner)
+}
+
+// ── Block Key & Fence Detection ────────────────────────────────────────────
+
+/** Fast djb2 hash of first 32 chars — sub-microsecond, no import needed */
+export function blockKey(blockId: string, index: number, content: string): string {
+  let hash = 5381
+  const len = Math.min(content.length, 32)
+  for (let i = 0; i < len; i++) {
+    hash = ((hash << 5) + hash) ^ content.charCodeAt(i)
+  }
+  return `${blockId}-${index}-${(hash >>> 0).toString(36)}`
+}
+
+/**
+ * Returns true if `raw` is an unclosed code fence (streaming partial block).
+ * marked.lexer() emits `code` tokens even for unclosed fences — raw does NOT
+ * end with closing backtick fence in that case.
+ */
+export function isUnclosedCodeBlock(raw: string): boolean {
+  const trimmed = raw.trimEnd()
+  return trimmed.startsWith('```') && !trimmed.endsWith('```')
 }
 
 // ── Types & Helpers ────────────────────────────────────────────────────────
@@ -25,6 +56,7 @@ export type MarkdownProps = {
   id?: string
   className?: string
   components?: Partial<Components>
+  isStreaming?: boolean
 }
 
 function parseMarkdownIntoBlocks(markdown: string): string[] {
@@ -38,54 +70,70 @@ function extractLanguage(className?: string): string {
   return match ? match[1] : "plaintext"
 }
 
-const INITIAL_COMPONENTS: Partial<Components> = {
-  code: function CodeComponent({ className, children, ...props }) {
-    const isInline =
-      !props.node?.position?.start.line ||
-      props.node?.position?.start.line === props.node?.position?.end.line
+// ── Components Factory ─────────────────────────────────────────────────────
 
-    if (isInline) {
+function createComponents(isStreamingCode = false): Partial<Components> {
+  return {
+    code: function CodeComponent({ className, children, ...props }) {
+      const isInline =
+        !props.node?.position?.start.line ||
+        props.node?.position?.start.line === props.node?.position?.end.line
+
+      if (isInline) {
+        return (
+          <span
+            className={cn(
+              "bg-muted rounded-sm px-1 font-mono text-sm",
+              className
+            )}
+            {...props}
+          >
+            {children}
+          </span>
+        )
+      }
+
+      const language = extractLanguage(className)
+
+      if (language === "mermaid") {
+        return <MermaidBlock code={String(children).trim()} />
+      }
+
+      const codeStr = children as string
+      const lineCount = codeStr ? codeStr.split('\n').length : 0
+
       return (
-        <span
-          className={cn(
-            "bg-muted rounded-sm px-1 font-mono text-sm",
-            className
-          )}
-          {...props}
-        >
-          {children}
-        </span>
+        <CodeBlock className={className} language={language} isStreaming={isStreamingCode}>
+          <CodeBlockCode
+            code={codeStr}
+            language={language}
+            showLineNumbers={lineCount > 10}
+            isStreaming={isStreamingCode}
+          />
+        </CodeBlock>
       )
-    }
-
-    const language = extractLanguage(className)
-
-    if (language === "mermaid") {
-      return <MermaidBlock code={String(children).trim()} />
-    }
-
-    const codeStr = children as string
-    const lineCount = codeStr ? codeStr.split('\n').length : 0
-
-    return (
-      <CodeBlock className={className} language={language}>
-        <CodeBlockCode code={codeStr} language={language} showLineNumbers={lineCount > 10} />
-      </CodeBlock>
-    )
-  },
-  pre: function PreComponent({ children }) {
-    return <>{children}</>
-  },
+    },
+    pre: function PreComponent({ children }) {
+      return <>{children}</>
+    },
+  }
 }
+
+// Stable references for the common cases — avoids object recreation on each render
+const FOOTNOTE_COMPONENTS = createFootnoteComponents()
+const INITIAL_COMPONENTS = { ...createComponents(false), ...FOOTNOTE_COMPONENTS }
+const STREAMING_COMPONENTS = { ...createComponents(true), ...FOOTNOTE_COMPONENTS }
 
 // ── Standard Markdown Block (no math) ──────────────────────────────────────
 
 const MemoizedMarkdownBlock = memo(
   function MarkdownBlock({
     content,
+    isStreamingCode = false,
     components = INITIAL_COMPONENTS,
   }: {
     content: string
+    isStreamingCode?: boolean
     components?: Partial<Components>
   }) {
     return (
@@ -99,6 +147,7 @@ const MemoizedMarkdownBlock = memo(
   },
   function propsAreEqual(prevProps, nextProps) {
     return prevProps.content === nextProps.content
+      && prevProps.isStreamingCode === nextProps.isStreamingCode
   }
 )
 
@@ -166,31 +215,49 @@ function MarkdownComponent({
   children,
   id,
   className,
-  components = INITIAL_COMPONENTS,
+  isStreaming = false,
+  components,
 }: MarkdownProps) {
   const generatedId = useId()
   const blockId = id ?? generatedId
   const blocks = useMemo(() => parseMarkdownIntoBlocks(children), [children])
+  const footnoteMap = useMemo(() => extractFootnotes(children), [children])
 
-  return (
+  const content = (
     <div className={className}>
-      {blocks.map((block, index) =>
-        hasMathContent(block) ? (
+      {blocks.map((block, index) => {
+        const isLastBlock = index === blocks.length - 1
+        // Fence detection is authoritative — unclosed fence = streaming code regardless of isStreaming flag.
+        // isStreaming is used by CodeBlockCode to decide whether to skip Shiki.
+        // Here we only check fence state to determine which components object to pass.
+        const isStreamingCode = isLastBlock && isUnclosedCodeBlock(block)
+
+        // Use stable INITIAL_COMPONENTS for non-streaming blocks.
+        // Use STREAMING_COMPONENTS only for the last block with an unclosed fence.
+        // If caller provides custom components, always use those.
+        const resolvedComponents = components ?? (isStreamingCode ? STREAMING_COMPONENTS : INITIAL_COMPONENTS)
+
+        return hasMathContent(block) ? (
           <MemoizedMathBlock
-            key={`${blockId}-block-${index}`}
+            key={blockKey(blockId, index, block)}
             content={block}
-            components={components}
+            components={resolvedComponents}
           />
         ) : (
           <MemoizedMarkdownBlock
-            key={`${blockId}-block-${index}`}
+            key={blockKey(blockId, index, block)}
             content={block}
-            components={components}
+            isStreamingCode={isStreamingCode}
+            components={resolvedComponents}
           />
         )
-      )}
+      })}
     </div>
   )
+
+  return footnoteMap.size > 0
+    ? <FootnoteProvider footnotes={footnoteMap}>{content}</FootnoteProvider>
+    : content
 }
 
 const Markdown = memo(MarkdownComponent)

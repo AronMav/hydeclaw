@@ -8,6 +8,7 @@ import {
   useChatStore,
   isActivePhase,
   getInitialAgent,
+  getLastSessionId,
 } from "@/stores/chat-store";
 import { useWsSubscription } from "@/hooks/use-ws-subscription";
 import { useHotkey } from "@/hooks/use-hotkey";
@@ -114,69 +115,50 @@ export default function ChatPage() {
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const isReadOnly = activeSession?.channel === "heartbeat" || activeSession?.channel === "cron" || activeSession?.channel === "inter-agent";
 
-  // Session restore on mount — single unified effect
+  // Session restore on mount or agent switch.
+  // IMPORTANT: Wait until sessions are ACTUALLY loaded (not just isLoading=false with empty data).
+  // React Query can report isLoading=false before the first fetch completes (initial state).
+  const sessionsReady = !sessionsLoading && sessionsData !== undefined;
   useEffect(() => {
-    if (!currentAgent || restoredAgents.current.has(currentAgent)) return;
+    if (!currentAgent || !sessionsReady) return;
+
+    // Already restored this agent — skip
+    if (restoredAgents.current.has(currentAgent)) return;
+    restoredAgents.current.add(currentAgent);
 
     const agentState = useChatStore.getState().agents[currentAgent];
 
-    // CRITICAL: If there's an active stream, DON'T touch anything — just show live view
+    // If already streaming — don't touch
     if (isActivePhase(agentState?.connectionPhase)) {
-      restoredAgents.current.add(currentAgent);
-      if (agentState?.messageSource?.mode !== "live") {
-        useChatStore.setState((draft) => {
-          if (draft.agents[currentAgent]) {
-            const current = draft.agents[currentAgent].messageSource;
-            if (current.mode !== "live") {
-              draft.agents[currentAgent].messageSource = { mode: "live", messages: [] };
-            }
-          }
-        });
-      }
       return;
     }
 
-    // Wait for sessions to load before any restore decision
-    if (sessionsLoading) return;
+    // If has activeSessionId but UI shows new-chat — WS set the ID but didn't load the session.
+    // Load it now.
+    if (agentState?.activeSessionId && agentState?.messageSource?.mode === "new-chat") {
+      useChatStore.getState().selectSession(agentState.activeSessionId, currentAgent);
+      return;
+    }
 
-    // URL session: only use if it belongs to THIS agent (not stale from previous agent)
+    // If already viewing a real session (live or history) — don't touch
+    if (agentState?.activeSessionId && agentState?.messageSource?.mode !== "new-chat") {
+      return;
+    }
+
+    // Priority 1: URL ?s= param (deep link)
     if (urlSessionId && sessions.some((s) => s.id === urlSessionId)) {
-      restoredAgents.current.add(currentAgent);
       useChatStore.getState().selectSession(urlSessionId, currentAgent);
       return;
     }
 
-    restoredAgents.current.add(currentAgent);
-
-    // If agent has an interactive active session (not heartbeat/cron), jump to it
-    const serverActive = agentState?.activeSessionIds ?? [];
-    if (serverActive.length > 0 && sessions.length > 0) {
-      const NON_INTERACTIVE = ["heartbeat", "cron", "system"];
-      const interactive = sessions.find(
-        (s) => serverActive.includes(s.id) && !NON_INTERACTIVE.includes(s.channel),
-      );
-      if (interactive) {
-        useChatStore.getState().selectSession(interactive.id, currentAgent);
-        return;
-      }
+    // Priority 2: Most recent session
+    if (sessions.length > 0) {
+      useChatStore.getState().selectSession(sessions[0].id, currentAgent);
+      return;
     }
 
-    // Check if any other agent's active session includes this agent as participant
-    const chatStore = useChatStore.getState();
-    const allAgentStates = chatStore.agents;
-    for (const [otherAgent, otherState] of Object.entries(allAgentStates)) {
-      if (otherAgent === currentAgent) continue;
-      const sid = otherState.activeSessionId;
-      if (sid && chatStore.sessionParticipants[sid]?.includes(currentAgent)) {
-        // This agent is a participant in another agent's active session
-        chatStore.selectSession(sid, currentAgent);
-        return;
-      }
-    }
-
-    // Otherwise — open new chat (don't load stale history)
     useChatStore.getState().newChat();
-  }, [sessionsLoading, sessions, currentAgent, urlSessionId]);
+  }, [sessionsReady, sessions, currentAgent, urlSessionId]);
 
   // Sync activeSessionId → URL ?s= param
   useEffect(() => {

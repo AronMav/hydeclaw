@@ -32,7 +32,7 @@ impl AgentEngine {
             if event_tx.send(StreamEvent::TextDelta(text)).is_err() {
                 tracing::debug!("SSE event channel closed, engine continues for DB save");
             }
-            if event_tx.send(StreamEvent::Finish { finish_reason: "command".to_string() }).is_err() {
+            if event_tx.send(StreamEvent::Finish { finish_reason: "command".to_string(), continuation: false }).is_err() {
                 tracing::debug!("SSE event channel closed, engine continues for DB save");
             }
             return Ok(());
@@ -40,6 +40,8 @@ impl AgentEngine {
 
         let thinking_level = self.thinking_level.load(std::sync::atomic::Ordering::Relaxed);
 
+        // TODO(branching): When frontend sends leaf_message_id, use load_branch_messages
+        // instead of load_messages in build_context to provide branch-aware LLM context.
         let crate::agent::context_builder::ContextSnapshot { session_id, mut messages, tools: available_tools } =
             self.build_context(msg, true, resume_session_id, force_new_session).await?;
 
@@ -246,6 +248,14 @@ impl AgentEngine {
                             });
                         }
                     }
+                    let _ = event_tx.send(StreamEvent::StepFinish {
+                        step_id: step_id.clone(),
+                        finish_reason: "continuation".into(),
+                    });
+                    let _ = event_tx.send(StreamEvent::Finish {
+                        finish_reason: "continuation".into(),
+                        continuation: true,
+                    });
                     let _ = event_tx.send(StreamEvent::TextDelta("\n\n...".to_string()));
                     messages.push(Message {
                         role: MessageRole::User,
@@ -568,6 +578,7 @@ impl AgentEngine {
         if event_tx
             .send(StreamEvent::Finish {
                 finish_reason: "stop".into(),
+                continuation: false,
             })
             .is_err()
         {

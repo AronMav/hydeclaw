@@ -148,7 +148,9 @@ async fn worker_loop(db: &PgPool, provider: &Arc<dyn LlmProvider>, cancel: &Canc
         }
 
         let chunk_id_str = chunk_id.to_string();
-        let truncated = &content[..content.len().min(1500)];
+        let mut end = content.len().min(1500);
+        while end > 0 && !content.is_char_boundary(end) { end -= 1; }
+        let truncated = &content[..end];
         tokio::select! {
             _ = cancel.cancelled() => {
                 tracing::info!("graph worker cancelled during extraction");

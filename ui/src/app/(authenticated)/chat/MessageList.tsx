@@ -6,8 +6,8 @@ import { useChatStore } from "@/stores/chat-store";
 import type { ChatMessage } from "@/stores/chat-store";
 import { Button } from "@/components/ui/button";
 import { BarsLoader } from "@/components/ui/loader";
-import { Skeleton } from "@/components/ui/skeleton";
-import { RoleAvatar, AgentTurnSeparator } from "./ChatThread";
+import { RoleAvatar } from "./ChatThread";
+import { HandoffDivider } from "@/components/chat/HandoffDivider";
 import { MessageItem } from "./MessageItem";
 import { useAuthStore } from "@/stores/auth-store";
 import { useSessions } from "@/lib/queries";
@@ -31,14 +31,14 @@ function isNewMessage(msg: ChatMessage): boolean {
 
 // ── Loading skeletons ──────────────────────────────────────────────────────
 
-function MessageSkeleton() {
+export function MessageSkeleton() {
   return (
     <div className="flex gap-3 py-5 md:py-6">
-      <Skeleton className="h-8 w-8 rounded-full shrink-0" />
-      <div className="flex flex-1 flex-col gap-2">
-        <Skeleton className="h-3 w-20" />
-        <Skeleton className="h-4 w-full" />
-        <Skeleton className="h-4 w-3/4" />
+      <div className="h-9 w-9 rounded-xl bg-muted/50 animate-pulse shrink-0" />
+      <div className="flex-1 space-y-2">
+        <div className="h-3 w-20 rounded bg-muted/50 animate-pulse" />
+        <div className="h-4 w-full rounded bg-muted/40 animate-pulse" />
+        <div className="h-4 w-3/4 rounded bg-muted/30 animate-pulse" />
       </div>
     </div>
   );
@@ -85,15 +85,19 @@ function ThinkingMessage() {
 function ScrollToBottomButton({
   isAtBottom,
   isStreaming,
+  newTokenCount,
   onClick,
   ariaLabel,
 }: {
   isAtBottom: boolean;
   isStreaming: boolean;
+  newTokenCount: number;
   onClick: () => void;
   ariaLabel: string;
 }) {
   if (isAtBottom) return null;
+
+  const badge = newTokenCount > 99 ? "99+" : newTokenCount > 0 ? String(newTokenCount) : null;
 
   return (
     <Button
@@ -106,6 +110,11 @@ function ScrollToBottomButton({
       <ChevronDown className="h-5 w-5" />
       {isStreaming && (
         <span className="absolute -top-1 -right-1 h-3 w-3 rounded-full bg-primary animate-pulse" />
+      )}
+      {badge && (
+        <span className="absolute -bottom-1 -right-1 min-w-[18px] h-[18px] rounded-full bg-primary text-primary-foreground text-[10px] font-bold flex items-center justify-center px-1 leading-none">
+          {badge}
+        </span>
       )}
     </Button>
   );
@@ -146,11 +155,7 @@ function VirtuosoFooter({ turnLimitMessage }: { turnLimitMessage: string | null 
   );
 }
 
-// ── Turn count selector ────────────────────────────────────────────────────
-
-function useTurnCount() {
-  return useChatStore((s) => s.agents[s.currentAgent]?.turnCount ?? 0);
-}
+// ── Turn limit selector ───────────────────────────────────────────────────
 
 function useTurnLimitMessage() {
   return useChatStore((s) => s.agents[s.currentAgent]?.turnLimitMessage ?? null);
@@ -176,13 +181,15 @@ export function MessageList({
   onLoadEarlier: () => void;
 }) {
   const { t } = useTranslation();
-  const turnCount = useTurnCount();
   const turnLimitMessage = useTurnLimitMessage();
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const isAtBottomRef = useRef(true);
   // Track whether user manually scrolled up (wheel/touch) vs content growth pushing us up
   const userScrolledUpRef = useRef(false);
+  // Track tokens received while user is scrolled up (SCRL-03)
+  const [missedTokens, setMissedTokens] = useState(0);
+  const missedTokensRef = useRef(0); // shadow ref to avoid stale closure in effect
 
   // Hoist session data so individual UserMessage components don't each subscribe
   const currentAgent = useChatStore((s) => s.currentAgent);
@@ -207,7 +214,60 @@ export function MessageList({
     return [...messages, thinkingItem];
   }, [messages, showThinking]);
 
-  // Force scroll on session switch (messages array identity changes from empty)
+  // ── ResizeObserver-based scroll anchoring ──────────────────────────────────
+  // Instead of counting parts.length or virtualItems.length, observe the actual
+  // content height. When it grows and user was at bottom → auto-scroll.
+  // This is the pattern used by assistant-ui and Vercel AI SDK.
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    // Find the Virtuoso scroller element (first child with overflow)
+    const scroller = container.querySelector("[data-virtuoso-scroller]") as HTMLElement | null;
+    if (!scroller) return;
+
+    // SCRL-01: Enable CSS overflow-anchor so the browser pins the viewport
+    // to the bottom item while new tokens append during streaming.
+    scroller.style.overflowAnchor = "auto";
+
+    let prevHeight = scroller.scrollHeight;
+
+    const ro = new ResizeObserver(() => {
+      const newHeight = scroller.scrollHeight;
+      if (newHeight > prevHeight && isAtBottomRef.current && !userScrolledUpRef.current) {
+        // Content grew and we were at bottom → scroll down
+        requestAnimationFrame(() => {
+          virtuosoRef.current?.scrollToIndex({ index: virtualItems.length - 1, behavior: "auto" });
+        });
+      }
+      prevHeight = newHeight;
+    });
+
+    // Observe the list container (Virtuoso renders items here)
+    const listContainer = scroller.querySelector("[data-viewport-type='element']") as HTMLElement | null;
+    if (listContainer) {
+      ro.observe(listContainer);
+    }
+
+    return () => ro.disconnect();
+  }, [virtualItems.length]); // Re-attach when items count changes structurally
+
+  // ── SCRL-03: count tokens that arrived while user was scrolled up ────────────
+  const prevPartsLenRef = useRef(0);
+  useEffect(() => {
+    // Compute total parts across all live messages (proxy for token arrivals)
+    const totalParts = virtualItems.reduce((acc, m) => acc + m.parts.length, 0);
+    if (totalParts > prevPartsLenRef.current && userScrolledUpRef.current) {
+      const delta = totalParts - prevPartsLenRef.current;
+      missedTokensRef.current += delta;
+      setMissedTokens(missedTokensRef.current);
+    }
+    prevPartsLenRef.current = totalParts;
+  }, [virtualItems]);
+
+  // Force scroll to bottom on session switch
   const prevLenRef = useRef(messages.length);
   useEffect(() => {
     const wasEmpty = prevLenRef.current === 0;
@@ -219,27 +279,26 @@ export function MessageList({
     }
   }, [messages.length]);
 
-  // Thinking indicator is now a virtual data item — followOutput handles
-  // auto-scrolling natively when virtualItems grows. This effect only
-  // forces scroll when stream starts and Virtuoso's atBottom might be stale
-  // (textarea expansion can push us past atBottomThreshold).
+  // Force scroll when stream starts (user submitted a message)
   const prevStreamingRef = useRef(isStreaming);
   useEffect(() => {
     const streamJustStarted = !prevStreamingRef.current && isStreaming;
     prevStreamingRef.current = isStreaming;
     if (streamJustStarted && virtualItems.length > 0) {
-      userScrolledUpRef.current = false; // New stream = user wants to see response
+      userScrolledUpRef.current = false;
+      missedTokensRef.current = 0;
+      setMissedTokens(0);
       virtuosoRef.current?.scrollToIndex({ index: virtualItems.length - 1, behavior: "smooth" });
     }
   }, [isStreaming, virtualItems.length]);
 
-  const virtualItemsLengthRef = useRef(virtualItems.length);
-  virtualItemsLengthRef.current = virtualItems.length;
-
   const scrollToBottom = useCallback(() => {
-    virtuosoRef.current?.scrollToIndex({ index: virtualItemsLengthRef.current - 1, behavior: "smooth" });
+    virtuosoRef.current?.scrollToIndex({ index: virtualItems.length - 1, behavior: "smooth" });
     isAtBottomRef.current = true;
     setIsAtBottom(true);
+    // SCRL-03: reset missed token counter
+    missedTokensRef.current = 0;
+    setMissedTokens(0);
   }, []);
 
   const virtuosoComponents = useMemo(() => ({
@@ -266,7 +325,7 @@ export function MessageList({
   }
 
   return (
-    <div className="flex flex-1 flex-col pt-14 lg:pt-0 relative">
+    <div ref={scrollContainerRef} className="flex flex-1 flex-col pt-14 lg:pt-0 relative">
       <Virtuoso
         ref={virtuosoRef}
         data={virtualItems}
@@ -282,8 +341,12 @@ export function MessageList({
         atBottomStateChange={(atBottom) => {
           isAtBottomRef.current = atBottom;
           setIsAtBottom(atBottom);
-          // If we reached bottom, reset user-scrolled-up flag
-          if (atBottom) userScrolledUpRef.current = false;
+          if (atBottom) {
+            userScrolledUpRef.current = false;
+            // SCRL-03: reset missed token counter when user naturally reaches bottom
+            missedTokensRef.current = 0;
+            setMissedTokens(0);
+          }
         }}
         isScrolling={(scrolling) => {
           // Detect user-initiated scroll-up during streaming
@@ -292,9 +355,9 @@ export function MessageList({
             userScrolledUpRef.current = true;
           }
         }}
-        atBottomThreshold={150}
+        atBottomThreshold={100}
         initialTopMostItemIndex={messages.length > 0 ? messages.length - 1 : 0}
-        increaseViewportBy={200}
+        increaseViewportBy={{ top: 500, bottom: 200 }}
         components={virtuosoComponents}
         itemContent={(index, msg) => {
           // Virtual thinking item — render the thinking indicator as a data item
@@ -313,6 +376,7 @@ export function MessageList({
             prev.id !== THINKING_ID &&
             prev.role === "assistant" &&
             msg.role === "assistant" &&
+            !!prev.agentId && !!msg.agentId &&
             prev.agentId !== msg.agentId &&
             prev.agentId != null &&
             msg.agentId != null;
@@ -323,11 +387,7 @@ export function MessageList({
           return (
             <div className="mx-auto w-full max-w-4xl px-3 md:px-6">
               {showSeparator && (
-                <AgentTurnSeparator
-                  data={{ agentName: msg.agentId!, reason: "" }}
-                  animate={isNew}
-                  turnCount={!isStreaming && isNew ? turnCount : undefined}
-                />
+                <HandoffDivider agentName={msg.agentId!} />
               )}
               <div className={cn(
                 isNew && "animate-in fade-in slide-in-from-bottom-2 duration-200 ease-out",
@@ -343,6 +403,7 @@ export function MessageList({
       <ScrollToBottomButton
         isAtBottom={isAtBottom}
         isStreaming={isStreaming}
+        newTokenCount={missedTokens}
         onClick={scrollToBottom}
         ariaLabel={t("chat.scroll_to_bottom")}
       />

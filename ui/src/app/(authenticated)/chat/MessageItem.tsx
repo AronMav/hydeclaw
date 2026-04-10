@@ -4,8 +4,10 @@ import React, { memo, type ReactNode } from "react";
 import { useChatStore } from "@/stores/chat-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useTranslation } from "@/hooks/use-translation";
-import type { ChatMessage, MessagePart, ToolPart, ToolPartState } from "@/stores/chat-store";
+import type { ChatMessage, MessagePart, ToolPart, ToolPartState, ApprovalPart } from "@/stores/chat-store";
+import { findSiblings, getCachedRawMessages } from "@/stores/chat-store";
 import { formatMessageTime } from "@/lib/format";
+import { BranchNavigator } from "./BranchNavigator";
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronRight } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
@@ -20,6 +22,9 @@ import {
   SourceUrlDataPartView,
   RichCardDataPartView,
 } from "./ChatThread";
+import { ContinuationSeparator } from "@/components/chat/ContinuationSeparator";
+import { StepGroup } from "@/components/chat/StepGroup";
+import { ApprovalCard } from "@/components/chat/ApprovalCard";
 
 
 // ── Parts render cache (PERF-03) ───────────────────────────────────────────
@@ -36,20 +41,9 @@ export const TOOL_GROUP_THRESHOLD = 3;
 
 // ── Tool status mapping ─────────────────────────────────────────────────────
 
-export function mapToolPartState(state: ToolPartState): "calling" | "running" | "complete" | "error" | "denied" {
-  switch (state) {
-    case "input-streaming":
-      return "calling";
-    case "input-available":
-      return "running";
-    case "output-available":
-      return "complete";
-    case "output-error":
-      return "error";
-    case "output-denied":
-      return "denied";
-  }
-}
+import { mapToolPartState } from "@/lib/tool-state";
+// Re-export for backward compatibility
+export { mapToolPartState } from "@/lib/tool-state";
 
 // ── Empty part view (loading indicator for empty assistant messages) ─────────
 
@@ -59,13 +53,15 @@ function EmptyPartView() {
 
 // ── Part renderer dispatch ──────────────────────────────────────────────────
 
-function renderPart(part: MessagePart, index: number) {
+function renderPart(part: MessagePart, index: number, _meta?: { stepGroupToolIds?: Set<string>; parts?: MessagePart[] }) {
   switch (part.type) {
     case "text":
       return <TextPart key={index} text={part.text} />;
     case "reasoning":
       return <ReasoningPart key={index} text={part.text} />;
     case "tool": {
+      // Skip standalone tool parts that are inside a step group (dedup)
+      if (_meta?.stepGroupToolIds?.has(part.toolCallId)) return null;
       return (
         <ToolCallPartView
           key={index}
@@ -81,7 +77,21 @@ function renderPart(part: MessagePart, index: number) {
     case "source-url":
       return <SourceUrlDataPartView key={index} data={{ url: part.url, title: part.title }} />;
     case "rich-card":
+      // Skip agent-turn rich cards — HandoffDivider in ChatThread replaces this
+      if (part.cardType === "agent-turn") return null;
       return <RichCardDataPartView key={index} data={{ cardType: part.cardType, ...part.data }} />;
+    case "continuation-separator":
+      return <ContinuationSeparator key={`cont-${index}`} />;
+    case "step-group":
+      return (
+        <StepGroup
+          key={`step-${part.stepId}`}
+          stepGroup={part}
+          isLastGroup={!_meta?.parts?.slice(index + 1).some(p => p.type === "step-group")}
+        />
+      );
+    case "approval":
+      return <ApprovalCard key={`approval-${part.approvalId}`} part={part} />;
     default:
       return null;
   }
@@ -145,6 +155,16 @@ function ToolCallGroup({ parts }: { parts: ToolPart[] }) {
 function renderPartsWithGrouping(parts: MessagePart[]) {
   const result: ReactNode[] = [];
 
+  // Collect tool IDs that are inside step groups (to avoid double-rendering)
+  const stepGroupToolIds = new Set<string>();
+  for (const p of parts) {
+    if (p.type === "step-group") {
+      for (const tp of p.toolParts) stepGroupToolIds.add(tp.toolCallId);
+    }
+  }
+
+  const meta = { stepGroupToolIds, parts };
+
   // Stage 2 & 3 Fix: Pre-filter empty/whitespace-only text parts that could break tool grouping
   const effectiveParts = parts.filter(p => {
     if (p.type === "text") return p.text.trim().length > 0;
@@ -156,9 +176,19 @@ function renderPartsWithGrouping(parts: MessagePart[]) {
     const part = effectiveParts[i];
 
     if (part.type === "tool") {
-      // Collect consecutive tool parts
+      // Skip tool parts already inside a step group
+      if (stepGroupToolIds.has(part.toolCallId)) {
+        i++;
+        continue;
+      }
+
+      // Collect consecutive non-step-grouped tool parts
       const toolRun: ToolPart[] = [];
-      while (i < effectiveParts.length && effectiveParts[i].type === "tool") {
+      while (
+        i < effectiveParts.length &&
+        effectiveParts[i].type === "tool" &&
+        !stepGroupToolIds.has((effectiveParts[i] as ToolPart).toolCallId)
+      ) {
         const p = effectiveParts[i];
         if (p.type === "tool") toolRun.push(p);
         i++;
@@ -182,7 +212,7 @@ function renderPartsWithGrouping(parts: MessagePart[]) {
         });
       }
     } else {
-      result.push(renderPart(part, i));
+      result.push(renderPart(part, i, meta));
       i++;
     }
   }
@@ -195,6 +225,17 @@ function renderPartsWithGrouping(parts: MessagePart[]) {
 function UserMessage({ message, sessionChannel, sessionUserId }: { message: ChatMessage; sessionChannel?: string; sessionUserId?: string }) {
   const { t, locale } = useTranslation();
   const agentIcons = useAuthStore((s) => s.agentIcons);
+  const activeSessionId = useChatStore((s) => s.agents[s.currentAgent]?.activeSessionId ?? null);
+
+  // Compute branch siblings for this user message (only when branching data exists)
+  const branchInfo = React.useMemo(() => {
+    if (!message.parentMessageId || !activeSessionId) return null;
+    const allRows = getCachedRawMessages(activeSessionId);
+    if (allRows.length === 0) return null;
+    const { siblings, index } = findSiblings(allRows, message.id);
+    if (siblings.length <= 1) return null;
+    return { parentMessageId: message.parentMessageId, siblings, index };
+  }, [message.id, message.parentMessageId, activeSessionId]);
 
   const isReadOnly = sessionChannel === "heartbeat" || sessionChannel === "cron" || sessionChannel === "inter-agent";
 
@@ -237,7 +278,16 @@ function UserMessage({ message, sessionChannel, sessionUserId }: { message: Chat
               </span>
             )}
           </div>
-          <MessageActions message={message} showReload={false} />
+          <div className="flex items-center gap-1">
+            {branchInfo && (
+              <BranchNavigator
+                parentMessageId={branchInfo.parentMessageId}
+                siblings={branchInfo.siblings}
+                currentIndex={branchInfo.index}
+              />
+            )}
+            <MessageActions message={message} showReload={false} />
+          </div>
         </div>
         <div className={cn("min-w-0 space-y-3", isSending && "opacity-70")}>
           {message.parts.map((part, i) => renderPart(part, i))}

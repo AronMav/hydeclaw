@@ -99,7 +99,9 @@ pub async fn retry_http_post_custom(
 
                 if status.as_u16() == 400 {
                     let body_preview = serde_json::to_string(body).unwrap_or_default();
-                    let truncated = &body_preview[..body_preview.len().min(4000)];
+                    let mut end = body_preview.len().min(4000);
+                    while end > 0 && !body_preview.is_char_boundary(end) { end -= 1; }
+                    let truncated = &body_preview[..end];
                     tracing::error!(
                         provider = %provider_name,
                         request_body = %truncated,

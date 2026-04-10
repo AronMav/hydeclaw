@@ -17,9 +17,13 @@ export type SseEvent =
   | { type: "tool-input-available"; toolCallId: string; input: unknown }
   | { type: "tool-output-available"; toolCallId: string; output: unknown }
   | { type: "file"; url: string; mediaType?: string }
-  | { type: "rich-card"; cardType: "table" | "metric" | "agent-turn"; data: Record<string, unknown> }
+  | { type: "rich-card"; cardType: string; data: Record<string, unknown> }
   | { type: "sync"; content: string; toolCalls: unknown[]; status: string; error?: string }
-  | { type: "finish"; agentName?: string }
+  | { type: "step-start"; stepId: string }
+  | { type: "step-finish"; stepId: string; finishReason: string }
+  | { type: "tool-approval-needed"; approvalId: string; toolName: string; toolInput: Record<string, unknown>; timeoutMs: number }
+  | { type: "tool-approval-resolved"; approvalId: string; action: "approved" | "rejected" | "timeout_rejected"; modifiedInput?: Record<string, unknown> }
+  | { type: "finish"; agentName?: string; continuation?: boolean }
   | { type: "error"; errorText: string };
 
 /**
@@ -68,7 +72,7 @@ export function parseSseEvent(raw: string): SseEvent | null {
       if (typeof e.url !== "string") return null;
       return { type, url: e.url, mediaType: typeof e.mediaType === "string" ? e.mediaType : undefined };
     case "rich-card":
-      return { type, cardType: e.cardType as "table" | "metric" | "agent-turn", data: (e.data as Record<string, unknown>) ?? {} };
+      return { type, cardType: typeof e.cardType === "string" ? e.cardType : "unknown", data: (e.data as Record<string, unknown>) ?? {} };
     case "sync":
       return {
         type,
@@ -77,10 +81,41 @@ export function parseSseEvent(raw: string): SseEvent | null {
         status: typeof e.status === "string" ? e.status : "unknown",
         error: typeof e.error === "string" ? e.error : undefined,
       };
+    case "step-start":
+      if (typeof e.stepId !== "string") return null;
+      return { type, stepId: e.stepId };
+    case "step-finish":
+      if (typeof e.stepId !== "string") return null;
+      return { type, stepId: e.stepId, finishReason: typeof e.finishReason === "string" ? e.finishReason : "unknown" };
     case "finish":
-      return { type, agentName: typeof e.agentName === "string" ? e.agentName : undefined };
+      return {
+        type,
+        agentName: typeof e.agentName === "string" ? e.agentName : undefined,
+        continuation: typeof e.continuation === "boolean" ? e.continuation : undefined,
+      };
     case "error":
       return { type, errorText: typeof e.errorText === "string" ? e.errorText : "Unknown error" };
+    case "tool-approval-needed": {
+      if (typeof e.approvalId !== "string" || typeof e.toolName !== "string") return null;
+      return {
+        type,
+        approvalId: e.approvalId,
+        toolName: e.toolName,
+        toolInput: (e.toolInput as Record<string, unknown>) ?? {},
+        timeoutMs: typeof e.timeoutMs === "number" ? e.timeoutMs : 300000,
+      };
+    }
+    case "tool-approval-resolved": {
+      if (typeof e.approvalId !== "string") return null;
+      const action = e.action as string;
+      if (action !== "approved" && action !== "rejected" && action !== "timeout_rejected") return null;
+      return {
+        type,
+        approvalId: e.approvalId,
+        action,
+        modifiedInput: e.modifiedInput != null ? (e.modifiedInput as Record<string, unknown>) : undefined,
+      };
+    }
     default:
       return null;
   }
@@ -99,6 +134,18 @@ export function parseSSELines(chunk: string, buffer: { current: string }): strin
     buffer.current = buffer.current.slice(idx + 1);
   }
   return lines;
+}
+
+/**
+ * Extract the event ID from an SSE "id:" line.
+ * Returns null if not an id line or if the value is empty/whitespace.
+ */
+export function extractSseEventId(line: string): string | null {
+  if (line.startsWith("id:")) {
+    const val = line.slice(3).trim();
+    return val || null;
+  }
+  return null;
 }
 
 import { parseContentParts as parseParts } from "@/lib/message-parser";

@@ -185,6 +185,8 @@ pub(crate) async fn api_session_messages(
                         "feedback": m.feedback.unwrap_or(0),
                         "edited_at": m.edited_at.map(|t| t.to_rfc3339()),
                         "status": m.status,
+                        "parent_message_id": m.parent_message_id,
+                        "branch_from_message_id": m.branch_from_message_id,
                     })
                 })
                 .collect();
@@ -510,6 +512,67 @@ pub(crate) async fn api_patch_message(
 #[derive(Deserialize)]
 pub(crate) struct PatchMessageRequest {
     content: String,
+}
+
+// ── Fork (branch) endpoint ──────────────────────────────
+
+#[derive(Deserialize)]
+pub(crate) struct ForkRequest {
+    branch_from_message_id: uuid::Uuid, // the user message being replaced
+    content: String,                     // new user message text
+}
+
+/// POST /api/sessions/{id}/fork — create a branched user message from an existing message.
+pub(crate) async fn api_fork_session(
+    State(state): State<AppState>,
+    Path(session_id): Path<uuid::Uuid>,
+    Json(body): Json<ForkRequest>,
+) -> impl IntoResponse {
+    // 1. Find the parent of the branch_from message (the message BEFORE it)
+    let parent_id = match sessions::find_parent_of_message(
+        &state.db,
+        session_id,
+        body.branch_from_message_id,
+    )
+    .await
+    {
+        Ok(pid) => pid,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    };
+
+    // 2. Save the new user message with branch pointers
+    match sessions::save_message_branched(
+        &state.db,
+        session_id,
+        "user",
+        &body.content,
+        None,
+        None,
+        None,
+        None,
+        parent_id,
+        Some(body.branch_from_message_id),
+    )
+    .await
+    {
+        Ok(new_msg_id) => Json(json!({
+            "message_id": new_msg_id,
+            "parent_message_id": parent_id,
+            "branch_from_message_id": body.branch_from_message_id,
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 /// PATCH /api/sessions/{id} — update session metadata (title).

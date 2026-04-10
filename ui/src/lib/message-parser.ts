@@ -197,6 +197,21 @@ export class IncrementalParser {
     return normalizeParts(this.parts);
   }
 
+  /** Get snapshot of all parts including buffered accum, WITHOUT resetting state */
+  snapshot(): ParsedContentPart[] {
+    if (!this.accum) return [...this.parts];
+    // Temporarily add accum to get complete picture
+    const copy = this.parts.map(p => ({ ...p }));
+    const last = copy[copy.length - 1];
+    const type = this.insideThink ? "reasoning" : "text";
+    if (last && last.type === type) {
+      last.text += this.accum;
+    } else {
+      copy.push({ type, text: this.accum } as ParsedContentPart);
+    }
+    return copy;
+  }
+
   private appendToLast(type: "text" | "reasoning", text: string) {
     const last = this.parts[this.parts.length - 1];
     if (last && last.type === type) {
