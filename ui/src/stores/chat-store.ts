@@ -2,16 +2,14 @@ import { create } from "zustand";
 import { devtools } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 
-import { apiDelete, apiPatch, getToken } from "@/lib/api";
-import { parseSSELines, parseSseEvent, parseContentParts } from "@/stores/sse-events";
-import { IncrementalParser } from "@/lib/message-parser";
-import type { SessionRow } from "@/types/api";
+import { apiDelete, apiPatch } from "@/lib/api";
 import { queryClient } from "@/lib/query-client";
 import { qk } from "@/lib/queries";
 
-import { uuid, STREAM_THROTTLE_MS, isActivePhase, emptyAgentState, getLiveMessages } from "./chat-types";
-import type { ChatMessage, MessagePart, TextPart, ToolPart, ConnectionPhase, MessageSource, AgentState } from "./chat-types";
+import { isActivePhase, emptyAgentState, getLiveMessages } from "./chat-types";
+import type { ChatMessage, TextPart, AgentState } from "./chat-types";
 import { getCachedHistoryMessages } from "./chat-history";
+import { createStreamingRenderer } from "./streaming-renderer";
 
 // ── Re-exports for backward compatibility ───────────────────────────────────
 export type { ChatMessage, MessagePart, TextPart, ToolPart, ToolPartState, RichCardPart, FilePart, SourceUrlPart, ReasoningPart, ConnectionPhase, MessageSource } from "./chat-types";
@@ -21,31 +19,6 @@ export { convertHistory, getCachedHistoryMessages } from "./chat-history";
 // ── Store interface ─────────────────────────────────────────────────────────
 
 const LAST_SESSION_KEY = "hydeclaw.chat.lastSession";
-
-// ── CLN-02: Encapsulated non-serializable state ──────────────────────────────
-// AbortController and setTimeout handles are not plain objects — Immer cannot
-// proxy or freeze them. They live in private Maps behind accessor helpers so
-// no bare module-scope mutable Records remain.
-
-const _abortControllers = new Map<string, AbortController | null>();
-const _reconnectTimers = new Map<string, ReturnType<typeof setTimeout> | null>();
-
-function getAbortCtrl(agent: string): AbortController | null {
-  return _abortControllers.get(agent) ?? null;
-}
-function setAbortCtrl(agent: string, ctrl: AbortController | null): void {
-  _abortControllers.set(agent, ctrl);
-}
-function getReconnectTimer(agent: string): ReturnType<typeof setTimeout> | null {
-  return _reconnectTimers.get(agent) ?? null;
-}
-function setReconnectTimer(agent: string, timer: ReturnType<typeof setTimeout> | null): void {
-  _reconnectTimers.set(agent, timer);
-}
-
-// ── Reconnect constants (SSE-02) ─────────────────────────────────────────────
-const MAX_RECONNECT_ATTEMPTS = 3;
-const RECONNECT_DELAY_BASE_MS = 1000;
 
 interface ChatStore {
   /** Per-agent state map. */
@@ -141,652 +114,12 @@ export const useChatStore = create<ChatStore>()(
     });
   }
 
-  // ── Debounced UI state persistence to server ──
-  const uiStateSaveTimers: Record<string, ReturnType<typeof setTimeout>> = {};
-  function saveUiState(agent: string) {
-    clearTimeout(uiStateSaveTimers[agent]);
-    uiStateSaveTimers[agent] = setTimeout(() => {
-      const st = get().agents[agent];
-      if (!st?.activeSessionId) return;
-      apiPatch(`/api/sessions/${st.activeSessionId}`, {
-        ui_state: { connectionPhase: st.connectionPhase },
-      }).catch((e) => { console.warn("[chat] save failed:", e); });
-    }, 500);
-  }
-
-  // ── Guaranteed UI state flush on tab close ──────────────────────────────
-  // [MOVED TO REACT EFFECT IN ChatThread.tsx to prevent listener leaks]
-
-  /**
-   * Resume an active backend stream after page reload.
-   * Connects to GET /api/chat/{sessionId}/stream and processes replay + live events.
-   */
-  function resumeStream(agent: string, sessionId: string, reconnectAttempt = 0) {
-    // Don't resume if already streaming (but allow reconnect path even in "reconnecting" phase)
-    const st = get().agents[agent];
-    if (st && st.connectionPhase === "streaming") return;
-
-    // Clear any existing reconnect timer before starting a new stream
-    const existingTimer = getReconnectTimer(agent);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-      setReconnectTimer(agent, null);
-    }
-    abortActiveStream(agent);
-    update(agent, { streamGeneration: (get().agents[agent]?.streamGeneration ?? 0) + 1 });
-    const myGeneration = get().agents[agent]?.streamGeneration ?? 1;
-    const controller = new AbortController();
-    setAbortCtrl(agent, controller);
-
-    // Seed with history from React Query cache so UI shows messages immediately (Fix A).
-    // Read getCachedHistoryMessages BEFORE the update() call — never call get() inside set().
-    // Use the passed sessionId parameter directly: activeSessionId may not be set yet in store
-    // (e.g. first render after F5 before WS delivers session state).
-    const existingSt = get().agents[agent];
-    const seedMessages = existingSt?.messageSource.mode === "live"
-      ? existingSt.messageSource.messages
-      : getCachedHistoryMessages(sessionId);
-
-    update(agent, {
-      streamError: null,
-      connectionPhase: "streaming",
-      connectionError: null,
-      messageSource: { mode: "live", messages: seedMessages },
-    });
-
-    const token = getToken();
-
-    fetch(`/api/chat/${sessionId}/stream`, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${token}` },
-      signal: controller.signal,
-    })
-      .then((resp) => {
-        if (resp.status === 204) {
-          // No active stream — engine already finished.
-          // Transition to history mode so useSessionMessages fetches fresh data (Fix B).
-          update(agent, { connectionPhase: "idle", messageSource: { mode: "history", sessionId } });
-          return;
-        }
-        if (!resp.ok) {
-          return resp.text().then((t) => { throw new Error(t || `HTTP ${resp.status}`); });
-        }
-        return processSSEStream(agent, resp.body!, controller.signal, myGeneration, sessionId, reconnectAttempt);
-      })
-      .catch((err) => {
-        if (err.name === "AbortError") return;
-        // Network error during reconnect — schedule next retry
-        if (reconnectAttempt < MAX_RECONNECT_ATTEMPTS) {
-          scheduleReconnect(agent, sessionId, reconnectAttempt);
-        } else {
-          update(agent, { connectionPhase: "idle" });
-        }
-      });
-  }
-
-  /** Abort active stream for an agent and reset status. */
-  function abortActiveStream(agent: string) {
-    // Clear any pending reconnect timer first — prevents reconnect after abort
-    const timer = getReconnectTimer(agent);
-    if (timer) {
-      clearTimeout(timer);
-      setReconnectTimer(agent, null);
-    }
-    const ctrl = getAbortCtrl(agent);
-    if (ctrl) {
-      ctrl.abort();
-      setAbortCtrl(agent, null);
-      update(agent, { connectionPhase: "idle" });
-    }
-  }
-
-  // ── Reconnect scheduling (SSE-02) ────────────────────────────────────────────
-  /**
-   * Schedule an exponential-backoff reconnect for an agent.
-   * Called when processSSEStream exits without receiving a finish event.
-   * Cleared by abortActiveStream/stopStream (user-initiated aborts must NOT retry).
-   */
-  function scheduleReconnect(agent: string, sessionId: string, attempt: number) {
-    if (attempt >= MAX_RECONNECT_ATTEMPTS) {
-      const sid = sessionId ?? get().agents[agent]?.activeSessionId;
-      update(agent, {
-        streamError: "Connection lost after retries",
-        connectionPhase: "error",
-        connectionError: "Connection lost after retries",
-        // Fall back to history mode so stale live messages don't stick
-        messageSource: sid ? { mode: "history", sessionId: sid } : { mode: "new-chat" },
-      });
-      return;
-    }
-    update(agent, { connectionPhase: "reconnecting", connectionError: null });
-    const delay = RECONNECT_DELAY_BASE_MS * Math.pow(2, attempt);
-    setReconnectTimer(agent, setTimeout(() => {
-      setReconnectTimer(agent, null);
-      // resumeStream handles 204 (engine finished) gracefully
-      resumeStream(agent, sessionId, attempt + 1);
-    }, delay));
-  }
-
-  // ── SSE stream handler ──
-  function startStream(agent: string, sessionId: string | null, messages: ChatMessage[], userText: string) {
-    abortActiveStream(agent);
-    update(agent, { streamGeneration: (get().agents[agent]?.streamGeneration ?? 0) + 1 });
-    const myGeneration = get().agents[agent]?.streamGeneration ?? 1;
-    const controller = new AbortController();
-    setAbortCtrl(agent, controller);
-
-    // Build user message — optimistic status: "sending" until data-session-id confirms receipt
-    const userMsg: ChatMessage = {
-      id: uuid(),
-      role: "user",
-      parts: [{ type: "text", text: userText }],
-      createdAt: new Date().toISOString(),
-      status: "sending",
-    };
-    const allMessages = [...messages, userMsg];
-    update(agent, {
-      messageSource: { mode: "live", messages: allMessages },
-      streamError: null,
-      connectionPhase: "submitted",
-      connectionError: null,
-      agentTurns: [],  // Reset for new stream
-      turnCount: 0,
-      turnLimitMessage: null,
-      pendingTargetAgent: null,  // clear stale target from previous stream
-    });
-    saveUiState(agent);
-
-    // Build request body — backend only uses the last user message + session_id
-    const agentState = get().agents[agent];
-    const forceNew = agentState?.forceNewSession ?? false;
-    const body: Record<string, unknown> = {
-      agent,
-      messages: [{ role: "user", content: userText }],
-    };
-    if (sessionId) body.session_id = sessionId;
-    if (forceNew) {
-      body.force_new_session = true;
-      update(agent, { forceNewSession: false });
-    }
-
-    const token = getToken();
-
-    fetch("/api/chat", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    })
-      .then((resp) => {
-        if (!resp.ok) {
-          return resp.text().then((t) => {
-            throw new Error(t || `HTTP ${resp.status}`);
-          });
-        }
-        return processSSEStream(agent, resp.body!, controller.signal, myGeneration);
-      })
-      .catch((err) => {
-        if (err.name === "AbortError") return;
-        const errMsg = err.message || "Stream failed";
-        // SSE-03: Mark the optimistic user message as failed so the UI shows an error indicator.
-        set((draft) => {
-          const st = draft.agents[agent];
-          if (!st || st.messageSource.mode !== "live") return;
-          const msgs = st.messageSource.messages;
-          for (let i = msgs.length - 1; i >= 0; i--) {
-            if (msgs[i].role === "user" && msgs[i].status === "sending") {
-              msgs[i].status = "failed";
-              break;
-            }
-          }
-        });
-        update(agent, {
-          streamError: errMsg,
-          connectionPhase: "error",
-          connectionError: errMsg,
-        });
-        saveUiState(agent);
-      });
-  }
-
-  async function processSSEStream(
-    agent: string,
-    body: ReadableStream<Uint8Array>,
-    signal: AbortSignal,
-    generation: number,
-    knownSessionId?: string,
-    reconnectAttempt = 0,
-  ) {
-    const reader = body.getReader();
-    const decoder = new TextDecoder();
-    const buffer = { current: "" };
-
-    // Mutable assistant message being built
-    let assistantId = uuid();
-    let assistantCreatedAt = new Date().toISOString();
-    let parts: MessagePart[] = [];
-    const incrementalParser = new IncrementalParser();
-    const toolInputChunks = new Map<string, string[]>();
-    let receivedSessionId: string | null = knownSessionId ?? null;
-    // Track finish event to distinguish natural end from connection drop
-    let receivedFinishEvent = false;
-    // Initialize from pendingTargetAgent so first render shows correct avatar.
-    // Fall back to primary agent name so single-agent sessions never produce undefined agentId.
-    let currentRespondingAgent: string | null = get().agents[agent]?.pendingTargetAgent ?? agent;
-
-    function flushText() {
-      // Snapshot accumulated text/reasoning into parts array at current position.
-      // This preserves text-tool-text ordering during streaming.
-      const flushed = incrementalParser.flush();
-      if (flushed.length > 0) {
-        parts.push(...flushed);
-      }
-    }
-
-    function pushUpdate() {
-      // Guard: stale stream — a newer stream has started, discard updates
-      if (generation !== (get().agents[agent]?.streamGeneration ?? 0)) return;
-      // Guard: don't update store after abort (prevents race with stopStream)
-      if (signal.aborted) return;
-
-      // Get parser's current text/reasoning parts (emitted so far + buffered accum).
-      // Use flush() to get complete snapshot including buffered chars.
-      // We DON'T reset the parser here — flush() returns normalized copy.
-      const textParts = incrementalParser.snapshot();
-      // Non-text parts (tools, files, rich-cards) are in `parts` local array.
-      const nonTextParts = parts.filter(p => p.type !== "text" && p.type !== "reasoning");
-
-      set((draft) => {
-        const st = draft.agents[agent];
-        if (!st) return;
-        if (st.messageSource.mode !== "live") {
-          st.messageSource = { mode: "live", messages: [] };
-        }
-        const liveMessages = st.messageSource.messages;
-        const existing = liveMessages.findIndex((m: ChatMessage) => m.id === assistantId);
-
-        // Merge: text/reasoning from parser + tools/files from parts array.
-        // Text comes first, then tools — this matches SSE event order for simple responses.
-        // For interleaved text-tool-text, flushText() snapshots text into `parts` before
-        // tool insertion, so nonTextParts includes tools at correct positions relative to
-        // the flushed text parts that are also in `parts`.
-        const allParts = [...textParts, ...nonTextParts] as MessagePart[];
-
-        if (existing >= 0) {
-          const msg = liveMessages[existing];
-          msg.parts = allParts;
-          msg.agentId = currentRespondingAgent ?? undefined;
-        } else {
-          liveMessages.push({
-            id: assistantId,
-            role: "assistant",
-            parts: allParts,
-            createdAt: assistantCreatedAt,
-            agentId: currentRespondingAgent ?? undefined,
-          });
-        }
-        if (st.connectionPhase !== "error") st.connectionPhase = "streaming";
-      });
-    }
-
-    // Throttle UI updates to ~20fps (50ms) — reduces renders from 60/sec to 20/sec.
-    // setTimeout coalesces rapid SSE events, then rAF syncs with browser paint cycle.
-    let updateScheduled = false;
-    let updateTimer: ReturnType<typeof setTimeout> | null = null;
-    function scheduleUpdate() {
-      if (updateScheduled) return;
-      updateScheduled = true;
-      updateTimer = setTimeout(() => {
-        updateTimer = null;
-        requestAnimationFrame(() => {
-          updateScheduled = false;
-          pushUpdate();
-        });
-      }, STREAM_THROTTLE_MS);
-    }
-    function cancelScheduledUpdate() {
-      if (updateTimer) { clearTimeout(updateTimer); updateTimer = null; }
-      updateScheduled = false;
-    }
-
-    try {
-      while (true) {
-        if (signal.aborted) break;
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = parseSSELines(chunk, buffer);
-
-        for (const line of lines) {
-          if (!line.startsWith("data:")) continue;
-          const raw = line.slice(5).trim();
-          if (raw === "[DONE]") continue;
-
-          const event = parseSseEvent(raw);
-          if (!event) continue;
-
-          switch (event.type) {
-            case "data-session-id": {
-              const sid = event.data.sessionId;
-              if (sid && generation === (get().agents[agent]?.streamGeneration ?? 0)) {
-                receivedSessionId = sid;
-                // SSE-03: Confirm the optimistic user message — server has accepted it.
-                // Find the last "sending" user message and mark it confirmed.
-                set((draft) => {
-                  const st = draft.agents[agent];
-                  if (!st || st.messageSource.mode !== "live") return;
-                  const msgs = st.messageSource.messages;
-                  for (let i = msgs.length - 1; i >= 0; i--) {
-                    if (msgs[i].role === "user" && msgs[i].status === "sending") {
-                      msgs[i].status = "confirmed";
-                      break;
-                    }
-                  }
-                });
-                update(agent, { activeSessionId: sid });
-                saveLastSession(agent, sid);
-                // Session status is now server-driven via WS agent_processing events.
-                // No optimistic updates needed — WS event arrives ~simultaneously.
-
-                // Populate sessionParticipants cache from React Query session data
-                const sessionsData = queryClient.getQueryData<{ sessions: SessionRow[] }>(
-                  qk.sessions(agent)
-                );
-                const session = sessionsData?.sessions.find(s => s.id === sid);
-                if (session?.participants) {
-                  get().updateSessionParticipants(sid, session.participants);
-                }
-              }
-              break;
-            }
-
-            case "start": {
-              const newId = event.messageId || assistantId;
-              assistantId = newId;
-              assistantCreatedAt = new Date().toISOString();
-              parts = [];
-              if (event.agentName) currentRespondingAgent = event.agentName;
-              // Dedup: remove resume placeholder (id starts with "resume-") and any
-              // seeded message with same ID to prevent duplicates on stream resume
-              const stNow = get().agents[agent];
-              if (stNow && stNow.messageSource.mode === "live") {
-                const currentMessages = stNow.messageSource.messages;
-                const deduped = currentMessages.filter(
-                  (m) => m.id !== newId && !m.id.startsWith("resume-")
-                );
-                if (deduped.length !== currentMessages.length) {
-                  update(agent, { messageSource: { mode: "live", messages: deduped } });
-                }
-              }
-              break;
-            }
-
-            case "text-start": {
-              if (event.agentName) currentRespondingAgent = event.agentName;
-              break;
-            }
-
-            case "text-delta": {
-              incrementalParser.processDelta(event.delta);
-              scheduleUpdate();
-              break;
-            }
-
-            case "text-end": {
-              // Incremental parser accumulates state across text blocks
-              scheduleUpdate();
-              break;
-            }
-
-            case "tool-input-start": {
-              flushText();
-              const { toolCallId: tcId, toolName: tcName } = event;
-              toolInputChunks.set(tcId, []);
-              parts.push({
-                type: "tool",
-                toolCallId: tcId,
-                toolName: tcName,
-                state: "input-streaming",
-                input: {},
-              });
-              scheduleUpdate();
-              break;
-            }
-
-            case "tool-input-delta": {
-              const { toolCallId: tcId, inputTextDelta: delta } = event;
-              if (delta) toolInputChunks.get(tcId)?.push(delta);
-              break;
-            }
-
-            case "tool-input-available": {
-              const { toolCallId: tcId, input } = event;
-              // Chunks were only needed for streaming display; actual input is now available — free memory
-              toolInputChunks.delete(tcId);
-              const idx = parts.findIndex(
-                (p) => p.type === "tool" && p.toolCallId === tcId,
-              );
-              if (idx >= 0) {
-                parts[idx] = { ...(parts[idx] as ToolPart), state: "input-available", input: (input as Record<string, unknown>) ?? {} };
-              }
-              scheduleUpdate();
-              break;
-            }
-
-            case "tool-output-available": {
-              const { toolCallId: tcId, output } = event;
-              const idx = parts.findIndex(
-                (p) => p.type === "tool" && p.toolCallId === tcId,
-              );
-              if (idx >= 0) {
-                parts[idx] = { ...(parts[idx] as ToolPart), state: "output-available", output };
-              }
-              scheduleUpdate();
-              break;
-            }
-
-            case "file": {
-              flushText();
-              parts.push({
-                type: "file",
-                url: event.url,
-                mediaType: event.mediaType || "application/octet-stream",
-              });
-              scheduleUpdate();
-              break;
-            }
-
-            case "rich-card": {
-              flushText();
-              if (event.cardType === "agent-turn" && event.data?.agentName) {
-                // Agent turn separator: update tracking state but DON'T push to parts
-                // or scheduleUpdate — this is a control event, not message content.
-                // Pushing would create a phantom assistant message after finish reset.
-                currentRespondingAgent = event.data.agentName as string;
-                const currentTurnCount = get().agents[agent]?.turnCount ?? 0;
-                update(agent, { pendingTargetAgent: currentRespondingAgent, turnCount: currentTurnCount + 1 });
-                break;
-              }
-              parts.push({
-                type: "rich-card",
-                cardType: event.cardType,
-                data: event.data,
-              });
-              scheduleUpdate();
-              break;
-            }
-
-            case "sync": {
-              // Stage 3: Differential Sync. Instead of replacing all liveMessages,
-              // we only update the assistant message if it matches our current assistantId.
-              const { content: syncContent, toolCalls: syncToolCalls, status: syncStatus } = event;
-              const normalizedParts = parseContentParts(syncContent || "");
-              
-              const syncParts: MessagePart[] = [...normalizedParts];
-              for (const tc of syncToolCalls as Array<Record<string, unknown>>) {
-                syncParts.push({
-                  type: "tool",
-                  toolCallId: (tc.toolCallId as string) ?? "",
-                  toolName: (tc.toolName as string) ?? "tool",
-                  state: "output-available",
-                  input: {},
-                  output: tc.output,
-                });
-              }
-
-              set((draft) => {
-                const st = draft.agents[agent];
-                if (!st) return;
-                // Ensure we're in live mode for sync updates
-                if (st.messageSource.mode !== "live") {
-                  st.messageSource = { mode: "live", messages: [] };
-                }
-                const liveMessages = st.messageSource.messages;
-                const existingIdx = liveMessages.findIndex(m => m.id === assistantId);
-                if (existingIdx >= 0) {
-                  // Differential update: preserves user messages and other assistant messages
-                  liveMessages[existingIdx].parts = syncParts;
-                } else {
-                  // Fallback: if not found, it might be a clean resume, so we seed
-                  const userMsgs = liveMessages.filter(m => m.role === "user");
-                  st.messageSource = { mode: "live", messages: [...userMsgs, {
-                    id: assistantId,
-                    role: "assistant",
-                    parts: syncParts,
-                    createdAt: assistantCreatedAt,
-                    agentId: currentRespondingAgent ?? undefined,
-                  }] };
-                }
-              });
-
-              if (syncStatus === "finished" || syncStatus === "error" || syncStatus === "interrupted") {
-                const errorText = syncStatus === "error" ? (event.error ?? null) : null;
-                const inTurnLoop = !!get().agents[agent]?.pendingTargetAgent;
-                if (syncStatus === "error" || !inTurnLoop) {
-                  const newPhase: ConnectionPhase = syncStatus === "error" ? "error" : "idle";
-                  update(agent, {
-                    streamError: errorText,
-                    connectionPhase: newPhase,
-                    connectionError: errorText,
-                  });
-                }
-              }
-              break;
-            }
-
-            case "finish": {
-              // Mark natural end — distinguishes from connection drop in finally block
-              receivedFinishEvent = true;
-              // Cancel any pending update and do final synchronous update
-              cancelScheduledUpdate();
-              flushText(); // Snapshot remaining text into parts at correct position
-              pushUpdate(); // Final render with all parts in correct order
-              // FSM-04: Reset incremental parser state so next agent turn starts clean.
-              // Prevents reasoning state from leaking from one agent's output to the next.
-              incrementalParser.reset();
-              // CRITICAL for multi-agent turn loop: reset state for next agent turn.
-              // Without this, events between finish and next start (e.g. agent-turn rich card)
-              // would overwrite the finalized message with wrong agentId.
-              assistantId = uuid();
-              assistantCreatedAt = new Date().toISOString();
-              parts = [];
-              break;
-            }
-
-            case "error": {
-              const errText = event.errorText;
-              if (errText.includes("turn limit") || errText.includes("cycle detected")) {
-                // Turn management message — show inline as info card, not as error banner
-                update(agent, { turnLimitMessage: errText, turnCount: 0 });
-              } else {
-                update(agent, {
-                  streamError: errText,
-                  connectionPhase: "error",
-                  connectionError: errText,
-                });
-              }
-              break;
-            }
-          }
-        }
-      }
-    } finally {
-      reader.releaseLock();
-      // Execute any pending update synchronously instead of cancelling it
-      // (prevents losing the final text-delta that was scheduled but not yet rendered)
-      if (updateScheduled) {
-        cancelScheduledUpdate();
-        pushUpdate(); // Execute the update that setTimeout+rAF would have done
-      }
-      // Always flush remaining text (including on abort — preserves partial response)
-      flushText();
-      if (!signal.aborted) {
-        // Only push if there's content — avoids phantom empty message after finish reset
-        if (parts.length > 0) pushUpdate();
-
-        // SSE-02: Detect connection drop (stream ended without finish event).
-        // If we have a session ID and haven't been aborted, schedule reconnect.
-        const isError = get().agents[agent]?.connectionPhase === "error";
-        if (!isError && !receivedFinishEvent && receivedSessionId) {
-          // Connection dropped mid-stream — schedule exponential backoff reconnect
-          scheduleReconnect(agent, receivedSessionId, reconnectAttempt);
-          return;
-        }
-
-        // Preserve error status if error event was already received
-        if (!isError) {
-          update(agent, {
-            connectionPhase: "idle",
-            connectionError: null,
-            pendingTargetAgent: null,
-            turnCount: 0,
-            // Keep messageSource as "live" with final messages — avoids flash when
-            // React Query hasn't yet fetched fresh history. The live messages ARE
-            // the complete response. History mode will be set on next session select.
-          });
-        }
-        saveUiState(agent);
-        // Session status is server-driven via WS agent_processing events — no optimistic update needed.
-      } else if (parts.length > 0) {
-        // On abort: save partial response to live messages but keep idle status
-        // (stopStream already set connectionPhase to "idle")
-        const st = get().agents[agent];
-        if (st) {
-          const assistantMsg: ChatMessage = {
-            id: assistantId,
-            role: "assistant",
-            parts: [...parts],
-            createdAt: assistantCreatedAt,
-            agentId: currentRespondingAgent ?? undefined,
-          };
-          const currentMessages = getLiveMessages(st.messageSource);
-          const existing = currentMessages.findIndex((m) => m.id === assistantId);
-          const updated =
-            existing >= 0
-              ? currentMessages.map((m, i) => (i === existing ? assistantMsg : m))
-              : [...currentMessages, assistantMsg];
-          update(agent, { messageSource: { mode: "live", messages: updated } });
-        }
-      }
-    }
-
-    // Save and invalidate React Query caches (skip on abort — stream was cancelled intentionally)
-    if (!signal.aborted) {
-      if (receivedSessionId) {
-        saveLastSession(agent, receivedSessionId);
-      }
-      // Refresh session list and session messages in React Query cache
-      queryClient.invalidateQueries({ queryKey: qk.sessions(agent) });
-      const completedSessionId = receivedSessionId ?? get().agents[agent]?.activeSessionId;
-      if (completedSessionId) {
-        queryClient.invalidateQueries({ queryKey: qk.sessionMessages(completedSessionId) });
-      }
-    }
-  }
+  // ── Streaming renderer (SSE processing, rAF throttling, reconnection) ──
+  const renderer = createStreamingRenderer({ get, set });
+  // Wire saveLastSession callback (avoids circular dependency)
+  renderer.onSessionId((agent: string, sessionId: string) => {
+    saveLastSession(agent, sessionId);
+  });
 
   return {
     agents: {},
@@ -832,13 +165,9 @@ export const useChatStore = create<ChatStore>()(
         }
       }
 
-      // User-initiated agent switch — abort stream, reset state
-      const prevCtrl = getAbortCtrl(prev);
-      if (prevCtrl) {
-        prevCtrl.abort();
-        setAbortCtrl(prev, null);
-        update(prev, { connectionPhase: "idle" });
-      }
+      // User-initiated agent switch — MEM-01: clean up all Maps for previous agent
+      renderer.cleanupAgent(prev);
+      update(prev, { connectionPhase: "idle" });
       ensure(name);
       update(name, {
         activeSessionId: null,
@@ -865,7 +194,7 @@ export const useChatStore = create<ChatStore>()(
         return;
       }
 
-      abortActiveStream(agent);
+      renderer.abortActiveStream(agent);
 
       update(agent, {
         activeSessionId: sessionId,
@@ -883,11 +212,7 @@ export const useChatStore = create<ChatStore>()(
       set({ currentAgent: agent });
       ensure(agent);
       // Abort any active stream for this agent
-      const sbiCtrl = getAbortCtrl(agent);
-      if (sbiCtrl) {
-        sbiCtrl.abort();
-        setAbortCtrl(agent, null);
-      }
+      renderer.abortActiveStream(agent);
       update(agent, {
         activeSessionId: sessionId,
         messageSource: { mode: "history", sessionId },
@@ -900,8 +225,7 @@ export const useChatStore = create<ChatStore>()(
 
     newChat: () => {
       const agent = get().currentAgent;
-      getAbortCtrl(agent)?.abort();
-      setAbortCtrl(agent, null);
+      renderer.abortActiveStream(agent);
       update(agent, {
         activeSessionId: null,
         messageSource: { mode: "new-chat" },
@@ -964,6 +288,7 @@ export const useChatStore = create<ChatStore>()(
 
     setModelOverride: async (agent, model) => {
       update(agent, { modelOverride: model });
+      const { getToken } = await import("@/lib/api");
       const token = getToken();
       await fetch(`/api/agents/${encodeURIComponent(agent)}/model-override`, {
         method: "POST",
@@ -972,7 +297,7 @@ export const useChatStore = create<ChatStore>()(
       }).catch((e) => { console.warn("[chat] save failed:", e); }); // fail silently — store already updated optimistically
     },
 
-    resumeStream: (agent: string, sessionId: string) => resumeStream(agent, sessionId),
+    resumeStream: (agent: string, sessionId: string) => renderer.resumeStream(agent, sessionId),
 
     sendMessage: (text: string) => {
       const store = get();
@@ -997,19 +322,18 @@ export const useChatStore = create<ChatStore>()(
         seedMessages = st.messageSource.messages;
       }
 
-      startStream(agent, sessionId, seedMessages, text);
+      renderer.startStream(agent, sessionId, seedMessages, text);
     },
 
     stopStream: () => {
       const agent = get().currentAgent;
       // Clear any pending reconnect timer — user abort must not trigger reconnect
-      const stopTimer = getReconnectTimer(agent);
+      const stopTimer = renderer.getReconnectTimer(agent);
       if (stopTimer) {
         clearTimeout(stopTimer);
-        setReconnectTimer(agent, null);
+        renderer.setReconnectTimer(agent, null);
       }
-      getAbortCtrl(agent)?.abort();
-      setAbortCtrl(agent, null);
+      renderer.getAbortCtrl(agent)?.abort();
       update(agent, { connectionPhase: "idle" });
     },
 
@@ -1020,9 +344,7 @@ export const useChatStore = create<ChatStore>()(
 
       // Abort any active stream first
       if (isActivePhase(st.connectionPhase)) {
-        getAbortCtrl(agent)?.abort();
-        setAbortCtrl(agent, null);
-        update(agent, { connectionPhase: "idle" });
+        renderer.abortActiveStream(agent);
       }
 
       let sessionId = st.activeSessionId;
@@ -1051,7 +373,7 @@ export const useChatStore = create<ChatStore>()(
       // Remove last user message too (startStream will re-add it)
       messages = messages.slice(0, messages.lastIndexOf(lastUser));
 
-      startStream(agent, sessionId, messages, userText);
+      renderer.startStream(agent, sessionId, messages, userText);
     },
 
     regenerateFrom: (messageId: string) => {
@@ -1060,9 +382,7 @@ export const useChatStore = create<ChatStore>()(
       const st = store.agents[agent] ?? emptyAgentState();
 
       if (isActivePhase(st.connectionPhase)) {
-        getAbortCtrl(agent)?.abort();
-        setAbortCtrl(agent, null);
-        update(agent, { connectionPhase: "idle" });
+        renderer.abortActiveStream(agent);
       }
 
       let sessionId = st.activeSessionId;
@@ -1097,7 +417,7 @@ export const useChatStore = create<ChatStore>()(
       // Keep only messages before the target (startStream re-adds the user message)
       const seedMessages = messages.slice(0, targetIdx);
 
-      startStream(agent, sessionId, seedMessages, userText);
+      renderer.startStream(agent, sessionId, seedMessages, userText);
     },
 
     renameSession: async (sessionId: string, title: string) => {
@@ -1112,8 +432,7 @@ export const useChatStore = create<ChatStore>()(
       const st = get().agents[agent];
       if (st?.activeSessionId === sessionId) {
         // Use captured `agent` — currentAgent may have changed during await
-        getAbortCtrl(agent)?.abort();
-        setAbortCtrl(agent, null);
+        renderer.abortActiveStream(agent);
         update(agent, {
           activeSessionId: null, messageSource: { mode: "new-chat" },
           streamError: null,
@@ -1129,8 +448,7 @@ export const useChatStore = create<ChatStore>()(
       const agent = get().currentAgent;
       await apiDelete(`/api/sessions?agent=${encodeURIComponent(agent)}`);
       // Use captured `agent` — currentAgent may have changed during await
-      getAbortCtrl(agent)?.abort();
-      setAbortCtrl(agent, null);
+      renderer.abortActiveStream(agent);
       update(agent, {
         activeSessionId: null, messageSource: { mode: "new-chat" },
         streamError: null,
