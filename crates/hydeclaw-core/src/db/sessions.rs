@@ -180,7 +180,7 @@ pub async fn save_message(
     tool_calls: Option<&serde_json::Value>,
     tool_call_id: Option<&str>,
 ) -> Result<Uuid> {
-    save_message_ex(db, session_id, role, content, tool_calls, tool_call_id, None, None).await
+    save_message_ex(db, session_id, role, content, tool_calls, tool_call_id, None, None, None).await
 }
 
 /// Save a message with optional per-message agent_id (for multi-agent discuss sessions).
@@ -194,10 +194,11 @@ pub async fn save_message_ex(
     tool_call_id: Option<&str>,
     agent_id: Option<&str>,
     thinking_blocks: Option<&serde_json::Value>,
+    parent_id: Option<Uuid>,
 ) -> Result<Uuid> {
     let id = sqlx::query_scalar(
-        "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, agent_id, thinking_blocks) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+        "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, agent_id, thinking_blocks, parent_message_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
     )
     .bind(session_id)
     .bind(role)
@@ -206,6 +207,7 @@ pub async fn save_message_ex(
     .bind(tool_call_id)
     .bind(agent_id)
     .bind(thinking_blocks)
+    .bind(parent_id)
     .fetch_one(db)
     .await?;
 
