@@ -532,6 +532,10 @@ pub(crate) async fn api_chat_sse(
             let current_agent_name = current_engine.name().to_string();
             turn_chain.push(current_agent_name.clone());
 
+            // Clear any stale handoff target from previous iteration
+            // (handle_sse may set it; take_handoff below consumes it)
+            current_engine.take_handoff().await;
+
             let assistant_msg_id = match current_engine.handle_sse(&current_msg, event_tx.clone(), current_session_id, current_force_new).await {
                 Ok(id) => {
                     current_leaf_id = Some(id);
