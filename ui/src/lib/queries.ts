@@ -472,11 +472,11 @@ export function useSessionMessages(sessionId: string | null, engineRunning = fal
     enabled: !!sessionId,
     staleTime: 0,
     gcTime: 24 * 60 * 60 * 1000,
-    // Poll every 2s when engine is still processing (run_status='running') or message streaming
+    // Poll every 5s when engine is still processing, 3s when streaming
     refetchInterval: (query) => {
-      if (engineRunning) return 2000;
+      if (engineRunning) return 5000;
       const msgs = (query.state.data as { messages: MessageRow[] } | undefined)?.messages
-      return msgs?.some(m => m.status === "streaming") ? 2000 : false
+      return msgs?.some(m => m.status === "streaming") ? 3000 : false
     },
   })
 }

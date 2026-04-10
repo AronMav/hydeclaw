@@ -146,7 +146,7 @@ pub struct LimitsConfig {
     pub max_handoff_context_chars: usize,
 }
 
-fn default_max_requests() -> u32 { 100 }
+fn default_max_requests() -> u32 { 300 }
 fn default_max_tool_concurrency() -> u32 { 10 }
 fn default_request_timeout() -> u64 { 180 }
 fn default_max_agent_turns() -> usize { 5 }
