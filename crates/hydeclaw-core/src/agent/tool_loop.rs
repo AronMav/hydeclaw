@@ -163,6 +163,12 @@ impl LoopDetector {
         LoopStatus::Ok
     }
 
+    /// (Optional) Record the result of the tool call to refine detection.
+    /// Currently used for logging, but enables future logic like "don't break on errors".
+    pub fn record_result(&mut self, _tool_name: &str, _success: bool) {
+        // Future: implement error-specific thresholds
+    }
+
     fn hash_call(name: &str, args: &serde_json::Value) -> u64 {
         let mut hasher = DefaultHasher::new();
         // Hash name first to isolate tools even with same args
