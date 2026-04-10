@@ -79,6 +79,10 @@ HydeClaw is a Rust-based AI gateway. The core binary (`crates/hydeclaw-core`) ha
 - `engine_handlers.rs: execute_yaml_channel_action()` — YAML tool with post-call channel action (e.g. send_photo)
 - `workspace.rs: is_read_only()` — path protection; `base` agents can write to service dirs and tools but have SOUL.md/IDENTITY.md read-only
 
+**Loop detection (`tool_loop.rs`):** Two-phase `LoopDetector` — `check_limits()` (pre-execution, read-only) + `record_execution()` (post-execution, tracks success/failure). Error-aware: 3 consecutive errors on same tool → break. WAL warm-up via `session_wal::warm_up_detector()` on crash recovery.
+
+**Handoff (`engine_handoff.rs` + `chat.rs` turn loop):** `handoff_target: Arc<Mutex<Option<HandoffRequest>>>` — set by handoff tool, consumed by turn loop. Turn loop uses a **handoff stack** (not single var) so A→B→C returns C→B→A. `take_handoff()` clears stale target before each iteration. `handle_sse` returns `Result<Uuid>` (assistant message ID) for parent_message_id chain tracking.
+
 **Agent config** (TOML at `config/agents/{name}.toml`):
 - `base = true` — system agent: can't be renamed/deleted, runs on host (no sandbox), can write to service dirs and tools
 - `base = true` — cannot be renamed/deleted via API; SOUL.md + IDENTITY.md are immutable
@@ -87,11 +91,15 @@ HydeClaw is a Rust-based AI gateway. The core binary (`crates/hydeclaw-core`) ha
 
 ### Gateway (`src/gateway/`)
 
-Axum HTTP API on port 18789. All routes in `mod.rs`. Key handlers:
+Axum HTTP API on port 18789. **Sub-router pattern:** 27 handler modules each export `pub(crate) fn routes() -> Router<AppState>`; `mod.rs` composes them via `.merge()`. Key handlers:
+
 - `agents.rs` — CRUD for agent configs; sorts base agents first
-- `chat.rs` — SSE streaming chat endpoint; converts `StreamEvent` to JSON events
+- `chat.rs` — SSE streaming chat endpoint; converts `StreamEvent` to JSON events; bounded channels (256/512) with backpressure
+- `sessions.rs` — session CRUD + fork endpoint (`POST /api/sessions/{id}/fork`) + active-path endpoint
 - `services.rs` — managed native processes (channels, toolgate) + Docker container management (MCP, browser-renderer)
 - `state.rs: agent_names()` / `agent_summaries()` — return agents sorted base-first then alphabetical
+
+**Rate limiting:** 300 rpm default (configurable via `limits.max_requests_per_minute`). Authenticated requests (valid Bearer token) exempt. Auth lockout: 500 failed attempts → 30s block for requests without Authorization header. Loopback exempt.
 
 ### Tools (`src/tools/`)
 
@@ -199,7 +207,19 @@ Next.js 16 App Router, React 19, Tailwind 4, shadcn/ui, Zustand state, CodeMirro
 
 Post-build script `scripts/flatten-rsc.mjs` flattens RSC chunks — required for static nginx serving. Run as part of `npm run build`.
 
-**Key stores:** `chat-store.ts` (SSE parsing + message state), `auth-store.ts` (health check + agent list on startup), `canvas-store.ts` (workspace canvas state).
+**Key stores:** `chat-store.ts` (451 lines — core state machine + actions), `auth-store.ts` (health check + agent list), `canvas-store.ts` (workspace canvas state).
+
+**Chat store decomposition** (Phase 54): `chat-store.ts` was 1891 lines, now split into:
+
+- `chat-types.ts` — types (ChatMessage, MessagePart, AgentState, ConnectionPhase, MessageSource)
+- `chat-history.ts` — convertHistory, resolveActivePath, findSiblings, getCachedRawMessages
+- `chat-reconciliation.ts` — contentHash, reconcileLiveWithHistory
+- `chat-persistence.ts` — saveLastSession, getLastSessionId, getInitialAgent (localStorage)
+- `streaming-renderer.ts` — factory via `createStreamingRenderer()`: SSE parsing, rAF throttling (50ms), reconnection, per-agent Map cleanup. Non-serializable state (AbortController, setTimeout) in private closures, not Immer
+
+**Chat components** (`ui/src/components/chat/`): ApprovalCard, ApprovalCountdown, ApprovalArgsEditor, ContinuationSeparator, HandoffDivider, ReconnectingIndicator, StepGroup, ToolCallPartView
+
+**Utilities:** `card-registry.tsx` (CARD_REGISTRY + GenerativeUISlot + CardErrorBoundary), `citation-tooltip.tsx` (footnote tooltips), `tool-state.ts` (ToolPartState mapper), `use-smoothed-text.ts` (adaptive text streaming animation)
 
 **API types:** `ui/src/types/api.ts` — keep `AgentInfo`, `WebhookEntry`, `ApprovalEntry` etc. in sync with backend JSON responses. SSE event types in `ui/src/stores/sse-events.ts`.
 
@@ -207,7 +227,11 @@ Post-build script `scripts/flatten-rsc.mjs` flattens RSC chunks — required for
 
 PostgreSQL 17 + pgvector. Migrations in `migrations/` (sqlx). Auto-run on startup. No ORM — raw sqlx queries in `src/db/`.
 
-Key tables: `sessions`, `messages`, `memory_chunks`, `scheduled_jobs`, `secrets`, `agent_channels`, `usage_log`, `providers`, `provider_active`, `watchdog_settings`.
+Key tables: `sessions`, `messages`, `session_events` (WAL journal), `memory_chunks`, `scheduled_jobs`, `secrets`, `agent_channels`, `usage_log`, `providers`, `provider_active`, `watchdog_settings`.
+
+**Message branching (m012):** `parent_message_id` links to predecessor, `branch_from_message_id` marks fork points. Both nullable — NULL = trunk. Enables conversation tree navigation.
+
+**Session WAL (m013):** `session_events` logs lifecycle transitions (running, tool_start, tool_end, done, failed). Used by `session_wal::warm_up_detector()` to restore LoopDetector state on crash recovery instead of injecting synthetic messages.
 
 **Active providers:** `provider_active` maps capabilities (stt, tts, vision, imagegen, embedding, graph_extraction) to providers. Graph extraction worker reads its provider from `provider_active` at startup; UI configures it via Active Providers on the Providers page.
 
