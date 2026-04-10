@@ -524,6 +524,9 @@ pub(crate) async fn api_chat_sse(
         let mut current_force_new = force_new_session;
         let mut turn_count = 0;
         let mut turn_chain: Vec<String> = Vec::new();
+        // Track the handoff initiator so we can return control after target responds
+        // Track the handoff initiator so we can return control after target responds.
+        let mut handoff_initiator: Option<(String, std::sync::Arc<crate::agent::engine::AgentEngine>)> = None;
 
         loop {
             let current_agent_name = current_engine.name().to_string();
@@ -667,10 +670,53 @@ pub(crate) async fn api_chat_sse(
                     tool_policy_override: None,
                     leaf_message_id: None,
                 };
+                // Save initiator so we can return control after target responds
+                handoff_initiator = Some((current_agent_name.clone(), current_engine.clone()));
                 current_engine = next_engine;
                 current_session_id = Some(sid);
                 current_force_new = false;
                 continue;
+            }
+
+            // Priority 1b: Return control to handoff initiator after target agent responded
+            if let Some((ref initiator_name, ref initiator_engine)) = handoff_initiator {
+                if current_agent_name != *initiator_name {
+                    tracing::info!(
+                        from = %current_agent_name,
+                        to = %initiator_name,
+                        "turn loop: returning control to handoff initiator"
+                    );
+
+                    // Signal agent switch back to initiator
+                    event_tx.send(StreamEvent::AgentSwitch { agent_name: initiator_name.clone() }).ok();
+
+                    // Build return message with target's response
+                    current_msg = hydeclaw_types::IncomingMessage {
+                        user_id: format!("agent:{}", current_agent_name),
+                        text: Some(format!(
+                            "[Response from {}]\n{}",
+                            current_agent_name,
+                            if last_response.len() > 2000 { format!("{}...", &last_response[..2000]) } else { last_response.clone() }
+                        )),
+                        attachments: vec![],
+                        agent_id: initiator_name.clone(),
+                        channel: crate::agent::channel_kind::channel::INTER_AGENT.to_string(),
+                        context: serde_json::json!({
+                            "from": current_agent_name,
+                            "response_from": current_agent_name,
+                            "handoff_return": true,
+                        }),
+                        timestamp: chrono::Utc::now(),
+                        formatting_prompt: None,
+                        tool_policy_override: None,
+                        leaf_message_id: None,
+                    };
+                    current_engine = initiator_engine.clone();
+                    current_session_id = Some(sid);
+                    current_force_new = false;
+                    handoff_initiator = None; // Clear — initiator has control back
+                    continue;
+                }
             }
 
             // Priority 2: @-mention fallback with self-mention filtering (D-09, D-10, D-11)

@@ -149,7 +149,7 @@ impl LoopDetector {
             }
             if self.consecutive_errors >= self.error_break_threshold {
                 return LoopStatus::Break(format!(
-                    "tool '{}' failed {} times consecutively — stopping to avoid infinite error loop",
+                    "tool '{}' failed {} times consecutively тАФ stopping to avoid infinite error loop",
                     tool_name, self.consecutive_errors
                 ));
             }
@@ -171,7 +171,6 @@ impl LoopDetector {
         LoopStatus::Ok
     }
 
-    /// Warm up the detector with a known hash from history (e.g. WAL).
     pub fn warm_up(&mut self, hash: u64, name: &str) {
         *self.tool_counts.entry(name.to_string()).or_insert(0) += 1;
         if self.last_hash == Some(hash) {
@@ -195,7 +194,9 @@ impl LoopDetector {
     fn hash_call(name: &str, args: &serde_json::Value) -> u64 {
         let mut hasher = DefaultHasher::new();
         name.hash(&mut hasher);
-        args.to_string().hash(&mut hasher);
+        // Use canonical JSON (sorted keys) for stable hashing across restarts/versions
+        let args_str = serde_json::to_string(args).unwrap_or_else(|_| args.to_string());
+        args_str.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -256,12 +257,26 @@ impl LoopDetector {
 
 pub fn is_context_overflow(error: &anyhow::Error) -> bool {
     let msg = error.to_string().to_lowercase();
-    msg.contains("context length") || msg.contains("token limit") || msg.contains("too many token") || msg.contains("input too long") || msg.contains("400") && (msg.contains("too long") || msg.contains("too large"))
+    msg.contains("context length")
+        || msg.contains("context_length")
+        || msg.contains("token limit")
+        || msg.contains("too many token")
+        || msg.contains("input too long")
+        || msg.contains("prompt is too long")
+        || msg.contains("maximum context")
+        || msg.contains("exceeds the model")
+        || msg.contains("input_tokens_exceeded")
+        || msg.contains("sequence_length_exceeded")
+        || msg.contains("prompt_too_long")
+        || msg.contains("payload exceeded")
+        || msg.contains("request too large")
+        || (msg.contains("400") && (msg.contains("too long") || msg.contains("too large")))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn test_two_phase() {
         let cfg = ToolLoopConfig::default();
@@ -269,5 +284,55 @@ mod tests {
         let args = serde_json::json!({"q": "1"});
         assert_eq!(det.check_limits("t1", &args), LoopStatus::Ok);
         assert_eq!(det.record_execution("t1", &args, true), LoopStatus::Ok);
+    }
+
+    #[test]
+    fn loop_detector_no_loop() {
+        let config = ToolLoopConfig { warn_threshold: 3, break_threshold: 5, ..Default::default() };
+        let mut detector = LoopDetector::new(&config);
+        assert_eq!(detector.record_execution("search", &serde_json::json!({"q": "a"}), true), LoopStatus::Ok);
+        assert_eq!(detector.record_execution("search", &serde_json::json!({"q": "b"}), true), LoopStatus::Ok);
+    }
+
+    #[test]
+    fn loop_detector_warns_then_breaks() {
+        let config = ToolLoopConfig { warn_threshold: 3, break_threshold: 5, ..Default::default() };
+        let mut detector = LoopDetector::new(&config);
+        let args = serde_json::json!({"q": "same"});
+        assert_eq!(detector.record_execution("search", &args, true), LoopStatus::Ok); // 1
+        assert_eq!(detector.record_execution("search", &args, true), LoopStatus::Ok); // 2
+        assert!(matches!(detector.record_execution("search", &args, true), LoopStatus::Warning(3))); // 3
+        assert!(matches!(detector.record_execution("search", &args, true), LoopStatus::Warning(4))); // 4
+        assert!(matches!(detector.record_execution("search", &args, true), LoopStatus::Break(_))); // 5
+    }
+
+    #[test]
+    fn tool_identity_isolation() {
+        let config = ToolLoopConfig::default();
+        let mut detector = LoopDetector::new(&config);
+        let args = serde_json::json!({"q": "same"});
+        assert_eq!(detector.record_execution("search", &args, true), LoopStatus::Ok);
+        assert_eq!(detector.record_execution("read", &args, true), LoopStatus::Ok);
+        assert_eq!(detector.consecutive, 1);
+    }
+
+    #[test]
+    fn args_no_longer_truncated() {
+        let base = "x".repeat(200);
+        let arg1 = format!("{}A", base);
+        let arg2 = format!("{}B", base);
+        let h1 = LoopDetector::hash_call_raw("tool", &serde_json::json!({"data": arg1}));
+        let h2 = LoopDetector::hash_call_raw("tool", &serde_json::json!({"data": arg2}));
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn error_loop_protection() {
+        let config = ToolLoopConfig { error_break_threshold: 2, ..Default::default() };
+        let mut detector = LoopDetector::new(&config);
+        let args = serde_json::json!({"q": "bad"});
+        assert_eq!(detector.record_execution("t1", &args, false), LoopStatus::Ok);
+        let status = detector.record_execution("t1", &args, false);
+        assert!(matches!(status, LoopStatus::Break(ref r) if r.contains("failed 2 times")));
     }
 }

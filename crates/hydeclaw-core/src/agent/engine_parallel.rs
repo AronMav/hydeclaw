@@ -91,26 +91,27 @@ impl super::AgentEngine {
         let mut results: Vec<Option<String>> = vec![None; n];
         let subagent_timeout = super::subagent_impl::parse_subagent_timeout(&self.app_config.subagents.in_process_timeout) + std::time::Duration::from_secs(10);
         let default_timeout = std::time::Duration::from_secs(120);
-        let wal_payload = |tc: &ToolCall| -> serde_json::Value { 
+        // Helpers for WAL logging
+        let start_payload = |tc: &ToolCall| -> serde_json::Value { 
             serde_json::json!({ 
                 "tool_call_id": tc.id, 
                 "tool_name": tc.name,
                 "args_hash": format!("{:x}", LoopDetector::hash_call_raw(&tc.name, &tc.arguments))
             }) 
         };
-
-        // Helper to record in detector
-        let mut record_res = |det: &mut LoopDetector, name: &str, args: &Value, res: &str| {
-            if detect_loops {
-                let success = !res.to_lowercase().contains("error") && !res.to_lowercase().contains("failed");
-                let _ = det.record_execution(name, args, success);
-            }
+        let end_payload = |tc: &ToolCall, res: &str| -> serde_json::Value {
+            let success = !res.to_lowercase().contains("error") && !res.to_lowercase().contains("failed");
+            serde_json::json!({ 
+                "tool_call_id": tc.id, 
+                "tool_name": tc.name,
+                "success": success
+            })
         };
 
         // 5a. Parallel batch
         if parallel_indices.len() > 0 {
             for &i in &parallel_indices {
-                let _ = crate::db::session_wal::log_event(&self.db, session_id, "tool_start", Some(&wal_payload(&tool_calls[i]))).await;
+                let _ = crate::db::session_wal::log_event(&self.db, session_id, "tool_start", Some(&start_payload(&tool_calls[i]))).await;
             }
 
             let futs: Vec<_> = parallel_indices.iter().map(|&i| {
@@ -126,22 +127,28 @@ impl super::AgentEngine {
             }).collect();
 
             for (i, result) in futures_util::future::join_all(futs).await {
-                record_res(detector, &tool_calls[i].name, &tool_calls[i].arguments, &result);
-                results[i] = Some(result);
-                let _ = crate::db::session_wal::log_event(&self.db, session_id, "tool_end", Some(&wal_payload(&tool_calls[i]))).await;
+                if detect_loops {
+                    let success = !result.starts_with("Error:") && !result.starts_with("tool error:") && !result.contains("timed out");
+                    detector.record_execution(&tool_calls[i].name, &tool_calls[i].arguments, success);
+                }
+                results[i] = Some(result.clone());
+                let _ = crate::db::session_wal::log_event(&self.db, session_id, "tool_end", Some(&end_payload(&tool_calls[i], &result))).await;
             }
         }
 
         // 5b. Sequential
         for &i in &sequential_indices {
-            let _ = crate::db::session_wal::log_event(&self.db, session_id, "tool_start", Some(&wal_payload(&tool_calls[i]))).await;
+            let _ = crate::db::session_wal::log_event(&self.db, session_id, "tool_start", Some(&start_payload(&tool_calls[i]))).await;
             let res = match tokio::time::timeout(std::time::Duration::from_secs(120), self.execute_tool_call(&tool_calls[i].name, &enriched[i])).await {
                 Ok(r) => self.truncate_tool_result(&r, current_context_chars),
                 Err(_) => format!("Tool '{}' timed out after 120s", tool_calls[i].name),
             };
-            record_res(detector, &tool_calls[i].name, &tool_calls[i].arguments, &res);
-            results[i] = Some(res);
-            let _ = crate::db::session_wal::log_event(&self.db, session_id, "tool_end", Some(&wal_payload(&tool_calls[i]))).await;
+            if detect_loops {
+                let success = !res.starts_with("Error:") && !res.starts_with("tool error:") && !res.contains("timed out");
+                detector.record_execution(&tool_calls[i].name, &tool_calls[i].arguments, success);
+            }
+            results[i] = Some(res.clone());
+            let _ = crate::db::session_wal::log_event(&self.db, session_id, "tool_end", Some(&end_payload(&tool_calls[i], &res))).await;
         }
 
         // 6. Final reassemble
