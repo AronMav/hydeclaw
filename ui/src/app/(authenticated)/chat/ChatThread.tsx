@@ -843,17 +843,16 @@ export function ChatThread({
     sessionRunStatus === "running"
   );
 
-  // Auto-resume SSE stream after page reload when engine is still processing
-  const resumedRef = useRef<string | null>(null);
+  // Auto-resume SSE stream ONCE after page reload when engine is still processing.
+  // Uses a Set to prevent re-triggering for the same session.
+  const resumedSessions = useRef(new Set<string>());
   useEffect(() => {
-    // Only trigger resume if we are NOT currently connecting/streaming but the DB/WS says it's running
-    if (activeSessionId && !isActivePhase(connectionPhase) && (activeSessionIds.includes(activeSessionId) || sessionRunStatus === "running")) {
-      if (resumedRef.current !== activeSessionId) {
-        resumedRef.current = activeSessionId;
-        console.debug("[chat] Triggering auto-resume for session:", activeSessionId);
-        useChatStore.getState().resumeStream(currentAgent, activeSessionId);
-      }
-    }
+    if (!activeSessionId || isActivePhase(connectionPhase)) return;
+    if (resumedSessions.current.has(activeSessionId)) return;
+    const isRunning = activeSessionIds.includes(activeSessionId) || sessionRunStatus === "running";
+    if (!isRunning) return;
+    resumedSessions.current.add(activeSessionId);
+    useChatStore.getState().resumeStream(currentAgent, activeSessionId);
   }, [activeSessionId, activeSessionIds, sessionRunStatus, connectionPhase, currentAgent]);
 
   // Always fetch session messages — even during streaming.

@@ -121,11 +121,13 @@ export function createStreamingRenderer(store: StoreAccess) {
       ? existingSt.messageSource.messages
       : getCachedHistoryMessages(sessionId);
 
+    // Don't switch to "live" mode yet — wait for actual SSE data.
+    // This prevents empty screen flash if server returns 204 (no active stream).
     update(agent, {
       streamError: null,
       connectionPhase: "streaming",
       connectionError: null,
-      messageSource: { mode: "live" as const, messages: seedMessages },
+      ...(seedMessages.length > 0 ? { messageSource: { mode: "live" as const, messages: seedMessages } } : {}),
     });
 
     const token = assertToken();
