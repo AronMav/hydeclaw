@@ -376,6 +376,7 @@ export function MessageList({
             prev.id !== THINKING_ID &&
             prev.role === "assistant" &&
             msg.role === "assistant" &&
+            !!prev.agentId && !!msg.agentId &&
             prev.agentId !== msg.agentId &&
             prev.agentId != null &&
             msg.agentId != null;
