@@ -219,6 +219,8 @@ export function MessageList({
   // content height. When it grows and user was at bottom → auto-scroll.
   // This is the pattern used by assistant-ui and Vercel AI SDK.
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const virtualItemsLenRef = useRef(virtualItems.length);
+  virtualItemsLenRef.current = virtualItems.length;
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -239,7 +241,7 @@ export function MessageList({
       if (newHeight > prevHeight && isAtBottomRef.current && !userScrolledUpRef.current) {
         // Content grew and we were at bottom → scroll down
         requestAnimationFrame(() => {
-          virtuosoRef.current?.scrollToIndex({ index: virtualItems.length - 1, behavior: "auto" });
+          virtuosoRef.current?.scrollToIndex({ index: virtualItemsLenRef.current - 1, behavior: "auto" });
         });
       }
       prevHeight = newHeight;
@@ -252,7 +254,7 @@ export function MessageList({
     }
 
     return () => ro.disconnect();
-  }, [virtualItems.length]); // Re-attach when items count changes structurally
+  }, []); // Stable effect — reads current length from ref
 
   // ── SCRL-03: count tokens that arrived while user was scrolled up ────────────
   const prevPartsLenRef = useRef(0);
@@ -293,7 +295,7 @@ export function MessageList({
   }, [isStreaming, virtualItems.length]);
 
   const scrollToBottom = useCallback(() => {
-    virtuosoRef.current?.scrollToIndex({ index: virtualItems.length - 1, behavior: "smooth" });
+    virtuosoRef.current?.scrollToIndex({ index: "LAST", behavior: "smooth" });
     isAtBottomRef.current = true;
     setIsAtBottom(true);
     // SCRL-03: reset missed token counter

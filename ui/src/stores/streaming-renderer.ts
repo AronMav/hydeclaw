@@ -20,6 +20,8 @@ import type {
   MessagePart,
   TextPart,
   ToolPart,
+  ApprovalPart,
+  StepGroupPart,
   ConnectionPhase,
   AgentState,
 } from "./chat-types";
@@ -341,6 +343,7 @@ export function createStreamingRenderer(store: StoreAccess) {
     let receivedFinishEvent = false;
     // Initialize from pendingTargetAgent so first render shows correct avatar.
     let currentRespondingAgent: string | null = store.get().agents[agent]?.pendingTargetAgent ?? agent;
+    let currentStepGroup: StepGroupPart | null = null;
 
     function flushText() {
       const flushed = incrementalParser.flush();
@@ -496,13 +499,17 @@ export function createStreamingRenderer(store: StoreAccess) {
               flushText();
               const { toolCallId: tcId, toolName: tcName } = event;
               toolInputChunks.set(tcId, []);
-              parts.push({
+              const toolPart: ToolPart = {
                 type: "tool",
                 toolCallId: tcId,
                 toolName: tcName,
                 state: "input-streaming",
                 input: {},
-              });
+              };
+              parts.push(toolPart);
+              if (currentStepGroup) {
+                currentStepGroup.toolParts.push({ ...toolPart });
+              }
               scheduleUpdate();
               break;
             }
@@ -533,8 +540,68 @@ export function createStreamingRenderer(store: StoreAccess) {
               );
               if (idx >= 0) {
                 parts[idx] = { ...(parts[idx] as ToolPart), state: "output-available", output };
+                if (currentStepGroup) {
+                  const sgIdx = currentStepGroup.toolParts.findIndex(tp => tp.toolCallId === tcId);
+                  if (sgIdx >= 0) {
+                    currentStepGroup.toolParts[sgIdx] = { ...currentStepGroup.toolParts[sgIdx], state: "output-available", output };
+                  }
+                }
               }
               scheduleUpdate();
+              break;
+            }
+
+            case "tool-approval-needed": {
+              flushText();
+              const approval: ApprovalPart = {
+                type: "approval",
+                approvalId: event.approvalId,
+                toolName: event.toolName,
+                toolInput: event.toolInput,
+                timeoutMs: event.timeoutMs,
+                receivedAt: Date.now(),
+                status: "pending",
+              };
+              parts.push(approval);
+              scheduleUpdate();
+              break;
+            }
+
+            case "tool-approval-resolved": {
+              const idx = parts.findIndex(
+                (p) => p.type === "approval" && p.approvalId === event.approvalId,
+              );
+              if (idx >= 0) {
+                const existing = parts[idx] as ApprovalPart;
+                parts[idx] = {
+                  ...existing,
+                  status: event.action,
+                  modifiedInput: event.modifiedInput,
+                };
+              }
+              scheduleUpdate();
+              break;
+            }
+
+            case "step-start": {
+              flushText();
+              currentStepGroup = {
+                type: "step-group",
+                stepId: event.stepId,
+                toolParts: [],
+                isStreaming: true,
+              };
+              break;
+            }
+
+            case "step-finish": {
+              if (currentStepGroup && currentStepGroup.toolParts.length > 0) {
+                currentStepGroup.isStreaming = false;
+                currentStepGroup.finishReason = event.finishReason;
+                parts.push(currentStepGroup);
+                scheduleUpdate();
+              }
+              currentStepGroup = null;
               break;
             }
 
