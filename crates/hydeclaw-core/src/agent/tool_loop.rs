@@ -689,19 +689,60 @@ mod tests {
     }
 
     #[test]
-    fn args_truncated_to_200() {
-        // Two calls: one with a 300-char arg, one with the same 300-char arg
-        // Both should produce the same hash (same first 200 chars)
-        let long_arg = "x".repeat(300);
-        let truncated_arg = "x".repeat(300); // same string, hash_call truncates both to 200
-        let h1 = LoopDetector::hash_call("tool", &serde_json::json!({"data": long_arg}));
-        let h2 = LoopDetector::hash_call("tool", &serde_json::json!({"data": truncated_arg}));
-        assert_eq!(h1, h2, "same 300-char arg should produce identical hash (both truncated)");
+    fn loop_detector_no_panic_on_short_buffer() {
+        let config = ToolLoopConfig::default();
+        let mut detector = LoopDetector::new(&config);
+        // Should not panic on first few calls
+        assert_eq!(detector.record("t1", &serde_json::json!({})), LoopStatus::Ok);
+        assert_eq!(detector.record("t2", &serde_json::json!({})), LoopStatus::Ok);
+    }
 
-        // A call with a different 300-char arg (different first 200 chars) should differ
-        let different_arg = format!("y{}", "x".repeat(299));
-        let h3 = LoopDetector::hash_call("tool", &serde_json::json!({"data": different_arg}));
-        assert_ne!(h1, h3, "different first 200 chars should produce different hash");
+    #[test]
+    fn tool_identity_isolation() {
+        let config = ToolLoopConfig::default();
+        let mut detector = LoopDetector::new(&config);
+        let args = serde_json::json!({"q": "same"});
+        // Different tools with same args should NOT be seen as consecutive duplicates
+        assert_eq!(detector.record("search", &args), LoopStatus::Ok);
+        assert_eq!(detector.record("read", &args), LoopStatus::Ok);
+        assert_eq!(detector.consecutive, 1);
+    }
+
+    #[test]
+    fn args_no_longer_truncated() {
+        // Two calls: different only after char 200
+        let base = "x".repeat(200);
+        let arg1 = format!("{}A", base);
+        let arg2 = format!("{}B", base);
+        let h1 = LoopDetector::hash_call("tool", &serde_json::json!({"data": arg1}));
+        let h2 = LoopDetector::hash_call("tool", &serde_json::json!({"data": arg2}));
+        // Since truncation is removed, these hashes must be different
+        assert_ne!(h1, h2, "hashes should differ after 200 chars if truncation is removed");
+    }
+
+    #[test]
+    fn ngram_max_cycle_stress() {
+        let mut config = make_config_ngram();
+        config.ngram_max_cycle = 10;
+        let mut det = LoopDetector::new(&config);
+        
+        // Create a 10-step cycle repeated twice (no trigger) then 3rd time (trigger)
+        let mut steps = Vec::new();
+        for i in 0..10 {
+            steps.push((format!("t{}", i), i.to_string()));
+        }
+
+        for _ in 0..2 {
+            for (t, a) in &steps {
+                det.record(t, &serde_json::json!({ "q": a }));
+            }
+        }
+        // 3rd repetition
+        for i in 0..9 {
+            det.record(&steps[i].0, &serde_json::json!({ "q": steps[i].1 }));
+        }
+        let status = det.record(&steps[9].0, &serde_json::json!({ "q": steps[9].1 }));
+        assert!(matches!(status, LoopStatus::CycleDetected(_)));
     }
 
     #[test]
