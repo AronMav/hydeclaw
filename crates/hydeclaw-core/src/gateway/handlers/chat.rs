@@ -519,24 +519,30 @@ pub(crate) async fn api_chat_sse(
     let all_agent_names_for_loop = all_agent_names.clone();
     let engine_handle = tokio::spawn(async move {
         let mut current_engine = engine;
+        let initial_leaf_id = msg.leaf_message_id;
         let mut current_msg = msg;
         let mut current_session_id = session_id;
         let mut current_force_new = force_new_session;
         let mut turn_count = 0;
         let mut turn_chain: Vec<String> = Vec::new();
-        // Stack of handoff initiators — each handoff pushes, each return pops.
-        // This ensures A→B→C returns to B then A (not just the last initiator).
         let mut handoff_stack: Vec<(String, std::sync::Arc<crate::agent::engine::AgentEngine>)> = Vec::new();
+        let mut current_leaf_id = initial_leaf_id;
 
         loop {
             let current_agent_name = current_engine.name().to_string();
             turn_chain.push(current_agent_name.clone());
 
-            if let Err(e) = current_engine.handle_sse(&current_msg, event_tx.clone(), current_session_id, current_force_new).await {
-                tracing::error!(error = %e, "SSE chat error (agent: {})", current_agent_name);
-                event_tx.send(StreamEvent::Error(e.to_string())).ok();
-                break;
-            }
+            let assistant_msg_id = match current_engine.handle_sse(&current_msg, event_tx.clone(), current_session_id, current_force_new).await {
+                Ok(id) => {
+                    current_leaf_id = Some(id);
+                    id
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "SSE chat error (agent: {})", current_agent_name);
+                    event_tx.send(StreamEvent::Error(e.to_string())).ok();
+                    break;
+                }
+            };
 
             turn_count += 1;
             let effective_limit = current_engine.max_agent_turns()

@@ -151,6 +151,7 @@ impl SessionManager {
         tool_call_id: Option<&str>,
         sender_agent_id: Option<&str>,
         thinking_blocks: Option<&serde_json::Value>,
+        parent_id: Option<Uuid>,
     ) -> Result<Uuid> {
         crate::db::sessions::save_message_ex(
             &self.db,
@@ -161,6 +162,7 @@ impl SessionManager {
             tool_call_id,
             sender_agent_id,
             thinking_blocks,
+            parent_id,
         )
         .await
     }

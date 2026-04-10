@@ -139,7 +139,7 @@ pub trait AgentDispatch: Send + Sync {
         event_tx: mpsc::UnboundedSender<StreamEvent>,
         resume_session_id: Option<Uuid>,
         force_new_session: bool,
-    ) -> Result<()>;
+    ) -> Result<Uuid>;
 
     async fn handle_with_status(
         &self,
@@ -718,7 +718,7 @@ impl AgentEngine {
 
         // For inter-agent messages (user_id starts with "agent:"), save the sender agent_id
         let sender_agent_id = if msg.user_id.starts_with("agent:") { Some(msg.user_id.trim_start_matches("agent:")) } else { None };
-        sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None).await?;
+        sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None, None).await?;
 
         // Context compaction if needed (model-aware token budget)
         self.compact_messages(&mut messages, None).await;
@@ -966,7 +966,7 @@ impl AgentEngine {
             }
         }
 
-        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), None)
+        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), None, None)
             .await?;
 
         // Hook: AfterResponse
@@ -1051,7 +1051,7 @@ impl AgentDispatch for AgentEngine {
         event_tx: mpsc::UnboundedSender<StreamEvent>,
         resume_session_id: Option<Uuid>,
         force_new_session: bool,
-    ) -> Result<()> {
+    ) -> Result<Uuid> {
         AgentEngine::handle_sse(self, msg, event_tx, resume_session_id, force_new_session).await
     }
 

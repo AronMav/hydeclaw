@@ -101,7 +101,7 @@ impl AgentEngine {
         // Save user message (original, not enriched)
         // For inter-agent messages (user_id starts with "agent:"), save the sender agent_id
         let sender_agent_id = if msg.user_id.starts_with("agent:") { Some(msg.user_id.trim_start_matches("agent:")) } else { None };
-        sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None).await?;
+        let user_msg_id = sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None, msg.leaf_message_id).await?;
 
         // Context compaction if needed (model-aware token budget)
         self.compact_messages(&mut messages, None).await;
@@ -445,7 +445,7 @@ impl AgentEngine {
         } else {
             serde_json::to_value(&final_thinking_blocks).ok()
         };
-        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), thinking_json.as_ref())
+        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), thinking_json.as_ref(), Some(user_msg_id))
             .await?;
         self.maybe_trim_session(session_id).await;
 
@@ -505,7 +505,7 @@ impl AgentEngine {
 
         // For inter-agent messages (user_id starts with "agent:"), save the sender agent_id
         let sender_agent_id = if msg.user_id.starts_with("agent:") { Some(msg.user_id.trim_start_matches("agent:")) } else { None };
-        sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None).await?;
+        sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None, None).await?;
 
         // Stream LLM response (no tools for streaming — simple text response)
         let (final_response, stream_thinking_json) = match self.provider.chat_stream(&messages, &[], chunk_tx).await {
@@ -541,7 +541,7 @@ impl AgentEngine {
             }
         };
 
-        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), stream_thinking_json.as_ref())
+        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), stream_thinking_json.as_ref(), None)
             .await?;
         self.maybe_trim_session(session_id).await;
 

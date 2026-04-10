@@ -13,7 +13,7 @@ impl AgentEngine {
         event_tx: mpsc::UnboundedSender<StreamEvent>,
         resume_session_id: Option<Uuid>,
         force_new_session: bool,
-    ) -> Result<()> {
+    ) -> Result<Uuid> {
         let _chat_guard = crate::graph_worker::ChatActiveGuard::new();
 
         // Hook: BeforeMessage
@@ -25,17 +25,26 @@ impl AgentEngine {
         let user_text = msg.text.clone().unwrap_or_default();
         if let Some(result) = self.handle_command(&user_text, msg).await {
             let text = result?;
-            let msg_id = format!("msg_{}", Uuid::new_v4());
-            if event_tx.send(StreamEvent::MessageStart { message_id: msg_id }).is_err() {
+            let msg_id_str = format!("msg_{}", Uuid::new_v4());
+            if event_tx.send(StreamEvent::MessageStart { message_id: msg_id_str }).is_err() {
                 tracing::debug!("SSE event channel closed, engine continues for DB save");
             }
-            if event_tx.send(StreamEvent::TextDelta(text)).is_err() {
+            if event_tx.send(StreamEvent::TextDelta(text.clone())).is_err() {
                 tracing::debug!("SSE event channel closed, engine continues for DB save");
             }
             if event_tx.send(StreamEvent::Finish { finish_reason: "command".to_string(), continuation: false }).is_err() {
                 tracing::debug!("SSE event channel closed, engine continues for DB save");
             }
-            return Ok(());
+
+            // Save command response to DB for branching consistency
+            let sid = if let Some(sid) = resume_session_id {
+                sid
+            } else {
+                crate::db::sessions::get_or_create_session(&self.db, &self.agent.name, &msg.user_id, &msg.channel, self.agent.session.as_ref().map(|s| s.dm_scope.as_str()).unwrap_or("default")).await?
+            };
+            let u_msg_id = SessionManager::new(self.db.clone()).save_message_ex(sid, "user", &user_text, None, None, None, None, msg.leaf_message_id).await?;
+            let a_msg_id = SessionManager::new(self.db.clone()).save_message_ex(sid, "assistant", &text, None, None, Some(&self.agent.name), None, Some(u_msg_id)).await?;
+            return Ok(a_msg_id);
         }
 
         let thinking_level = self.thinking_level.load(std::sync::atomic::Ordering::Relaxed);
@@ -94,7 +103,7 @@ impl AgentEngine {
 
         // For inter-agent messages (user_id starts with "agent:"), save the sender agent_id
         let sender_agent_id = if msg.user_id.starts_with("agent:") { Some(msg.user_id.trim_start_matches("agent:")) } else { None };
-        sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None).await?;
+        let user_msg_id = sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None, msg.leaf_message_id).await?;
 
         // Context compaction if needed (model-aware token budget)
         self.compact_messages(&mut messages, None).await;
@@ -574,7 +583,7 @@ impl AgentEngine {
         } else {
             serde_json::to_value(&final_thinking_blocks).ok()
         };
-        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), thinking_json.as_ref())
+        let assistant_msg_id = sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), thinking_json.as_ref(), Some(user_msg_id))
             .await?;
         self.maybe_trim_session(session_id).await;
 
@@ -607,6 +616,6 @@ impl AgentEngine {
             });
         }
 
-        Ok(())
+        Ok(assistant_msg_id)
     }
 }
