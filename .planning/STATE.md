@@ -1,17 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.13.0
-milestone_name: Chat UX Evolution
+milestone: v0.12.0
+milestone_name: Chat Redesign
 status: executing
-stopped_at: "Completed 54-01-PLAN.md"
-last_updated: "2026-04-10"
-last_activity: 2026-04-10
+stopped_at: Completed 54-02-PLAN.md
+last_updated: "2026-04-10T03:54:40.400Z"
+last_activity: 2026-04-10 — Completed 54-01 (types and pure functions extraction)
 progress:
-  total_phases: 1
+  total_phases: 7
   completed_phases: 0
-  total_plans: 3
-  completed_plans: 1
-  percent: 33
+  total_plans: 4
+  completed_plans: 9
 ---
 
 # Project State
@@ -60,6 +59,7 @@ Last activity: 2026-04-10 — Completed 54-01 (types and pure functions extracti
 - [Phase 44-ux-polish]: totalPartsCount Stage 3 Fix useEffect removed — followOutput callback is single scroll authority
 - [Phase 45-cleanup]: CLN-01: StreamStatus/isActiveStream removed — ConnectionPhase/isActivePhase are sole stream-state authorities
 - [Phase 45-cleanup]: CLN-02: AbortController/timers in private Maps not Immer state; streamGeneration moved to AgentState as plain number
+- [Phase 54]: Factory pattern with callback injection for streaming-renderer to avoid circular imports
 
 ### Pending Todos
 
@@ -73,6 +73,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-10T03:42:47Z
-Stopped at: Completed 54-01-PLAN.md
+Last session: 2026-04-10T03:54:40.396Z
+Stopped at: Completed 54-02-PLAN.md
 Resume with: `/gsd:execute-phase 54`
