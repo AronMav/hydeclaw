@@ -37,8 +37,8 @@ import { ApprovalCard } from "@/components/chat/ApprovalCard";
 const _partsRenderCache = new WeakMap<ChatMessage, ReactNode[]>();
 
 // ── Tool grouping threshold ─────────────────────────────────────────────────
-// Minimum consecutive tool calls required to collapse into a ToolCallGroup.
-export const TOOL_GROUP_THRESHOLD = 3;
+// Disable tool grouping — show each tool call individually.
+export const TOOL_GROUP_THRESHOLD = Infinity;
 
 // ── Tool status mapping ─────────────────────────────────────────────────────
 
