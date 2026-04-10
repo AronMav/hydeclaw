@@ -135,8 +135,10 @@ export function createStreamingRenderer(store: StoreAccess) {
     })
       .then((resp) => {
         if (resp.status === 204) {
-          // No active stream -- engine already finished.
+          // No active stream -- engine already finished. Switch to history and refetch.
           update(agent, { connectionPhase: "idle", messageSource: { mode: "history", sessionId } });
+          queryClient.invalidateQueries({ queryKey: qk.sessions(agent) });
+          queryClient.invalidateQueries({ queryKey: qk.sessionMessages(sessionId) });
           return;
         }
         if (!resp.ok) {
