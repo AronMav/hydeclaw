@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v0.12.0
 milestone_name: Chat Redesign
-status: verifying
-stopped_at: Completed 59-02-PLAN.md
-last_updated: "2026-04-10T05:39:28.059Z"
-last_activity: 2026-04-10
+status: Defining requirements
+stopped_at: Completed 60-01-PLAN.md
+last_updated: "2026-04-10T21:11:57.426Z"
+last_activity: 2026-04-09 — Milestone v0.13.0 started
 progress:
-  total_phases: 10
-  completed_phases: 1
-  total_plans: 6
-  completed_plans: 12
+  total_phases: 6
+  completed_phases: 0
+  total_plans: 4
+  completed_plans: 7
 ---
 
 # Project State
@@ -24,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 
 ## Current Position
 
-Phase: 58 (channels-bridge-errors) — COMPLETE
-Plan: 1 of 1 (complete)
-Status: Phase complete — ready for verification
-Last activity: 2026-04-10
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-04-09 — Milestone v0.13.0 started
 
 ## Accumulated Context
 
@@ -59,7 +59,7 @@ Last activity: 2026-04-10
 - [Phase 44-ux-polish]: totalPartsCount Stage 3 Fix useEffect removed — followOutput callback is single scroll authority
 - [Phase 45-cleanup]: CLN-01: StreamStatus/isActiveStream removed — ConnectionPhase/isActivePhase are sole stream-state authorities
 - [Phase 45-cleanup]: CLN-02: AbortController/timers in private Maps not Immer state; streamGeneration moved to AgentState as plain number
-- [Phase 59]: assertToken() throws on empty token with redirect; getToken() kept backward-compatible for SSE callers
+- [Phase 60-async-delegation]: Async handoff via subagent delegation replaces blocking turn-loop switching
 
 ### Pending Todos
 
@@ -73,6 +73,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-10T05:39:28.055Z
-Stopped at: Completed 59-02-PLAN.md
-Resume with: Next phase
+Last session: 2026-04-10T21:11:57.423Z
+Stopped at: Completed 60-01-PLAN.md
+Resume with: `/gsd:plan-phase 40`

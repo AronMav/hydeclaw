@@ -1,35 +1,21 @@
 use axum::{
-    Router,
     extract::{Path, State},
     http::StatusCode,
     response::{
         IntoResponse, Json,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::str::FromStr;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
 
 use super::super::{AppState, OpenAiMessage, sse_types};
 use crate::agent::engine::StreamEvent;
 use crate::tasks;
-
-pub(crate) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/health", get(health))
-        .route("/api/mcp/callback", post(mcp_callback))
-        .route("/v1/chat/completions", post(chat_completions))
-        .route("/v1/models", get(list_models))
-        .route("/v1/embeddings", post(embeddings_proxy))
-        .route("/api/chat", post(api_chat_sse))
-        .route("/api/chat/{id}/stream", get(api_chat_resume_stream))
-        .route("/api/chat/{id}/abort", post(api_chat_abort))
-}
 
 // ── Streaming message RAII guard ──
 // Ensures streaming messages are finalized in DB even if the converter task
@@ -214,7 +200,7 @@ pub(crate) async fn chat_completions(
 
     if req.stream {
         let (sse_tx, sse_rx) =
-            tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(256);
+            tokio::sync::mpsc::unbounded_channel::<Result<Event, std::convert::Infallible>>();
 
         let messages = req.messages.clone();
         tokio::spawn(async move {
@@ -233,7 +219,7 @@ pub(crate) async fn chat_completions(
                     "model": model_name,
                     "choices": [{"index": 0, "delta": {"content": chunk}, "finish_reason": null}]
                 });
-                if sse_tx.send(Ok(Event::default().data(data.to_string()))).await.is_err() { break; }
+                sse_tx.send(Ok(Event::default().data(data.to_string()))).ok();
             }
 
             // Final stop chunk
@@ -244,15 +230,15 @@ pub(crate) async fn chat_completions(
                 "model": model_name,
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
             });
-            let _ = sse_tx.send(Ok(Event::default().data(data.to_string()))).await;
-            let _ = sse_tx.send(Ok(Event::default().data("[DONE]"))).await;
+            sse_tx.send(Ok(Event::default().data(data.to_string()))).ok();
+            sse_tx.send(Ok(Event::default().data("[DONE]"))).ok();
 
             if let Ok(Err(e)) = handle.await {
                 tracing::error!(error = %e, "streaming chat completion error");
             }
         });
 
-        return Sse::new(ReceiverStream::new(sse_rx))
+        return Sse::new(UnboundedReceiverStream::new(sse_rx))
             .keep_alive(KeepAlive::default())
             .into_response();
     }
@@ -373,12 +359,6 @@ pub(crate) struct ChatSseRequest {
     /// Force creation of a new session (UI "New Chat" button).
     #[serde(default)]
     force_new_session: bool,
-    /// When set, engine builds LLM context from the branch chain ending at this message.
-    #[serde(default)]
-    leaf_message_id: Option<String>,
-    /// Optional file attachments from the UI.
-    #[serde(default)]
-    attachments: Vec<hydeclaw_types::MediaAttachment>,
 }
 
 #[allow(unused_assignments)]
@@ -452,7 +432,6 @@ pub(crate) async fn api_chat_sse(
         .and_then(|s| uuid::Uuid::from_str(s).ok());
     let force_new_session = req.force_new_session && session_id.is_none();
     let user_text_for_title = user_text.clone();
-    let user_text_for_engine_title = user_text.clone();
 
     // ── @-mention routing ──────────────────────────────────────────
     // If user message contains @AgentName, route to that agent instead.
@@ -485,10 +464,6 @@ pub(crate) async fn api_chat_sse(
     let agent_name = engine.name().to_string();
     tracing::info!(agent_name = %agent_name, mentioned = ?mentioned_agent, "mention routing: final target agent");
 
-    // Parse leaf_message_id for branch-aware context building
-    let leaf_message_id = req.leaf_message_id.as_deref()
-        .and_then(|s| uuid::Uuid::parse_str(s).ok());
-
     // Send cleaned text to LLM (without @mention prefix — prevents LLM from echoing it)
     let msg = hydeclaw_types::IncomingMessage {
         user_id: crate::agent::channel_kind::channel::UI.to_string(),
@@ -500,13 +475,12 @@ pub(crate) async fn api_chat_sse(
         timestamp: chrono::Utc::now(),
         formatting_prompt: None,
         tool_policy_override: None,
-        leaf_message_id,
     };
 
     let (event_tx, mut event_rx) =
         tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
     let (sse_tx, sse_rx) =
-        tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(512);
+        tokio::sync::mpsc::unbounded_channel::<Result<Event, std::convert::Infallible>>();
 
     // Engine task: process message and emit StreamEvents.
     // Includes agent-to-agent turn loop: after each agent responds, check for @-mentions
@@ -520,39 +494,57 @@ pub(crate) async fn api_chat_sse(
     let all_agent_names_for_loop = all_agent_names.clone();
     let engine_handle = tokio::spawn(async move {
         let mut current_engine = engine;
-        let initial_leaf_id = msg.leaf_message_id;
         let mut current_msg = msg;
         let mut current_session_id = session_id;
         let mut current_force_new = force_new_session;
         let mut turn_count = 0;
         let mut turn_chain: Vec<String> = Vec::new();
-        let mut handoff_stack: Vec<(String, std::sync::Arc<crate::agent::engine::AgentEngine>)> = Vec::new();
-        let mut current_leaf_id = initial_leaf_id;
 
-        loop {
+        'turn_loop: loop {
             let current_agent_name = current_engine.name().to_string();
             turn_chain.push(current_agent_name.clone());
 
-            // Clear any stale handoff target from previous iteration
-            // (handle_sse may set it; take_handoff below consumes it)
-            current_engine.take_handoff().await;
-
-            let assistant_msg_id = match current_engine.handle_sse(&current_msg, event_tx.clone(), current_session_id, current_force_new).await {
-                Ok(id) => {
-                    current_leaf_id = Some(id);
-                    id
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "SSE chat error (agent: {})", current_agent_name);
-                    event_tx.send(StreamEvent::Error(e.to_string())).ok();
-                    break;
-                }
-            };
+            if let Err(e) = current_engine.handle_sse(&current_msg, event_tx.clone(), current_session_id, current_force_new).await {
+                tracing::error!(error = %e, "SSE chat error (agent: {})", current_agent_name);
+                event_tx.send(StreamEvent::Error(e.to_string())).ok();
+                break;
+            }
 
             turn_count += 1;
+            let effective_limit = current_engine.max_agent_turns()
+                .unwrap_or(global_max_agent_turns);
+            if turn_count >= effective_limit {
+                tracing::info!(
+                    limit = effective_limit,
+                    "Agent turn limit reached, stopping turn loop"
+                );
+                break;
+            }
 
-            // Turn limit and cycle detection moved AFTER handoff routing checks (below)
-            // to allow a final return-to-initiator before stopping.
+            // Cycle detection: stop if any agent appears 3+ times in the turn chain
+            {
+                let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+                let mut cycle_detected = false;
+                for name in &turn_chain {
+                    let count = counts.entry(name.as_str()).or_insert(0);
+                    *count += 1;
+                    if *count >= 3 {
+                        cycle_detected = true;
+                        break;
+                    }
+                }
+                if cycle_detected {
+                    tracing::warn!(
+                        chain = ?turn_chain,
+                        "Cycle detected in agent turn loop, stopping"
+                    );
+                    event_tx.send(StreamEvent::Error(
+                        format!("Agent turn loop stopped: cycle detected (agents: {})",
+                            turn_chain.join(" -> "))
+                    )).ok();
+                    break;
+                }
+            }
 
             // Get session_id for turn loop. handle_sse clears processing_session_id
             // on return, so we read it BEFORE it's cleared by capturing it from the
@@ -586,163 +578,82 @@ pub(crate) async fn api_chat_sse(
                 }
             };
 
-            // ── Routing: check handoff tool first, then @-mention fallback ──
-            tracing::info!(
-                agent = %current_agent_name,
-                has_initiator = !handoff_stack.is_empty(),
-                turn = turn_count,
-                "turn loop: routing check"
-            );
+            // ── Routing: check completed async handoffs first, then @-mention fallback ──
 
-            // Priority 1: Structured handoff (D-06, D-07)
-            let handoff = current_engine.take_handoff().await;
-            if let Some(req) = handoff {
-                let next_agent_name = req.target_agent.clone();
+            // Priority 1: Drain completed async handoffs
+            let completed_handoffs = current_engine.take_pending_handoffs().await;
+            if !completed_handoffs.is_empty() {
+                let timeout_dur = std::time::Duration::from_secs(120);
 
-                // Resolve next agent's engine
-                let next_engine = match agent_map.read().await.get(&next_agent_name) {
-                    Some(h) => h.engine.clone(),
-                    None => {
-                        tracing::warn!(target = %next_agent_name, "handoff target agent not found, stopping turn loop");
-                        break;
+                for ph in completed_handoffs {
+                    match tokio::time::timeout(timeout_dur, ph.completion_rx).await {
+                        Ok(Ok(sub_result)) => {
+                            let response_text = match (&sub_result.status, &sub_result.result, &sub_result.error) {
+                                (crate::agent::subagent_state::SubagentStatus::Completed, Some(r), _) => r.clone(),
+                                (_, _, Some(e)) => format!("(Error from {}): {}", ph.target_name, e),
+                                _ => format!("(No response from {})", ph.target_name),
+                            };
+
+                            // Truncate to max_handoff_context_chars
+                            let max_ctx = state.config.limits.max_handoff_context_chars;
+                            let truncated_response = if response_text.len() > max_ctx {
+                                let mut end = max_ctx;
+                                while end > 0 && !response_text.is_char_boundary(end) { end -= 1; }
+                                format!("{}... [truncated]", &response_text[..end])
+                            } else {
+                                response_text
+                            };
+
+                            tracing::info!(
+                                from = %ph.target_name,
+                                to = %current_engine.name(),
+                                "turn loop: injecting async handoff result"
+                            );
+
+                            current_msg = hydeclaw_types::IncomingMessage {
+                                user_id: format!("agent:{}", ph.target_name),
+                                text: Some(format!("[Response from {}]\n{}", ph.target_name, truncated_response)),
+                                attachments: vec![],
+                                agent_id: current_engine.name().to_string(),
+                                channel: crate::agent::channel_kind::channel::INTER_AGENT.to_string(),
+                                context: serde_json::json!({
+                                    "from": ph.target_name,
+                                    "response_from": ph.target_name,
+                                    "handoff_return": true,
+                                }),
+                                timestamp: chrono::Utc::now(),
+                                formatting_prompt: None,
+                                tool_policy_override: None,
+                            };
+                            current_session_id = Some(sid);
+                            current_force_new = false;
+                            continue 'turn_loop;
+                        }
+                        Ok(Err(_)) => {
+                            tracing::warn!(target = %ph.target_name, "turn loop: handoff completion channel closed");
+                        }
+                        Err(_) => {
+                            tracing::warn!(target = %ph.target_name, timeout_secs = 120, "turn loop: handoff timed out");
+                            current_msg = hydeclaw_types::IncomingMessage {
+                                user_id: format!("agent:{}", ph.target_name),
+                                text: Some(format!("[Response from {}]\n(No response from {} -- task timed out)", ph.target_name, ph.target_name)),
+                                attachments: vec![],
+                                agent_id: current_engine.name().to_string(),
+                                channel: crate::agent::channel_kind::channel::INTER_AGENT.to_string(),
+                                context: serde_json::json!({
+                                    "from": ph.target_name,
+                                    "handoff_return": true,
+                                    "timeout": true,
+                                }),
+                                timestamp: chrono::Utc::now(),
+                                formatting_prompt: None,
+                                tool_policy_override: None,
+                            };
+                            current_session_id = Some(sid);
+                            current_force_new = false;
+                            continue 'turn_loop;
+                        }
                     }
-                };
-
-                // Add participant (D-03: handoff adds participant AND transfers turn)
-                let _ = crate::db::sessions::add_participant(current_engine.db_pool(), sid, &next_agent_name).await;
-
-                // Signal agent switch to converter task (UI separator)
-                event_tx.send(StreamEvent::AgentSwitch { agent_name: next_agent_name.clone() }).ok();
-                event_tx.send(StreamEvent::RichCard {
-                    card_type: "agent-turn".to_string(),
-                    data: serde_json::json!({
-                        "agentName": next_agent_name,
-                        "reason": format!("handoff from {}", current_agent_name),
-                    }),
-                }).ok();
-
-                // Truncate handoff context to prevent context window bloat (CTXA-04)
-                let max_ctx_chars = state.config.limits.max_handoff_context_chars;
-                let truncated_context = if req.context.len() > max_ctx_chars {
-                    let mut end = max_ctx_chars;
-                    // Avoid splitting UTF-8 characters
-                    while !req.context.is_char_boundary(end) && end > 0 {
-                        end -= 1;
-                    }
-                    format!("{}... [truncated]", &req.context[..end])
-                } else {
-                    req.context.clone()
-                };
-
-                // Build structured inter-agent message with identity reinforcement (D-14)
-                let context_text = format!(
-                    "You are {}. Respond ONLY as {}.\n\n[Handoff from {}]\nTask: {}\nContext: {}",
-                    next_agent_name, next_agent_name, current_agent_name, req.task, truncated_context
-                );
-                current_msg = hydeclaw_types::IncomingMessage {
-                    user_id: format!("agent:{}", current_agent_name),
-                    text: Some(context_text),
-                    attachments: vec![],
-                    agent_id: next_agent_name.clone(),
-                    channel: crate::agent::channel_kind::channel::INTER_AGENT.to_string(),
-                    context: serde_json::json!({
-                        "from": current_agent_name,
-                        "task": req.task,
-                        "context": truncated_context,
-                        "handoff": true,
-                    }),
-                    timestamp: chrono::Utc::now(),
-                    formatting_prompt: None,
-                    tool_policy_override: None,
-                    leaf_message_id: current_leaf_id,
-                };
-                // Push initiator onto stack so we can return control after target responds
-                handoff_stack.push((current_agent_name.clone(), current_engine.clone()));
-                current_engine = next_engine;
-                current_session_id = Some(sid);
-                current_force_new = false;
-                continue;
-            }
-
-            // Priority 1b: Return control to handoff initiator after target agent responded.
-            // Pop from stack — A→B→C returns to B, then B returns to A.
-            if let Some((initiator_name, initiator_engine)) = handoff_stack.last().cloned() {
-                if current_agent_name != initiator_name {
-                    handoff_stack.pop(); // consume this level
-                    tracing::info!(
-                        from = %current_agent_name,
-                        to = %initiator_name,
-                        stack_depth = handoff_stack.len(),
-                        "turn loop: returning control to handoff initiator"
-                    );
-
-                    event_tx.send(StreamEvent::AgentSwitch { agent_name: initiator_name.clone() }).ok();
-
-                    let max_ctx = state.config.limits.max_handoff_context_chars;
-                    let truncated_response = if last_response.len() > max_ctx {
-                        let mut end = max_ctx;
-                        while end > 0 && !last_response.is_char_boundary(end) { end -= 1; }
-                        format!("{}... [truncated]", &last_response[..end])
-                    } else {
-                        last_response.clone()
-                    };
-
-                    current_msg = hydeclaw_types::IncomingMessage {
-                        user_id: format!("agent:{}", current_agent_name),
-                        text: Some(format!("[Response from {}]\n{}", current_agent_name, truncated_response)),
-                        attachments: vec![],
-                        agent_id: initiator_name.clone(),
-                        channel: crate::agent::channel_kind::channel::INTER_AGENT.to_string(),
-                        context: serde_json::json!({
-                            "from": current_agent_name,
-                            "response_from": current_agent_name,
-                            "handoff_return": true,
-                        }),
-                        timestamp: chrono::Utc::now(),
-                        formatting_prompt: None,
-                        tool_policy_override: None,
-                        leaf_message_id: current_leaf_id,
-                    };
-                    current_engine = initiator_engine;
-                    current_session_id = Some(sid);
-                    current_force_new = false;
-                    continue;
-                }
-            }
-
-            // Check turn limit and cycle detection AFTER routing checks to allow one last return
-            let effective_limit = current_engine.max_agent_turns()
-                .unwrap_or(global_max_agent_turns);
-            if turn_count >= effective_limit {
-                tracing::info!(
-                    limit = effective_limit,
-                    "Agent turn limit reached, stopping turn loop"
-                );
-                break;
-            }
-
-            // Cycle detection: stop if any agent appears 5+ times (slower but safer for complex tasks)
-            {
-                let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-                let mut cycle_detected = false;
-                for name in &turn_chain {
-                    let count = counts.entry(name.as_str()).or_insert(0);
-                    *count += 1;
-                    if *count >= 5 {
-                        cycle_detected = true;
-                        break;
-                    }
-                }
-                if cycle_detected {
-                    tracing::warn!(
-                        chain = ?turn_chain,
-                        "Cycle detected in agent turn loop, stopping"
-                    );
-                    event_tx.send(StreamEvent::Error(
-                        format!("Agent turn loop stopped: cycle detected (agents: {})",
-                            turn_chain.join(" -> "))
-                    )).ok();
-                    break;
                 }
             }
 
@@ -791,7 +702,7 @@ pub(crate) async fn api_chat_sse(
             // Truncate context to max_handoff_context_chars (same as handoff path)
             let max_ctx = state.config.limits.max_handoff_context_chars;
             let truncated = if last_response.len() > max_ctx {
-                format!("{}... [truncated]", &last_response[..last_response.floor_char_boundary(max_ctx)])
+                format!("{}...(truncated)", &last_response[..last_response.floor_char_boundary(max_ctx)])
             } else {
                 last_response.clone()
             };
@@ -812,32 +723,19 @@ pub(crate) async fn api_chat_sse(
                 timestamp: chrono::Utc::now(),
                 formatting_prompt: None,
                 tool_policy_override: None,
-                leaf_message_id: current_leaf_id,
             };
             current_engine = next_engine;
             current_session_id = Some(sid);
             current_force_new = false;
-
-            // Notify UI about session update after each agent turn (for real-time sidebar refresh)
-            let event = serde_json::json!({
-                "type": "session_updated",
-                "agent": agent_for_broadcast,
-                "channel": crate::agent::channel_kind::channel::UI,
-            });
-            ui_tx.send(event.to_string()).ok();
-
-            // Auto-title on first response for immediate user feedback
-            if turn_count == 1 {
-                let title_db = current_engine.db_pool().clone();
-                let sid_copy = sid;
-                let text_copy = user_text_for_engine_title.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = crate::db::sessions::auto_title_session(&title_db, sid_copy, &text_copy).await {
-                        tracing::debug!(error = %e, "auto-title failed");
-                    }
-                });
-            }
         }
+
+        // Notify UI about session update so sidebar refreshes
+        let event = serde_json::json!({
+            "type": "session_updated",
+            "agent": agent_for_broadcast,
+            "channel": crate::agent::channel_kind::channel::UI,
+        });
+        ui_tx.send(event.to_string()).ok();
     });
 
     // Converter task: StreamEvent → SSE JSON events (Vercel AI SDK v3 UI format)
@@ -878,7 +776,7 @@ pub(crate) async fn api_chat_sse(
                 }
                 if !sse_tx.is_closed() {
                     client_gone_since = None;
-                    sse_tx.send(Ok(Event::default().data($json_str))).await.is_ok()
+                    sse_tx.send(Ok(Event::default().data($json_str))).is_ok()
                 } else {
                     // Client disconnected — keep buffering for DB save + resume.
                     // Do NOT abort the engine: let it finish naturally so the result
@@ -1056,28 +954,7 @@ pub(crate) async fn api_chat_sse(
                     current_responding_agent = new_agent;
                     continue; // Internal event — don't emit SSE
                 }
-                StreamEvent::ApprovalNeeded { approval_id, tool_name, tool_input, timeout_ms } => {
-                    let data = json!({
-                        "type": sse_types::APPROVAL_NEEDED,
-                        "approvalId": approval_id,
-                        "toolName": tool_name,
-                        "toolInput": tool_input,
-                        "timeoutMs": timeout_ms,
-                    }).to_string();
-                    let _ = send_and_buffer!(data);
-                    continue;
-                }
-                StreamEvent::ApprovalResolved { approval_id, action, modified_input } => {
-                    let data = json!({
-                        "type": sse_types::APPROVAL_RESOLVED,
-                        "approvalId": approval_id,
-                        "action": action,
-                        "modifiedInput": modified_input,
-                    }).to_string();
-                    let _ = send_and_buffer!(data);
-                    continue;
-                }
-                StreamEvent::Finish { .. } => {
+                StreamEvent::Finish { finish_reason: _ } => {
                     // Send any pending text-end first
                     if let Some(text_id) = pending_text_end.take() {
                         let end_data = json!({"type": sse_types::TEXT_END, "id": text_id}).to_string();
@@ -1184,9 +1061,9 @@ pub(crate) async fn api_chat_sse(
             // Flush any remaining text-end (if stream ended without Finish event)
             if let Some(text_id) = pending_text_end {
                 let end_data = json!({"type": sse_types::TEXT_END, "id": text_id});
-                let _ = sse_tx.send(Ok(Event::default().data(end_data.to_string()))).await;
+                let _ = sse_tx.send(Ok(Event::default().data(end_data.to_string())));
             }
-            let _ = sse_tx.send(Ok(Event::default().data("[DONE]"))).await;
+            let _ = sse_tx.send(Ok(Event::default().data("[DONE]")));
         }
 
         // Auto-title: set session title from first user message if not already titled
@@ -1200,7 +1077,7 @@ pub(crate) async fn api_chat_sse(
         }
     });
 
-    let stream = ReceiverStream::new(sse_rx);
+    let stream = UnboundedReceiverStream::new(sse_rx);
 
     (
         [(
@@ -1269,7 +1146,7 @@ pub(crate) async fn api_chat_resume_stream(
 
             let sse_stream = stream! {
                 // Phase 1: Replay buffered events
-                for (_id, event_json) in buffered_events {
+                for event_json in buffered_events {
                     yield Ok::<_, std::convert::Infallible>(
                         Event::default().data(event_json)
                     );
@@ -1285,7 +1162,7 @@ pub(crate) async fn api_chat_resume_stream(
                 let mut skip_remaining = replay_count;
                 loop {
                     match broadcast_rx.recv().await {
-                        Ok((_id, event_json)) => {
+                        Ok(event_json) => {
                             if skip_remaining > 0 {
                                 skip_remaining -= 1;
                                 continue;
