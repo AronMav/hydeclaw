@@ -150,6 +150,42 @@ export interface AgentState {
   streamGeneration: number;
 }
 
+// ── Store interface ─────────────────────────────────────────────────────────
+
+export interface ChatStore {
+  agents: Record<string, AgentState>;
+  currentAgent: string;
+  sessionParticipants: Record<string, string[]>;
+
+  setCurrentAgent: (name: string) => void;
+  updateSessionParticipants: (sessionId: string, participants: string[]) => void;
+  selectSession: (sessionId: string, forAgent?: string) => Promise<void>;
+  selectSessionById: (agent: string, sessionId: string) => void;
+  newChat: () => void;
+  refreshHistory: (sessionId: string, agentName?: string) => void;
+  clearError: () => void;
+
+  sendMessage: (text: string) => void;
+  stopStream: () => void;
+  regenerate: () => void;
+  regenerateFrom: (messageId: string) => void;
+
+  resumeStream: (agent: string, sessionId: string) => void;
+  setThinking: (agent: string, sessionId: string | null) => void;
+  setThinkingLevel: (level: number) => void;
+  markSessionActive: (agent: string, sessionId: string) => void;
+  markSessionInactive: (agent: string, sessionId: string) => void;
+  setModelOverride: (agent: string, model: string | null) => Promise<void>;
+  renameSession: (sessionId: string, title: string) => Promise<void>;
+  deleteSession: (sessionId: string) => Promise<void>;
+  deleteAllSessions: () => Promise<void>;
+  deleteMessage: (messageId: string) => Promise<void>;
+  loadEarlierMessages: (agent: string) => void;
+  exportSession: () => Promise<void>;
+
+  _selectCounter: Record<string, number>;
+}
+
 export function emptyAgentState(): AgentState {
   return {
     activeSessionId: null,
