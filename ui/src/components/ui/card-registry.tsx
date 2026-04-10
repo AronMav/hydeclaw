@@ -23,7 +23,7 @@ function SubagentCompleteCard({ data }: { data: Record<string, unknown> }) {
         <span className="font-medium">{agent}</span>
         <span className="text-muted-foreground">{status}</span>
       </div>
-      {task && <p className="mt-1 text-muted-foreground text-xs line-clamp-2">{task}</p>}
+      {task && <p className="mt-1 text-muted-foreground text-xs whitespace-pre-wrap">{task}</p>}
     </div>
   );
 }
