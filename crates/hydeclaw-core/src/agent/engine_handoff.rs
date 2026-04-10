@@ -57,53 +57,21 @@ impl AgentEngine {
             "handoff tool: running target agent in isolated context"
         );
 
-        // 5. Gather recent tool results from this session to enrich context.
-        // Target agent is isolated but needs key data (e.g., portfolio, search results).
-        let tool_results_context = if let Some(sid) = *self.processing_session_id().lock().await {
-            match crate::db::sessions::get_recent_tool_results(&self.db, sid, 5).await {
-                Ok(results) if !results.is_empty() => {
-                    let mut ctx = String::from("\n\nRecent tool results (from initiator's session):\n");
-                    for (name, output) in results {
-                        let truncated = if output.len() > 1000 {
-                            let mut end = 1000;
-                            while end > 0 && !output.is_char_boundary(end) { end -= 1; }
-                            format!("{}... [truncated]", &output[..end])
-                        } else {
-                            output
-                        };
-                        ctx.push_str(&format!("- {}: {}\n", name, truncated));
-                    }
-                    ctx
-                }
-                _ => String::new(),
+        // 5. Set handoff target — consumed by turn loop in chat.rs.
+        // Turn loop runs target as isolated subagent (via run_subagent) for identity isolation,
+        // while keeping SSE stream alive for real-time UI updates.
+        {
+            let mut target_lock = self.handoff_target.lock().await;
+            if target_lock.is_some() {
+                return "Error: handoff already requested this turn. Only one handoff per turn is allowed.".to_string();
             }
-        } else {
-            String::new()
-        };
-
-        // 6. Run target agent as isolated subagent — own system prompt, own context.
-        let full_task = format!(
-            "{}\n\nContext from {}:\n{}{}",
-            task, self.agent.name, context, tool_results_context
-        );
-
-        let timeout = std::time::Duration::from_secs(120);
-        match tokio::time::timeout(
-            timeout,
-            target_engine.run_subagent(&full_task, 30, Some(std::time::Instant::now() + timeout), None, None, None),
-        ).await {
-            Ok(Ok(response)) => {
-                tracing::info!(from = %target, to = %self.agent.name, response_len = response.len(), "handoff complete");
-                format!("[Response from {}]\n{}", target, response)
-            }
-            Ok(Err(e)) => {
-                tracing::warn!(error = %e, agent = %target, "handoff agent failed");
-                format!("[Error from {}] {}", target, e)
-            }
-            Err(_) => {
-                tracing::warn!(agent = %target, "handoff agent timed out after 120s");
-                format!("[Timeout from {}] Agent did not respond within 120 seconds.", target)
-            }
+            *target_lock = Some(HandoffRequest {
+                target_agent: target.to_string(),
+                task: task.to_string(),
+                context: context.to_string(),
+            });
         }
+
+        format!("Handoff to {} accepted. They will respond next.", target)
     }
 }
