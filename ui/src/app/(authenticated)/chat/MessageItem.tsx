@@ -11,7 +11,7 @@ import { formatMessageTime } from "@/lib/format";
 import { BranchNavigator } from "./BranchNavigator";
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronRight } from "lucide-react";
-import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
+// Collapsible removed — tool grouping disabled
 import { BarsLoader } from "@/components/ui/loader";
 import { MessageActions } from "./MessageActions";
 import { TextPart } from "./parts/TextPart";
@@ -37,8 +37,7 @@ import { ApprovalCard } from "@/components/chat/ApprovalCard";
 const _partsRenderCache = new WeakMap<ChatMessage, ReactNode[]>();
 
 // ── Tool grouping threshold ─────────────────────────────────────────────────
-// Disable tool grouping — show each tool call individually.
-export const TOOL_GROUP_THRESHOLD = Infinity;
+// Tool grouping removed — each tool call rendered individually.
 
 // ── Tool status mapping ─────────────────────────────────────────────────────
 
@@ -98,127 +97,22 @@ function renderPart(part: MessagePart, index: number, _meta?: { stepGroupToolIds
   }
 }
 
-// ── Tool call grouping ─────────────────────────────────────────────────────
+// ── Parts rendering (no grouping — each part rendered individually) ────────
 
-function ToolCallGroup({ parts }: { parts: ToolPart[] }) {
-  const { t } = useTranslation();
-
-  const allComplete = parts.every((p) => p.state === "output-available");
-  const hasError = parts.some(
-    (p) => p.state === "output-error" || p.state === "output-denied"
-  );
-  const runningCount = parts.filter(
-    (p) => p.state === "input-streaming" || p.state === "input-available"
-  ).length;
-
-  return (
-    <Collapsible className="rounded-lg border border-border/50 bg-muted/10">
-      <CollapsibleTrigger asChild>
-        <button
-          type="button"
-          className="flex w-full items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors group"
-        >
-          <ChevronRight
-            className="h-4 w-4 shrink-0 transition-transform duration-200 group-data-[state=open]:rotate-90"
-          />
-          <span className="font-medium">
-            {runningCount > 0
-              ? t("chat.tools_running", { running: runningCount, total: parts.length })
-              : hasError
-                ? t("chat.tools_with_errors", { count: parts.length })
-                : t("chat.tools_used", { count: parts.length })}
-          </span>
-          {allComplete && !hasError && (
-            <span className="ml-auto text-xs text-success">{t("chat.tools_all_complete")}</span>
-          )}
-          {hasError && (
-            <span className="ml-auto text-xs text-destructive">{t("chat.tools_has_errors")}</span>
-          )}
-        </button>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="border-t border-border/30 px-1 py-1 space-y-1">
-          {parts.map((tp, i) => (
-            <ToolCallPartView
-              key={i}
-              toolName={tp.toolName}
-              args={tp.input}
-              result={tp.output}
-              status={{ type: mapToolPartState(tp.state) }}
-            />
-          ))}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
-
-function renderPartsWithGrouping(parts: MessagePart[]) {
-  const result: ReactNode[] = [];
-
-  // Collect tool IDs that are inside step groups (to avoid double-rendering)
+function renderAllParts(parts: MessagePart[]) {
+  // Collect tool IDs inside step groups to avoid double-rendering
   const stepGroupToolIds = new Set<string>();
   for (const p of parts) {
     if (p.type === "step-group") {
       for (const tp of p.toolParts) stepGroupToolIds.add(tp.toolCallId);
     }
   }
-
   const meta = { stepGroupToolIds, parts };
 
-  // Stage 2 & 3 Fix: Pre-filter empty/whitespace-only text parts that could break tool grouping
-  const effectiveParts = parts.filter(p => {
-    if (p.type === "text") return p.text.trim().length > 0;
-    return true;
-  });
-
-  let i = 0;
-  while (i < effectiveParts.length) {
-    const part = effectiveParts[i];
-
-    if (part.type === "tool") {
-      // Skip tool parts already inside a step group
-      if (stepGroupToolIds.has(part.toolCallId)) {
-        i++;
-        continue;
-      }
-
-      // Collect consecutive non-step-grouped tool parts
-      const toolRun: ToolPart[] = [];
-      while (
-        i < effectiveParts.length &&
-        effectiveParts[i].type === "tool" &&
-        !stepGroupToolIds.has((effectiveParts[i] as ToolPart).toolCallId)
-      ) {
-        const p = effectiveParts[i];
-        if (p.type === "tool") toolRun.push(p);
-        i++;
-      }
-
-      if (toolRun.length >= TOOL_GROUP_THRESHOLD) {
-        // Group 3+ consecutive tool calls
-        result.push(<ToolCallGroup key={`tool-group-${i}`} parts={toolRun} />);
-      } else {
-        // Render individually (1-2 tool calls)
-        toolRun.forEach((tp, j) => {
-          result.push(
-            <ToolCallPartView
-              key={`tool-${i - toolRun.length + j}`}
-              toolName={tp.toolName}
-              args={tp.input}
-              result={tp.output}
-              status={{ type: mapToolPartState(tp.state) }}
-            />
-          );
-        });
-      }
-    } else {
-      result.push(renderPart(part, i, meta));
-      i++;
-    }
-  }
-
-  return result;
+  return parts
+    .filter(p => !(p.type === "text" && p.text.trim().length === 0))
+    .filter(p => !(p.type === "tool" && stepGroupToolIds.has(p.toolCallId)))
+    .map((part, i) => renderPart(part, i, meta));
 }
 
 // ── User message ────────────────────────────────────────────────────────────
@@ -333,7 +227,7 @@ function AssistantMessage({ message }: { message: ChatMessage }) {
   if (hasParts) {
     renderedParts = _partsRenderCache.get(message);
     if (!renderedParts) {
-      renderedParts = renderPartsWithGrouping(message.parts);
+      renderedParts = renderAllParts(message.parts);
       _partsRenderCache.set(message, renderedParts);
     }
   }

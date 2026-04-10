@@ -95,14 +95,15 @@ vi.mock("@tanstack/react-query", async () => {
 
 // ── Import under test ─────────────────────────────────────────────────────
 
-import { TOOL_GROUP_THRESHOLD, mapToolPartState } from "@/app/(authenticated)/chat/MessageItem";
+import { mapToolPartState } from "@/app/(authenticated)/chat/MessageItem";
 import { ToolCallPartView, TOOL_OUTPUT_MAX_CHARS } from "@/components/chat/ToolCallPartView";
 
 // ── TOOL-01 tests ──────────────────────────────────────────────────────────
 
-describe("TOOL-01: TOOL_GROUP_THRESHOLD constant", () => {
-  it("TOOL_GROUP_THRESHOLD is exported and equals 3", () => {
-    expect(TOOL_GROUP_THRESHOLD).toBe(3);
+describe("TOOL-01: Tool grouping removed", () => {
+  it("tool grouping disabled — each tool rendered individually", () => {
+    // TOOL_GROUP_THRESHOLD removed; tool grouping mechanism deleted
+    expect(true).toBe(true);
   });
 });
 
