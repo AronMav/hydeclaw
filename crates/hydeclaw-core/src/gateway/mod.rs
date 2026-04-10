@@ -36,6 +36,8 @@ mod sse_types {
     pub const SYNC: &str = "sync";
     pub const FINISH: &str = "finish";
     pub const ERROR: &str = "error";
+    pub const APPROVAL_NEEDED: &str = "approval-needed";
+    pub const APPROVAL_RESOLVED: &str = "approval-resolved";
 }
 
 /// Public OpenAI-format message — used by gateway AND referenced from engine::handle_openai.
