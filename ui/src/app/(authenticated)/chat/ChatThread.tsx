@@ -842,8 +842,11 @@ export function ChatThread({
     }
   }, [engineRunning, activeSessionId, currentAgent]);
 
+  // Always fetch session messages — even during streaming.
+  // During live streaming, sourceMessages prefers live data, but history data
+  // is needed as fallback (e.g. F5 reload while agent is processing).
   const { data: sessionMessagesData, isLoading: historyLoading } = useSessionMessages(
-    isActivePhase(connectionPhase) ? null : activeSessionId,
+    activeSessionId,
     engineRunning,
   );
   const renderLimit = useChatStore((s) => s.agents[s.currentAgent]?.renderLimit ?? 100);
