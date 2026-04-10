@@ -3,7 +3,6 @@
 import { cleanContent } from "@/lib/format";
 import { MessageContent } from "@/components/ui/message";
 import { useChatStore } from "@/stores/chat-store";
-import { useSmoothedText } from "@/hooks/use-smoothed-text";
 
 export function TextPart({ text }: { text: string }) {
   const currentAgent = useChatStore((s) => s.currentAgent)
@@ -11,8 +10,7 @@ export function TextPart({ text }: { text: string }) {
     (s) => s.agents[currentAgent]?.connectionPhase === "streaming"
   )
   const cleaned = cleanContent(text);
-  const smoothed = useSmoothedText(cleaned, isStreaming);
-  if (!smoothed) return null;
+  if (!cleaned) return null;
   return (
     <MessageContent
       markdown
@@ -24,7 +22,7 @@ export function TextPart({ text }: { text: string }) {
         [&_a]:text-primary [&_a]:font-bold [&_a]:no-underline hover:[&_a]:underline
         [&_li]:text-foreground [&_strong]:text-foreground [&_strong]:font-bold"
     >
-      {smoothed}
+      {cleaned}
     </MessageContent>
   );
 }
