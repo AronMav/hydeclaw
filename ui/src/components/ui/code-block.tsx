@@ -13,7 +13,11 @@ function CodeBlockHeader({ language, code }: { language?: string; code: string }
 
   const handleCopy = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(code)
+      if (navigator.clipboard) {
+        await navigator.clipboard.writeText(code)
+      } else {
+        throw new Error("clipboard unavailable")
+      }
     } catch {
       const ta = document.createElement("textarea")
       ta.value = code
