@@ -500,7 +500,7 @@ pub(crate) async fn api_chat_sse(
         let mut turn_count = 0;
         let mut turn_chain: Vec<String> = Vec::new();
 
-        loop {
+        'turn_loop: loop {
             let current_agent_name = current_engine.name().to_string();
             turn_chain.push(current_agent_name.clone());
 
@@ -578,73 +578,83 @@ pub(crate) async fn api_chat_sse(
                 }
             };
 
-            // ── Routing: check handoff tool first, then @-mention fallback ──
+            // ── Routing: check completed async handoffs first, then @-mention fallback ──
 
-            // Priority 1: Structured handoff (D-06, D-07)
-            let handoff = current_engine.take_handoff().await;
-            if let Some(req) = handoff {
-                let next_agent_name = req.target_agent.clone();
+            // Priority 1: Drain completed async handoffs
+            let completed_handoffs = current_engine.take_pending_handoffs().await;
+            if !completed_handoffs.is_empty() {
+                let timeout_dur = std::time::Duration::from_secs(120);
 
-                // Resolve next agent's engine
-                let next_engine = match agent_map.read().await.get(&next_agent_name) {
-                    Some(h) => h.engine.clone(),
-                    None => {
-                        tracing::warn!(target = %next_agent_name, "handoff target agent not found, stopping turn loop");
-                        break;
+                for ph in completed_handoffs {
+                    match tokio::time::timeout(timeout_dur, ph.completion_rx).await {
+                        Ok(Ok(sub_result)) => {
+                            let response_text = match (&sub_result.status, &sub_result.result, &sub_result.error) {
+                                (crate::agent::subagent_state::SubagentStatus::Completed, Some(r), _) => r.clone(),
+                                (_, _, Some(e)) => format!("(Error from {}): {}", ph.target_name, e),
+                                _ => format!("(No response from {})", ph.target_name),
+                            };
+
+                            // Truncate to max_handoff_context_chars
+                            let max_ctx = state.config.limits.max_handoff_context_chars;
+                            let truncated_response = if response_text.len() > max_ctx {
+                                let mut end = max_ctx;
+                                while end > 0 && !response_text.is_char_boundary(end) { end -= 1; }
+                                format!("{}... [truncated]", &response_text[..end])
+                            } else {
+                                response_text
+                            };
+
+                            tracing::info!(
+                                from = %ph.target_name,
+                                to = %current_engine.name(),
+                                "turn loop: injecting async handoff result"
+                            );
+
+                            current_msg = hydeclaw_types::IncomingMessage {
+                                user_id: format!("agent:{}", ph.target_name),
+                                text: Some(format!("[Response from {}]\n{}", ph.target_name, truncated_response)),
+                                attachments: vec![],
+                                agent_id: current_engine.name().to_string(),
+                                channel: crate::agent::channel_kind::channel::INTER_AGENT.to_string(),
+                                context: serde_json::json!({
+                                    "from": ph.target_name,
+                                    "response_from": ph.target_name,
+                                    "handoff_return": true,
+                                }),
+                                timestamp: chrono::Utc::now(),
+                                formatting_prompt: None,
+                                tool_policy_override: None,
+                            };
+                            current_session_id = Some(sid);
+                            current_force_new = false;
+                            continue 'turn_loop;
+                        }
+                        Ok(Err(_)) => {
+                            tracing::warn!(target = %ph.target_name, "turn loop: handoff completion channel closed");
+                        }
+                        Err(_) => {
+                            tracing::warn!(target = %ph.target_name, timeout_secs = 120, "turn loop: handoff timed out");
+                            current_msg = hydeclaw_types::IncomingMessage {
+                                user_id: format!("agent:{}", ph.target_name),
+                                text: Some(format!("[Response from {}]\n(No response from {} -- task timed out)", ph.target_name, ph.target_name)),
+                                attachments: vec![],
+                                agent_id: current_engine.name().to_string(),
+                                channel: crate::agent::channel_kind::channel::INTER_AGENT.to_string(),
+                                context: serde_json::json!({
+                                    "from": ph.target_name,
+                                    "handoff_return": true,
+                                    "timeout": true,
+                                }),
+                                timestamp: chrono::Utc::now(),
+                                formatting_prompt: None,
+                                tool_policy_override: None,
+                            };
+                            current_session_id = Some(sid);
+                            current_force_new = false;
+                            continue 'turn_loop;
+                        }
                     }
-                };
-
-                // Add participant (D-03: handoff adds participant AND transfers turn)
-                let _ = crate::db::sessions::add_participant(current_engine.db_pool(), sid, &next_agent_name).await;
-
-                // Signal agent switch to converter task (UI separator)
-                event_tx.send(StreamEvent::AgentSwitch { agent_name: next_agent_name.clone() }).ok();
-                event_tx.send(StreamEvent::RichCard {
-                    card_type: "agent-turn".to_string(),
-                    data: serde_json::json!({
-                        "agentName": next_agent_name,
-                        "reason": format!("handoff from {}", current_agent_name),
-                    }),
-                }).ok();
-
-                // Truncate handoff context to prevent context window bloat (CTXA-04)
-                let max_ctx_chars = state.config.limits.max_handoff_context_chars;
-                let truncated_context = if req.context.len() > max_ctx_chars {
-                    let mut end = max_ctx_chars;
-                    // Avoid splitting UTF-8 characters
-                    while !req.context.is_char_boundary(end) && end > 0 {
-                        end -= 1;
-                    }
-                    format!("{}... [truncated]", &req.context[..end])
-                } else {
-                    req.context.clone()
-                };
-
-                // Build structured inter-agent message (D-14)
-                let context_text = format!(
-                    "[Handoff from {}]\nTask: {}\nContext: {}",
-                    current_agent_name, req.task, truncated_context
-                );
-                current_msg = hydeclaw_types::IncomingMessage {
-                    user_id: format!("agent:{}", current_agent_name),
-                    text: Some(context_text),
-                    attachments: vec![],
-                    agent_id: next_agent_name.clone(),
-                    channel: crate::agent::channel_kind::channel::INTER_AGENT.to_string(),
-                    context: serde_json::json!({
-                        "from": current_agent_name,
-                        "task": req.task,
-                        "context": truncated_context,
-                        "handoff": true,
-                    }),
-                    timestamp: chrono::Utc::now(),
-                    formatting_prompt: None,
-                    tool_policy_override: None,
-                };
-                current_engine = next_engine;
-                current_session_id = Some(sid);
-                current_force_new = false;
-                continue;
+                }
             }
 
             // Priority 2: @-mention fallback with self-mention filtering (D-09, D-10, D-11)
