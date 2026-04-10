@@ -148,12 +148,21 @@ export default function ChatPage() {
     // Priority 1: URL ?s= param (deep link)
     if (urlSessionId && sessions.some((s) => s.id === urlSessionId)) {
       useChatStore.getState().selectSession(urlSessionId, currentAgent);
+      // If session is still running, auto-resume SSE stream
+      const urlSession = sessions.find((s) => s.id === urlSessionId);
+      if (urlSession?.run_status === "running") {
+        useChatStore.getState().resumeStream(currentAgent, urlSessionId);
+      }
       return;
     }
 
     // Priority 2: Most recent session
     if (sessions.length > 0) {
       useChatStore.getState().selectSession(sessions[0].id, currentAgent);
+      // If session is still running, auto-resume SSE stream
+      if (sessions[0].run_status === "running") {
+        useChatStore.getState().resumeStream(currentAgent, sessions[0].id);
+      }
       return;
     }
 
