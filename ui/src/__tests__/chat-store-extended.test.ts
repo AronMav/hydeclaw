@@ -318,10 +318,12 @@ describe("STATE-01: history to live transition", () => {
 
     // sendMessage block — from "sendMessage: (text: string) => {" to "stopStream:"
     // Note: skip over the interface declaration which uses "=> void;" not "=> {"
-    const sendMsgImplStart = src.indexOf("sendMessage: (text: string) => {");
+    const sendMsgImplStart = src.indexOf("sendMessage: (text");
+    // Find the opening brace of the implementation
+    const sendMsgBrace = src.indexOf("=> {", sendMsgImplStart);
     const sendMessageBlock = src.slice(
-      sendMsgImplStart,
-      src.indexOf("stopStream:", sendMsgImplStart)
+      sendMsgBrace,
+      src.indexOf("stopStream:", sendMsgBrace)
     );
     // No old-style viewMode update calls
     expect(sendMessageBlock).not.toMatch(/update\(agent,\s*\{\s*viewMode:\s*["']live["']\s*\}/);
