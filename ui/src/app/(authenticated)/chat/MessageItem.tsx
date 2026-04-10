@@ -1,6 +1,7 @@
 "use client";
 
 import React, { memo, type ReactNode } from "react";
+import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { useChatStore } from "@/stores/chat-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useTranslation } from "@/hooks/use-translation";
@@ -326,6 +327,8 @@ function AssistantMessage({ message }: { message: ChatMessage }) {
   // PERF-03: WeakMap cache for rendered parts — only re-render if message object changed.
   // Cache key is the ChatMessage object reference; PERF-02 in-place mutation ensures
   // non-streaming messages keep stable refs so they get cache hits across re-renders.
+  const [animateRef] = useAutoAnimate({ duration: 200 });
+
   let renderedParts: ReactNode[] | undefined;
   if (hasParts) {
     renderedParts = _partsRenderCache.get(message);
@@ -354,7 +357,7 @@ function AssistantMessage({ message }: { message: ChatMessage }) {
           </div>
           <MessageActions message={message} showReload />
         </div>
-        <div className="min-w-0 space-y-3">
+        <div ref={animateRef} className="min-w-0 space-y-3">
           {hasParts ? renderedParts : <EmptyPartView />}
         </div>
       </div>
