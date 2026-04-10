@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { devtools } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 
-import { apiDelete, apiPatch } from "@/lib/api";
+import { apiDelete, apiPatch, apiPost } from "@/lib/api";
 import { queryClient } from "@/lib/query-client";
 import { qk } from "@/lib/queries";
 
@@ -13,9 +13,10 @@ import { createStreamingRenderer } from "./streaming-renderer";
 import { saveLastSession, clearLastSessionId } from "./chat-persistence";
 
 // ── Re-exports for backward compatibility ───────────────────────────────────
-export type { ChatMessage, MessagePart, TextPart, ToolPart, ToolPartState, RichCardPart, FilePart, SourceUrlPart, ReasoningPart, ConnectionPhase, MessageSource, ChatStore } from "./chat-types";
+export type { ChatMessage, MessagePart, TextPart, ToolPart, ToolPartState, RichCardPart, FilePart, SourceUrlPart, ReasoningPart, ConnectionPhase, MessageSource, ChatStore, ApprovalPart, StepGroupPart, ContinuationSeparatorPart } from "./chat-types";
 export { isActivePhase, MAX_INPUT_LENGTH, STREAM_THROTTLE_MS } from "./chat-types";
-export { convertHistory, getCachedHistoryMessages } from "./chat-history";
+export { convertHistory, getCachedHistoryMessages, getCachedRawMessages, findSiblings } from "./chat-history";
+export { contentHash, reconcileLiveWithHistory } from "./chat-reconciliation";
 export { saveLastSession, getInitialAgent, getLastSessionId } from "./chat-persistence";
 
 // ── Store implementation ────────────────────────────────────────────────────
@@ -441,6 +442,63 @@ export const useChatStore = create<ChatStore>()(
         document.body.removeChild(a);
       } finally {
         URL.revokeObjectURL(url);
+      }
+    },
+
+    switchBranch: (parentMessageId: string, selectedChildId: string) => {
+      const agent = get().currentAgent;
+      const st = get().agents[agent];
+      if (!st) return;
+
+      set((draft) => {
+        const s = draft.agents[agent];
+        if (s) s.selectedBranches[parentMessageId] = selectedChildId;
+      });
+
+      // Re-resolve display messages from cached history rows
+      if (st.messageSource.mode === "history" && st.activeSessionId) {
+        queryClient.invalidateQueries({ queryKey: qk.sessionMessages(st.activeSessionId) });
+      }
+    },
+
+    forkAndRegenerate: async (messageId: string, newContent: string) => {
+      const store = get();
+      const agent = store.currentAgent;
+      const st = store.agents[agent] ?? emptyAgentState();
+      const sessionId = st.activeSessionId;
+      if (!sessionId) return;
+
+      try {
+        const resp = await apiPost<{
+          message_id: string;
+          parent_message_id: string;
+          branch_from_message_id: string;
+        }>(`/api/sessions/${sessionId}/fork`, {
+          branch_from_message_id: messageId,
+          content: newContent,
+        });
+
+        const currentSt = get().agents[agent] ?? emptyAgentState();
+        let messages: ChatMessage[];
+        if (currentSt.messageSource.mode === "history") {
+          messages = getCachedHistoryMessages(sessionId, currentSt.selectedBranches);
+        } else {
+          messages = getLiveMessages(currentSt.messageSource);
+        }
+
+        const forkIdx = messages.findIndex((m) => m.id === messageId);
+        const seedMessages = forkIdx >= 0 ? messages.slice(0, forkIdx) : messages;
+
+        set((draft) => {
+          const s = draft.agents[agent];
+          if (s && resp.parent_message_id) {
+            s.selectedBranches[resp.parent_message_id] = resp.message_id;
+          }
+        });
+
+        renderer.startStream(agent, sessionId, seedMessages, newContent);
+      } catch (e) {
+        console.error("[fork] failed:", e);
       }
     },
   };

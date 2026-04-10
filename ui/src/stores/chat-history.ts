@@ -12,10 +12,14 @@ import { qk } from "@/lib/queries";
  * from the same agent are merged into a single visual message to ensure
  * stable tool grouping and consistent identity.
  */
-export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean): ChatMessage[] {
+export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean, selectedBranches?: Record<string, string>): ChatMessage[] {
+  // When branching data exists and selectedBranches provided, resolve active path first
+  const resolvedRows = selectedBranches && rows.some(r => r.parent_message_id != null)
+    ? resolveActivePath(rows, selectedBranches)
+    : rows;
   // Filter out streaming placeholder messages ONLY if we have an active live stream
   // that will provide the same content. If not, show them as fallback (history).
-  const filtered = rows.filter(m => {
+  const filtered = resolvedRows.filter(m => {
     if (m.status === "streaming" && isAgentStreaming) return false;
     return true;
   });
@@ -51,6 +55,8 @@ export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean): 
         parts: [{ type: "text", text: m.content || "" }],
         createdAt: m.created_at,
         agentId: m.agent_id ?? undefined,
+        parentMessageId: m.parent_message_id ?? undefined,
+        branchFromMessageId: m.branch_from_message_id ?? undefined,
       });
     } else if (m.role === "assistant" && !m.tool_call_id) {
       // Assistant text block
@@ -69,6 +75,8 @@ export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean): 
         parts: newParts,
         createdAt: m.created_at,
         agentId: assistantAgentId,
+        parentMessageId: m.parent_message_id ?? undefined,
+        branchFromMessageId: m.branch_from_message_id ?? undefined,
       };
     } else if (m.role === "tool" && m.tool_call_id) {
       // Tool result block — always attach to the latest assistant message
@@ -119,8 +127,79 @@ export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean): 
  * See ARCH-02 audit (phase 34): queryClient.getQueryData is intentional here and
  * in sendMessage(); no React component calls getQueryData directly.
  */
-export function getCachedHistoryMessages(sessionId: string | null): ChatMessage[] {
+export function getCachedHistoryMessages(sessionId: string | null, selectedBranches?: Record<string, string>): ChatMessage[] {
   if (!sessionId) return [];
   const cached = queryClient.getQueryData<{ messages: MessageRow[] }>(qk.sessionMessages(sessionId));
-  return cached ? convertHistory(cached.messages) : [];
+  return cached ? convertHistory(cached.messages, false, selectedBranches) : [];
+}
+
+/** Get all raw MessageRow[] from React Query cache for a session (for sibling discovery). */
+export function getCachedRawMessages(sessionId: string | null): MessageRow[] {
+  if (!sessionId) return [];
+  const cached = queryClient.getQueryData<{ messages: MessageRow[] }>(qk.sessionMessages(sessionId));
+  return cached?.messages ?? [];
+}
+
+// ── Branch resolution ─────────────────────────────────────────────────────
+
+/**
+ * Given all messages (including all branches) and the user's branch selections,
+ * returns the linear path of messages to display.
+ */
+export function resolveActivePath(
+  rows: MessageRow[],
+  selectedBranches: Record<string, string>,
+): MessageRow[] {
+  const hasBranching = rows.some(r => r.parent_message_id != null);
+  if (!hasBranching) {
+    return [...rows].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  }
+
+  const childrenOf = new Map<string, MessageRow[]>();
+  const roots: MessageRow[] = [];
+
+  for (const r of rows) {
+    if (r.parent_message_id == null) {
+      roots.push(r);
+    } else {
+      const siblings = childrenOf.get(r.parent_message_id) ?? [];
+      siblings.push(r);
+      childrenOf.set(r.parent_message_id, siblings);
+    }
+  }
+
+  for (const [, children] of childrenOf) {
+    children.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  }
+
+  roots.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  if (roots.length === 0) return [];
+
+  const path: MessageRow[] = [];
+  let current: MessageRow | undefined = roots[0];
+
+  while (current) {
+    path.push(current);
+    const children = childrenOf.get(current.id);
+    if (!children || children.length === 0) break;
+
+    const selectedId: string | undefined = selectedBranches[current.id];
+    current = selectedId
+      ? children.find(c => c.id === selectedId) ?? children[children.length - 1]
+      : children[children.length - 1];
+  }
+
+  return path;
+}
+
+/** Find all sibling messages (sharing the same parent, same role). */
+export function findSiblings(rows: MessageRow[], messageId: string): { siblings: MessageRow[]; index: number } {
+  const msg = rows.find(r => r.id === messageId);
+  if (!msg || !msg.parent_message_id) return { siblings: msg ? [msg] : [], index: 0 };
+
+  const siblings = rows
+    .filter(r => r.parent_message_id === msg.parent_message_id && r.role === msg.role)
+    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+  return { siblings, index: siblings.findIndex(s => s.id === messageId) };
 }
