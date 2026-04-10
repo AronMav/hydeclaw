@@ -213,9 +213,11 @@ export class IncrementalParser {
   }
 
   private appendToLast(type: "text" | "reasoning", text: string) {
-    const last = this.parts[this.parts.length - 1];
+    const lastIdx = this.parts.length - 1;
+    const last = this.parts[lastIdx];
     if (last && last.type === type) {
-      last.text += text;
+      // Create new object for immutable update compatibility (Fix IMM-01)
+      this.parts[lastIdx] = { ...last, text: last.text + text };
     } else {
       this.parts.push({ type, text });
     }

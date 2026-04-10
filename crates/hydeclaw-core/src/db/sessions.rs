@@ -483,7 +483,16 @@ pub async fn cleanup_interrupted_sessions(db: &PgPool) -> Result<usize> {
         }
     }
 
-    // 4. Clear stale streamStatus from UI metadata.
+    // 4. Final safety check: any session still 'running' with no activity for 30m is 'interrupted'
+    sqlx::query(
+        "UPDATE sessions SET run_status = 'interrupted' \
+         WHERE run_status = 'running' \
+           AND COALESCE(activity_at, last_message_at) < NOW() - interval '30 minutes'"
+    )
+    .execute(db)
+    .await?;
+
+    // 5. Clear stale streamStatus from UI metadata.
     //    After a restart, no streams are active, so any session showing "streaming"
     //    in its UI metadata must be stale. Clear them all at once.
     if let Err(e) = sqlx::query(
