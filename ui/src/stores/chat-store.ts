@@ -7,91 +7,16 @@ import { queryClient } from "@/lib/query-client";
 import { qk } from "@/lib/queries";
 
 import { isActivePhase, emptyAgentState, getLiveMessages } from "./chat-types";
-import type { ChatMessage, TextPart, AgentState } from "./chat-types";
+import type { ChatMessage, TextPart, AgentState, ChatStore } from "./chat-types";
 import { getCachedHistoryMessages } from "./chat-history";
 import { createStreamingRenderer } from "./streaming-renderer";
+import { saveLastSession, clearLastSessionId } from "./chat-persistence";
 
 // ── Re-exports for backward compatibility ───────────────────────────────────
-export type { ChatMessage, MessagePart, TextPart, ToolPart, ToolPartState, RichCardPart, FilePart, SourceUrlPart, ReasoningPart, ConnectionPhase, MessageSource } from "./chat-types";
+export type { ChatMessage, MessagePart, TextPart, ToolPart, ToolPartState, RichCardPart, FilePart, SourceUrlPart, ReasoningPart, ConnectionPhase, MessageSource, ChatStore } from "./chat-types";
 export { isActivePhase, MAX_INPUT_LENGTH, STREAM_THROTTLE_MS } from "./chat-types";
 export { convertHistory, getCachedHistoryMessages } from "./chat-history";
-
-// ── Store interface ─────────────────────────────────────────────────────────
-
-const LAST_SESSION_KEY = "hydeclaw.chat.lastSession";
-
-interface ChatStore {
-  /** Per-agent state map. */
-  agents: Record<string, AgentState>;
-  /** Currently selected agent name. */
-  currentAgent: string;
-  /** Cache: sessionId -> participant list (updated from API responses and WS events). */
-  sessionParticipants: Record<string, string[]>;
-
-  // ── Actions ──
-  setCurrentAgent: (name: string) => void;
-  updateSessionParticipants: (sessionId: string, participants: string[]) => void;
-  selectSession: (sessionId: string, forAgent?: string) => Promise<void>;
-  /** Select a session by ID for a specific agent. */
-  selectSessionById: (agent: string, sessionId: string) => void;
-  newChat: () => void;
-  /** Silently refresh history messages without loading indicator (used by WS session_updated). */
-  refreshHistory: (sessionId: string, agentName?: string) => void;
-  clearError: () => void;
-
-  sendMessage: (text: string) => void;
-  stopStream: () => void;
-  regenerate: () => void;
-  regenerateFrom: (messageId: string) => void;
-
-  resumeStream: (agent: string, sessionId: string) => void;
-  setThinking: (agent: string, sessionId: string | null) => void;
-  setThinkingLevel: (level: number) => void;
-  /** Server-driven: mark a session as actively processing. */
-  markSessionActive: (agent: string, sessionId: string) => void;
-  /** Server-driven: mark a session as no longer processing. */
-  markSessionInactive: (agent: string, sessionId: string) => void;
-  setModelOverride: (agent: string, model: string | null) => Promise<void>;
-  renameSession: (sessionId: string, title: string) => Promise<void>;
-  deleteSession: (sessionId: string) => Promise<void>;
-  deleteAllSessions: () => Promise<void>;
-  deleteMessage: (messageId: string) => Promise<void>;
-  loadEarlierMessages: (agent: string) => void;
-  exportSession: () => Promise<void>;
-
-  // ── Internal ──
-  _selectCounter: Record<string, number>;
-}
-
-// ── localStorage helpers ────────────────────────────────────────────────────
-
-export function saveLastSession(agent: string, sessionId?: string) {
-  try {
-    const data = loadLastSession();
-    data.agent = agent;
-    if (sessionId) data.sessions = { ...data.sessions, [agent]: sessionId };
-    localStorage.setItem(LAST_SESSION_KEY, JSON.stringify(data));
-  } catch { /* ignore */ }
-}
-
-function clearLastSessionId(agent: string) {
-  try {
-    const data = loadLastSession();
-    if (data.sessions?.[agent]) {
-      delete data.sessions[agent];
-      localStorage.setItem(LAST_SESSION_KEY, JSON.stringify(data));
-    }
-  } catch { /* ignore */ }
-}
-
-function loadLastSession(): { agent?: string; sessions?: Record<string, string>; sessionId?: string } {
-  try {
-    const saved = localStorage.getItem(LAST_SESSION_KEY);
-    if (saved) return JSON.parse(saved);
-  } catch { /* ignore */ }
-  return {};
-}
-
+export { saveLastSession, getInitialAgent, getLastSessionId } from "./chat-persistence";
 
 // ── Store implementation ────────────────────────────────────────────────────
 
@@ -524,17 +449,3 @@ export const useChatStore = create<ChatStore>()(
   ),
 );
 
-// ── Auto-restore helper (call once on mount) ───────────────────────────────
-
-export function getInitialAgent(agents: string[]): string {
-  const { agent: savedAgent } = loadLastSession();
-  if (savedAgent && agents.includes(savedAgent)) return savedAgent;
-  return agents[0] || "";
-}
-
-export function getLastSessionId(agent?: string): string | undefined {
-  const data = loadLastSession();
-  // Per-agent session lookup, fallback to legacy global sessionId
-  if (agent && data.sessions?.[agent]) return data.sessions[agent];
-  return data.sessionId;
-}
