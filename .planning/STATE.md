@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v0.12.0
 milestone_name: Chat Redesign
-status: Defining requirements
-stopped_at: Completed 60-01-PLAN.md
-last_updated: "2026-04-10T21:11:57.426Z"
-last_activity: 2026-04-09 — Milestone v0.13.0 started
+status: executing
+stopped_at: Phase 60 UI-SPEC approved
+last_updated: "2026-04-10T21:00:39.510Z"
+last_activity: 2026-04-10 -- Phase 60 execution started
 progress:
-  total_phases: 6
-  completed_phases: 0
-  total_plans: 4
-  completed_plans: 7
+  total_phases: 11
+  completed_phases: 6
+  total_plans: 18
+  completed_plans: 12
 ---
 
 # Project State
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-09)
 
 **Core value:** Стабильная и безопасная AI-платформа с self-hosted фокусом
-**Current focus:** Defining requirements
+**Current focus:** Phase 60 — async-delegation
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-04-09 — Milestone v0.13.0 started
+Phase: 60 (async-delegation) — EXECUTING
+Plan: 1 of 2
+Status: Executing Phase 60
+Last activity: 2026-04-10 -- Phase 60 execution started
 
 ## Accumulated Context
 
@@ -59,7 +59,7 @@ Last activity: 2026-04-09 — Milestone v0.13.0 started
 - [Phase 44-ux-polish]: totalPartsCount Stage 3 Fix useEffect removed — followOutput callback is single scroll authority
 - [Phase 45-cleanup]: CLN-01: StreamStatus/isActiveStream removed — ConnectionPhase/isActivePhase are sole stream-state authorities
 - [Phase 45-cleanup]: CLN-02: AbortController/timers in private Maps not Immer state; streamGeneration moved to AgentState as plain number
-- [Phase 60-async-delegation]: Async handoff via subagent delegation replaces blocking turn-loop switching
+- [Phase 59]: assertToken() throws on empty token with redirect; getToken() kept backward-compatible for SSE callers
 
 ### Pending Todos
 
@@ -73,6 +73,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-10T21:11:57.423Z
-Stopped at: Completed 60-01-PLAN.md
-Resume with: `/gsd:plan-phase 40`
+Last session: 2026-04-10T20:46:25.752Z
+Stopped at: Phase 60 UI-SPEC approved
+Resume with: Next phase

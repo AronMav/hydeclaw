@@ -162,6 +162,22 @@ Plans:
 - [ ] 58-01-PLAN.md — Bridge error propagation + Telegram mention stripping
 **UI hint**: no
 
+### Phase 60: Async Delegation Model
+**Goal**: Replace blocking handoff (turn loop switching) with async delegation — parent agent stays in control, target agents run as isolated async subagents, results injected as user messages
+**Depends on**: Nothing
+**Requirements**: DELEG-01, DELEG-02, DELEG-03, DELEG-04, DELEG-05
+**Success Criteria** (what must be TRUE):
+  1. handoff tool returns immediately with status message, does not block SSE stream
+  2. Target agent runs as isolated async subagent via existing subagent infrastructure
+  3. Completed subagent results injected as user messages in turn loop
+  4. Frontend simplified: no handoff stack, no agent-turn switching in streaming-renderer
+  5. All existing chat tests pass after refactoring
+**Plans:** 2 plans
+Plans:
+- [ ] 60-01-PLAN.md — Backend: async handoff spawn + turn loop result injection
+- [ ] 60-02-PLAN.md — Frontend: remove handoff state fields, AgentTurnSeparator, update tests
+**UI hint**: yes
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -176,3 +192,4 @@ Plans:
 | 55. Gateway Sub-Router Extraction | v0.13.0 | 1/1 | Complete | 2026-04-10 |
 | 56. Backend Channels Hardening | v0.13.0 | 0/1 | In Progress | — |
 | 58. Channels Bridge Errors | v0.13.0 | 0/1 | Not Started | — |
+| 60. Async Delegation | v0.14.0 | 0/2 | Not Started | — |
