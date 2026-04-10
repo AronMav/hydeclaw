@@ -892,11 +892,14 @@ export function ChatThread({
   // Show thinking indicator when waiting for a response.
   // Cases: (1) just submitted, (2) streaming but no assistant text yet,
   //        (3) engine running server-side (e.g. during handoff — no SSE stream, but agent is working)
+  // Do NOT show if the last message is from a different agent (handoff already happened — that agent shows its own thinking).
   const lastMsg = sourceMessages[sourceMessages.length - 1];
   const hasAssistantContent = lastMsg?.role === "assistant" && lastMsg.parts.length > 0;
+  const lastMsgIsOtherAgent = lastMsg?.role === "assistant" && lastMsg.agentId && lastMsg.agentId !== currentAgent;
   const isLiveOrHistory = messageSource.mode === "live" || messageSource.mode === "history";
   const showThinking = isLiveOrHistory
     && !hasAssistantContent
+    && !lastMsgIsOtherAgent
     && (connectionPhase === "submitted" || connectionPhase === "streaming" || connectionPhase === "reconnecting" || engineRunning);
 
   // Only show loading skeleton when there is truly no data to display (Fix D).
