@@ -121,18 +121,11 @@ export function createStreamingRenderer(store: StoreAccess) {
       ? existingSt.messageSource.messages
       : getCachedHistoryMessages(sessionId);
 
-    // CRITICAL: If seedMessages is empty (e.g. on page refresh when cache is cold), 
-    // keep the existing messageSource (which is usually mode: "history") 
-    // to allow React Query to populate it normally without us overwriting it with [].
-    const newSource = seedMessages.length > 0 
-      ? { mode: "live", messages: seedMessages } 
-      : (existingSt?.messageSource ?? { mode: "history", sessionId });
-
     update(agent, {
       streamError: null,
       connectionPhase: "streaming",
       connectionError: null,
-      messageSource: newSource,
+      messageSource: { mode: "live" as const, messages: seedMessages },
     });
 
     const token = assertToken();
