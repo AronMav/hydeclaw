@@ -9,7 +9,7 @@ impl AgentEngine {
     /// Sets `handoff_target` which the turn loop in chat.rs reads after handle_sse returns.
     /// Adds participant to session AND transfers the active turn to the target agent.
     pub(super) async fn handle_handoff(&self, args: &serde_json::Value) -> String {
-        // 1. Validate required parameters (D-02: agent, task, context all required)
+        // 1. Validate required parameters
         let target = match args.get("agent").and_then(|v| v.as_str()) {
             Some(n) if !n.is_empty() => n,
             _ => return "Error: 'agent' parameter is required and must be non-empty".to_string(),
@@ -28,43 +28,59 @@ impl AgentEngine {
             return "Error: cannot handoff to yourself".to_string();
         }
 
-        // 3. Verify target agent exists
+        // 3. Resolve target agent engine
         let agent_map = match &self.agent_map {
             Some(m) => m,
             None => return "Error: agent registry not available".to_string(),
         };
-        {
+        let target_engine = {
             let map = agent_map.read().await;
-            if !map.contains_key(target) {
-                return format!(
+            match map.get(target) {
+                Some(h) => h.engine.clone(),
+                None => return format!(
                     "Error: agent '{}' not found. Use agents_list to see available agents.",
                     target
-                );
+                ),
             }
-        }
+        };
 
-        // 4. Prevent multiple handoffs in same turn (parallel tool execution guard)
-        // 5. Set handoff target (consumed by turn loop in chat.rs)
-        {
-            let mut target_lock = self.handoff_target.lock().await;
-            if target_lock.is_some() {
-                return "Error: handoff already requested this turn. Only one handoff per turn is allowed.".to_string();
-            }
-            *target_lock = Some(HandoffRequest {
-                target_agent: target.to_string(),
-                task: task.to_string(),
-                context: context.to_string(),
-            });
+        // 4. Add participant to session
+        if let Some(sid) = *self.processing_session_id().lock().await {
+            let _ = crate::agent::session_manager::SessionManager::new(self.db.clone())
+                .add_participant(sid, target).await;
         }
 
         tracing::info!(
             from = %self.agent.name,
             to = %target,
             task = %task,
-            "handoff tool: transferring turn"
+            "handoff tool: running target agent in isolated context"
         );
 
-        // 6. Return confirmation to LLM (D-04)
-        format!("Handoff to {} accepted. They will respond next.", target)
+        // 5. Run target agent as isolated subagent — own system prompt, own context.
+        // Target sees ONLY the task+context, not the initiator's full conversation.
+        let full_task = format!(
+            "{}\n\nContext from {}:\n{}",
+            task, self.agent.name, context
+        );
+
+        let timeout = std::time::Duration::from_secs(120);
+        match tokio::time::timeout(
+            timeout,
+            target_engine.run_subagent(&full_task, 30, Some(std::time::Instant::now() + timeout), None, None, None),
+        ).await {
+            Ok(Ok(response)) => {
+                tracing::info!(from = %target, to = %self.agent.name, response_len = response.len(), "handoff complete");
+                format!("[Response from {}]\n{}", target, response)
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, agent = %target, "handoff agent failed");
+                format!("[Error from {}] {}", target, e)
+            }
+            Err(_) => {
+                tracing::warn!(agent = %target, "handoff agent timed out after 120s");
+                format!("[Timeout from {}] Agent did not respond within 120 seconds.", target)
+            }
+        }
     }
 }
