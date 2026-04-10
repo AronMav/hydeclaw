@@ -613,36 +613,10 @@ export function createStreamingRenderer(store: StoreAccess) {
             case "rich-card": {
               flushText();
               if (event.cardType === "agent-turn" && event.data?.agentName) {
-                const nextAgent = event.data.agentName as string;
-                currentRespondingAgent = nextAgent;
+                currentRespondingAgent = event.data.agentName as string;
                 const currentTurnCount = store.get().agents[agent]?.turnCount ?? 0;
-                
-                // Get messages from the agent that just finished its turn
-                const currentMessages = store.get().agents[agent]?.messageSource.mode === "live" 
-                  ? [...store.get().agents[agent].messageSource.messages] 
-                  : [];
-
-                // Sync store currentAgent if this is an inter-agent turn loop in active view
-                if (store.get().currentAgent === agent) {
-                  store.set((draft: any) => {
-                    draft.currentAgent = nextAgent;
-                    if (!draft.agents[nextAgent]) draft.agents[nextAgent] = emptyAgentState();
-                    
-                    // Transfer the entire live message history to the new agent's state
-                    // This ensures the UI doesn't "flicker" or show an empty/stale list
-                    draft.agents[nextAgent].messageSource = { 
-                      mode: "live", 
-                      messages: currentMessages 
-                    };
-                    
-                    draft.agents[nextAgent].activeSessionId = receivedSessionId;
-                    draft.agents[nextAgent].connectionPhase = "streaming";
-                    draft.agents[nextAgent].turnCount = currentTurnCount + 1;
-                    draft.agents[nextAgent].pendingTargetAgent = null;
-                  });
-                } else {
-                  update(agent, { pendingTargetAgent: currentRespondingAgent, turnCount: currentTurnCount + 1 });
-                }
+                // Update turn metadata on the ORIGINAL agent — do NOT switch currentAgent
+                update(agent, { pendingTargetAgent: currentRespondingAgent, turnCount: currentTurnCount + 1 });
                 break;
               }
               parts.push({
