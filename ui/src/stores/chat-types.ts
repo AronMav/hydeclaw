@@ -169,12 +169,6 @@ export interface AgentState {
   renderLimit: number;
   /** Per-session model override (null = use agent default). */
   modelOverride: string | null;
-  /** Agent that will respond to the current message (from @-mention parsing). */
-  pendingTargetAgent: string | null;
-  /** Ordered list of agent names per assistant message turn (for multi-agent identity). */
-  agentTurns: string[];
-  /** Turn counter for multi-agent turn loop (incremented on each agent-turn event). */
-  turnCount: number;
   /** Inline message when turn limit or cycle detection stops the loop. */
   turnLimitMessage: string | null;
   /** Per-agent stream generation counter (CLN-02 HIST-03) — detects stale SSE deltas. */
@@ -236,9 +230,6 @@ export function emptyAgentState(): AgentState {
     activeSessionIds: [],
     renderLimit: 100,
     modelOverride: null,
-    pendingTargetAgent: null,
-    agentTurns: [],
-    turnCount: 0,
     turnLimitMessage: null,
     streamGeneration: 0,
     reconnectAttempt: 0,

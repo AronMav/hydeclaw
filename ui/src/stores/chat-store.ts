@@ -232,11 +232,6 @@ export const useChatStore = create<ChatStore>()(
 
       if (isActivePhase(st.connectionPhase)) return;
 
-      // Parse @-mention to set pendingTargetAgent for thinking indicator
-      const mentionMatch = text.match(/^@(\S+)/);
-      const targetAgent = mentionMatch ? mentionMatch[1] : null;
-      update(agent, { pendingTargetAgent: targetAgent });
-
       let sessionId = st.activeSessionId;
       let seedMessages: ChatMessage[] = [];
 

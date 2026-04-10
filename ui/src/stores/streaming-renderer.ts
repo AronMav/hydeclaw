@@ -249,10 +249,7 @@ export function createStreamingRenderer(store: StoreAccess) {
       streamError: null,
       connectionPhase: "submitted",
       connectionError: null,
-      agentTurns: [],  // Reset for new stream
-      turnCount: 0,
       turnLimitMessage: null,
-      pendingTargetAgent: null,  // clear stale target from previous stream
     });
     saveUiState(agent);
 
@@ -336,8 +333,7 @@ export function createStreamingRenderer(store: StoreAccess) {
     let receivedSessionId: string | null = knownSessionId ?? null;
     // Track finish event to distinguish natural end from connection drop
     let receivedFinishEvent = false;
-    // Initialize from pendingTargetAgent so first render shows correct avatar.
-    let currentRespondingAgent: string | null = store.get().agents[agent]?.pendingTargetAgent ?? agent;
+    let currentRespondingAgent: string | null = agent;
     let currentStepGroup: StepGroupPart | null = null;
 
     function flushText() {
@@ -614,13 +610,6 @@ export function createStreamingRenderer(store: StoreAccess) {
 
             case "rich-card": {
               flushText();
-              if (event.cardType === "agent-turn" && event.data?.agentName) {
-                currentRespondingAgent = event.data.agentName as string;
-                const currentTurnCount = store.get().agents[agent]?.turnCount ?? 0;
-                // Update turn metadata on the ORIGINAL agent — do NOT switch currentAgent
-                update(agent, { pendingTargetAgent: currentRespondingAgent, turnCount: currentTurnCount + 1 });
-                break;
-              }
               parts.push({
                 type: "rich-card",
                 cardType: event.cardType,
@@ -694,15 +683,12 @@ export function createStreamingRenderer(store: StoreAccess) {
 
               if (syncStatus === "finished" || syncStatus === "error" || syncStatus === "interrupted") {
                 const errorText = syncStatus === "error" ? (event.error ?? null) : null;
-                const inTurnLoop = !!store.get().agents[agent]?.pendingTargetAgent;
-                if (syncStatus === "error" || !inTurnLoop) {
-                  const newPhase: ConnectionPhase = syncStatus === "error" ? "error" : "idle";
-                  update(agent, {
-                    streamError: errorText,
-                    connectionPhase: newPhase,
-                    connectionError: errorText,
-                  });
-                }
+                const newPhase: ConnectionPhase = syncStatus === "error" ? "error" : "idle";
+                update(agent, {
+                  streamError: errorText,
+                  connectionPhase: newPhase,
+                  connectionError: errorText,
+                });
               }
               break;
             }
@@ -722,7 +708,7 @@ export function createStreamingRenderer(store: StoreAccess) {
             case "error": {
               const errText = event.errorText;
               if (errText.includes("turn limit") || errText.includes("cycle detected")) {
-                update(agent, { turnLimitMessage: errText, turnCount: 0 });
+                update(agent, { turnLimitMessage: errText });
               } else {
                 update(agent, {
                   streamError: errText,
@@ -756,8 +742,6 @@ export function createStreamingRenderer(store: StoreAccess) {
           update(agent, {
             connectionPhase: "idle",
             connectionError: null,
-            pendingTargetAgent: null,
-            turnCount: 0,
           });
         }
         saveUiState(agent);
