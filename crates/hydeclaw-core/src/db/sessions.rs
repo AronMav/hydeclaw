@@ -843,6 +843,39 @@ pub async fn resolve_active_path(
     }
 }
 
+/// Find the parent of a given message (the message immediately before it in chronological order).
+/// Returns `None` if the message is the first in the session.
+pub async fn find_parent_of_message(
+    db: &PgPool,
+    session_id: Uuid,
+    message_id: Uuid,
+) -> Result<Option<Uuid>> {
+    let row: Option<(Option<Uuid>,)> = sqlx::query_as(
+        "SELECT parent_message_id FROM messages WHERE id = $1 AND session_id = $2",
+    )
+    .bind(message_id)
+    .bind(session_id)
+    .fetch_optional(db)
+    .await?;
+
+    match row {
+        Some((parent_id,)) => Ok(parent_id),
+        None => {
+            // Message not found — fall back to chronological ordering
+            let prev: Option<(Uuid,)> = sqlx::query_as(
+                "SELECT id FROM messages WHERE session_id = $1 AND created_at < \
+                 (SELECT created_at FROM messages WHERE id = $2) \
+                 ORDER BY created_at DESC LIMIT 1",
+            )
+            .bind(session_id)
+            .bind(message_id)
+            .fetch_optional(db)
+            .await?;
+            Ok(prev.map(|(id,)| id))
+        }
+    }
+}
+
 /// Fork a session: insert a new message with parent and branch-from references.
 #[allow(clippy::too_many_arguments)]
 pub async fn save_message_branched(

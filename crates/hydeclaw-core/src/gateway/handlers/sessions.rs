@@ -25,6 +25,8 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/sessions/{id}/messages", get(api_session_messages))
         .route("/api/messages/{id}", delete(api_delete_message).patch(api_patch_message))
         .route("/api/messages/{id}/feedback", post(api_message_feedback))
+        .route("/api/sessions/{id}/fork", post(api_fork_session))
+        .route("/api/sessions/{id}/active-path", get(api_active_path))
 }
 
 // ── Latest Session endpoint ──
@@ -846,42 +848,3 @@ pub(crate) async fn api_active_path(
     }
 }
 
-#[derive(Deserialize)]
-pub(crate) struct ForkRequest {
-    /// The message to fork from (will become `branch_from_message_id`).
-    branch_from_message_id: uuid::Uuid,
-    /// Optional parent message for tree continuity.
-    parent_message_id: Option<uuid::Uuid>,
-    /// The role of the new branched message (usually "user").
-    #[serde(default = "default_role")]
-    role: String,
-    /// Content of the new message at the branch point.
-    content: String,
-}
-
-fn default_role() -> String {
-    "user".to_string()
-}
-
-/// POST /api/sessions/{id}/fork -- create a branched message in an existing session.
-pub(crate) async fn api_fork_session(
-    State(state): State<AppState>,
-    Path(session_id): Path<uuid::Uuid>,
-    Json(req): Json<ForkRequest>,
-) -> impl IntoResponse {
-    match sessions::save_message_branched(
-        &state.db,
-        session_id,
-        &req.role,
-        &req.content,
-        None,
-        None,
-        None,
-        None,
-        req.parent_message_id,
-        Some(req.branch_from_message_id),
-    ).await {
-        Ok(msg_id) => Json(json!({ "id": msg_id })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
-    }
-}

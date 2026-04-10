@@ -1,10 +1,12 @@
 use axum::{
+    Router,
     extract::{Path, State},
     http::StatusCode,
     response::{
         IntoResponse, Json,
         sse::{Event, KeepAlive, Sse},
     },
+    routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -16,6 +18,18 @@ use tokio_util::sync::CancellationToken;
 use super::super::{AppState, OpenAiMessage, sse_types};
 use crate::agent::engine::StreamEvent;
 use crate::tasks;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/health", get(health))
+        .route("/api/mcp/callback", post(mcp_callback))
+        .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/models", get(list_models))
+        .route("/v1/embeddings", post(embeddings_proxy))
+        .route("/api/chat", post(api_chat_sse))
+        .route("/api/chat/{id}/stream", get(api_chat_resume_stream))
+        .route("/api/chat/{id}/abort", post(api_chat_abort))
+}
 
 // ── Streaming message RAII guard ──
 // Ensures streaming messages are finalized in DB even if the converter task
@@ -954,7 +968,28 @@ pub(crate) async fn api_chat_sse(
                     current_responding_agent = new_agent;
                     continue; // Internal event — don't emit SSE
                 }
-                StreamEvent::Finish { finish_reason: _ } => {
+                StreamEvent::ApprovalNeeded { approval_id, tool_name, tool_input, timeout_ms } => {
+                    let data = json!({
+                        "type": sse_types::APPROVAL_NEEDED,
+                        "approvalId": approval_id,
+                        "toolName": tool_name,
+                        "toolInput": tool_input,
+                        "timeoutMs": timeout_ms,
+                    }).to_string();
+                    let _ = send_and_buffer!(data);
+                    continue;
+                }
+                StreamEvent::ApprovalResolved { approval_id, action, modified_input } => {
+                    let data = json!({
+                        "type": sse_types::APPROVAL_RESOLVED,
+                        "approvalId": approval_id,
+                        "action": action,
+                        "modifiedInput": modified_input,
+                    }).to_string();
+                    let _ = send_and_buffer!(data);
+                    continue;
+                }
+                StreamEvent::Finish { .. } => {
                     // Send any pending text-end first
                     if let Some(text_id) = pending_text_end.take() {
                         let end_data = json!({"type": sse_types::TEXT_END, "id": text_id}).to_string();
@@ -1146,7 +1181,7 @@ pub(crate) async fn api_chat_resume_stream(
 
             let sse_stream = stream! {
                 // Phase 1: Replay buffered events
-                for event_json in buffered_events {
+                for (_id, event_json) in buffered_events {
                     yield Ok::<_, std::convert::Infallible>(
                         Event::default().data(event_json)
                     );
@@ -1162,7 +1197,7 @@ pub(crate) async fn api_chat_resume_stream(
                 let mut skip_remaining = replay_count;
                 loop {
                     match broadcast_rx.recv().await {
-                        Ok(event_json) => {
+                        Ok((_id, event_json)) => {
                             if skip_remaining > 0 {
                                 skip_remaining -= 1;
                                 continue;
