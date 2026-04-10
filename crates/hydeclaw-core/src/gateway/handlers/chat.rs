@@ -524,9 +524,9 @@ pub(crate) async fn api_chat_sse(
         let mut current_force_new = force_new_session;
         let mut turn_count = 0;
         let mut turn_chain: Vec<String> = Vec::new();
-        // Track the handoff initiator so we can return control after target responds
-        // Track the handoff initiator so we can return control after target responds.
-        let mut handoff_initiator: Option<(String, std::sync::Arc<crate::agent::engine::AgentEngine>)> = None;
+        // Stack of handoff initiators — each handoff pushes, each return pops.
+        // This ensures A→B→C returns to B then A (not just the last initiator).
+        let mut handoff_stack: Vec<(String, std::sync::Arc<crate::agent::engine::AgentEngine>)> = Vec::new();
 
         loop {
             let current_agent_name = current_engine.name().to_string();
@@ -609,7 +609,7 @@ pub(crate) async fn api_chat_sse(
             // ── Routing: check handoff tool first, then @-mention fallback ──
             tracing::info!(
                 agent = %current_agent_name,
-                has_initiator = handoff_initiator.is_some(),
+                has_initiator = !handoff_stack.is_empty(),
                 turn = turn_count,
                 "turn loop: routing check"
             );
@@ -676,38 +676,39 @@ pub(crate) async fn api_chat_sse(
                     tool_policy_override: None,
                     leaf_message_id: None,
                 };
-                // Save initiator so we can return control after target responds
-                handoff_initiator = Some((current_agent_name.clone(), current_engine.clone()));
+                // Push initiator onto stack so we can return control after target responds
+                handoff_stack.push((current_agent_name.clone(), current_engine.clone()));
                 current_engine = next_engine;
                 current_session_id = Some(sid);
                 current_force_new = false;
                 continue;
             }
 
-            // Priority 1b: Return control to handoff initiator after target agent responded
-            if let Some((ref initiator_name, ref initiator_engine)) = handoff_initiator {
-                if current_agent_name != *initiator_name {
+            // Priority 1b: Return control to handoff initiator after target agent responded.
+            // Pop from stack — A→B→C returns to B, then B returns to A.
+            if let Some((initiator_name, initiator_engine)) = handoff_stack.last().cloned() {
+                if current_agent_name != initiator_name {
+                    handoff_stack.pop(); // consume this level
                     tracing::info!(
                         from = %current_agent_name,
                         to = %initiator_name,
+                        stack_depth = handoff_stack.len(),
                         "turn loop: returning control to handoff initiator"
                     );
 
-                    // Signal agent switch back to initiator
                     event_tx.send(StreamEvent::AgentSwitch { agent_name: initiator_name.clone() }).ok();
 
-                    // Build return message with target's response
+                    let truncated_response = if last_response.len() > 2000 {
+                        let mut end = 2000;
+                        while end > 0 && !last_response.is_char_boundary(end) { end -= 1; }
+                        format!("{}...", &last_response[..end])
+                    } else {
+                        last_response.clone()
+                    };
+
                     current_msg = hydeclaw_types::IncomingMessage {
                         user_id: format!("agent:{}", current_agent_name),
-                        text: Some(format!(
-                            "[Response from {}]\n{}",
-                            current_agent_name,
-                            if last_response.len() > 2000 {
-                            let mut end = 2000;
-                            while end > 0 && !last_response.is_char_boundary(end) { end -= 1; }
-                            format!("{}...", &last_response[..end])
-                        } else { last_response.clone() }
-                        )),
+                        text: Some(format!("[Response from {}]\n{}", current_agent_name, truncated_response)),
                         attachments: vec![],
                         agent_id: initiator_name.clone(),
                         channel: crate::agent::channel_kind::channel::INTER_AGENT.to_string(),
@@ -721,10 +722,9 @@ pub(crate) async fn api_chat_sse(
                         tool_policy_override: None,
                         leaf_message_id: None,
                     };
-                    current_engine = initiator_engine.clone();
+                    current_engine = initiator_engine;
                     current_session_id = Some(sid);
                     current_force_new = false;
-                    handoff_initiator = None; // Clear — initiator has control back
                     continue;
                 }
             }
