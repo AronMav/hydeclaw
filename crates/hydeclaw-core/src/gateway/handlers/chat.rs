@@ -634,10 +634,10 @@ pub(crate) async fn api_chat_sse(
                     req.context.clone()
                 };
 
-                // Build structured inter-agent message (D-14)
+                // Build structured inter-agent message with identity reinforcement (D-14)
                 let context_text = format!(
-                    "[Handoff from {}]\nTask: {}\nContext: {}",
-                    current_agent_name, req.task, truncated_context
+                    "You are {}. Respond ONLY as {}.\n\n[Handoff from {}]\nTask: {}\nContext: {}",
+                    next_agent_name, next_agent_name, current_agent_name, req.task, truncated_context
                 );
                 current_msg = hydeclaw_types::IncomingMessage {
                     user_id: format!("agent:{}", current_agent_name),
