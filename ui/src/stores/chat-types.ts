@@ -202,7 +202,7 @@ export interface ChatStore {
   refreshHistory: (sessionId: string, agentName?: string) => void;
   clearError: () => void;
 
-  sendMessage: (text: string) => void;
+  sendMessage: (text: string, attachments?: Array<any>) => void;
   stopStream: () => void;
   regenerate: () => void;
   regenerateFrom: (messageId: string) => void;
