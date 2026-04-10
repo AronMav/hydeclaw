@@ -119,11 +119,18 @@ export function createStreamingRenderer(store: StoreAccess) {
       ? existingSt.messageSource.messages
       : getCachedHistoryMessages(sessionId);
 
+    // CRITICAL: If seedMessages is empty (e.g. on page refresh when cache is cold), 
+    // keep the existing messageSource (which is usually mode: "history") 
+    // to allow React Query to populate it normally without us overwriting it with [].
+    const newSource = seedMessages.length > 0 
+      ? { mode: "live", messages: seedMessages } 
+      : (existingSt?.messageSource ?? { mode: "history", sessionId });
+
     update(agent, {
       streamError: null,
       connectionPhase: "streaming",
       connectionError: null,
-      messageSource: { mode: "live", messages: seedMessages },
+      messageSource: newSource,
     });
 
     const token = assertToken();
@@ -548,23 +555,29 @@ export function createStreamingRenderer(store: StoreAccess) {
               store.set((draft: any) => {
                 const st = draft.agents[agent];
                 if (!st) return;
-                if (st.messageSource.mode !== "live") {
+                
+                const currentSessionId = st.activeSessionId;
+                const isSameSession = receivedSessionId && currentSessionId === receivedSessionId;
+                
+                if (st.messageSource.mode !== "live" && !isSameSession) {
                   st.messageSource = { mode: "live", messages: [] };
                 }
+                
                 const liveMessages = st.messageSource.messages;
                 const existingIdx = liveMessages.findIndex((m: ChatMessage) => m.id === assistantId);
+                
                 if (existingIdx >= 0) {
                   liveMessages[existingIdx].parts = syncParts;
                 } else {
-                  const userMsgs = liveMessages.filter((m: ChatMessage) => m.role === "user");
-                  st.messageSource = { mode: "live", messages: [...userMsgs, {
+                  liveMessages.push({
                     id: assistantId,
                     role: "assistant",
                     parts: syncParts,
                     createdAt: assistantCreatedAt,
                     agentId: currentRespondingAgent ?? undefined,
-                  }] };
+                  });
                 }
+                if (st.connectionPhase !== "error" && syncStatus !== "done") st.connectionPhase = "streaming";
               });
 
               if (syncStatus === "finished" || syncStatus === "error" || syncStatus === "interrupted") {
