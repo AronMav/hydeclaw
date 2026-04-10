@@ -5,6 +5,7 @@ import type { ErrorInfo, ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { assertToken } from "@/lib/api";
 import { useChatStore, isActivePhase, convertHistory } from "@/stores/chat-store";
+import { uuid } from "@/stores/chat-types";
 import { sanitizeUrl } from "@/lib/sanitize-url";
 import { useVisualViewport } from "@/hooks/use-visual-viewport";
 import type { ChatMessage } from "@/stores/chat-store";
@@ -433,7 +434,7 @@ function ChatComposer() {
       setAttachments((prev) => [
         ...prev,
         {
-          id: crypto.randomUUID(),
+          id: uuid(),
           name: file.name,
           file,
           content: [{ type: "file", data: result.url as string, mimeType: file.type, filename: file.name }],
