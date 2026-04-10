@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.12.0
 milestone_name: Chat Redesign
 status: executing
-stopped_at: Completed 54-02-PLAN.md
-last_updated: "2026-04-10T03:54:40.400Z"
-last_activity: 2026-04-10 — Completed 54-01 (types and pure functions extraction)
+stopped_at: Completed 54-03-PLAN.md
+last_updated: "2026-04-10T04:03:00Z"
+last_activity: 2026-04-10 — Completed 54-03 (final store slimming and MEM-01 test)
 progress:
   total_phases: 7
   completed_phases: 0
   total_plans: 4
-  completed_plans: 9
+  completed_plans: 10
 ---
 
 # Project State
@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 ## Current Position
 
 Phase: 54-chat-store-decomposition
-Plan: 02
+Plan: 03 (completed)
 Status: Executing
-Last activity: 2026-04-10 — Completed 54-01 (types and pure functions extraction)
+Last activity: 2026-04-10 — Completed 54-03 (final store slimming and MEM-01 test)
 
 ## Accumulated Context
 
@@ -60,6 +60,8 @@ Last activity: 2026-04-10 — Completed 54-01 (types and pure functions extracti
 - [Phase 45-cleanup]: CLN-01: StreamStatus/isActiveStream removed — ConnectionPhase/isActivePhase are sole stream-state authorities
 - [Phase 45-cleanup]: CLN-02: AbortController/timers in private Maps not Immer state; streamGeneration moved to AgentState as plain number
 - [Phase 54]: Factory pattern with callback injection for streaming-renderer to avoid circular imports
+- [Phase 54]: ChatStore interface moved to chat-types.ts alongside AgentState
+- [Phase 54]: localStorage helpers extracted to chat-persistence.ts (pure type module stays pure)
 
 ### Pending Todos
 
@@ -73,6 +75,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-10T03:54:40.396Z
-Stopped at: Completed 54-02-PLAN.md
+Last session: 2026-04-10T04:03:00Z
+Stopped at: Completed 54-03-PLAN.md
 Resume with: `/gsd:execute-phase 54`

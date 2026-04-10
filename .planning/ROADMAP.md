@@ -122,11 +122,11 @@ Plans:
   1. chat-store.ts is under 500 lines after decomposition
   2. At least 3 extracted modules (types, history, streaming)
   3. All existing tests pass after refactoring
-**Plans:** 1/3 plans complete
+**Plans:** 3/3 plans complete
 Plans:
 - [x] 54-01-PLAN.md — Extract types, constants, and pure functions into chat-types.ts and chat-history.ts
-- [ ] 54-02-PLAN.md
-- [ ] 54-03-PLAN.md
+- [x] 54-02-PLAN.md — Extract streaming-renderer.ts factory with SSE processing and rAF throttling
+- [x] 54-03-PLAN.md — Final store slimming to 451 lines and MEM-01 map-cleanup test
 **UI hint**: no
 
 ## Progress
@@ -139,4 +139,4 @@ Plans:
 | 43. Reconnect & Optimistic UI | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
 | 44. UX Polish | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
 | 45. Cleanup | v0.12.0 | 1/1 | Complete    | 2026-04-09 |
-| 54. Chat-Store Decomposition | v0.13.0 | 1/3 | In Progress | — |
+| 54. Chat-Store Decomposition | v0.13.0 | 3/3 | Complete | 2026-04-10 |
