@@ -121,8 +121,24 @@ impl super::AgentEngine {
         };
         let default_timeout = std::time::Duration::from_secs(120);
 
+        // Helper: WAL tool_start/tool_end payload
+        let wal_payload = |tc: &ToolCall| -> serde_json::Value {
+            serde_json::json!({
+                "tool_call_id": tc.id,
+                "tool_name": tc.name,
+            })
+        };
+
         // 5a. Parallel batch (only if >1 parallel tool)
         if parallel_indices.len() > 1 {
+            // Log tool_start for all parallel tools before batch
+            for &i in &parallel_indices {
+                let payload = wal_payload(&tool_calls[i]);
+                if let Err(e) = crate::db::session_wal::log_event(&self.db, session_id, "tool_start", Some(&payload)).await {
+                    tracing::warn!(error = %e, tool = %tool_calls[i].name, "failed to log WAL tool_start");
+                }
+            }
+
             let futs: Vec<_> = parallel_indices
                 .iter()
                 .map(|&i| {
@@ -150,6 +166,11 @@ impl super::AgentEngine {
             let parallel_results = futures_util::future::join_all(futs).await;
             for (i, result) in parallel_results {
                 results[i] = Some(result);
+                // Log tool_end for each completed parallel tool
+                let payload = wal_payload(&tool_calls[i]);
+                if let Err(e) = crate::db::session_wal::log_event(&self.db, session_id, "tool_end", Some(&payload)).await {
+                    tracing::warn!(error = %e, tool = %tool_calls[i].name, "failed to log WAL tool_end");
+                }
             }
 
             tracing::info!(
@@ -159,6 +180,10 @@ impl super::AgentEngine {
         } else if parallel_indices.len() == 1 {
             let i = parallel_indices[0];
             let name = &tool_calls[i].name;
+            let payload = wal_payload(&tool_calls[i]);
+            if let Err(e) = crate::db::session_wal::log_event(&self.db, session_id, "tool_start", Some(&payload)).await {
+                tracing::warn!(error = %e, tool = %name, "failed to log WAL tool_start");
+            }
             let tool_timeout = if name == "subagent" { subagent_timeout } else { default_timeout };
             let result = match tokio::time::timeout(
                 tool_timeout,
@@ -174,10 +199,17 @@ impl super::AgentEngine {
                 }
             };
             results[i] = Some(result);
+            if let Err(e) = crate::db::session_wal::log_event(&self.db, session_id, "tool_end", Some(&payload)).await {
+                tracing::warn!(error = %e, tool = %name, "failed to log WAL tool_end");
+            }
         }
 
         // 5b. Sequential
         for &i in &sequential_indices {
+            let payload = wal_payload(&tool_calls[i]);
+            if let Err(e) = crate::db::session_wal::log_event(&self.db, session_id, "tool_start", Some(&payload)).await {
+                tracing::warn!(error = %e, tool = %tool_calls[i].name, "failed to log WAL tool_start");
+            }
             let result = match tokio::time::timeout(
                 std::time::Duration::from_secs(120),
                 self.execute_tool_call(&tool_calls[i].name, &enriched[i]),
@@ -191,6 +223,9 @@ impl super::AgentEngine {
                 }
             };
             results[i] = Some(result);
+            if let Err(e) = crate::db::session_wal::log_event(&self.db, session_id, "tool_end", Some(&payload)).await {
+                tracing::warn!(error = %e, tool = %tool_calls[i].name, "failed to log WAL tool_end");
+            }
         }
 
         // 6. Reassemble in original order

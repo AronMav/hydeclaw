@@ -209,6 +209,16 @@ impl SessionManager {
         crate::db::sessions::trim_session_messages(&self.db, session_id, max).await
     }
 
+    /// Log a session lifecycle event to the WAL (fire-and-forget pattern).
+    pub async fn log_wal_event(
+        &self,
+        session_id: Uuid,
+        event_type: &str,
+        payload: Option<&serde_json::Value>,
+    ) -> Result<()> {
+        crate::db::session_wal::log_event(&self.db, session_id, event_type, payload).await
+    }
+
     /// Insert synthetic tool results for missing call IDs (crash-recovery, ENG-01).
     pub async fn insert_missing_tool_results(
         &self,
@@ -286,7 +296,12 @@ impl SessionLifecycleGuard {
     pub async fn done(&mut self) {
         match crate::db::sessions::set_session_run_status(&self.db, self.session_id, "done").await
         {
-            Ok(()) => self.outcome = SessionOutcome::Done,
+            Ok(()) => {
+                self.outcome = SessionOutcome::Done;
+                if let Err(e) = crate::db::session_wal::log_event(&self.db, self.session_id, "done", None).await {
+                    tracing::warn!(session_id = %self.session_id, error = %e, "failed to log WAL done event");
+                }
+            }
             Err(e) => tracing::warn!(
                 session_id = %self.session_id,
                 error = %e,
@@ -301,7 +316,13 @@ impl SessionLifecycleGuard {
         match crate::db::sessions::set_session_run_status(&self.db, self.session_id, "failed")
             .await
         {
-            Ok(()) => self.outcome = SessionOutcome::Failed(reason.to_string()),
+            Ok(()) => {
+                self.outcome = SessionOutcome::Failed(reason.to_string());
+                let payload = serde_json::json!({ "reason": reason });
+                if let Err(e) = crate::db::session_wal::log_event(&self.db, self.session_id, "failed", Some(&payload)).await {
+                    tracing::warn!(session_id = %self.session_id, error = %e, "failed to log WAL failed event");
+                }
+            }
             Err(e) => tracing::warn!(
                 session_id = %self.session_id,
                 error = %e,
@@ -330,6 +351,10 @@ impl Drop for SessionLifecycleGuard {
                         session_id = %sid,
                         "failed to mark session as failed in Drop guard"
                     );
+                }
+                let payload = serde_json::json!({ "reason": "guard dropped (early exit)" });
+                if let Err(e) = crate::db::session_wal::log_event(&db, sid, "failed", Some(&payload)).await {
+                    tracing::warn!(error = %e, session_id = %sid, "failed to log WAL failed event in Drop guard");
                 }
             });
         }

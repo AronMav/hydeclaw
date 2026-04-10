@@ -99,20 +99,7 @@ pub enum StreamEvent {
     RichCard { card_type: String, data: serde_json::Value },
     /// File/media attachment (image, audio, etc.) — displayed inline in UI chat.
     File { url: String, media_type: String },
-    Finish { finish_reason: String, continuation: bool },
-    /// Approval needed: a tool call is waiting for human approval.
-    ApprovalNeeded {
-        approval_id: String,
-        tool_name: String,
-        tool_input: serde_json::Value,
-        timeout_ms: u64,
-    },
-    /// Approval resolved: a pending approval was approved, rejected, or timed out.
-    ApprovalResolved {
-        approval_id: String,
-        action: String, // "approved" | "rejected" | "timeout_rejected"
-        modified_input: Option<serde_json::Value>,
-    },
+    Finish { finish_reason: String },
     /// Internal event: signals that a different agent is now responding (multi-agent turn loop).
     /// Converter task updates current_responding_agent; no SSE is emitted to the client.
     AgentSwitch { agent_name: String },
@@ -156,7 +143,7 @@ pub trait AgentDispatch: Send + Sync {
 
     async fn handle_isolated(&self, msg: &IncomingMessage) -> Result<String>;
 
-    async fn resolve_approval(&self, approval_id: Uuid, approved: bool, resolved_by: &str, modified_input: Option<serde_json::Value>) -> Result<()>;
+    async fn resolve_approval(&self, approval_id: Uuid, approved: bool, resolved_by: &str) -> Result<()>;
 }
 
 pub struct AgentEngine {
@@ -249,7 +236,6 @@ fn search_cache_key(query: &str) -> u64 {
 #[derive(Debug)]
 pub enum ApprovalResult {
     Approved,
-    ApprovedWithModifiedArgs(serde_json::Value),
     Rejected(String),
 }
 
@@ -564,7 +550,7 @@ impl AgentEngine {
     }
 
     /// Resolve a pending approval (called from API/callback handler).
-    pub async fn resolve_approval(&self, approval_id: Uuid, approved: bool, resolved_by: &str, modified_input: Option<serde_json::Value>) -> anyhow::Result<()> {
+    pub async fn resolve_approval(&self, approval_id: Uuid, approved: bool, resolved_by: &str) -> anyhow::Result<()> {
         let status = if approved { "approved" } else { "rejected" };
         let updated = crate::db::approvals::resolve_approval(&self.db, approval_id, status, resolved_by).await?;
         if !updated {
@@ -582,24 +568,11 @@ impl AgentEngine {
             "status": status,
         }));
 
-        // Emit SSE event for inline approval resolution in chat UI
-        let action_str = if approved { "approved" } else { "rejected" };
-        if let Some(tx) = self.sse_event_tx().lock().await.as_ref() {
-            tx.send(StreamEvent::ApprovalResolved {
-                approval_id: approval_id.to_string(),
-                action: action_str.to_string(),
-                modified_input: modified_input.clone(),
-            }).ok();
-        }
-
         // Wake up the waiting tool execution
         let mut waiters = self.approval_waiters().write().await;
         if let Some((tx, _created_at)) = waiters.remove(&approval_id) {
             let result = if approved {
-                match modified_input {
-                    Some(args) => ApprovalResult::ApprovedWithModifiedArgs(args),
-                    None => ApprovalResult::Approved,
-                }
+                ApprovalResult::Approved
             } else {
                 ApprovalResult::Rejected(format!("rejected by {}", resolved_by))
             };
@@ -1076,8 +1049,8 @@ impl AgentDispatch for AgentEngine {
         AgentEngine::handle_isolated(self, msg).await
     }
 
-    async fn resolve_approval(&self, approval_id: Uuid, approved: bool, resolved_by: &str, modified_input: Option<serde_json::Value>) -> Result<()> {
-        AgentEngine::resolve_approval(self, approval_id, approved, resolved_by, modified_input).await
+    async fn resolve_approval(&self, approval_id: Uuid, approved: bool, resolved_by: &str) -> Result<()> {
+        AgentEngine::resolve_approval(self, approval_id, approved, resolved_by).await
     }
 }
 
@@ -1114,6 +1087,14 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
         SessionManager::new(self.db.clone())
             .load_messages(session_id, Some(limit))
             .await
+    }
+
+    async fn session_load_branch_messages(
+        &self,
+        session_id: Uuid,
+        leaf_message_id: Uuid,
+    ) -> Result<Vec<crate::db::sessions::MessageRow>> {
+        crate::db::sessions::load_branch_messages(&self.db, session_id, leaf_message_id).await
     }
 
     async fn session_insert_missing_tool_results(

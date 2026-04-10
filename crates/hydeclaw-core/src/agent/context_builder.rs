@@ -55,6 +55,11 @@ pub(crate) trait ContextBuilderDeps: Send + Sync {
         session_id: Uuid,
         limit: i64,
     ) -> Result<Vec<crate::db::sessions::MessageRow>>;
+    async fn session_load_branch_messages(
+        &self,
+        session_id: Uuid,
+        leaf_message_id: Uuid,
+    ) -> Result<Vec<crate::db::sessions::MessageRow>>;
     async fn session_insert_missing_tool_results(
         &self,
         session_id: Uuid,
@@ -148,9 +153,13 @@ impl ContextBuilder for DefaultContextBuilder {
             deps.session_get_or_create(&msg.user_id, &msg.channel, &dm_scope).await?
         };
 
-        // 2. Load conversation history
-        let limit = deps.agent_max_history_messages();
-        let history = deps.session_load_messages(session_id, limit).await?;
+        // 2. Load conversation history (branch-aware when leaf_message_id is set)
+        let history = if let Some(leaf_id) = msg.leaf_message_id {
+            deps.session_load_branch_messages(session_id, leaf_id).await?
+        } else {
+            let limit = deps.agent_max_history_messages();
+            deps.session_load_messages(session_id, limit).await?
+        };
 
         // 3. Build system prompt with MCP tool schemas
         let ws_prompt = deps.load_workspace_prompt().await?;
@@ -523,6 +532,7 @@ mod tests {
             timestamp: Utc::now(),
             formatting_prompt: None,
             tool_policy_override: None,
+            leaf_message_id: None,
         }
     }
 

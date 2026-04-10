@@ -1,12 +1,30 @@
 use axum::{
+    Router,
     extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
+    routing::{get, post, put, delete, patch},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::super::AppState;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/memory", get(api_list_memory).post(api_create_memory))
+        .route("/api/memory/stats", get(api_memory_stats))
+        .route("/api/memory/graph", get(api_memory_graph))
+        .route("/api/memory/export", get(api_export_memory))
+        .route("/api/memory/fts-language", get(api_get_fts_language).put(api_set_fts_language))
+        .route("/api/memory/{id}", delete(api_delete_memory).patch(api_patch_memory))
+        .route("/api/memory/tasks", get(api_memory_tasks))
+        .route("/api/memory/extraction-queue", get(api_extraction_queue))
+        .route("/api/memory/categories", get(api_memory_categories))
+        .route("/api/memory/topics", get(api_memory_topics))
+        .route("/api/memory/documents", get(api_list_documents))
+        .route("/api/memory/documents/{id}", get(api_get_document).patch(api_patch_document).delete(api_delete_memory))
+}
 
 // ── Memory API ──
 

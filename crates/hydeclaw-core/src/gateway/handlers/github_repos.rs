@@ -1,10 +1,18 @@
 use axum::{
+    Router,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
+    routing::{get, post, delete},
     Json,
 };
 use crate::gateway::AppState;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/agents/{name}/github/repos", get(api_list_github_repos).post(api_add_github_repo))
+        .route("/api/agents/{name}/github/repos/{id}", delete(api_delete_github_repo))
+}
 
 #[derive(serde::Deserialize)]
 pub(crate) struct AddRepoRequest {

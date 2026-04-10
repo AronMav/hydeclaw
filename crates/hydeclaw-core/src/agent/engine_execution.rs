@@ -45,6 +45,9 @@ impl AgentEngine {
         if let Err(e) = sm.set_run_status(session_id, "running").await {
             tracing::warn!(session_id = %session_id, error = %e, "failed to mark session as running");
         }
+        if let Err(e) = sm.log_wal_event(session_id, "running", None).await {
+            tracing::warn!(session_id = %session_id, error = %e, "failed to log WAL running event");
+        }
         // RAII guard: if we exit early via `?` (error path), mark session as 'failed'.
         let mut lifecycle_guard = SessionLifecycleGuard::new(self.db.clone(), session_id);
 

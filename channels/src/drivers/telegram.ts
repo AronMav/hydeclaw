@@ -312,7 +312,11 @@ export function createTelegramDriver(
       }
     }
 
-    const text = msg.text ?? msg.caption ?? "";
+    let text = msg.text ?? msg.caption ?? "";
+    // Strip @botname from group messages so LLM sees clean text
+    if (isGroup && botUsername) {
+      text = text.replace(new RegExp(`@${botUsername}\\b`, "gi"), "").trim();
+    }
     if (!text && attachments.length === 0) return;
 
     // Don't debounce commands (messages starting with /)

@@ -1,14 +1,23 @@
 use std::sync::Arc;
 
 use axum::{
+    Router,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Json},
+    routing::{get, post},
 };
 use serde_json::{json, Value};
 
 use super::super::AppState;
 use crate::process_manager::ProcessManager;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/services", get(api_list_services))
+        .route("/api/services/{name}/{action}", post(api_service_action))
+        .route("/api/containers/{name}/restart", post(api_container_restart))
+}
 
 /// Handle restart/start/stop/status/logs for a native managed process.
 async fn handle_managed_action(

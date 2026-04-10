@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::str::FromStr;
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 
 use super::super::{AppState, OpenAiMessage, sse_types};
@@ -200,7 +200,7 @@ pub(crate) async fn chat_completions(
 
     if req.stream {
         let (sse_tx, sse_rx) =
-            tokio::sync::mpsc::unbounded_channel::<Result<Event, std::convert::Infallible>>();
+            tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(256);
 
         let messages = req.messages.clone();
         tokio::spawn(async move {
@@ -219,7 +219,7 @@ pub(crate) async fn chat_completions(
                     "model": model_name,
                     "choices": [{"index": 0, "delta": {"content": chunk}, "finish_reason": null}]
                 });
-                sse_tx.send(Ok(Event::default().data(data.to_string()))).ok();
+                if sse_tx.send(Ok(Event::default().data(data.to_string()))).await.is_err() { break; }
             }
 
             // Final stop chunk
@@ -230,18 +230,16 @@ pub(crate) async fn chat_completions(
                 "model": model_name,
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
             });
-            sse_tx.send(Ok(Event::default().data(data.to_string()))).ok();
-            sse_tx.send(Ok(Event::default().data("[DONE]"))).ok();
+            let _ = sse_tx.send(Ok(Event::default().data(data.to_string()))).await;
+            let _ = sse_tx.send(Ok(Event::default().data("[DONE]"))).await;
 
             if let Ok(Err(e)) = handle.await {
                 tracing::error!(error = %e, "streaming chat completion error");
             }
         });
 
-        return Sse::new(UnboundedReceiverStream::new(sse_rx))
-            .keep_alive(KeepAlive::new()
-                .interval(std::time::Duration::from_secs(30))
-                .text("heartbeat"))
+        return Sse::new(ReceiverStream::new(sse_rx))
+            .keep_alive(KeepAlive::default())
             .into_response();
     }
 
@@ -361,6 +359,9 @@ pub(crate) struct ChatSseRequest {
     /// Force creation of a new session (UI "New Chat" button).
     #[serde(default)]
     force_new_session: bool,
+    /// When set, engine builds LLM context from the branch chain ending at this message.
+    #[serde(default)]
+    leaf_message_id: Option<String>,
 }
 
 #[allow(unused_assignments)]
@@ -466,6 +467,10 @@ pub(crate) async fn api_chat_sse(
     let agent_name = engine.name().to_string();
     tracing::info!(agent_name = %agent_name, mentioned = ?mentioned_agent, "mention routing: final target agent");
 
+    // Parse leaf_message_id for branch-aware context building
+    let leaf_message_id = req.leaf_message_id.as_deref()
+        .and_then(|s| uuid::Uuid::parse_str(s).ok());
+
     // Send cleaned text to LLM (without @mention prefix — prevents LLM from echoing it)
     let msg = hydeclaw_types::IncomingMessage {
         user_id: crate::agent::channel_kind::channel::UI.to_string(),
@@ -477,12 +482,13 @@ pub(crate) async fn api_chat_sse(
         timestamp: chrono::Utc::now(),
         formatting_prompt: None,
         tool_policy_override: None,
+        leaf_message_id,
     };
 
     let (event_tx, mut event_rx) =
         tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
     let (sse_tx, sse_rx) =
-        tokio::sync::mpsc::unbounded_channel::<Result<Event, std::convert::Infallible>>();
+        tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(512);
 
     // Engine task: process message and emit StreamEvents.
     // Includes agent-to-agent turn loop: after each agent responds, check for @-mentions
@@ -642,6 +648,7 @@ pub(crate) async fn api_chat_sse(
                     timestamp: chrono::Utc::now(),
                     formatting_prompt: None,
                     tool_policy_override: None,
+                    leaf_message_id: None,
                 };
                 current_engine = next_engine;
                 current_session_id = Some(sid);
@@ -715,6 +722,7 @@ pub(crate) async fn api_chat_sse(
                 timestamp: chrono::Utc::now(),
                 formatting_prompt: None,
                 tool_policy_override: None,
+                leaf_message_id: None,
             };
             current_engine = next_engine;
             current_session_id = Some(sid);
@@ -763,18 +771,12 @@ pub(crate) async fn api_chat_sse(
         // Helper: send SSE event to client (if connected) and always buffer in registry
         macro_rules! send_and_buffer {
             ($json_str:expr) => {{
-                let event_id: Option<u64> = if let Some(ref sid) = session_id_str {
-                    Some(registry.push_event(sid, &$json_str).await)
-                } else {
-                    None
-                };
+                if let Some(ref sid) = session_id_str {
+                    registry.push_event(sid, &$json_str).await;
+                }
                 if !sse_tx.is_closed() {
                     client_gone_since = None;
-                    let mut evt = Event::default().data($json_str);
-                    if let Some(eid) = event_id {
-                        evt = evt.id(eid.to_string());
-                    }
-                    sse_tx.send(Ok(evt)).is_ok()
+                    sse_tx.send(Ok(Event::default().data($json_str))).await.is_ok()
                 } else {
                     // Client disconnected — keep buffering for DB save + resume.
                     // Do NOT abort the engine: let it finish naturally so the result
@@ -862,8 +864,8 @@ pub(crate) async fn api_chat_sse(
                 StreamEvent::MessageStart { message_id } => {
                     json!({"type": sse_types::START, "messageId": message_id, "agentName": current_responding_agent})
                 }
-                StreamEvent::StepStart { step_id } => {
-                    json!({"type": sse_types::STEP_START, "stepId": step_id})
+                StreamEvent::StepStart { step_id: _ } => {
+                    continue;
                 }
                 StreamEvent::TextDelta(ref text) => {
                     if session_uuid.is_none() && accumulated_text.is_empty() {
@@ -931,8 +933,8 @@ pub(crate) async fn api_chat_sse(
                         "output": result
                     })
                 }
-                StreamEvent::StepFinish { step_id, finish_reason } => {
-                    json!({"type": sse_types::STEP_FINISH, "stepId": step_id, "finishReason": finish_reason})
+                StreamEvent::StepFinish { step_id: _, finish_reason: _ } => {
+                    continue;
                 }
                 StreamEvent::RichCard { card_type, data } => {
                     json!({
@@ -948,37 +950,17 @@ pub(crate) async fn api_chat_sse(
                         "mediaType": media_type
                     })
                 }
-                StreamEvent::ApprovalNeeded { approval_id, tool_name, tool_input, timeout_ms } => {
-                    json!({
-                        "type": sse_types::TOOL_APPROVAL_NEEDED,
-                        "approvalId": approval_id,
-                        "toolName": tool_name,
-                        "toolInput": tool_input,
-                        "timeoutMs": timeout_ms,
-                    })
-                }
-                StreamEvent::ApprovalResolved { approval_id, action, modified_input } => {
-                    let mut v = json!({
-                        "type": sse_types::TOOL_APPROVAL_RESOLVED,
-                        "approvalId": approval_id,
-                        "action": action,
-                    });
-                    if let Some(mi) = modified_input {
-                        v["modifiedInput"] = mi;
-                    }
-                    v
-                }
                 StreamEvent::AgentSwitch { agent_name: new_agent } => {
                     current_responding_agent = new_agent;
                     continue; // Internal event — don't emit SSE
                 }
-                StreamEvent::Finish { finish_reason: _, continuation } => {
+                StreamEvent::Finish { finish_reason: _ } => {
                     // Send any pending text-end first
                     if let Some(text_id) = pending_text_end.take() {
                         let end_data = json!({"type": sse_types::TEXT_END, "id": text_id}).to_string();
                         let _ = send_and_buffer!(end_data);
                     }
-                    let finish_data = json!({"type": sse_types::FINISH, "agentName": current_responding_agent, "continuation": continuation}).to_string();
+                    let finish_data = json!({"type": sse_types::FINISH, "agentName": current_responding_agent}).to_string();
                     let _ = send_and_buffer!(finish_data);
                     // Final flush of streaming message + mark complete
                     // CRITICAL ORDERING: upsert → read_streaming_content → set_content → finalize (DELETE)
@@ -1079,9 +1061,9 @@ pub(crate) async fn api_chat_sse(
             // Flush any remaining text-end (if stream ended without Finish event)
             if let Some(text_id) = pending_text_end {
                 let end_data = json!({"type": sse_types::TEXT_END, "id": text_id});
-                let _ = sse_tx.send(Ok(Event::default().data(end_data.to_string())));
+                let _ = sse_tx.send(Ok(Event::default().data(end_data.to_string()))).await;
             }
-            let _ = sse_tx.send(Ok(Event::default().data("[DONE]")));
+            let _ = sse_tx.send(Ok(Event::default().data("[DONE]"))).await;
         }
 
         // Auto-title: set session title from first user message if not already titled
@@ -1095,16 +1077,14 @@ pub(crate) async fn api_chat_sse(
         }
     });
 
-    let stream = UnboundedReceiverStream::new(sse_rx);
+    let stream = ReceiverStream::new(sse_rx);
 
     (
         [(
             axum::http::header::HeaderName::from_static("x-vercel-ai-ui-message-stream"),
             "v1",
         )],
-        Sse::new(stream).keep_alive(KeepAlive::new()
-                .interval(std::time::Duration::from_secs(30))
-                .text("heartbeat")),
+        Sse::new(stream).keep_alive(KeepAlive::default()),
     )
         .into_response()
 }
@@ -1116,25 +1096,12 @@ pub(crate) async fn api_chat_sse(
 /// Returns 204 if no active stream, or SSE with replay + live events.
 pub(crate) async fn api_chat_resume_stream(
     Path(id): Path<String>,
-    headers: axum::http::HeaderMap,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use async_stream::stream;
     use tokio::sync::broadcast;
 
-    let last_event_id: Option<u64> = headers
-        .get("Last-Event-ID")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok());
-
-    // Choose subscribe or replay_from based on Last-Event-ID presence
-    let subscription = if let Some(lei) = last_event_id {
-        state.stream_registry.replay_from(&id, lei).await
-    } else {
-        state.stream_registry.subscribe(&id).await
-    };
-
-    match subscription {
+    match state.stream_registry.subscribe(&id).await {
         None => {
             // No in-memory stream — check DB for recently finished/interrupted job
             let session_uuid = uuid::Uuid::parse_str(&id).ok();
@@ -1164,35 +1131,24 @@ pub(crate) async fn api_chat_resume_stream(
                         "error": job.error_text,
                     });
                     let sync_str = sync.to_string();
-                    let keepalive = KeepAlive::new()
-                        .interval(std::time::Duration::from_secs(30))
-                        .text("heartbeat");
                     let sse_stream = async_stream::stream! {
                         yield Ok::<_, std::convert::Infallible>(Event::default().data(sync_str));
                         yield Ok(Event::default().data("[DONE]"));
                     };
                     return Sse::new(sse_stream)
-                        .keep_alive(keepalive)
+                        .keep_alive(KeepAlive::default())
                         .into_response();
                 }
-            // No DB job either — if client expected resume, signal expiry
-            if last_event_id.is_some() {
-                return (
-                    StatusCode::GONE,
-                    [(axum::http::header::HeaderName::from_static("x-stream-expired"), "true")],
-                ).into_response();
-            }
             StatusCode::NO_CONTENT.into_response()
         }
         Some((buffered_events, mut broadcast_rx, already_finished)) => {
-            // Track the last replayed event ID for dedup in the live phase
-            let last_replayed_id = buffered_events.last().map(|(eid, _)| *eid).unwrap_or(0);
+            let replay_count = buffered_events.len();
 
             let sse_stream = stream! {
-                // Phase 1: Replay buffered events (with event IDs)
-                for (eid, event_json) in buffered_events {
+                // Phase 1: Replay buffered events
+                for event_json in buffered_events {
                     yield Ok::<_, std::convert::Infallible>(
-                        Event::default().id(eid.to_string()).data(event_json)
+                        Event::default().data(event_json)
                     );
                 }
 
@@ -1202,17 +1158,19 @@ pub(crate) async fn api_chat_resume_stream(
                 }
 
                 // Phase 2: Live events via broadcast subscription
-                // Skip events already covered by the replay snapshot
+                // Events between subscribe() and here may overlap with buffer — skip them
+                let mut skip_remaining = replay_count;
                 loop {
                     match broadcast_rx.recv().await {
-                        Ok((eid, event_json)) => {
-                            if eid <= last_replayed_id {
+                        Ok(event_json) => {
+                            if skip_remaining > 0 {
+                                skip_remaining -= 1;
                                 continue;
                             }
                             let is_terminal =
                                 event_json.contains("\"type\":\"finish\"")
                                 || event_json.contains("\"type\":\"error\"");
-                            yield Ok(Event::default().id(eid.to_string()).data(event_json));
+                            yield Ok(Event::default().data(event_json));
                             if is_terminal {
                                 yield Ok(Event::default().data("[DONE]"));
                                 break;
@@ -1224,6 +1182,7 @@ pub(crate) async fn api_chat_resume_stream(
                                 session = %id,
                                 "Resume stream lagged"
                             );
+                            skip_remaining = skip_remaining.saturating_sub(n as usize);
                             continue;
                         }
                         Err(broadcast::error::RecvError::Closed) => {
@@ -1240,11 +1199,7 @@ pub(crate) async fn api_chat_resume_stream(
                     ),
                     "v1",
                 )],
-                Sse::new(sse_stream).keep_alive(
-                    KeepAlive::new()
-                        .interval(std::time::Duration::from_secs(30))
-                        .text("heartbeat")
-                ),
+                Sse::new(sse_stream).keep_alive(KeepAlive::default()),
             )
                 .into_response()
         }

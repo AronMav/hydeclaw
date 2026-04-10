@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useChatStore } from "@/stores/chat-store";
-import { useAuthStore } from "@/stores/auth-store";
+import { assertToken } from "@/lib/api";
 import { useTranslation } from "@/hooks/use-translation";
 import type { ChatMessage, TextPart } from "@/stores/chat-store";
 import { Button } from "@/components/ui/button";
@@ -35,10 +35,6 @@ function extractText(message: ChatMessage): string {
     .filter((p): p is TextPart => p.type === "text")
     .map((p) => p.text)
     .join("\n");
-}
-
-function getToken(): string {
-  return useAuthStore.getState().token ?? "";
 }
 
 // ── Copy button ─────────────────────────────────────────────────────────────
@@ -164,7 +160,7 @@ function SpeakButton({ message }: { message: ChatMessage }) {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${getToken()}`,
+            Authorization: `Bearer ${assertToken()}`,
           },
           body: JSON.stringify({ text }),
         });
@@ -217,7 +213,7 @@ function FeedbackButtons({ message }: { message: ChatMessage }) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${getToken()}`,
+          Authorization: `Bearer ${assertToken()}`,
         },
         body: JSON.stringify({ feedback }),
       }).catch(() => toast.error(t("chat.feedback_error")));

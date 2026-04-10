@@ -1,12 +1,27 @@
 use axum::{
+    Router,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Json},
+    routing::{get, post, put, delete},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::super::AppState;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/channels", get(api_list_all_channels))
+        .route("/api/channels/active", get(api_channels_active))
+        .route("/api/channels/notify", post(api_channel_notify))
+        .route("/api/agents/{name}/hooks", get(super::agents::api_agent_hooks))
+        .route("/api/agents/{name}/channels", get(api_channels_list).post(api_channel_create))
+        .route("/api/agents/{name}/channels/{id}", delete(api_channel_delete).put(api_channel_update))
+        .route("/api/agents/{name}/channels/{id}/restart", post(api_channel_restart))
+        .route("/api/agents/{name}/channels/{id}/ack", post(api_channel_ack))
+        .route("/api/agents/{name}/channels/{id}/status", get(api_channel_status))
+}
 
 /// Config keys that contain sensitive credentials — stored in vault, masked in API responses.
 const CREDENTIAL_KEYS: &[&str] = &[

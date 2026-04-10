@@ -1,13 +1,22 @@
 use axum::{
+    Router,
     extract::State,
     http::StatusCode,
     response::IntoResponse,
+    routing::{get, post, delete},
     Json,
 };
 use serde::Deserialize;
 use serde_json::json;
 
 use super::super::AppState;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/triggers/email/push", post(gmail_push_handler))
+        .route("/api/triggers/email", get(api_list_gmail_triggers).post(api_create_gmail_trigger))
+        .route("/api/triggers/email/{id}", delete(api_delete_gmail_trigger))
+}
 
 // ── Gmail API helpers ──
 
@@ -276,6 +285,7 @@ pub(crate) async fn gmail_push_handler(
                 timestamp: chrono::Utc::now(),
                 formatting_prompt: None,
                 tool_policy_override: None,
+                leaf_message_id: None,
             };
             if let Err(e) = engine.handle(&incoming).await {
                 tracing::error!(agent = %agent_id, error = %e, "gmail push handler error");

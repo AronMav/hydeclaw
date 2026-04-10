@@ -1,9 +1,19 @@
 use axum::{
+    Router,
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Json},
+    routing::{get, put, delete},
 };
 use super::super::AppState;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/skills", get(api_skills_list_global))
+        .route("/api/skills/{skill}", get(api_skill_get_global).put(api_skill_upsert_global).delete(api_skill_delete_global))
+        .route("/api/agents/{name}/skills", get(api_skills_list))
+        .route("/api/agents/{name}/skills/{skill}", get(api_skill_get).put(api_skill_upsert).delete(api_skill_delete))
+}
 
 /// Sanitize a skill name to a safe filename stem (same logic as write_skill).
 pub(crate) fn skill_safe_name(name: &str) -> String {

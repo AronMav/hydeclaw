@@ -224,6 +224,15 @@ impl Scheduler {
                     }
                     Err(e) => tracing::error!(error = %e, "session cleanup failed"),
                 }
+                // Prune old WAL events alongside session cleanup
+                match crate::db::session_wal::prune_old_events(&db, ttl_days).await {
+                    Ok(pruned) => {
+                        if pruned > 0 {
+                            tracing::info!(pruned, "WAL event pruning completed");
+                        }
+                    }
+                    Err(e) => tracing::error!(error = %e, "WAL event pruning failed"),
+                }
             })
         })?;
 
@@ -456,6 +465,7 @@ impl Scheduler {
                 timestamp: chrono::Utc::now(),
                 formatting_prompt: fmt_prompt,
                 tool_policy_override: tool_policy.clone(),
+                leaf_message_id: None,
             };
 
             let db2 = db.clone();
@@ -581,6 +591,7 @@ impl Scheduler {
                     timestamp: chrono::Utc::now(),
                     formatting_prompt: fmt_prompt,
                     tool_policy_override: tool_policy.clone(),
+                    leaf_message_id: None,
                 };
 
                 // Record cron run start
@@ -864,6 +875,7 @@ async fn run_heartbeat(
         timestamp: chrono::Utc::now(),
         formatting_prompt: fmt_prompt,
         tool_policy_override: None,
+        leaf_message_id: None,
     };
 
     let response = engine.handle_isolated(&msg).await?;
@@ -965,6 +977,7 @@ pub async fn run_first_run_onboarding(
         timestamp: chrono::Utc::now(),
         formatting_prompt: None,
         tool_policy_override: None,
+        leaf_message_id: None,
     };
 
     let response = engine.handle_isolated(&msg).await?;

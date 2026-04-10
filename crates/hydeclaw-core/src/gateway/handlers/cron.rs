@@ -1,13 +1,24 @@
 use axum::{
+    Router,
     extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
+    routing::{get, post, put, delete},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::Row;
 
 use super::super::AppState;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/cron", get(api_list_cron).post(api_create_cron))
+        .route("/api/cron/{id}", put(api_update_cron).delete(api_delete_cron))
+        .route("/api/cron/{id}/run", post(api_run_cron))
+        .route("/api/cron/{id}/runs", get(api_cron_runs))
+        .route("/api/cron/runs", get(api_cron_runs_all))
+}
 
 // ── Cron Jobs API ──
 
@@ -415,6 +426,7 @@ pub(crate) async fn api_run_cron(
             timestamp: chrono::Utc::now(),
             formatting_prompt: None,
             tool_policy_override: tool_policy,
+            leaf_message_id: None,
         };
 
         // Record cron run start

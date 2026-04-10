@@ -196,14 +196,14 @@ export function classifyMediaType(mimeType: string | undefined): import("../type
 
 /** Re-upload attachments through core for stable URLs. */
 export async function reUploadAttachments(
-  bridge: { uploadMedia: (url: string, filename: string, authHeader?: string) => Promise<string | null> },
+  bridge: { uploadMedia: (url: string, filename: string, authHeader?: string) => Promise<string> },
   attachments: import("../types").MediaAttachment[],
   authHeader?: string,
 ): Promise<import("../types").MediaAttachment[]> {
   return Promise.all(
     attachments.map(async (att) => {
       const localUrl = await bridge.uploadMedia(att.url, att.file_name ?? "file", authHeader);
-      return { ...att, url: localUrl ?? att.url };
+      return { ...att, url: localUrl };
     }),
   );
 }

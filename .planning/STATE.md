@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v0.12.0
 milestone_name: Chat Redesign
-status: executing
-stopped_at: Completed 54-03-PLAN.md
-last_updated: "2026-04-10T04:03:00Z"
-last_activity: 2026-04-10 — Completed 54-03 (final store slimming and MEM-01 test)
+status: verifying
+stopped_at: Completed 59-02-PLAN.md
+last_updated: "2026-04-10T05:39:28.059Z"
+last_activity: 2026-04-10
 progress:
-  total_phases: 7
-  completed_phases: 0
-  total_plans: 4
-  completed_plans: 10
+  total_phases: 10
+  completed_phases: 1
+  total_plans: 6
+  completed_plans: 12
 ---
 
 # Project State
@@ -24,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 
 ## Current Position
 
-Phase: 54-chat-store-decomposition
-Plan: 03 (completed)
-Status: Executing
-Last activity: 2026-04-10 — Completed 54-03 (final store slimming and MEM-01 test)
+Phase: 58 (channels-bridge-errors) — COMPLETE
+Plan: 1 of 1 (complete)
+Status: Phase complete — ready for verification
+Last activity: 2026-04-10
 
 ## Accumulated Context
 
@@ -59,9 +59,7 @@ Last activity: 2026-04-10 — Completed 54-03 (final store slimming and MEM-01 t
 - [Phase 44-ux-polish]: totalPartsCount Stage 3 Fix useEffect removed — followOutput callback is single scroll authority
 - [Phase 45-cleanup]: CLN-01: StreamStatus/isActiveStream removed — ConnectionPhase/isActivePhase are sole stream-state authorities
 - [Phase 45-cleanup]: CLN-02: AbortController/timers in private Maps not Immer state; streamGeneration moved to AgentState as plain number
-- [Phase 54]: Factory pattern with callback injection for streaming-renderer to avoid circular imports
-- [Phase 54]: ChatStore interface moved to chat-types.ts alongside AgentState
-- [Phase 54]: localStorage helpers extracted to chat-persistence.ts (pure type module stays pure)
+- [Phase 59]: assertToken() throws on empty token with redirect; getToken() kept backward-compatible for SSE callers
 
 ### Pending Todos
 
@@ -75,6 +73,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-10T04:03:00Z
-Stopped at: Completed 54-03-PLAN.md
-Resume with: `/gsd:execute-phase 54`
+Last session: 2026-04-10T05:39:28.055Z
+Stopped at: Completed 59-02-PLAN.md
+Resume with: Next phase

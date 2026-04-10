@@ -150,6 +150,7 @@ vi.mock("@/lib/api", () => ({
   apiPut: vi.fn().mockResolvedValue({}),
   apiDelete: vi.fn().mockResolvedValue(undefined),
   getToken: () => "test-token",
+  assertToken: () => "test-token",
   inviteAgent: (...args: unknown[]) => mockInviteAgent(...args),
 }));
 

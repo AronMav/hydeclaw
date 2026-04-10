@@ -129,6 +129,39 @@ Plans:
 - [x] 54-03-PLAN.md — Final store slimming to 451 lines and MEM-01 map-cleanup test
 **UI hint**: no
 
+### Phase 55: Gateway Sub-Router Extraction
+**Goal**: Split monolithic gateway/mod.rs router into per-domain sub-routers
+**Depends on**: Nothing
+**Requirements**: ARCH-02
+**Plans:** 1 plan
+Plans:
+- [x] 55-01-PLAN.md — Extract handler module routes() functions and compose in mod.rs
+
+### Phase 56: Backend Channels Hardening
+**Goal**: Bounded SSE channels with backpressure + Docker-aware CORS auto-derivation
+**Depends on**: Nothing
+**Requirements**: MEM-02, STAB-03
+**Success Criteria** (what must be TRUE):
+  1. SSE output channels in chat handlers use bounded capacity (256/512) with backpressure
+  2. Docker bridge network IPs are included in auto-derived CORS origins when configured
+  3. No unbounded memory growth from slow SSE clients
+**Plans:** 1 plan
+Plans:
+- [ ] 56-01-PLAN.md — Bounded SSE channels + Docker subnet CORS origins
+**UI hint**: no
+
+### Phase 58: Channels Bridge Error Handling
+**Goal**: Fix silent error swallowing in channels bridge HTTP methods and strip @-mention text from LLM context
+**Depends on**: Nothing
+**Requirements**: STAB-01, SEC-02
+**Success Criteria** (what must be TRUE):
+  1. uploadMedia, listUsers, revokeUser throw descriptive errors on failure instead of returning sentinel values
+  2. @botname mention text is stripped from messages before sending to LLM in Telegram group mode
+**Plans:** 1 plan
+Plans:
+- [ ] 58-01-PLAN.md — Bridge error propagation + Telegram mention stripping
+**UI hint**: no
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -140,3 +173,6 @@ Plans:
 | 44. UX Polish | v0.12.0 | 1/2 | Complete    | 2026-04-09 |
 | 45. Cleanup | v0.12.0 | 1/1 | Complete    | 2026-04-09 |
 | 54. Chat-Store Decomposition | v0.13.0 | 3/3 | Complete | 2026-04-10 |
+| 55. Gateway Sub-Router Extraction | v0.13.0 | 1/1 | Complete | 2026-04-10 |
+| 56. Backend Channels Hardening | v0.13.0 | 0/1 | In Progress | — |
+| 58. Channels Bridge Errors | v0.13.0 | 0/1 | Not Started | — |

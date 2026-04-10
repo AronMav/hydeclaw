@@ -1,5 +1,6 @@
-import { describe, test, expect, mock, beforeEach } from "bun:test";
+import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
 import { BridgeHandle } from "../bridge";
+import { reUploadAttachments } from "../drivers/common";
 
 describe("BridgeHandle", () => {
   let sent: string[];
@@ -321,5 +322,91 @@ describe("BridgeHandle", () => {
     const parsed = JSON.parse(sent[0]);
     expect(parsed.type).toBe("ready");
     expect(parsed.formatting_prompt).toBe("Format rules...");
+  });
+
+  // ── listUsers error propagation ─────────────────────────────────────
+
+  describe("listUsers error propagation", () => {
+    const originalFetch = globalThis.fetch;
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    test("throws on HTTP error status", async () => {
+      globalThis.fetch = (async () => ({ ok: false, status: 403 })) as any;
+      await expect(bridge.listUsers()).rejects.toThrow("listUsers failed: HTTP 403");
+    });
+
+    test("throws on fetch failure", async () => {
+      globalThis.fetch = (() => Promise.reject(new Error("network down"))) as any;
+      await expect(bridge.listUsers()).rejects.toThrow("network down");
+    });
+  });
+
+  // ── revokeUser error propagation ────────────────────────────────────
+
+  describe("revokeUser error propagation", () => {
+    const originalFetch = globalThis.fetch;
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    test("throws on HTTP error status", async () => {
+      globalThis.fetch = (async () => ({ ok: false, status: 500 })) as any;
+      await expect(bridge.revokeUser("u1")).rejects.toThrow("revokeUser failed: HTTP 500");
+    });
+
+    test("throws on fetch failure", async () => {
+      globalThis.fetch = (() => Promise.reject(new Error("connection refused"))) as any;
+      await expect(bridge.revokeUser("u1")).rejects.toThrow("connection refused");
+    });
+  });
+
+  // ── uploadMedia error propagation ───────────────────────────────────
+
+  describe("uploadMedia error propagation", () => {
+    const originalFetch = globalThis.fetch;
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    test("throws on download failure (non-ok status)", async () => {
+      globalThis.fetch = (async () => ({ ok: false, status: 404 })) as any;
+      await expect(bridge.uploadMedia("http://example.com/img.png", "img.png"))
+        .rejects.toThrow("uploadMedia download failed: HTTP 404");
+    });
+
+    test("throws on upload failure (non-ok status)", async () => {
+      let callCount = 0;
+      globalThis.fetch = (async () => {
+        callCount++;
+        if (callCount === 1) {
+          // Download succeeds
+          return { ok: true, blob: async () => new Blob(["data"]) };
+        }
+        // Upload fails
+        return { ok: false, status: 413 };
+      }) as any;
+      await expect(bridge.uploadMedia("http://example.com/img.png", "img.png"))
+        .rejects.toThrow("uploadMedia upload failed: HTTP 413");
+    });
+
+    test("throws on network error", async () => {
+      globalThis.fetch = (() => Promise.reject(new Error("DNS resolution failed"))) as any;
+      await expect(bridge.uploadMedia("http://example.com/img.png", "img.png"))
+        .rejects.toThrow("DNS resolution failed");
+    });
+  });
+
+  // ── reUploadAttachments error propagation ───────────────────────────
+
+  describe("reUploadAttachments error propagation", () => {
+    test("propagates uploadMedia errors", async () => {
+      const fakeBridge = {
+        uploadMedia: async () => { throw new Error("uploadMedia download failed: HTTP 500"); },
+      };
+      const atts = [{ url: "http://example.com/a.png", media_type: "image" as const, file_name: "a.png" }];
+      await expect(reUploadAttachments(fakeBridge, atts)).rejects.toThrow("uploadMedia download failed: HTTP 500");
+    });
   });
 });
