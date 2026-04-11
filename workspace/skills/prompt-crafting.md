@@ -1,6 +1,6 @@
 ---
 name: prompt-crafting
-description: Crafting effective prompts for subagents and LLM requests
+description: Crafting effective prompts for agent tool tasks and LLM requests
 triggers:
   - prompt
   - write a query
@@ -17,7 +17,7 @@ priority: 4
 
 ### When to apply
 
-- Formulating a task for a subagent via `agent(action="run")`
+- Formulating a task for a target agent via `agent(action="run")`
 - User asks to compose a prompt or instruction
 - Need to improve the quality of an LLM response
 
@@ -54,10 +54,10 @@ Respond in the format:
 **Confidence**: high/medium/low
 ```
 
-### For subagents (agent(action="run"))
+### For agent tool tasks (agent(action="run"))
 
-- Provide full context — the subagent does not see the conversation history
-- Specify the response format — the subagent must know what to return
+- Provide full context — the target agent does not see the conversation history
+- Specify the response format — the target agent must know what to return
 - Limit the scope — "only X, do not touch Y"
 - Don't send long texts — convey the essence
 

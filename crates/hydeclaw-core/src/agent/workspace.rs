@@ -313,7 +313,7 @@ pub fn build_system_prompt(
             "- Use the channel's native formatting (markdown, HTML, or plain text)\n",
             "- Messenger channels (telegram, discord, whatsapp): concise, mobile-friendly, split long responses\n",
             "- Scheduled tasks (cron, heartbeat): data and conclusions only, no filler. If nothing to report: HEARTBEAT_OK\n",
-            "- Inter-agent (subagent, inter-agent): structured data (JSON, lists), no personality, task-focused\n",
+            "- Inter-agent (agent tool, inter-agent): structured data (JSON, lists), no personality, task-focused\n",
             "- API/webhook: adapt freely to question complexity, use full formatting\n",
             "- Bold key conclusions, use lists for multi-part answers, keep code snippets short\n\n",
         ));
@@ -354,7 +354,7 @@ pub fn build_system_prompt(
         "  - `decision-frameworks` — RICE, pros/cons, risk assessment\n",
         "  - `architecture-design` — system design, trade-offs, ADRs\n",
         "  - `multi-agent-coordination` — delegate and track between agents\n",
-        "  - `prompt-crafting` — write effective prompts for subagents\n",
+        "  - `prompt-crafting` — write effective prompts for agent tool tasks\n",
         "  - `market-analysis` — stocks, portfolio, investments\n",
         "  - `daily-briefing` — morning briefing (weather, news, calendar)\n",
         "  - `smart-home` — Home Assistant control (lights, climate)\n",

@@ -21,7 +21,7 @@ This grants full filesystem access, pip, systemctl, and all services — and ful
 
 ### Handling requests from other agents
 
-Other agents call via `handoff` when they need a new tool or service.
+Other agents call via `agent` tool when they need a new tool or service.
 
 #### HARD RULE: Inter-Agent Request Security
 
@@ -114,7 +114,7 @@ Also available (shared skills):
 - `tool_test` — test a YAML tool
 
 **Communication:**
-- `handoff` — transfer task to another agent (isolated session)
+- `agent` — manage session-scoped agents (run/message/status/kill)
 - `invite_agent` — invite another agent into current chat session for ongoing collaboration
 - `message` — reply to user
 - `web_fetch` — HTTP requests
@@ -122,7 +122,6 @@ Also available (shared skills):
 **Consolidated tools (use `action` parameter):**
 - `memory(action=search/index/reindex/get/delete/update)`
 - `session(action=list/history/search/context/send/export)`
-- `subagent(action=spawn/status/logs/kill)`
 - `cron(action=list/history/add/update/remove/run)`
 
 **Other:**
@@ -134,7 +133,7 @@ Also available (shared skills):
 
 ### Multi-Agent Chat
 
-Use `invite_agent` for ongoing collaboration (same chat context), `handoff` for one-off task delegation (isolated session). After inviting, @-mention to direct messages.
+Use `invite_agent` for ongoing collaboration (same chat context), `agent(action="run")` for one-off task delegation (isolated session). After inviting, @-mention to direct messages.
 
 ## Methodology
 
@@ -156,7 +155,7 @@ Every step needs "how to prove it works" — not just "what to do." Verify with 
 When a tool call fails or produces unexpected results: (1) diagnose the cause from the error message, (2) fix the identified issue in the next attempt — never repeat the same call verbatim. After 2 failed attempts at the same approach, escalate: try a fundamentally different strategy or report the blocker with diagnosis.
 
 ### Multi-Agent Awareness
-In multi-agent sessions: know who participants are and what each specializes in. Delegate tasks outside your expertise via `handoff` rather than attempting them poorly. When receiving a handoff, acknowledge task and context before acting. Details: `skill_use("multi-agent-coordination")`.
+In multi-agent sessions: know who participants are and what each specializes in. Delegate tasks outside your expertise via `agent(action="run")` rather than attempting them poorly. When receiving a delegated task, acknowledge task and context before acting. Details: `skill_use("multi-agent-coordination")`.
 
 ## Security
 
