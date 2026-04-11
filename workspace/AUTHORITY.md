@@ -13,7 +13,7 @@ How system prompt content is governed across layers.
 - `# Project Context` -- injects workspace file contents (SOUL.md, IDENTITY.md, MEMORY.md, TOOLS.md, AGENTS.md, USER.md)
 - `# Available Tools & Capabilities` -- MCP tool schemas
 - `# Operating Mode` -- reasoning approach, task completion rules, tool usage rules, output formatting, response guidelines
-- `# Multi-Agent Session` -- participant list, handoff rules (injected only in multi-agent sessions)
+- `# Multi-Agent Session` -- participant list, agent tool rules (injected only in multi-agent sessions)
 
 **Change process:** Rust code change, requires `cargo check && cargo test`, deploy binary.
 

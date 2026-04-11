@@ -753,7 +753,7 @@ pub async fn get_participants(db: &PgPool, session_id: Uuid) -> Result<Vec<Strin
 }
 
 /// Get recent tool results from a session (tool name + output content).
-/// Used by handoff to enrich target agent's context with initiator's data.
+/// Legacy helper — no current callers.
 pub async fn get_recent_tool_results(db: &PgPool, session_id: Uuid, limit: i64) -> Result<Vec<(String, String)>> {
     let rows = sqlx::query(
         "SELECT m.content, tc.name as tool_name FROM messages m \

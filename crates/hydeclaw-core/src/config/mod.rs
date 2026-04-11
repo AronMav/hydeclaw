@@ -142,7 +142,7 @@ pub struct LimitsConfig {
     /// Exposed via GET/PUT /api/config — not consumed internally by the turn loop.
     #[serde(default = "default_max_agent_turns")]
     pub max_agent_turns: usize,
-    /// Maximum characters for handoff context passed between agents (default: 2000).
+    /// Maximum characters for inter-agent context (API-only, no internal consumer).
     /// Exposed via GET/PUT /api/config — not consumed internally by the turn loop.
     #[serde(default = "default_max_handoff_context_chars")]
     pub max_handoff_context_chars: usize,
@@ -1298,7 +1298,7 @@ model = "m2.5"
     #[test]
     fn limits_config_defaults() {
         let cfg = LimitsConfig::default();
-        assert_eq!(cfg.max_requests_per_minute, 100);
+        assert_eq!(cfg.max_requests_per_minute, 300);
         assert_eq!(cfg.max_tool_concurrency, 10);
         assert_eq!(cfg.request_timeout_secs, 180);
         assert_eq!(cfg.max_agent_turns, 5);
@@ -1452,7 +1452,7 @@ url = "postgres://localhost/test"
         assert!(cfg.gateway.public_url.is_none());
         assert_eq!(cfg.database.url, "postgres://localhost/test");
         // All optional sections should use defaults
-        assert_eq!(cfg.limits.max_requests_per_minute, 100);
+        assert_eq!(cfg.limits.max_requests_per_minute, 300);
         assert_eq!(cfg.limits.max_tool_concurrency, 10);
         assert_eq!(cfg.typing.mode, "instant");
         assert!(cfg.subagents.enabled);
@@ -1671,23 +1671,23 @@ session_tools = false
         assert!(!tools.groups.session_tools);
     }
 
-    // ── LimitsConfig: max_handoff_context_chars ──
+    // ── LimitsConfig: max_handoff_context_chars (inter-agent context) ──
 
     #[test]
-    fn limits_config_default_handoff_context_chars() {
+    fn limits_config_default_inter_agent_context_chars() {
         let cfg = LimitsConfig::default();
         assert_eq!(cfg.max_handoff_context_chars, 2000);
     }
 
     #[test]
-    fn limits_config_custom_handoff_context_chars() {
+    fn limits_config_custom_inter_agent_context_chars() {
         let toml_str = r#"
 max_handoff_context_chars = 500
 "#;
         let cfg: LimitsConfig = toml::from_str(toml_str).expect("failed to parse");
         assert_eq!(cfg.max_handoff_context_chars, 500);
         // Other fields should get defaults
-        assert_eq!(cfg.max_requests_per_minute, 100);
+        assert_eq!(cfg.max_requests_per_minute, 300);
         assert_eq!(cfg.max_agent_turns, 5);
     }
 
