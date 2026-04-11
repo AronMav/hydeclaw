@@ -7,7 +7,6 @@ pub mod channel_kind;
 pub mod cli_backend;
 pub mod hooks;
 pub mod engine;
-pub use engine::AgentDispatch;
 pub(crate) mod error_classify;
 pub(crate) mod localization;
 pub mod handle;

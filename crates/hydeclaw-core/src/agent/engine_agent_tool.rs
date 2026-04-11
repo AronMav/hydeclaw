@@ -101,7 +101,18 @@ impl AgentEngine {
         }
 
         // Sync mode (default): block until the agent completes or times out.
-        Self::wait_for_agent_result(pools, session_id, target, std::time::Duration::from_secs(300)).await
+        let result = Self::wait_for_agent_result(pools, session_id, target, std::time::Duration::from_secs(300)).await;
+
+        // Clean up: remove the completed agent from the pool so a subsequent `run` with the
+        // same target doesn't get the "already running" error.
+        {
+            let mut pools_write = pools.write().await;
+            if let Some(pool) = pools_write.get_mut(&session_id) {
+                pool.remove(target);
+            }
+        }
+
+        result
     }
 
     /// Block until a live agent becomes idle and return its last_result.
@@ -195,12 +206,17 @@ impl AgentEngine {
         match agent.message_tx.try_send(session_agent_pool::AgentMessage {
             text: text.to_string(),
         }) {
-            Ok(()) => serde_json::json!({
-                "status": "ok",
-                "agent": target,
-                "message": "Message sent",
-            })
-            .to_string(),
+            Ok(()) => {
+                // Force status to PROCESSING immediately so `collect` doesn't see the old
+                // idle result before the agent picks up the message.
+                agent.status.store(session_agent_pool::STATUS_PROCESSING, std::sync::atomic::Ordering::Release);
+                serde_json::json!({
+                    "status": "ok",
+                    "agent": target,
+                    "message": "Message sent",
+                })
+                .to_string()
+            }
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                 format!("Error: agent '{}' message queue is full — it may still be processing", target)
             }
