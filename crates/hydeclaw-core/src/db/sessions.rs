@@ -752,29 +752,6 @@ pub async fn get_participants(db: &PgPool, session_id: Uuid) -> Result<Vec<Strin
     Ok(row.get("participants"))
 }
 
-/// Get the most recent session ID for an agent (used by turn loop when session_id is unknown).
-pub async fn get_latest_session_id(db: &PgPool, agent_name: &str) -> Result<Option<Uuid>> {
-    let row = sqlx::query(
-        "SELECT id FROM sessions WHERE agent_id = $1 ORDER BY last_message_at DESC LIMIT 1"
-    )
-    .bind(agent_name)
-    .fetch_optional(db)
-    .await?;
-    Ok(row.map(|r| r.get("id")))
-}
-
-/// Get the text content of the last assistant message in a session.
-pub async fn get_last_assistant_message(db: &PgPool, session_id: Uuid) -> Result<Option<String>> {
-    let row = sqlx::query(
-        "SELECT content FROM messages WHERE session_id = $1 AND role = 'assistant' \
-         ORDER BY created_at DESC LIMIT 1"
-    )
-    .bind(session_id)
-    .fetch_optional(db)
-    .await?;
-    Ok(row.map(|r| r.get("content")))
-}
-
 /// Get recent tool results from a session (tool name + output content).
 /// Used by handoff to enrich target agent's context with initiator's data.
 pub async fn get_recent_tool_results(db: &PgPool, session_id: Uuid, limit: i64) -> Result<Vec<(String, String)>> {

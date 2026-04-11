@@ -140,6 +140,41 @@ impl SessionAgentPool {
     pub fn is_empty(&self) -> bool {
         self.agents.is_empty()
     }
+
+    /// Returns true if all agents in this pool have finished (task_handle.is_finished()).
+    pub fn is_all_finished(&self) -> bool {
+        self.agents.values().all(|a| a.task_handle.is_finished())
+    }
+}
+
+/// Remove stale session pools where all agents have finished or the pool is empty.
+pub async fn cleanup_stale_pools(
+    pools: &tokio::sync::RwLock<std::collections::HashMap<uuid::Uuid, SessionAgentPool>>,
+) -> usize {
+    let stale_ids: Vec<uuid::Uuid> = {
+        let pools_read = pools.read().await;
+        pools_read.iter()
+            .filter(|(_, pool)| pool.is_empty() || pool.is_all_finished())
+            .map(|(id, _)| *id)
+            .collect()
+    };
+    if stale_ids.is_empty() {
+        return 0;
+    }
+    let mut pools_write = pools.write().await;
+    let mut removed = 0;
+    for id in &stale_ids {
+        if let Some(pool) = pools_write.get(id) {
+            if pool.is_empty() || pool.is_all_finished() {
+                pools_write.remove(id);
+                removed += 1;
+            }
+        }
+    }
+    if removed > 0 {
+        tracing::info!(removed, "cleaned up stale session agent pools");
+    }
+    removed
 }
 
 // ── AgentPoolEntry ────────────────────────────────────────────────────────────

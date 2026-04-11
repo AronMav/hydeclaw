@@ -565,6 +565,18 @@ async fn main() -> Result<()> {
 
     // Managed processes started after TcpListener::bind below — toolgate needs Core API ready.
 
+    // Periodic session agent pool cleanup (every 5 minutes, remove finished/empty pools)
+    {
+        let pools = state.session_pools.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                agent::session_agent_pool::cleanup_stale_pools(&pools).await;
+            }
+        });
+    }
+
     // Stream cleanup: in-memory broadcast (2 min TTL) + DB jobs (1 hour TTL)
     {
         let registry = stream_registry;
