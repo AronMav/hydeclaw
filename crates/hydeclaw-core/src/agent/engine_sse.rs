@@ -42,8 +42,8 @@ impl AgentEngine {
             } else {
                 crate::db::sessions::get_or_create_session(&self.db, &self.agent.name, &msg.user_id, &msg.channel, self.agent.session.as_ref().map(|s| s.dm_scope.as_str()).unwrap_or("default")).await?
             };
-            let u_msg_id = SessionManager::new(self.db.clone()).save_message_ex(sid, "user", &user_text, None, None, None, None, msg.leaf_message_id).await?;
-            let a_msg_id = SessionManager::new(self.db.clone()).save_message_ex(sid, "assistant", &text, None, None, Some(&self.agent.name), None, Some(u_msg_id)).await?;
+            let u_msg_id = SessionManager::new(self.db.clone()).save_message_ex(sid, "user", &user_text, None, None, None, None, msg.leaf_message_id, None).await?;
+            let a_msg_id = SessionManager::new(self.db.clone()).save_message_ex(sid, "assistant", &text, None, None, Some(&self.agent.name), None, Some(u_msg_id), None).await?;
             return Ok(a_msg_id);
         }
 
@@ -107,7 +107,7 @@ impl AgentEngine {
 
         // For inter-agent messages (user_id starts with "agent:"), save the sender agent_id
         let sender_agent_id = if msg.user_id.starts_with("agent:") { Some(msg.user_id.trim_start_matches("agent:")) } else { None };
-        let user_msg_id = sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None, msg.leaf_message_id).await?;
+        let user_msg_id = sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None, msg.leaf_message_id, None).await?;
         let mut last_msg_id = user_msg_id;
 
         // Context compaction if needed (model-aware token budget)
@@ -336,6 +336,7 @@ impl AgentEngine {
                 Some(&self.agent.name),
                 None,
                 Some(last_msg_id),
+                None,
             )
             .await {
                 Ok(id) => { last_msg_id = id; }
@@ -432,7 +433,7 @@ impl AgentEngine {
                         context_chars += display_len;
 
                         match sm.save_message_ex(
-                            session_id, "tool", &db_result, None, Some(tc_id), None, None, Some(last_msg_id),
+                            session_id, "tool", &db_result, None, Some(tc_id), None, None, Some(last_msg_id), None,
                         ).await {
                             Ok(id) => { last_msg_id = id; }
                             Err(e) => { tracing::warn!(error = %e, session_id = %session_id, "failed to save tool result to DB"); }
@@ -593,7 +594,7 @@ impl AgentEngine {
         } else {
             serde_json::to_value(&final_thinking_blocks).ok()
         };
-        let assistant_msg_id = sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), thinking_json.as_ref(), Some(last_msg_id))
+        let assistant_msg_id = sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), thinking_json.as_ref(), Some(last_msg_id), None)
             .await?;
         self.maybe_trim_session(session_id).await;
 
