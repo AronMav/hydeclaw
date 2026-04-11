@@ -356,9 +356,11 @@ impl AgentEngine {
                 thinking_blocks: vec![],
             });
 
+            // Use an empty object (not Null) so enrich_tool_args can inject session_id into _context.
             let effective_session_id = session_id.unwrap_or_else(uuid::Uuid::nil);
+            let subagent_context = serde_json::json!({});
             let loop_broken = match self.execute_tool_calls_partitioned(
-                &response.tool_calls, &serde_json::Value::Null, effective_session_id, crate::agent::channel_kind::channel::INTER_AGENT,
+                &response.tool_calls, &subagent_context, effective_session_id, crate::agent::channel_kind::channel::INTER_AGENT,
                 messages.iter().map(|m| m.content.len()).sum(),
                 &mut detector, loop_config.detect_loops,
             ).await {

@@ -111,9 +111,12 @@ impl AgentEngine {
             _ => return "Error: 'text' parameter is required".to_string(),
         };
 
-        let session_id = match self.processing_session_id().lock().await.as_ref().copied() {
-            Some(id) => id,
-            None => return "Error: no active session".to_string(),
+        let session_id = match extract_session_id(args) {
+            Some(id) if id != uuid::Uuid::nil() => id,
+            _ => match self.processing_session_id().lock().await.as_ref().copied() {
+                Some(id) => id,
+                None => return "Error: no active session — agent tool requires a session context".to_string(),
+            },
         };
 
         let pools = match &self.session_pools {
@@ -151,9 +154,12 @@ impl AgentEngine {
 
     /// `status` — return status of a single agent (if `agent` given) or all agents in the pool.
     async fn handle_agent_status(&self, args: &serde_json::Value) -> String {
-        let session_id = match self.processing_session_id().lock().await.as_ref().copied() {
-            Some(id) => id,
-            None => return "Error: no active session".to_string(),
+        let session_id = match extract_session_id(args) {
+            Some(id) if id != uuid::Uuid::nil() => id,
+            _ => match self.processing_session_id().lock().await.as_ref().copied() {
+                Some(id) => id,
+                None => return "Error: no active session — agent tool requires a session context".to_string(),
+            },
         };
 
         let pools = match &self.session_pools {
@@ -204,9 +210,12 @@ impl AgentEngine {
             _ => return "Error: 'target' parameter is required".to_string(),
         };
 
-        let session_id = match self.processing_session_id().lock().await.as_ref().copied() {
-            Some(id) => id,
-            None => return "Error: no active session".to_string(),
+        let session_id = match extract_session_id(args) {
+            Some(id) if id != uuid::Uuid::nil() => id,
+            _ => match self.processing_session_id().lock().await.as_ref().copied() {
+                Some(id) => id,
+                None => return "Error: no active session — agent tool requires a session context".to_string(),
+            },
         };
 
         let pools = match &self.session_pools {
