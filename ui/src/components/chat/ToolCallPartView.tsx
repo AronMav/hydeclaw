@@ -49,13 +49,13 @@ export const ToolCallPartView = memo(function ToolCallPartView({ toolName, args,
 
   return (
     <Collapsible
-      disabled={!hasContent && !inputDisplay}
       className="group overflow-hidden rounded-xl border border-border/60 bg-card/50 dark:bg-card/30 transition-all hover:border-primary/40 dark:hover:bg-card/50"
     >
       <CollapsibleTrigger asChild>
         <button
           type="button"
-          className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors"
+          disabled={!hasContent && !inputDisplay}
+          className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors disabled:cursor-default"
         >
           <div
             className={`h-2.5 w-2.5 rounded-full shrink-0 ${
