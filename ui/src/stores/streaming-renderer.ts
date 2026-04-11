@@ -477,6 +477,18 @@ export function createStreamingRenderer(store: StoreAccess) {
 
             case "start": {
               const newId = event.messageId || assistantId;
+
+              // Don't reset if current message only has tool/approval parts —
+              // accumulate tools across LLM iterations into one message block.
+              // Text will split into a new message via text-start handler below.
+              const hasOnlyTools = parts.length > 0 && parts.every(p =>
+                p.type === "tool" || p.type === "approval"
+              );
+              if (hasOnlyTools) {
+                if (event.agentName) currentRespondingAgent = event.agentName;
+                break;
+              }
+
               assistantId = newId;
               assistantCreatedAt = new Date().toISOString();
               parts = [];
@@ -498,6 +510,16 @@ export function createStreamingRenderer(store: StoreAccess) {
 
             case "text-start": {
               if (event.agentName) currentRespondingAgent = event.agentName;
+              // Split: if current message has tools, push it and start a new message for text.
+              // This ensures tools and text are in separate blocks (matching history view).
+              if (parts.some(p => p.type === "tool" || p.type === "approval")) {
+                flushText();
+                pushUpdate();
+                assistantId = uuid();
+                assistantCreatedAt = new Date().toISOString();
+                parts = [];
+                incrementalParser.reset();
+              }
               break;
             }
 
