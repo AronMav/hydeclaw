@@ -23,6 +23,7 @@ pub mod session_agent_pool;
 pub mod tool_loop;
 pub(crate) mod url_tools;
 pub mod mention_parser;
+pub mod parts_builder;
 pub mod workspace;
 
 /// Delete upload files older than `max_age` from workspace/uploads/.
