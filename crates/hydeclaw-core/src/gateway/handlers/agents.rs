@@ -579,7 +579,6 @@ pub async fn start_agent_from_config(
         agent_map: Some(state.agents.clone()),
         self_ref: std::sync::OnceLock::new(),
         ui_event_tx: Some(state.ui_event_tx.clone()),
-        pending_handoffs: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         processing_tracker: Some(state.processing_tracker.clone()),
         default_timezone,
         channel_formatting_prompt: tokio::sync::RwLock::new(None),
