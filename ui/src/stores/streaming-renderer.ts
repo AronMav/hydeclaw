@@ -25,7 +25,7 @@ import type {
   ConnectionPhase,
   AgentState,
 } from "./chat-types";
-import { getCachedHistoryMessages, getCachedRawMessages } from "./chat-history";
+import { getCachedHistoryMessages, getCachedRawMessages, resolveActivePath } from "./chat-history";
 
 // ── Store access interface ─────────────────────────────────────────────────
 // Uses `any` for store shape to avoid circular dependency with ChatStore.
@@ -265,11 +265,22 @@ export function createStreamingRenderer(store: StoreAccess) {
     }
     if (sessionId) {
       body.session_id = sessionId;
-      // Send leaf_message_id so backend can chain parent_message_id correctly.
-      // Use the last message from the previous turn (from cached raw messages).
+      // Send leaf_message_id — the tip of the currently viewed branch.
+      // Use resolveActivePath to find the correct leaf (not the absolute last message,
+      // which could be on a different branch).
       const rawMsgs = getCachedRawMessages(sessionId);
       if (rawMsgs.length > 0) {
-        body.leaf_message_id = rawMsgs[rawMsgs.length - 1].id;
+        const agentSt = store.get().agents[agent];
+        const branches = agentSt?.selectedBranches ?? {};
+        const hasBranching = rawMsgs.some(m => m.parent_message_id != null);
+        if (hasBranching) {
+          const activePath = resolveActivePath(rawMsgs, branches);
+          if (activePath.length > 0) {
+            body.leaf_message_id = activePath[activePath.length - 1].id;
+          }
+        } else {
+          body.leaf_message_id = rawMsgs[rawMsgs.length - 1].id;
+        }
       }
     }
     if (forceNew) {

@@ -39,7 +39,7 @@ The agent starts processing immediately. It runs in an isolated context — it d
 #### 2. Check status
 ```
 // Check a specific agent
-agent(action="status", agent_id="Alma")
+agent(action="status", target="Alma")
 → {"name": "Alma", "status": "idle", "last_result": "...", "iterations": 3, "elapsed_secs": 45}
 
 // List all agents in session
@@ -66,7 +66,7 @@ agent(action="kill", target="Alma")
 #### Simple delegation
 ```
 1. agent(action="run", target="Alma", task="Research topic X, return summary")
-2. Poll: agent(action="status", agent_id="Alma")  // repeat until idle
+2. Poll: agent(action="status", target="Alma")  // repeat until idle
 3. Read result from status response
 4. Present to user
 ```
