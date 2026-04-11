@@ -141,6 +141,7 @@ impl AgentEngine {
         let mut step_groups: Vec<crate::agent::parts_builder::StepGroupInfo> = Vec::new();
         let mut current_step_tool_ids: Vec<String> = Vec::new();
         let mut tool_iterations: u32 = 0;
+        let mut all_tool_calls: Vec<serde_json::Value> = Vec::new();
 
         for iteration in 0..loop_config.effective_max_iterations() {
             let step_id = format!("step_{}", iteration);
@@ -331,6 +332,11 @@ impl AgentEngine {
             context_chars += cleaned_content.chars().count();
 
             let tc_json = serde_json::to_value(&response.tool_calls).ok();
+            if let Some(ref tc) = tc_json {
+                if let Some(arr) = tc.as_array() {
+                    all_tool_calls.extend(arr.iter().cloned());
+                }
+            }
             match sm.save_message_ex(
                 session_id,
                 "assistant",
@@ -613,12 +619,17 @@ impl AgentEngine {
 
         // Assemble and persist finalized parts for unified chat view
         if !tool_results_for_parts.is_empty() || !final_response.is_empty() {
-            let approvals = crate::agent::parts_builder::load_session_approvals(&self.db, session_id)
+            let turn_tc_ids: std::collections::HashSet<&str> = tool_results_for_parts.iter().map(|(id, _)| id.as_str()).collect();
+            let approvals: Vec<_> = crate::agent::parts_builder::load_session_approvals(&self.db, session_id)
                 .await
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|a| a.tool_call_id.as_deref().is_some_and(|id| turn_tc_ids.contains(id)))
+                .collect();
+            let combined_tc = if all_tool_calls.is_empty() { None } else { Some(serde_json::Value::Array(all_tool_calls.clone())) };
             let parts_json = crate::agent::parts_builder::assemble_parts(
                 &final_response,
-                None,
+                combined_tc.as_ref(),
                 &tool_results_for_parts,
                 &approvals,
                 &step_groups,

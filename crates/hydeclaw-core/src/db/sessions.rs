@@ -231,7 +231,7 @@ pub async fn update_message_parts(
     message_id: Uuid,
     parts: &serde_json::Value,
 ) -> Result<()> {
-    sqlx::query("UPDATE messages SET parts = $2, status = 'complete' WHERE id = $1")
+    sqlx::query("UPDATE messages SET parts = $2, status = CASE WHEN status = 'failed' THEN status ELSE 'complete' END WHERE id = $1")
         .bind(message_id)
         .bind(parts)
         .execute(db)

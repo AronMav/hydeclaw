@@ -39,7 +39,10 @@ pub fn assemble_parts(
         for tc_id in &sg.tool_call_ids {
             grouped_tool_ids.insert(tc_id.clone());
             let (name, args) = tool_map.get(tc_id.as_str()).cloned().unwrap_or(("tool".to_string(), json!({})));
-            let output = result_map.get(tc_id.as_str()).map(|s| extract_clean_output(s));
+            let (output, extra) = match result_map.get(tc_id.as_str()) {
+                Some(s) => { let (o, e) = extract_clean_output(s); (Some(o), e) }
+                None => (None, vec![]),
+            };
 
             // Check if this tool had an approval
             if let Some(approval) = approvals.iter().find(|a| a.tool_call_id.as_deref() == Some(tc_id.as_str())) {
@@ -62,6 +65,7 @@ pub fn assemble_parts(
                 "input": args,
                 "output": output,
             }));
+            tool_parts.extend(extra);
         }
         parts.push(json!({
             "type": "step-group",
@@ -81,7 +85,10 @@ pub fn assemble_parts(
             }
             let name = tc.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
             let args = tc.get("arguments").cloned().unwrap_or(json!({}));
-            let output = result_map.get(tc_id).map(|s| extract_clean_output(s));
+            let (output, extra) = match result_map.get(tc_id) {
+                Some(s) => { let (o, e) = extract_clean_output(s); (Some(o), e) }
+                None => (None, vec![]),
+            };
 
             // Check for approval
             if let Some(approval) = approvals.iter().find(|a| a.tool_call_id.as_deref() == Some(tc_id)) {
@@ -104,6 +111,7 @@ pub fn assemble_parts(
                 "input": args,
                 "output": output,
             }));
+            parts.extend(extra);
         }
     }
 
@@ -147,14 +155,40 @@ fn parse_content_parts(content: &str) -> Vec<Value> {
     parts
 }
 
-/// Extract file and rich-card markers from tool output, returning cleaned text.
-fn extract_clean_output(raw: &str) -> Value {
-    let cleaned = raw
-        .lines()
-        .filter(|l| !l.starts_with("__file__:") && !l.starts_with("__rich_card__:"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    json!(cleaned)
+/// Extract file and rich-card markers from tool output.
+/// Returns (cleaned_text, extra_parts) where extra_parts are typed file/rich-card parts.
+fn extract_clean_output(raw: &str) -> (Value, Vec<Value>) {
+    let mut clean_lines = Vec::new();
+    let mut extra_parts = Vec::new();
+
+    for line in raw.lines() {
+        if let Some(json_str) = line.strip_prefix("__file__:") {
+            if let Ok(meta) = serde_json::from_str::<Value>(json_str) {
+                if let Some(url) = meta.get("url").and_then(|v| v.as_str()) {
+                    let media_type = meta.get("mediaType").and_then(|v| v.as_str()).unwrap_or("image/png");
+                    extra_parts.push(json!({
+                        "type": "file",
+                        "url": url,
+                        "mediaType": media_type,
+                    }));
+                }
+            }
+        } else if let Some(json_str) = line.strip_prefix("__rich_card__:") {
+            if let Ok(meta) = serde_json::from_str::<Value>(json_str) {
+                let card_type = meta.get("cardType").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let data = meta.get("data").cloned().unwrap_or(json!({}));
+                extra_parts.push(json!({
+                    "type": "rich-card",
+                    "cardType": card_type,
+                    "data": data,
+                }));
+            }
+        } else {
+            clean_lines.push(line);
+        }
+    }
+
+    (json!(clean_lines.join("\n")), extra_parts)
 }
 
 /// Build map of tool_call_id -> (name, arguments) from tool_calls JSON array.
