@@ -21,6 +21,20 @@ export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean, s
   // The complete version of the message is always saved separately.
   const filtered = resolvedRows.filter(m => m.status !== "streaming");
 
+  // Pre-pass: when a final assistant message has `parts`, all preceding
+  // intermediate assistant/tool rows in that turn are redundant — skip them.
+  const skipIds = new Set<string>();
+  for (let i = filtered.length - 1; i >= 0; i--) {
+    const m = filtered[i];
+    if (m.role === "assistant" && !m.tool_call_id && m.parts && Array.isArray(m.parts) && m.parts.length > 0) {
+      for (let j = i - 1; j >= 0; j--) {
+        const prev = filtered[j];
+        if (prev.role === "user") break;
+        skipIds.add(prev.id);
+      }
+    }
+  }
+
   const messages: ChatMessage[] = [];
   let lastAssistantMsg: ChatMessage | null = null;
   let lastAgentId: string | undefined = undefined;
@@ -39,6 +53,7 @@ export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean, s
   }
 
   for (const m of filtered) {
+    if (skipIds.has(m.id)) continue;
     if (m.role === "user") {
       // Finalize any pending assistant message before starting a user block
       if (lastAssistantMsg) {
