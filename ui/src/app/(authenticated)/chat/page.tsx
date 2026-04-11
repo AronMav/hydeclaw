@@ -543,23 +543,7 @@ export default function ChatPage() {
                             </span>
                           ) : null}
                         </div>
-                        {(s.participants?.length ?? 0) > 1 && (
-                          <AvatarGroup className="shrink-0">
-                            {s.participants!.slice(0, 3).map(name => (
-                              <Avatar key={name} size="sm" className="size-5">
-                                {agentIcons[name] ? (
-                                  <AvatarImage src={`/uploads/${agentIcons[name]}`} alt={name} />
-                                ) : null}
-                                <AvatarFallback className="text-[8px] font-bold">{name[0]}</AvatarFallback>
-                              </Avatar>
-                            ))}
-                            {s.participants!.length > 3 && (
-                              <AvatarGroupCount className="size-5 text-[8px]">
-                                +{s.participants!.length - 3}
-                              </AvatarGroupCount>
-                            )}
-                          </AvatarGroup>
-                        )}
+                        {/* Participant avatars removed — agents are now session-scoped via agent tool */}
                         <span className="font-mono text-xs tabular-nums text-muted-foreground/70 shrink-0">
                           {relativeTime(s.last_message_at, locale)}
                         </span>
@@ -738,58 +722,10 @@ export default function ChatPage() {
 
 // ── Participant bar (multi-agent sessions) ─────────────────────────────────
 
-export function ParticipantBar({ sessionId, currentAgent }: { sessionId: string | null; currentAgent: string }) {
-  const { data: sessionsData } = useSessions(currentAgent);
-  const session = sessionsData?.sessions.find((s: SessionRow) => s.id === sessionId);
-  const participants = session?.participants ?? [currentAgent];
-  const agentIcons = useAuthStore((s) => s.agentIcons);
-  const { data: allAgents = [] } = useAgents();
+export function ParticipantBar({ sessionId: _sessionId, currentAgent: _currentAgent }: { sessionId: string | null; currentAgent: string }) {
+  // Participant bar hidden — agents are now session-scoped via the `agent` tool (polling model).
+  return null;
 
-  // Only show when there are multiple participants
-  if (participants.length <= 1) return null;
-
-  const available = allAgents.filter((a: AgentInfo) => !participants.includes(a.name));
-
-  return (
-    <div className="flex items-center gap-1.5">
-      {participants.map((name: string) => (
-        <div key={name} className="flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-border/40 bg-muted/30 text-xs font-semibold">
-          <Avatar className="h-5 w-5 rounded-md">
-            {agentIcons[name] && (
-              <AvatarImage src={`/uploads/${agentIcons[name]}`} alt={name} className="rounded-md object-cover" />
-            )}
-            <AvatarFallback className="rounded-md bg-primary/20 text-[10px] font-bold text-primary">
-              {name[0]}
-            </AvatarFallback>
-          </Avatar>
-          <span className="uppercase tracking-wide">{name}</span>
-        </div>
-      ))}
-      {sessionId && available.length > 0 && (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="outline" size="icon" className="h-8 w-8 border-border/40 bg-muted/30">
-              <Plus className="h-3.5 w-3.5" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent>
-            {available.map((a: AgentInfo) => (
-              <DropdownMenuItem key={a.name} onClick={async () => {
-                try {
-                  await inviteAgent(sessionId, a.name);
-                  queryClient.invalidateQueries({ queryKey: qk.sessions(currentAgent) });
-                } catch (err) {
-                  console.error("Failed to invite:", err);
-                }
-              }}>
-                {a.name}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      )}
-    </div>
-  );
 }
 
 // ── Chat / Canvas tab switching ────────────────────────────────────────────
