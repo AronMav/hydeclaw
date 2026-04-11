@@ -154,30 +154,37 @@ impl AgentEngine {
             },
             ToolDefinition {
                 name: "agent".to_string(),
-                description: "Manage agents in the current session. Actions: \
-                    'run' — start a named agent with a task; \
-                    'message' — send a message to a running agent; \
-                    'status' — check agent status (omit target to list all); \
+                description: "Run another agent and get the result. By default blocks until the agent completes (may take several minutes). \
+                    Actions: 'run' — run an agent with a task and return result (blocks); \
+                    'run' with mode='async' — start agent without waiting (for parallel spawning); \
+                    'collect' — wait for an async agent to complete and return result (blocks); \
+                    'message' — send a follow-up message to a running agent; \
+                    'status' — check agent status; \
                     'kill' — terminate an agent.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["run", "message", "status", "kill"],
+                            "enum": ["run", "message", "status", "kill", "collect"],
                             "description": "Action to perform"
                         },
                         "target": {
                             "type": "string",
-                            "description": "Agent name (for run, message, status, kill). Omit for status to list all."
+                            "description": "Agent name"
                         },
                         "task": {
                             "type": "string",
-                            "description": "Initial task for the agent (for run)"
+                            "description": "Task description (for run)"
                         },
                         "text": {
                             "type": "string",
                             "description": "Message text (for message)"
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["sync", "async"],
+                            "description": "For run: 'sync' (default) blocks until result, 'async' returns immediately"
                         }
                     },
                     "required": ["action"]

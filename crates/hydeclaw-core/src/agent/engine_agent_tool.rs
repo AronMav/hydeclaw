@@ -16,7 +16,7 @@ fn extract_session_id(args: &serde_json::Value) -> Option<uuid::Uuid> {
 impl AgentEngine {
     /// Dispatch `agent` tool calls to the appropriate sub-handler based on `action`.
     ///
-    /// Actions: `run`, `message`, `status`, `kill`.
+    /// Actions: `run`, `message`, `status`, `kill`, `collect`.
     pub(super) async fn handle_agent_tool(&self, args: &serde_json::Value) -> String {
         let action = args
             .get("action")
@@ -28,11 +28,13 @@ impl AgentEngine {
             "message" => self.handle_agent_message(args).await,
             "status" => self.handle_agent_status(args).await,
             "kill" => self.handle_agent_kill(args).await,
-            other => format!("Error: unknown agent action '{}'. Expected: run, message, status, kill", other),
+            "collect" => self.handle_agent_collect(args).await,
+            other => format!("Error: unknown agent action '{}'. Expected: run, message, status, kill, collect", other),
         }
     }
 
-    /// `run` — spawn a new live agent in the current session's pool.
+    /// `run` — spawn a new live agent and wait for its result (blocking by default).
+    /// With `mode: "async"`, returns immediately for parallel spawning (use `collect` to get results).
     async fn handle_agent_run(&self, args: &serde_json::Value) -> String {
         let target = match args.get("target").and_then(|v| v.as_str()) {
             Some(n) if !n.is_empty() => n,
@@ -42,15 +44,13 @@ impl AgentEngine {
             Some(t) if !t.is_empty() => t,
             _ => return "Error: 'task' parameter is required".to_string(),
         };
+        let is_async = args.get("mode").and_then(|v| v.as_str()) == Some("async");
 
-        // Resolve session ID from enriched _context (injected by enrich_tool_args, race-free).
-        // No fallback to processing_session_id — that shared mutex causes deadlocks and races.
         let session_id = match extract_session_id(args) {
             Some(id) if id != uuid::Uuid::nil() => id,
             _ => return "Error: no active session — agent tool requires session context via _context".to_string(),
         };
 
-        // Resolve target engine from the agent map.
         let agent_map = match &self.agent_map {
             Some(m) => m,
             None => return "Error: agent_map not available (subagent context)".to_string(),
@@ -63,41 +63,99 @@ impl AgentEngine {
             }
         };
 
-        // Register the target agent as a session participant so multi-agent instructions are injected.
         let _ = crate::db::sessions::add_participant(self.db_pool(), session_id, target).await;
 
-        // Get session pools.
         let pools = match &self.session_pools {
             Some(p) => p,
             None => return "Error: session_pools not available".to_string(),
         };
 
         // Check for duplicate and insert — all under one write lock to prevent TOCTOU race.
-        let mut pools_write = pools.write().await;
-        let pool = pools_write
-            .entry(session_id)
-            .or_insert_with(|| SessionAgentPool::new(session_id));
-        if pool.contains(target) {
-            return format!("Error: {} is already running in this session. Use agent(action: \"message\") to communicate.", target);
+        {
+            let mut pools_write = pools.write().await;
+            let pool = pools_write
+                .entry(session_id)
+                .or_insert_with(|| SessionAgentPool::new(session_id));
+            if pool.contains(target) {
+                return format!("Error: {} is already running in this session. Use agent(action: \"message\") to communicate.", target);
+            }
+
+            let live_agent = match session_agent_pool::spawn_live_agent(
+                target.to_string(), target_engine, task.to_string(), session_id,
+            ) {
+                Some(la) => la,
+                None => return format!("Error: failed to deliver initial task to agent '{}'", target),
+            };
+            pool.insert(live_agent);
+        } // write lock released before blocking wait
+
+        tracing::info!(from = %self.agent.name, target = %target, mode = if is_async { "async" } else { "sync" }, "agent tool: spawned");
+
+        if is_async {
+            // Async mode: return immediately, caller uses `collect` later.
+            return serde_json::json!({
+                "status": "started",
+                "agent": target,
+                "message": format!("Agent '{}' started. Use agent(action: \"collect\", target: \"{}\") to get the result.", target, target),
+            }).to_string();
         }
 
-        // Spawn the live agent.
-        let live_agent = match session_agent_pool::spawn_live_agent(
-            target.to_string(), target_engine, task.to_string(), session_id,
-        ) {
-            Some(la) => la,
-            None => return format!("Error: failed to deliver initial task to agent '{}'", target),
-        };
+        // Sync mode (default): block until the agent completes or times out.
+        Self::wait_for_agent_result(pools, session_id, target, std::time::Duration::from_secs(300)).await
+    }
 
-        pool.insert(live_agent);
+    /// Block until a live agent becomes idle and return its last_result.
+    async fn wait_for_agent_result(
+        pools: &crate::agent::session_agent_pool::SessionPoolsMap,
+        session_id: uuid::Uuid,
+        target: &str,
+        timeout: std::time::Duration,
+    ) -> String {
+        let start = std::time::Instant::now();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 
-        serde_json::json!({
-            "status": "ok",
-            "agent": target,
-            "session_id": session_id.to_string(),
-            "message": format!("Agent '{}' started with initial task", target),
-        })
-        .to_string()
+            // Check if agent is done
+            let result = {
+                let pools_read = pools.read().await;
+                if let Some(pool) = pools_read.get(&session_id) {
+                    if let Some(agent) = pool.get(target) {
+                        if agent.is_idle() {
+                            let lr = agent.last_result.read().await.clone();
+                            Some(lr)
+                        } else if agent.task_handle.is_finished() {
+                            // Task exited (crash/cancel) while still "processing"
+                            let lr = agent.last_result.read().await.clone();
+                            Some(lr)
+                        } else {
+                            None // still processing
+                        }
+                    } else {
+                        // Agent was removed (killed by someone else)
+                        Some(Some(format!("Agent '{}' was killed before completing", target)))
+                    }
+                } else {
+                    Some(Some(format!("Session pool not found for {}", target)))
+                }
+            };
+
+            if let Some(last_result) = result {
+                let result_text = last_result.unwrap_or_else(|| "(no result)".to_string());
+                return serde_json::json!({
+                    "status": "completed",
+                    "agent": target,
+                    "result": result_text,
+                }).to_string();
+            }
+
+            if start.elapsed() > timeout {
+                return serde_json::json!({
+                    "status": "timeout",
+                    "agent": target,
+                    "message": format!("Agent '{}' did not complete within {} seconds", target, timeout.as_secs()),
+                }).to_string();
+            }
+        }
     }
 
     /// `message` — send a follow-up message to an already-running live agent.
@@ -241,5 +299,27 @@ impl AgentEngine {
             }
             None => format!("Error: agent '{}' not found in session pool", target),
         }
+    }
+
+    /// `collect` — block until an async-spawned agent completes and return its result.
+    /// Used after `agent(action="run", mode="async")` for parallel agent patterns.
+    async fn handle_agent_collect(&self, args: &serde_json::Value) -> String {
+        let target = match args.get("target").and_then(|v| v.as_str()) {
+            Some(t) if !t.is_empty() => t,
+            _ => return "Error: 'target' parameter is required".to_string(),
+        };
+
+        let session_id = match extract_session_id(args) {
+            Some(id) if id != uuid::Uuid::nil() => id,
+            _ => return "Error: no active session — agent tool requires session context via _context".to_string(),
+        };
+
+        let pools = match &self.session_pools {
+            Some(p) => p,
+            None => return "Error: session_pools not available".to_string(),
+        };
+
+        // Block until the agent completes (same logic as sync run).
+        Self::wait_for_agent_result(pools, session_id, target, std::time::Duration::from_secs(300)).await
     }
 }
