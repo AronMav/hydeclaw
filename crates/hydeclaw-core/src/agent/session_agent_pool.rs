@@ -157,10 +157,12 @@ pub struct AgentPoolEntry {
 
 /// Spawn a new LiveAgent with a background processing loop.
 /// Returns `None` if the initial task could not be delivered (channel closed).
+/// `session_id` is passed to `run_subagent_with_session` so pool agents can use the `agent` tool.
 pub fn spawn_live_agent(
     name: String,
     engine: Arc<AgentEngine>,
     initial_task: String,
+    session_id: Uuid,
 ) -> Option<LiveAgent> {
     let (tx, rx) = mpsc::channel::<AgentMessage>(32);
     let status = Arc::new(AtomicU8::new(STATUS_PROCESSING));
@@ -175,6 +177,7 @@ pub fn spawn_live_agent(
         last_result.clone(),
         cancel.clone(),
         iteration_count.clone(),
+        session_id,
     ));
 
     // Send initial task synchronously — channel is fresh with capacity 32.
@@ -202,6 +205,7 @@ async fn agent_processing_loop(
     last_result: Arc<RwLock<Option<String>>>,
     cancel: Arc<AtomicBool>,
     iteration_count: Arc<AtomicUsize>,
+    session_id: Uuid,
 ) {
     let max_iterations = engine.tool_loop_config().effective_max_iterations();
     let timeout = crate::agent::engine::parse_subagent_timeout(
@@ -215,19 +219,19 @@ async fn agent_processing_loop(
         status.store(STATUS_PROCESSING, Ordering::Relaxed);
         let deadline = Some(Instant::now() + timeout);
 
-        // NOTE: We do NOT set processing_session_id here. The `agent` tool is denied to
-        // pool agents (SUBAGENT_DENIED_TOOLS), so no tool inside run_subagent will read it.
-        // Setting it would race with the engine's own SSE pipeline if the same engine
-        // handles a normal chat request concurrently.
+        // Pass session_id via run_subagent_with_session so the `agent` tool can find the
+        // correct SessionAgentPool through enriched `_context`. We do NOT mutate the shared
+        // processing_session_id — that would race with SSE on the same engine.
 
         let result = engine
-            .run_subagent(
+            .run_subagent_with_session(
                 &msg.text,
                 max_iterations,
                 deadline,
                 Some(cancel.clone()),
                 None,
                 None,
+                Some(session_id),
             )
             .await;
 
