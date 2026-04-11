@@ -148,6 +148,8 @@ pub struct AppState {
     pub polling_diagnostics: Arc<PollingDiagnostics>,
     /// Cached WAN IP address (refreshed every 5 minutes to avoid hammering STUN/TURN services).
     pub wan_ip_cache: Arc<tokio::sync::RwLock<Option<WanIpCache>>>,
+    /// Session-scoped agent pools: maps session UUID → pool of alive agents.
+    pub session_pools: crate::agent::session_agent_pool::SessionPoolsMap,
 }
 
 /// Shared dependencies needed to start new agents at runtime (from CRUD endpoints).
