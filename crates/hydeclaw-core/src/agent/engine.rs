@@ -615,7 +615,12 @@ impl AgentEngine {
     fn enrich_tool_args(args: &serde_json::Value, context: &serde_json::Value, session_id: Uuid, channel: &str) -> serde_json::Value {
         let mut args = args.clone();
         if let Some(obj) = args.as_object_mut() {
-            let mut ctx = context.clone();
+            // If context is Null, create an empty object so session_id can be injected.
+            let mut ctx = if context.is_null() {
+                serde_json::json!({})
+            } else {
+                context.clone()
+            };
             if let Some(ctx_obj) = ctx.as_object_mut() {
                 ctx_obj.insert("session_id".to_string(), serde_json::json!(session_id.to_string()));
                 ctx_obj.insert("_channel".to_string(), serde_json::json!(channel));
