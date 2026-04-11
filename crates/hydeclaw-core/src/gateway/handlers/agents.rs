@@ -615,7 +615,6 @@ pub async fn start_agent_from_config(
                     std::time::Duration::from_secs(30),
                 ),
                 oauth: Some(state.oauth.clone()),
-                subagent_semaphore: Arc::new(tokio::sync::Semaphore::new(deps.subagent_max)),
                 subagent_registry: crate::agent::subagent_state::SubagentRegistry::new(),
                 // Shared fields (Phase 39-02 wave 2)
                 secrets: state.secrets.clone(),

@@ -153,10 +153,8 @@ pub struct AppState {
 }
 
 /// Shared dependencies needed to start new agents at runtime (from CRUD endpoints).
-#[allow(dead_code)]
 pub struct AgentDeps {
     pub mcp: Option<Arc<crate::mcp::McpRegistry>>,
-    pub subagent_max: usize,
     pub workspace_dir: String,
     pub toolgate_url: Option<String>,
     pub sandbox: Option<Arc<crate::containers::sandbox::CodeSandbox>>,

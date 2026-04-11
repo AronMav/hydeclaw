@@ -800,7 +800,6 @@ impl MemoryStore {
     }
 
     /// Delete a memory chunk by UUID. Returns true if a row was deleted.
-    #[allow(dead_code)]
     pub async fn delete(&self, chunk_id: &str) -> Result<bool> {
         crate::db::memory_queries::delete_chunk(&self.db, chunk_id).await
     }
