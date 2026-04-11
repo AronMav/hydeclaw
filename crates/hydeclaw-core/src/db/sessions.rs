@@ -42,8 +42,19 @@ pub async fn get_or_create_session(
         _ => (user_id, channel), // per-channel-peer
     };
 
-    // Use a single CTE to atomically find-or-create, closing the race window
-    // between SELECT and INSERT that could create duplicate sessions.
+    // Advisory lock keyed on (agent_id, user_id, channel) hash prevents concurrent
+    // transactions from both inserting when no session exists. The CTE alone is NOT
+    // sufficient — PostgreSQL snapshot isolation lets two concurrent CTEs both see
+    // `existing` as empty and both INSERT. The advisory lock serializes access.
+    let mut tx = db.begin().await?;
+
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1 || $2 || $3))")
+        .bind(agent_id)
+        .bind(eff_user)
+        .bind(eff_channel)
+        .execute(&mut *tx)
+        .await?;
+
     let row = sqlx::query(
         "WITH existing AS ( \
            SELECT id FROM sessions \
@@ -61,10 +72,12 @@ pub async fn get_or_create_session(
     .bind(agent_id)
     .bind(eff_user)
     .bind(eff_channel)
-    .fetch_one(db)
+    .fetch_one(&mut *tx)
     .await?;
 
-    Ok(row.get("id"))
+    let id: Uuid = row.get("id");
+    tx.commit().await?;
+    Ok(id)
 }
 
 /// Create a brand-new session for the given user (no history reuse).
@@ -605,7 +618,7 @@ pub async fn search_messages(
                 "SELECT m.content, s.id as session_id, s.user_id, s.channel, m.role, m.created_at, \
                         0.0::float8 AS rank \
                  FROM messages m JOIN sessions s ON m.session_id = s.id \
-                 WHERE s.agent_id = $1 AND m.content ILIKE '%' || $2 || '%' \
+                 WHERE s.agent_id = $1 AND m.content ILIKE '%' || $2 || '%' ESCAPE '\\' \
                  ORDER BY m.created_at DESC LIMIT $3",
             )
             .bind(agent_id)

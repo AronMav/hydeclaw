@@ -224,7 +224,9 @@ impl AgentEngine {
                 format!("Error: agent '{}' message queue is full — it may still be processing", target)
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                agent.status.store(session_agent_pool::STATUS_IDLE, std::sync::atomic::Ordering::Release);
+                // Don't revert to IDLE — agent loop is dead. Leave PROCESSING so that
+                // collect/wait_for_agent_result detects task_handle.is_finished() and
+                // returns the error instead of silently returning "(no result)".
                 format!("Error: agent '{}' processing loop has exited", target)
             }
         }
