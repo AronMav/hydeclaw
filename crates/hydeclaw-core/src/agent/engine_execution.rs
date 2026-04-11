@@ -37,7 +37,7 @@ impl AgentEngine {
         let crate::agent::context_builder::ContextSnapshot { session_id, mut messages, tools: available_tools } =
             self.build_context(msg, true, None, false).await?;
 
-        // Store session_id for tool handlers that need session context (e.g., handoff)
+        // Store session_id for tool handlers that need session context (e.g., agent tool)
         *self.processing_session_id().lock().await = Some(session_id);
 
         // Mark session as running — watchdog and startup cleanup use this

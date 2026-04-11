@@ -161,6 +161,7 @@ pub fn spawn_live_agent(
     name: String,
     engine: Arc<AgentEngine>,
     initial_task: String,
+    session_id: Uuid,
 ) -> LiveAgent {
     let (tx, rx) = mpsc::channel::<AgentMessage>(32);
     let status = Arc::new(AtomicU8::new(STATUS_PROCESSING));
@@ -175,13 +176,11 @@ pub fn spawn_live_agent(
         last_result.clone(),
         cancel.clone(),
         iteration_count.clone(),
+        session_id,
     ));
 
-    // Send initial task
-    let tx_init = tx.clone();
-    tokio::spawn(async move {
-        let _ = tx_init.send(AgentMessage { text: initial_task }).await;
-    });
+    // Send initial task synchronously — channel is fresh with capacity 32.
+    let _ = tx.try_send(AgentMessage { text: initial_task });
 
     LiveAgent {
         engine,
@@ -203,6 +202,7 @@ async fn agent_processing_loop(
     last_result: Arc<RwLock<Option<String>>>,
     cancel: Arc<AtomicBool>,
     iteration_count: Arc<AtomicUsize>,
+    session_id: Uuid,
 ) {
     let max_iterations = engine.tool_loop_config().effective_max_iterations();
     let timeout = crate::agent::engine::parse_subagent_timeout(
@@ -216,6 +216,9 @@ async fn agent_processing_loop(
         status.store(STATUS_PROCESSING, Ordering::Relaxed);
         let deadline = Some(Instant::now() + timeout);
 
+        // Set session context so pool agents can use the agent tool.
+        *engine.processing_session_id().lock().await = Some(session_id);
+
         let result = engine
             .run_subagent(
                 &msg.text,
@@ -226,6 +229,9 @@ async fn agent_processing_loop(
                 None,
             )
             .await;
+
+        // Clear session context after processing.
+        *engine.processing_session_id().lock().await = None;
 
         let result_text = match result {
             Ok(text) => text,

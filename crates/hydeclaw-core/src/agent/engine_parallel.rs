@@ -17,7 +17,7 @@ fn is_system_tool_parallel_safe(name: &str) -> bool {
             | "session"
             | "canvas"
             | "rich_card"
-            | "subagent"
+            | "agent"
     )
 }
 
@@ -117,7 +117,7 @@ impl super::AgentEngine {
             let futs: Vec<_> = parallel_indices.iter().map(|&i| {
                 let name = tool_calls[i].name.clone();
                 let args = enriched[i].clone();
-                let timeout = if name == "subagent" { subagent_timeout } else { default_timeout };
+                let timeout = if name == "agent" { subagent_timeout } else { default_timeout };
                 async move {
                     match tokio::time::timeout(timeout, self.execute_tool_call(&name, &args)).await {
                         Ok(r) => (i, self.truncate_tool_result(&r, current_context_chars)),

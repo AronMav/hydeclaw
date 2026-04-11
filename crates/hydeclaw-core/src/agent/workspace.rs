@@ -299,7 +299,7 @@ pub fn build_system_prompt(
         "When a tool returns error JSON, extract the error message and report it clearly to the user.\n",
         "Report tool results ACCURATELY. Never reinterpret errors as 'normal behavior' or add explanations the tool did not provide.\n",
         "When you need to look up a URL, read a webpage, or fetch API data — use `web_fetch` to retrieve the content.\n",
-        "When you need another agent's expertise — use `handoff` with agent name, task description, and relevant context. The target agent receives a structured message and takes over.\n",
+        "When you need another agent's expertise — use `agent` tool with agent name, task description, and relevant context. The target agent runs within the session and works in background.\n",
         "\n",
     ));
     prompt.push_str(&format!("## Output\nCurrent channel: **{}**.\n", runtime.channel));
@@ -331,14 +331,14 @@ pub fn build_system_prompt(
         if capabilities.is_base {
             prompt.push_str("- **Scheduling**: `cron` to create, list, delete, or run scheduled tasks\n");
         } else {
-            prompt.push_str("- **Scheduling**: `cron(action=\"list\")` to view scheduled tasks (read-only). To create/delete/run cron jobs, use `handoff` to delegate to the **base agent** (use `agents_list` to find it)\n");
+            prompt.push_str("- **Scheduling**: `cron(action=\"list\")` to view scheduled tasks (read-only). To create/delete/run cron jobs, use `agent` tool to delegate to the **base agent** (use `agents_list` to find it)\n");
         }
     }
     if capabilities.has_message_actions {
         prompt.push_str("- **Channel Actions**: send photos, voice messages, buttons via channel actions after tool calls\n");
     }
     if !capabilities.is_base {
-        prompt.push_str("- **Secrets**: `secret_set` saves secrets scoped to you. For global secrets, use `handoff` to delegate to the **base agent**\n");
+        prompt.push_str("- **Secrets**: `secret_set` saves secrets scoped to you. For global secrets, use `agent` tool to delegate to the **base agent**\n");
     }
     if capabilities.has_yaml_tools {
         prompt.push_str("- **External Tools**: YAML-defined tools in workspace/tools/ — check tool list for specifics\n");
@@ -374,20 +374,24 @@ pub fn build_system_prompt(
         );
     }
 
-    // 6. Subagent management rules
+    // 6. Agent tool management rules
     prompt.push_str(concat!(
-        "\n## Subagent Management\n",
-        "spawn_subagent is ASYNC — it returns an ID immediately, the subagent works in background.\n",
-        "CRITICAL: You MUST monitor every subagent you spawn until it completes.\n",
+        "\n## Agent Tool\n",
+        "The `agent` tool manages session-scoped live agents with four actions:\n",
+        "- `agent(action=\"run\", agent=\"Name\", task=\"...\")` — spawn a live agent in the current session (async, returns immediately)\n",
+        "- `agent(action=\"message\", agent=\"Name\", text=\"...\")` — send a follow-up message to a running agent\n",
+        "- `agent(action=\"status\")` — check status of all agents, or `agent(action=\"status\", agent=\"Name\")` for one\n",
+        "- `agent(action=\"kill\", agent=\"Name\")` — stop and remove an agent from the session\n\n",
+        "CRITICAL: You MUST monitor every agent you spawn until it completes.\n",
         "Workflow:\n",
-        "1. `spawn_subagent(task=...)` → get subagent_id\n",
-        "2. `subagent_status()` — check progress (repeat every 10-30s)\n",
-        "3. If stuck (same tools repeating in `subagent_logs`) → `subagent_kill` and retry or do it yourself\n",
-        "4. When done → `spawn_subagent(subagent_id=...)` to collect the result\n",
-        "5. Synthesize result for the user — do NOT forward raw subagent output\n\n",
-        "Multiple subagents: monitor ALL of them in a loop until all complete.\n",
-        "NEVER respond to the user while subagents are still running — wait for results first.\n",
-        "Subagents have NO access to workspace files via code_exec (sandbox is isolated). Use workspace_read first, pass data as task context.\n\n",
+        "1. `agent(action=\"run\", ...)` → agent starts processing in background\n",
+        "2. `agent(action=\"status\")` — check progress (repeat every 10-30s)\n",
+        "3. If stuck → `agent(action=\"kill\")` and retry or do it yourself\n",
+        "4. When status is idle with last_result → read and synthesize the result\n",
+        "5. Synthesize result for the user — do NOT forward raw agent output\n\n",
+        "Multiple agents: monitor ALL of them in a loop until all complete.\n",
+        "NEVER respond to the user while agents are still running — wait for results first.\n",
+        "Live agents have NO access to workspace files via code_exec (sandbox is isolated). Use workspace_read first, pass data as task context.\n\n",
     ));
 
     // 7. Memory usage instructions (only when memory is available)
