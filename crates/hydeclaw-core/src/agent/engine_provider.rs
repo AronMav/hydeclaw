@@ -5,7 +5,7 @@ use super::*;
 
 impl AgentEngine {
     /// Build tool loop config from agent TOML settings (or defaults).
-    pub(super) fn tool_loop_config(&self) -> crate::agent::tool_loop::ToolLoopConfig {
+    pub(crate) fn tool_loop_config(&self) -> crate::agent::tool_loop::ToolLoopConfig {
         self.agent
             .tool_loop
             .as_ref()
