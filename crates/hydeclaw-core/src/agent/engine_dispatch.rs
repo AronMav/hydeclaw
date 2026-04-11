@@ -405,6 +405,10 @@ impl AgentEngine {
                         Some(u) => u.to_string(),
                         None => return "Error: url parameter required.".to_string(),
                     };
+                    // Reject URLs starting with '-' to prevent git option injection (RCE via --upload-pack etc.)
+                    if url.starts_with('-') {
+                        return "Error: URL must not start with '-'".to_string();
+                    }
                     let url = if url.starts_with("https://github.com/") {
                         url.replace("https://github.com/", "git@github.com:")
                     } else { url };
@@ -415,11 +419,10 @@ impl AgentEngine {
                                 .unwrap_or("repo").trim_end_matches(".git").to_string()
                         });
                     let target = std::path::PathBuf::from(&self.workspace_dir).join(&dir_name);
-                    if target.exists() {
-                        return format!("Error: directory '{}' already exists in workspace.", dir_name);
-                    }
+                    // No pre-existence check (TOCTOU race). Let git clone fail naturally
+                    // if the directory already exists — git reports a clear error message.
                     let output = tokio::process::Command::new("git")
-                        .args(["clone", &url, &target.to_string_lossy()])
+                        .args(["clone", "--", &url, &target.to_string_lossy()])
                         .output().await;
                     return match output {
                         Ok(o) => {
