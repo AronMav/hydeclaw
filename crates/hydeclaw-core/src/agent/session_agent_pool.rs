@@ -28,7 +28,6 @@ pub struct AgentMessage {
 
 /// An always-alive agent instance bound to a session.
 pub struct LiveAgent {
-    pub engine: Arc<AgentEngine>,
     pub name: String,
     pub message_tx: mpsc::Sender<AgentMessage>,
     pub status: Arc<AtomicU8>,
@@ -157,12 +156,13 @@ pub struct AgentPoolEntry {
 // ── spawn_live_agent ─────────────────────────────────────────────────────────
 
 /// Spawn a new LiveAgent with a background processing loop.
+/// Returns `None` if the initial task could not be delivered (channel closed).
 pub fn spawn_live_agent(
     name: String,
     engine: Arc<AgentEngine>,
     initial_task: String,
     session_id: Uuid,
-) -> LiveAgent {
+) -> Option<LiveAgent> {
     let (tx, rx) = mpsc::channel::<AgentMessage>(32);
     let status = Arc::new(AtomicU8::new(STATUS_PROCESSING));
     let last_result = Arc::new(RwLock::new(None));
@@ -180,10 +180,12 @@ pub fn spawn_live_agent(
     ));
 
     // Send initial task synchronously — channel is fresh with capacity 32.
-    let _ = tx.try_send(AgentMessage { text: initial_task });
+    if tx.try_send(AgentMessage { text: initial_task }).is_err() {
+        task_handle.abort();
+        return None;
+    }
 
-    LiveAgent {
-        engine,
+    Some(LiveAgent {
         name,
         message_tx: tx,
         status,
@@ -192,7 +194,7 @@ pub fn spawn_live_agent(
         created_at: Instant::now(),
         iteration_count,
         task_handle,
-    }
+    })
 }
 
 async fn agent_processing_loop(

@@ -25,7 +25,7 @@ pub(crate) fn parse_subagent_timeout(s: &str) -> std::time::Duration {
 /// Tools denied to subagents by default (prevent recursive spawning, destructive operations, and dangerous ops).
 /// workspace_write and workspace_edit are allowed so subagents can write shared state files (SUB-01).
 pub(super) const SUBAGENT_DENIED_TOOLS: &[&str] = &[
-    "subagent", "workspace_delete",
+    "agent", "workspace_delete",
     "workspace_rename", "cron", "secret_set", "process",
 ];
 
@@ -660,7 +660,7 @@ mod tests {
     #[test]
     fn denied_tools_list_contains_critical_entries() {
         // Safety: subagent, workspace_delete, workspace_rename, cron must always be denied
-        assert!(SUBAGENT_DENIED_TOOLS.contains(&"subagent"));
+        assert!(SUBAGENT_DENIED_TOOLS.contains(&"agent"));
         assert!(SUBAGENT_DENIED_TOOLS.contains(&"workspace_delete"));
         assert!(SUBAGENT_DENIED_TOOLS.contains(&"workspace_rename"));
         assert!(SUBAGENT_DENIED_TOOLS.contains(&"cron"));
