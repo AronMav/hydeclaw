@@ -56,15 +56,15 @@ function EmptyPartView() {
 function renderPart(part: MessagePart, index: number, _meta?: { stepGroupToolIds?: Set<string>; parts?: MessagePart[] }) {
   switch (part.type) {
     case "text":
-      return <TextPart key={index} text={part.text} />;
+      return <TextPart key={`text-${index}`} text={part.text} />;
     case "reasoning":
-      return <ReasoningPart key={index} text={part.text} />;
+      return <ReasoningPart key={`reasoning-${index}`} text={part.text} />;
     case "tool": {
       // Skip standalone tool parts that are inside a step group (dedup)
       if (_meta?.stepGroupToolIds?.has(part.toolCallId)) return null;
       return (
         <ToolCallPartView
-          key={index}
+          key={`tool-${part.toolCallId}`}
           toolName={part.toolName}
           args={part.input}
           result={part.output}
@@ -73,13 +73,13 @@ function renderPart(part: MessagePart, index: number, _meta?: { stepGroupToolIds
       );
     }
     case "file":
-      return <FileDataPartView key={index} data={{ url: part.url, mediaType: part.mediaType }} />;
+      return <FileDataPartView key={`file-${part.url}`} data={{ url: part.url, mediaType: part.mediaType }} />;
     case "source-url":
-      return <SourceUrlDataPartView key={index} data={{ url: part.url, title: part.title }} />;
+      return <SourceUrlDataPartView key={`src-${part.url}`} data={{ url: part.url, title: part.title }} />;
     case "rich-card":
       // Skip agent-turn rich cards — HandoffDivider in ChatThread replaces this
       if (part.cardType === "agent-turn") return null;
-      return <RichCardDataPartView key={index} data={{ cardType: part.cardType, ...part.data }} />;
+      return <RichCardDataPartView key={`card-${part.cardType}-${index}`} data={{ cardType: part.cardType, ...part.data }} />;
     case "continuation-separator":
       return <ContinuationSeparator key={`cont-${index}`} />;
     case "step-group":

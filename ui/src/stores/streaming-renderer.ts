@@ -152,6 +152,8 @@ export function createStreamingRenderer(store: StoreAccess) {
       })
       .catch((err) => {
         if (err.name === "AbortError") return;
+        // Guard: if a newer stream started, don't schedule reconnect for the old one
+        if (myGeneration !== (store.get().agents[agent]?.streamGeneration ?? 0)) return;
         // Network error during reconnect -- schedule next retry
         if (reconnectAttempt < MAX_RECONNECT_ATTEMPTS) {
           scheduleReconnect(agent, sessionId, reconnectAttempt);
@@ -374,6 +376,8 @@ export function createStreamingRenderer(store: StoreAccess) {
       store.set((draft: any) => {
         const st = draft.agents[agent];
         if (!st) return;
+        // Double-check generation inside draft to close race window
+        if (st.streamGeneration !== generation) return;
         if (st.messageSource.mode !== "live") {
           st.messageSource = { mode: "live", messages: [] };
         }
@@ -434,7 +438,10 @@ export function createStreamingRenderer(store: StoreAccess) {
           if (raw === "[DONE]") continue;
 
           const event = parseSseEvent(raw);
-          if (!event) continue;
+          if (!event) {
+            if (process.env.NODE_ENV !== "production") console.warn("[sse] unparseable event:", raw.slice(0, 120));
+            continue;
+          }
 
           switch (event.type) {
             case "data-session-id": {
@@ -657,10 +664,12 @@ export function createStreamingRenderer(store: StoreAccess) {
               store.set((draft: any) => {
                 const st = draft.agents[agent];
                 if (!st) return;
-                
+                // Guard: skip sync events for a different session (e.g. agent switch race)
+                if (receivedSessionId && st.activeSessionId && receivedSessionId !== st.activeSessionId) return;
+
                 const currentSessionId = st.activeSessionId;
                 const isSameSession = receivedSessionId && currentSessionId === receivedSessionId;
-                
+
                 if (st.messageSource.mode !== "live" && !isSameSession) {
                   st.messageSource = { mode: "live", messages: [] };
                 }

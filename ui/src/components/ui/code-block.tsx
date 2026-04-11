@@ -69,7 +69,7 @@ function CodeBlock({ children, className, language, isStreaming = false, ...prop
     if (codeRef.current) {
       setCodeText(codeRef.current.textContent || "")
     }
-  })
+  }, [isStreaming, children])
 
   return (
     <div
