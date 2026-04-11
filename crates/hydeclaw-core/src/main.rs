@@ -497,7 +497,6 @@ async fn main() -> Result<()> {
 
     let agent_deps = Arc::new(tokio::sync::RwLock::new(gateway::AgentDeps {
         mcp: mcp_registry.clone(),
-        subagent_max: cfg.subagents.max_concurrent_in_process as usize,
         workspace_dir: config::WORKSPACE_DIR.to_string(),
         toolgate_url,
         sandbox: sandbox.clone(),

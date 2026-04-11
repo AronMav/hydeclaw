@@ -84,11 +84,27 @@ impl AgentEngine {
     }
 
     /// Internal tool: list all running agents with their provider and model info.
-    pub(super) async fn handle_agents_list(&self, _args: &serde_json::Value) -> String {
+    pub(super) async fn handle_agents_list(&self, args: &serde_json::Value) -> String {
         let agent_map = match &self.agent_map {
             Some(m) => m,
             None => return "Error: agent map not available (subagent context)".to_string(),
         };
+
+        // Collect active pool agents for the current session
+        let session_id = super::agent_tool_impl::extract_session_id(args)
+            .or_else(|| {
+                // Fallback: try processing_session_id (only safe for read here)
+                self.processing_session_id().try_lock().ok().and_then(|g| *g)
+            });
+        let mut active_in_session: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if let (Some(sid), Some(pools)) = (session_id, &self.session_pools) {
+            let pools_read = pools.read().await;
+            if let Some(pool) = pools_read.get(&sid) {
+                for entry in pool.list() {
+                    active_in_session.insert(entry.name.clone());
+                }
+            }
+        }
 
         let map = agent_map.read().await;
         if map.is_empty() {
@@ -99,16 +115,23 @@ impl AgentEngine {
             let a = &handle.engine.agent;
             let is_self = name == &self.agent.name;
             let base_tag = if a.base { " [BASE]" } else { "" };
+            let active_tag = if active_in_session.contains(name.as_str()) { " [ACTIVE]" } else { "" };
             out.push_str(&format!(
-                "- **{}**{}{}: {} / {} (lang: {})\n",
+                "- **{}**{}{}{}: {} / {} (lang: {})\n",
                 name,
                 if is_self { " (you)" } else { "" },
                 base_tag,
+                active_tag,
                 a.provider,
                 a.model,
                 a.language,
             ));
         }
+
+        if !active_in_session.is_empty() {
+            out.push_str(&format!("\nActive in session: {}\n", active_in_session.iter().cloned().collect::<Vec<_>>().join(", ")));
+        }
+
         out
     }
 

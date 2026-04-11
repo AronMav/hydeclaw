@@ -1175,14 +1175,6 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
 
 #[async_trait::async_trait]
 impl crate::agent::tool_executor::ToolExecutorDeps for AgentEngine {
-    fn execute_tool_call_raw<'a>(
-        &'a self,
-        name: &'a str,
-        arguments: &'a serde_json::Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
-        self.execute_tool_call(name, arguments)
-    }
-
     async fn execute_tool_calls_partitioned_raw(
         &self,
         tool_calls: &[hydeclaw_types::ToolCall],
@@ -1209,17 +1201,6 @@ impl crate::agent::tool_executor::ToolExecutorDeps for AgentEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::session_manager::SessionOutcome;
-
-    #[test]
-    fn lifecycle_guard_outcome_defaults_to_running() {
-        let outcome = SessionOutcome::Running;
-        assert!(matches!(outcome, SessionOutcome::Running));
-        let done = SessionOutcome::Done;
-        assert!(matches!(done, SessionOutcome::Done));
-        let failed = SessionOutcome::Failed("test".to_string());
-        assert!(matches!(failed, SessionOutcome::Failed(_)));
-    }
 
     #[test]
     fn search_cache_key_case_insensitive() {

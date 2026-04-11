@@ -11,39 +11,18 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use hydeclaw_types::ToolCall;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use uuid::Uuid;
 
 pub use crate::agent::engine::LoopBreak;
 use crate::agent::tool_loop::LoopDetector;
 
-// ── Public types ──────────────────────────────────────────────────────────────
-
-/// Per-call value type carrying the routing context for a single tool execution.
-/// Constructed fresh at each execute() call site; NOT stored long-lived.
-/// Limited to <=6 fields (TOOL-02).
-#[allow(dead_code)]
-pub struct ToolExecutorCtx {
-    pub session_id: Uuid,
-    pub channel: String,
-    pub context: serde_json::Value,
-    pub current_context_chars: usize,
-    pub sse_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::agent::engine::StreamEvent>>,
-    pub is_automated: bool,
-}
-
 // ── ToolExecutor public trait ─────────────────────────────────────────────────
 
 /// Abstraction over tool execution so unit tests can inject a `MockToolExecutor`
 /// without needing a live LLM stack or filesystem.
 #[async_trait]
-#[allow(dead_code)]
 pub trait ToolExecutor: Send + Sync {
-    /// Execute a single tool call. Returns the tool result string.
-    async fn execute(&self, name: &str, arguments: &serde_json::Value) -> String;
-
     /// Execute a batch of tool calls with loop detection and partitioned parallelism.
     async fn execute_batch(
         &self,
@@ -63,15 +42,7 @@ pub trait ToolExecutor: Send + Sync {
 /// `AgentEngine` implements this; the impl delegates to its own fields/methods.
 /// This avoids a direct Arc<AgentEngine> dependency from tool_executor.rs back to engine.rs.
 #[async_trait]
-#[allow(dead_code)]
 pub(crate) trait ToolExecutorDeps: Send + Sync {
-    /// Tool dispatch — delegates to existing engine_dispatch.rs methods.
-    fn execute_tool_call_raw<'a>(
-        &'a self,
-        name: &'a str,
-        arguments: &'a serde_json::Value,
-    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>;
-
     /// Batch execution — delegates to engine_parallel.rs.
     async fn execute_tool_calls_partitioned_raw(
         &self,
@@ -120,9 +91,6 @@ pub struct DefaultToolExecutor {
     pub(crate) ssrf_http_client: reqwest::Client,
     /// OAuth 2.0 connection manager for provider-based YAML tool auth.
     pub(crate) oauth: Option<Arc<crate::oauth::OAuthManager>>,
-    /// Limits concurrent in-process subagents to prevent API token exhaustion.
-    #[allow(dead_code)]
-    pub(crate) subagent_semaphore: Arc<tokio::sync::Semaphore>,
     /// Registry of async subagents for status/logs/kill management.
     pub(crate) subagent_registry: crate::agent::subagent_state::SubagentRegistry,
 
@@ -158,7 +126,6 @@ pub struct DefaultToolExecutorFields {
     pub canvas_state: tokio::sync::RwLock<Option<crate::agent::engine::CanvasContent>>,
     pub ssrf_http_client: reqwest::Client,
     pub oauth: Option<Arc<crate::oauth::OAuthManager>>,
-    pub subagent_semaphore: Arc<tokio::sync::Semaphore>,
     pub subagent_registry: crate::agent::subagent_state::SubagentRegistry,
     // Shared fields (Phase 39-02 wave 2)
     pub secrets: Arc<crate::secrets::SecretsManager>,
@@ -187,7 +154,6 @@ impl DefaultToolExecutor {
             canvas_state: fields.canvas_state,
             ssrf_http_client: fields.ssrf_http_client,
             oauth: fields.oauth,
-            subagent_semaphore: fields.subagent_semaphore,
             subagent_registry: fields.subagent_registry,
             secrets: fields.secrets,
             mcp: fields.mcp,
@@ -213,10 +179,6 @@ fn _assert_send() {
 
 #[async_trait]
 impl ToolExecutor for DefaultToolExecutor {
-    async fn execute(&self, name: &str, arguments: &serde_json::Value) -> String {
-        self.deps.execute_tool_call_raw(name, arguments).await
-    }
-
     async fn execute_batch(
         &self,
         tool_calls: &[ToolCall],

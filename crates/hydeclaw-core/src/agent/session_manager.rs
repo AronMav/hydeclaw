@@ -11,48 +11,6 @@ use uuid::Uuid;
 
 use crate::db::sessions::MessageRow;
 
-// ── Pure helpers ────────────────────────────────────────────────────────────
-
-/// Resolve the effective `(user_id, channel)` pair from a `dm_scope` string.
-///
-/// Matches the logic in `crate::db::sessions::get_or_create_session`:
-/// - `"shared"` | `"per-peer"` → unique per agent+user (channel collapsed to `"*"`)
-/// - `"per-chat"` → unique per agent+channel (user collapsed to `"*"`, for groups)
-/// - anything else (`"per-channel-peer"` or unknown) → unique per agent+user+channel
-#[allow(dead_code)]
-pub fn resolve_dm_scope<'a>(
-    user_id: &'a str,
-    channel: &'a str,
-    dm_scope: &str,
-) -> (&'a str, &'a str) {
-    match dm_scope {
-        "shared" | "per-peer" => (user_id, "*"),
-        "per-chat" => ("*", channel),
-        _ => (user_id, channel),
-    }
-}
-
-/// Truncate `text` to at most `max_len` bytes, breaking on a word boundary.
-///
-/// If the text is shorter than `max_len` it is returned unchanged.
-/// If truncated, an ellipsis (`…`) is appended.
-#[allow(dead_code)]
-pub fn truncate_title(text: &str, max_len: usize) -> String {
-    let trimmed = text.trim();
-    if trimmed.len() <= max_len {
-        return trimmed.to_string();
-    }
-    let mut end = max_len;
-    while end > 0 && !trimmed.is_char_boundary(end) {
-        end -= 1;
-    }
-    if let Some(pos) = trimmed[..end].rfind(' ') {
-        format!("{}…", &trimmed[..pos])
-    } else {
-        format!("{}…", &trimmed[..end])
-    }
-}
-
 // ── SessionManager ──────────────────────────────────────────────────────────
 
 /// Thin wrapper around `crate::db::sessions::*` that groups all session
@@ -169,45 +127,9 @@ impl SessionManager {
         .await
     }
 
-    /// Save a message with branch metadata (parent pointer + fork origin).
-    #[allow(clippy::too_many_arguments)]
-    #[allow(dead_code)]
-    pub async fn save_message_branched(
-        &self,
-        session_id: Uuid,
-        role: &str,
-        content: &str,
-        tool_calls: Option<&serde_json::Value>,
-        tool_call_id: Option<&str>,
-        sender_agent_id: Option<&str>,
-        thinking_blocks: Option<&serde_json::Value>,
-        parent_message_id: Option<Uuid>,
-        branch_from_message_id: Option<Uuid>,
-    ) -> Result<Uuid> {
-        crate::db::sessions::save_message_branched(
-            &self.db,
-            session_id,
-            role,
-            content,
-            tool_calls,
-            tool_call_id,
-            sender_agent_id,
-            thinking_blocks,
-            parent_message_id,
-            branch_from_message_id,
-        )
-        .await
-    }
-
     /// Update the session `run_status` field.
     pub async fn set_run_status(&self, session_id: Uuid, status: &str) -> Result<()> {
         crate::db::sessions::set_session_run_status(&self.db, session_id, status).await
-    }
-
-    /// Set the session title from user text (no-op if already titled).
-    #[allow(dead_code)]
-    pub async fn auto_title(&self, session_id: Uuid, user_text: &str) -> Result<()> {
-        crate::db::sessions::auto_title_session(&self.db, session_id, user_text).await
     }
 
     /// Trim the session message history to `max` messages (oldest first).
@@ -257,25 +179,15 @@ impl SessionManager {
         crate::db::sessions::count_messages(&self.db, session_id).await
     }
 
-    /// Add an agent to the session's participants list (idempotent).
-    #[allow(dead_code)]
-    pub async fn add_participant(
-        &self,
-        session_id: Uuid,
-        agent_name: &str,
-    ) -> Result<Vec<String>> {
-        crate::db::sessions::add_participant(&self.db, session_id, agent_name).await
-    }
 }
 
 // ── SessionLifecycleGuard ───────────────────────────────────────────────────
 
 /// Outcome of a session lifecycle — used by `SessionLifecycleGuard`.
-#[allow(dead_code)]
 pub(crate) enum SessionOutcome {
     Running,
     Done,
-    Failed(String),
+    Failed,
 }
 
 /// RAII guard that marks a session as `'failed'` if dropped without an explicit
@@ -324,7 +236,7 @@ impl SessionLifecycleGuard {
             .await
         {
             Ok(()) => {
-                self.outcome = SessionOutcome::Failed(reason.to_string());
+                self.outcome = SessionOutcome::Failed;
                 let payload = serde_json::json!({ "reason": reason });
                 if let Err(e) = crate::db::session_wal::log_event(&self.db, self.session_id, "failed", Some(&payload)).await {
                     tracing::warn!(session_id = %self.session_id, error = %e, "failed to log WAL failed event");
@@ -368,69 +280,3 @@ impl Drop for SessionLifecycleGuard {
     }
 }
 
-// ── Unit tests ──────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── resolve_dm_scope tests ──
-
-    #[test]
-    fn test_resolve_dm_scope_shared() {
-        let (u, c) = resolve_dm_scope("user1", "telegram", "shared");
-        assert_eq!(u, "user1");
-        assert_eq!(c, "*");
-    }
-
-    #[test]
-    fn test_resolve_dm_scope_per_peer() {
-        let (u, c) = resolve_dm_scope("user1", "telegram", "per-peer");
-        assert_eq!(u, "user1");
-        assert_eq!(c, "*");
-    }
-
-    #[test]
-    fn test_resolve_dm_scope_per_chat() {
-        let (u, c) = resolve_dm_scope("user1", "group_123", "per-chat");
-        assert_eq!(u, "*");
-        assert_eq!(c, "group_123");
-    }
-
-    #[test]
-    fn test_resolve_dm_scope_per_channel_peer() {
-        let (u, c) = resolve_dm_scope("user1", "telegram", "per-channel-peer");
-        assert_eq!(u, "user1");
-        assert_eq!(c, "telegram");
-    }
-
-    #[test]
-    fn test_resolve_dm_scope_unknown_defaults_to_per_channel_peer() {
-        let (u, c) = resolve_dm_scope("user1", "telegram", "some-unknown-scope");
-        assert_eq!(u, "user1");
-        assert_eq!(c, "telegram");
-    }
-
-    // ── truncate_title tests ──
-
-    #[test]
-    fn test_truncate_title_short_string_unchanged() {
-        let input = "Hello, world!";
-        assert_eq!(truncate_title(input, 63), input);
-    }
-
-    #[test]
-    fn test_truncate_title_long_string_truncated_at_word_boundary() {
-        // Build a 100-char string with clear word boundaries
-        let input = "The quick brown fox jumps over the lazy dog and then does it again and again until it stops here.";
-        let result = truncate_title(input, 63);
-        assert!(result.len() <= 63 + "…".len(), "result too long: {:?}", result);
-        assert!(result.ends_with('…'), "should end with ellipsis: {:?}", result);
-        // Should break at a word boundary — no hyphenation in the middle of a word
-        let without_ellipsis = result.trim_end_matches('…');
-        assert!(
-            without_ellipsis.ends_with(' ') || input.contains(without_ellipsis),
-            "truncation should be at word boundary"
-        );
-    }
-}

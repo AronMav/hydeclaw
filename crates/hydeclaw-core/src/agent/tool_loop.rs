@@ -9,12 +9,10 @@ pub struct ToolLoopConfig {
     pub max_iterations: usize,
     pub compact_on_overflow: bool,
     pub detect_loops: bool,
-    pub warn_threshold: usize,
     pub break_threshold: usize,
     pub max_consecutive_failures: usize,
     pub max_auto_continues: u8,
     pub max_loop_nudges: usize,
-    pub ngram_max_cycle: usize,
     pub error_break_threshold: usize,
 }
 
@@ -30,24 +28,19 @@ impl Default for ToolLoopConfig {
             max_iterations: 50,
             compact_on_overflow: true,
             detect_loops: true,
-            warn_threshold: 5,
             break_threshold: 10,
             max_consecutive_failures: 3,
             max_auto_continues: 5,
             max_loop_nudges: 3,
-            ngram_max_cycle: 6,
             error_break_threshold: 3,
         }
     }
 }
 
 #[derive(Debug, PartialEq)]
-#[allow(dead_code)]
 pub enum LoopStatus {
     Ok,
-    Warning(usize),
     Break(String),
-    CycleDetected(String),
 }
 
 /// Detects repetitive tool call patterns with two-phase checking.
@@ -56,11 +49,7 @@ pub struct LoopDetector {
     recent_names: VecDeque<String>,
     consecutive: usize,
     last_hash: Option<u64>,
-    #[allow(dead_code)]
-    warn_threshold: usize,
     break_threshold: usize,
-    #[allow(dead_code)]
-    ngram_max_cycle: usize,
     tool_counts: HashMap<String, usize>,
     consecutive_errors: usize,
     last_error_tool: Option<String>,
@@ -74,9 +63,7 @@ impl LoopDetector {
             recent_names: VecDeque::with_capacity(64),
             consecutive: 0,
             last_hash: None,
-            warn_threshold: config.warn_threshold,
             break_threshold: config.break_threshold,
-            ngram_max_cycle: config.ngram_max_cycle,
             tool_counts: HashMap::new(),
             consecutive_errors: 0,
             last_error_tool: None,
@@ -136,14 +123,6 @@ impl LoopDetector {
         LoopStatus::Ok
     }
 
-    #[allow(dead_code)]
-    pub fn warm_up(&mut self, hash: u64, name: &str) {
-        if self.last_hash == Some(hash) { self.consecutive += 1; } else { self.consecutive = 1; self.last_hash = Some(hash); }
-        if self.recent.len() >= 64 { self.recent.pop_front(); self.recent_names.pop_front(); }
-        self.recent.push_back(hash);
-        self.recent_names.push_back(name.to_string());
-    }
-
     pub fn hash_call_raw(name: &str, args: &serde_json::Value) -> u64 { Self::hash_call(name, args) }
 
     fn hash_call(name: &str, args: &serde_json::Value) -> u64 {
@@ -152,24 +131,6 @@ impl LoopDetector {
         let args_str = serde_json::to_string(args).unwrap_or_default();
         args_str.hash(&mut hasher);
         hasher.finish()
-    }
-
-    #[allow(dead_code)]
-    fn detect_ngram_cycle(&self) -> Option<LoopStatus> {
-        let len = self.recent.len();
-        if len < 6 { return None; }
-        for n in 3..=self.ngram_max_cycle.min(len/2) {
-            let pattern: Vec<u64> = (0..n).filter_map(|i| self.recent.get(len-n+i)).cloned().collect();
-            if pattern.len() < n { continue; }
-            let mut reps = 1;
-            let mut off = n;
-            while off + n <= len {
-                let seg: Vec<u64> = (0..n).filter_map(|i| self.recent.get(len-off-n+i)).cloned().collect();
-                if seg == pattern { reps += 1; off += n; } else { break; }
-            }
-            if reps >= 3 { return Some(LoopStatus::CycleDetected(format!("{}-step cycle", n))); }
-        }
-        None
     }
 
     pub fn tool_counts(&self) -> &HashMap<String, usize> { &self.tool_counts }
@@ -190,12 +151,10 @@ impl From<&crate::config::ToolLoopSettings> for ToolLoopConfig {
             max_iterations: s.max_iterations,
             compact_on_overflow: s.compact_on_overflow,
             detect_loops: s.detect_loops,
-            warn_threshold: s.warn_threshold,
             break_threshold: s.break_threshold,
             max_consecutive_failures: s.max_consecutive_failures,
             max_auto_continues: s.max_auto_continues,
             max_loop_nudges: s.max_loop_nudges,
-            ngram_max_cycle: s.ngram_cycle_length,
             error_break_threshold: s.error_break_threshold.unwrap_or(3),
         }
     }

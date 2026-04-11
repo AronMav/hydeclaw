@@ -6,7 +6,7 @@ use crate::agent::session_agent_pool::{self, SessionAgentPool};
 
 /// Extract session_id from enriched `_context` (per-invocation, race-free) with
 /// fallback to the shared `processing_session_id` (for host agent SSE path).
-fn extract_session_id(args: &serde_json::Value) -> Option<uuid::Uuid> {
+pub(crate) fn extract_session_id(args: &serde_json::Value) -> Option<uuid::Uuid> {
     args.get("_context")
         .and_then(|ctx| ctx.get("session_id"))
         .and_then(|s| s.as_str())
