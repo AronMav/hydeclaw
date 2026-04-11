@@ -8,6 +8,9 @@ triggers:
   - debugging
   - refactoring
   - code review
+  - review code
+  - check the code
+  - find bugs
   - debug
   - напиши код
   - тест
@@ -15,6 +18,9 @@ triggers:
   - отладка
   - рефакторинг
   - ревью кода
+  - проверь код
+  - найди баги
+  - посмотри код
   - дебаг
 priority: 5
 tools_required:
@@ -46,12 +52,16 @@ When something doesn't work:
 
 When reviewing code, check:
 
+- **Security** — SQL injection, XSS, command injection, hardcoded secrets
+- **Bugs** — null/undefined handling, off-by-one, race conditions
 - **Correctness** — does the code do what it claims?
 - **Edge cases** — null, empty strings, 0, negative numbers
 - **Error handling** — what happens if the API doesn't respond? File not found?
-- **Security** — SQL injection, XSS, secrets in code?
+- **Performance** — N+1 queries, unnecessary allocations, missing indexes, O(n²) where O(n) is possible
 - **Readability** — is the code understandable without comments?
-- **Performance** — O(n²) where O(n) is possible?
+- **Style** — naming conventions, dead code, code duplication
+
+Rate severity: **CRITICAL** / **HIGH** / **MEDIUM** / **LOW**
 
 ### Principles
 
@@ -66,14 +76,19 @@ When reviewing code, check:
 ```
 ## Overall Rating: ✅ / ⚠️ / ❌
 
-### Issues
-1. [file:line] — problem description → suggestion
+### Summary
+One sentence: overall quality assessment
+
+### Issues Found
+1. **[SEVERITY]** Brief description
+   - Location: file:line
+   - Fix: specific code change
 
 ### Notes
 1. [file:line] — description → recommendation
 
 ### What's Good
-- What was done correctly
+- 2-3 positive observations (reinforcement)
 ```
 
 ### Interface-First Ordering

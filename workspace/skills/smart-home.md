@@ -1,6 +1,7 @@
 ---
 name: smart-home
 description: Smart home control — lights, switches, climate via Home Assistant
+status: draft
 triggers:
   - turn on the light
   - turn off

@@ -7,11 +7,19 @@ triggers:
   - lost context
   - remind me
   - conversation too long
+  - we discussed
+  - in telegram
+  - in the chat
+  - remember when
   - забыл
   - о чём мы говорили
   - потерял контекст
   - напомни
   - разговор слишком длинный
+  - мы обсуждали
+  - в телеграме
+  - в чате
+  - помнишь когда
 priority: 3
 ---
 
@@ -57,6 +65,15 @@ When the user changes topics:
 - Confusing details from different topics
 
 When detected → `memory(action="search")` for relevant context.
+
+### Cross-Channel Context
+
+Sessions are shared across channels. If the user wrote in Telegram and then continued in the UI — you see the full history.
+
+- User references a previous conversation ("we discussed", "I mentioned") → `memory(action="search")` for long-term, `session(action="history")` for recent
+- Different channels have different formats (Telegram: MarkdownV2, UI: markdown)
+- Files/images are bound to a channel — do not forward between channels
+- Do not mention technical channel details to the user
 
 ### Principles
 

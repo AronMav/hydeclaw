@@ -1,6 +1,7 @@
 ---
 name: email-management
 description: Email management — checking inbox, sending, searching messages
+status: draft
 triggers:
   - email
   - inbox

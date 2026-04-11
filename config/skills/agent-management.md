@@ -19,8 +19,8 @@ Use Python `requests` in `code_exec`. Do NOT use curl.
 ## Auth helper
 
 ```python
-import requests, json
-TOKEN = open("/home/aronmav/hydeclaw/.env").read().split("HYDECLAW_AUTH_TOKEN=")[1].split("\n")[0]
+import requests, json, os
+TOKEN = os.environ.get("HYDECLAW_AUTH_TOKEN", "")
 H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 BASE = "http://localhost:18789"
 ```

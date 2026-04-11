@@ -74,10 +74,18 @@ curl -sf -X POST http://localhost:18789/api/services/toolgate/restart \
   -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN"
 ```
 
-Wait 5 seconds, then verify:
+Poll health until ready (up to 15 seconds):
 
 ```bash
-curl -sf http://localhost:9011/health
+for i in $(seq 1 5); do
+  sleep 3
+  if curl -sf http://localhost:9011/health >/dev/null 2>&1; then
+    echo "Toolgate healthy"
+    curl -sf http://localhost:9011/health
+    break
+  fi
+  echo "Waiting for toolgate... ($i/5)"
+done
 ```
 
 The `active_providers` field should show the new provider.
