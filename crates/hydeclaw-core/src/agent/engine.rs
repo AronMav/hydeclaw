@@ -689,11 +689,6 @@ impl AgentEngine {
         let mut consecutive_failures: usize = 0;
         let mut using_fallback = false;
         let mut fallback_provider: Option<Arc<dyn super::providers::LlmProvider>> = None;
-        let mut tool_results_for_parts: Vec<(String, String)> = Vec::new();
-        let mut step_groups: Vec<crate::agent::parts_builder::StepGroupInfo> = Vec::new();
-        let mut current_step_tool_ids: Vec<String> = Vec::new();
-        let mut tool_iterations: u32 = 0;
-        let mut all_tool_calls: Vec<serde_json::Value> = Vec::new();
 
         for iteration in 0..loop_config.effective_max_iterations() {
             self.compact_tool_results(&mut messages, &mut context_chars);
@@ -806,11 +801,6 @@ impl AgentEngine {
 
             // Save assistant message with tool_calls to DB
             let tc_json = serde_json::to_value(&response.tool_calls).ok();
-            if let Some(ref tc) = tc_json {
-                if let Some(arr) = tc.as_array() {
-                    all_tool_calls.extend(arr.iter().cloned());
-                }
-            }
             if let Err(e) = sm.save_message(
                 session_id, "assistant", &cleaned_content,
                 tc_json.as_ref(), None,
@@ -838,17 +828,7 @@ impl AgentEngine {
                         ).await {
                             tracing::warn!(error = %e, session_id = %session_id, "failed to save tool result to DB");
                         }
-                        tool_results_for_parts.push((tc_id.clone(), tool_result.clone()));
-                        current_step_tool_ids.push(tc_id.clone());
                     }
-                    if !current_step_tool_ids.is_empty() {
-                        step_groups.push(crate::agent::parts_builder::StepGroupInfo {
-                            step_id: format!("step-{}", tool_iterations),
-                            tool_call_ids: std::mem::take(&mut current_step_tool_ids),
-                            finish_reason: Some("tool-calls".to_string()),
-                        });
-                    }
-                    tool_iterations += 1;
                     false
                 }
                 Err(parallel_impl::LoopBreak(reason)) => {
@@ -943,23 +923,9 @@ impl AgentEngine {
         let final_msg_id = sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), None, None, None)
             .await?;
 
-        // Assemble and persist finalized parts for unified chat view
-        if !tool_results_for_parts.is_empty() || !final_response.is_empty() {
-            let turn_tc_ids: std::collections::HashSet<&str> = tool_results_for_parts.iter().map(|(id, _)| id.as_str()).collect();
-            let approvals: Vec<_> = crate::agent::parts_builder::load_session_approvals(&self.db, session_id)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|a| a.tool_call_id.as_deref().is_some_and(|id| turn_tc_ids.contains(id)))
-                .collect();
-            let combined_tc = if all_tool_calls.is_empty() { None } else { Some(serde_json::Value::Array(std::mem::take(&mut all_tool_calls))) };
-            let parts_json = crate::agent::parts_builder::assemble_parts(
-                &final_response,
-                combined_tc.as_ref(),
-                &tool_results_for_parts,
-                &approvals,
-                &step_groups,
-            );
+        // Assemble and persist finalized text parts for unified chat view
+        if !final_response.is_empty() {
+            let parts_json = crate::agent::parts_builder::assemble_parts(&final_response);
             if let Err(e) = crate::db::sessions::update_message_parts(&self.db, final_msg_id, &parts_json).await {
                 tracing::warn!(error = %e, "failed to persist message parts (isolated)");
             }
