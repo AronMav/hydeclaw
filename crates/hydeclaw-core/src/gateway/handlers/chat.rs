@@ -878,6 +878,17 @@ pub(crate) async fn api_chat_sse(
                 }
             });
         }
+
+        // Clean up session agent pool
+        if let Some(sid) = session_uuid {
+            let mut pools = state.session_pools.write().await;
+            if let Some(mut pool) = pools.remove(&sid) {
+                if !pool.is_empty() {
+                    tracing::info!(session = %sid, count = pool.len(), "cleaning up session agent pool");
+                    pool.kill_all();
+                }
+            }
+        }
     });
 
     let stream = UnboundedReceiverStream::new(sse_rx);
