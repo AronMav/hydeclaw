@@ -238,7 +238,7 @@ export const useChatStore = create<ChatStore>()(
       if (st.messageSource.mode === "history") {
         // Continue from history — get messages from React Query cache.
         // Do NOT flip messageSource here; startStream sets messageSource atomically.
-        seedMessages = getCachedHistoryMessages(sessionId);
+        seedMessages = getCachedHistoryMessages(sessionId, st.selectedBranches);
       } else if (st.messageSource.mode === "live" && st.messageSource.messages.length > 0) {
         seedMessages = st.messageSource.messages;
       }
@@ -273,7 +273,7 @@ export const useChatStore = create<ChatStore>()(
 
       if (st.messageSource.mode === "history") {
         // Do NOT flip messageSource here; startStream sets messageSource atomically.
-        messages = getCachedHistoryMessages(sessionId);
+        messages = getCachedHistoryMessages(sessionId, st.selectedBranches);
       } else {
         messages = getLiveMessages(st.messageSource);
       }
@@ -311,7 +311,7 @@ export const useChatStore = create<ChatStore>()(
 
       if (st.messageSource.mode === "history") {
         // Do NOT flip messageSource here; startStream sets messageSource atomically.
-        messages = getCachedHistoryMessages(sessionId);
+        messages = getCachedHistoryMessages(sessionId, st.selectedBranches);
       } else {
         messages = getLiveMessages(st.messageSource);
       }
@@ -411,7 +411,7 @@ export const useChatStore = create<ChatStore>()(
 
       const messages = st.messageSource.mode === "live"
         ? st.messageSource.messages
-        : getCachedHistoryMessages(st.activeSessionId);
+        : getCachedHistoryMessages(st.activeSessionId, st.selectedBranches);
       if (messages.length === 0) return;
 
       const session = {
