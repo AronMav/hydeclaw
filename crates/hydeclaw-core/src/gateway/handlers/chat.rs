@@ -732,6 +732,7 @@ pub(crate) async fn api_chat_sse(
                         "mediaType": media_type
                     })
                 }
+                // Retained for API compatibility — not currently emitted.
                 StreamEvent::AgentSwitch { agent_name: new_agent } => {
                     current_responding_agent = new_agent;
                     continue; // Internal event — don't emit SSE

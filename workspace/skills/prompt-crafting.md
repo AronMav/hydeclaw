@@ -17,7 +17,7 @@ priority: 4
 
 ### When to apply
 
-- Formulating a task for a subagent via `subagent(action="spawn")`
+- Formulating a task for a subagent via `agent(action="run")`
 - User asks to compose a prompt or instruction
 - Need to improve the quality of an LLM response
 
@@ -54,7 +54,7 @@ Respond in the format:
 **Confidence**: high/medium/low
 ```
 
-### For subagents (subagent(action="spawn"))
+### For subagents (agent(action="run"))
 
 - Provide full context — the subagent does not see the conversation history
 - Specify the response format — the subagent must know what to return

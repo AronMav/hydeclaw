@@ -139,9 +139,11 @@ pub struct LimitsConfig {
     #[serde(default = "default_request_timeout")]
     pub request_timeout_secs: u64,
     /// Maximum agent-to-agent turns in a single turn loop (default: 5).
+    /// Exposed via GET/PUT /api/config — not consumed internally by the turn loop.
     #[serde(default = "default_max_agent_turns")]
     pub max_agent_turns: usize,
     /// Maximum characters for handoff context passed between agents (default: 2000).
+    /// Exposed via GET/PUT /api/config — not consumed internally by the turn loop.
     #[serde(default = "default_max_handoff_context_chars")]
     pub max_handoff_context_chars: usize,
 }

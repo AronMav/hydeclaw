@@ -66,6 +66,9 @@ impl AgentEngine {
             }
         };
 
+        // Register the target agent as a session participant so multi-agent instructions are injected.
+        let _ = crate::db::sessions::add_participant(self.db_pool(), session_id, target).await;
+
         // Get session pools.
         let pools = match &self.session_pools {
             Some(p) => p,

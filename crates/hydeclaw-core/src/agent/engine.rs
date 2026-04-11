@@ -116,6 +116,7 @@ pub enum StreamEvent {
     },
     /// Internal event: signals that a different agent is now responding (multi-agent session).
     /// Converter task updates current_responding_agent; no SSE is emitted to the client.
+    /// Retained for API compatibility — not currently emitted.
     AgentSwitch { agent_name: String },
     Error(String),
 }
