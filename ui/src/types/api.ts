@@ -1,3 +1,5 @@
+import type { MessagePart } from "@/stores/chat-types";
+
 export interface StatusInfo {
   status: string;
   version: string;
@@ -124,6 +126,7 @@ export interface MessageRow {
   edited_at: string | null;
   parent_message_id: string | null;
   branch_from_message_id: string | null;
+  parts?: MessagePart[] | null;
 }
 
 export interface CronJob {
