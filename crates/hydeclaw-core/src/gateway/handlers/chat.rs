@@ -373,6 +373,9 @@ pub(crate) struct ChatSseRequest {
     /// Force creation of a new session (UI "New Chat" button).
     #[serde(default)]
     force_new_session: bool,
+    /// Last message ID in the active path — used as parent_message_id for the new user message.
+    #[serde(default)]
+    leaf_message_id: Option<uuid::Uuid>,
 }
 
 #[allow(unused_assignments)]
@@ -489,7 +492,7 @@ pub(crate) async fn api_chat_sse(
         timestamp: chrono::Utc::now(),
         formatting_prompt: None,
         tool_policy_override: None,
-        leaf_message_id: None,
+        leaf_message_id: req.leaf_message_id,
     };
 
     let (event_tx, mut event_rx) =
