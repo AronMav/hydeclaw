@@ -165,13 +165,17 @@ fn extract_clean_output(raw: &str) -> (Value, Vec<Value>) {
         if let Some(json_str) = line.strip_prefix("__file__:") {
             if let Ok(meta) = serde_json::from_str::<Value>(json_str) {
                 if let Some(url) = meta.get("url").and_then(|v| v.as_str()) {
-                    let media_type = meta.get("mediaType").and_then(|v| v.as_str()).unwrap_or("image/png");
+                    let media_type = meta.get("mediaType").and_then(|v| v.as_str()).unwrap_or("application/octet-stream");
                     extra_parts.push(json!({
                         "type": "file",
                         "url": url,
                         "mediaType": media_type,
                     }));
+                } else {
+                    clean_lines.push(line); // malformed marker — keep as text
                 }
+            } else {
+                clean_lines.push(line); // unparseable JSON — keep as text
             }
         } else if let Some(json_str) = line.strip_prefix("__rich_card__:") {
             if let Ok(meta) = serde_json::from_str::<Value>(json_str) {
@@ -186,6 +190,8 @@ fn extract_clean_output(raw: &str) -> (Value, Vec<Value>) {
                     "cardType": card_type,
                     "data": data,
                 }));
+            } else {
+                clean_lines.push(line); // unparseable JSON — keep as text
             }
         } else {
             clean_lines.push(line);
