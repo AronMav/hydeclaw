@@ -510,16 +510,6 @@ export function createStreamingRenderer(store: StoreAccess) {
 
             case "text-start": {
               if (event.agentName) currentRespondingAgent = event.agentName;
-              // Split: if current message has tools, push it and start a new message for text.
-              // This ensures tools and text are in separate blocks (matching history view).
-              if (parts.some(p => p.type === "tool" || p.type === "approval")) {
-                flushText();
-                pushUpdate();
-                assistantId = uuid();
-                assistantCreatedAt = new Date().toISOString();
-                parts = [];
-                incrementalParser.reset();
-              }
               break;
             }
 
