@@ -27,8 +27,8 @@ Load the full guide first: `skill_use(action="load", name="toolgate-guide")`
 6. Install deps via venv pip (NOT system pip)
 7. **Verify syntax**: run py_compile on the router file
 8. Restart toolgate via Core API `POST /api/services/toolgate/restart`
-9. Wait 7 seconds
-10. Verify: `web_fetch("http://localhost:9011/health")`
+9. Poll health until ready (up to 15s): retry `web_fetch("http://localhost:9011/health")` every 3s
+10. If health check fails after 15s — check import errors (see below)
 11. Add entry to TOOLS.md
 
 ## If toolgate doesn't respond after restart

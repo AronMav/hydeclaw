@@ -4,12 +4,18 @@ description: Deep topic research — gathering, analyzing, and synthesizing info
 triggers:
   - research
   - analyze
+  - analyze in depth
+  - deep research
+  - find and analyze
   - study the topic
   - gather information
   - overview
   - give me analytics
   - figure out
   - исследование
+  - глубокий анализ
+  - глубокое исследование
+  - найди и проанализируй
   - анализ
   - изучи тему
   - собери информацию
@@ -46,6 +52,7 @@ For questions requiring information from multiple sources.
 - Structure findings by topic, not by source
 - Highlight key conclusions
 - Note gaps — what could NOT be found
+- Add confidence assessment per finding: confirmed / probable / unconfirmed
 
 #### 5. Saving
 - Valuable facts → `memory(action="search")` (for future retrieval)
@@ -70,10 +77,16 @@ For questions requiring information from multiple sources.
 - What could not be determined
 ```
 
-### Tips for MiniMax M2.5
+### Rules
+
+- Never present single-source information as fact
+- Always note when sources disagree
+- Prefer recent sources over old ones
+- Use `search_web_fresh` for time-sensitive topics
+- Save key findings to `memory(action="index")` for future reference
+- Do not generate facts — if not found, say so
 - Keep search queries short and precise (3-5 words)
 - For Russian-language topics, search in both Russian and English
-- Do not generate facts — if not found, say so
 
 ### Discovery Levels Integration
 

@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 Phase: 60
 Plan: Not started
 Status: Ready to execute
-Last activity: 2026-04-10
+Last activity: 2026-04-11 - Completed quick task 260411-qp6: Skills revision — merge duplicates, mark drafts, fix system skills
 
 ## Accumulated Context
 
@@ -72,6 +72,11 @@ None.
 - No backend changes required for this milestone — all changes are frontend only
 - `sync` event reconciliation during reconnect: verify `assistantId` reset behavior (open question from ARCHITECTURE.md)
 - Optimistic user message UUID reconciliation strategy must be decided during Phase 43 planning
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
 
 ## Session Continuity
 

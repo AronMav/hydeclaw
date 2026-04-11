@@ -1,6 +1,7 @@
 ---
 name: calendar-management
 description: Calendar management — viewing schedule, creating events, reminders
+status: draft
 triggers:
   - calendar
   - schedule
