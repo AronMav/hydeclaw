@@ -70,7 +70,7 @@ impl AgentEngine {
 
         // Spawn the live agent.
         let live_agent = match session_agent_pool::spawn_live_agent(
-            target.to_string(), target_engine, task.to_string(), session_id,
+            target.to_string(), target_engine, task.to_string(),
         ) {
             Some(la) => la,
             None => return format!("Error: failed to deliver initial task to agent '{}'", target),
