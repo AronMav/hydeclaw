@@ -672,7 +672,7 @@ impl AgentEngine {
 
         // For inter-agent messages (user_id starts with "agent:"), save the sender agent_id
         let sender_agent_id = if msg.user_id.starts_with("agent:") { Some(msg.user_id.trim_start_matches("agent:")) } else { None };
-        sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None, None).await?;
+        sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None, None, None).await?;
 
         // Context compaction if needed (model-aware token budget)
         self.compact_messages(&mut messages, None).await;
@@ -920,7 +920,7 @@ impl AgentEngine {
             }
         }
 
-        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), None, None)
+        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), None, None, None)
             .await?;
 
         // Hook: AfterResponse
