@@ -33,16 +33,20 @@ impl AgentEngine {
     /// Fetch URL content, extract readable text, truncate for LLM context.
     /// Uses 10s timeout to avoid blocking message processing on slow URLs.
     pub(super) async fn fetch_url_content(&self, url: &str) -> Result<String> {
-        // Local Core API calls bypass SSRF filtering (same as web_fetch tool).
-        let is_local = url.starts_with("http://localhost:") || url.starts_with("http://127.0.0.1:");
+        // Only allow localhost on Core API port — block access to internal services.
+        // Parse port from gateway listen address (e.g. "0.0.0.0:18789" → 18789)
+        let core_port = self.app_config.gateway.listen.rsplit(':').next()
+            .and_then(|p| p.parse::<u16>().ok()).unwrap_or(18789);
+        let is_core_api = url.starts_with(&format!("http://localhost:{}", core_port))
+            || url.starts_with(&format!("http://127.0.0.1:{}", core_port));
 
-        if !is_local {
+        if !is_core_api {
             // SSRF protection: scheme + internal blocklist check (sync),
             // private IP blocking is handled by ssrf_http_client's DNS resolver.
             crate::tools::ssrf::validate_url_scheme(url)?;
         }
 
-        let client = if is_local { self.http_client() } else { self.ssrf_http_client() };
+        let client = if is_core_api { self.http_client() } else { self.ssrf_http_client() };
         let resp = client
             .get(url)
             .header("User-Agent", "HydeClaw/0.1 (link-preview)")
@@ -151,11 +155,15 @@ impl AgentEngine {
         tracing::info!(url = %url, "web_fetch: fetching URL");
 
         // Determine if this is a local Core API call (e.g., /api/doctor).
-        // Local calls use the regular http_client (no SSRF filtering) since
-        // they go to our own gateway which has its own auth layer.
-        let is_local = url.starts_with("http://localhost:") || url.starts_with("http://127.0.0.1:");
+        // Only allow localhost on Core API port (18789) — block access to internal services
+        // like toolgate (9011), postgres, redis, etc.
+        // Parse port from gateway listen address (e.g. "0.0.0.0:18789" → 18789)
+        let core_port = self.app_config.gateway.listen.rsplit(':').next()
+            .and_then(|p| p.parse::<u16>().ok()).unwrap_or(18789);
+        let is_core_api = url.starts_with(&format!("http://localhost:{}", core_port))
+            || url.starts_with(&format!("http://127.0.0.1:{}", core_port));
 
-        if !is_local {
+        if !is_core_api {
             // SSRF protection: scheme + internal blocklist (sync);
             // private IP blocking via ssrf_http_client's DNS resolver.
             if let Err(e) = crate::tools::ssrf::validate_url_scheme(url) {
@@ -163,7 +171,7 @@ impl AgentEngine {
             }
         }
 
-        let client = if is_local { self.http_client() } else { self.ssrf_http_client() };
+        let client = if is_core_api { self.http_client() } else { self.ssrf_http_client() };
         let resp = match client.get(url)
             .header("User-Agent", "HydeClaw/1.0")
             .timeout(std::time::Duration::from_secs(30))
