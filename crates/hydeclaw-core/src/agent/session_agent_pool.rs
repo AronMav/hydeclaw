@@ -14,6 +14,9 @@ use super::engine::AgentEngine;
 pub const STATUS_IDLE: u8 = 0;
 pub const STATUS_PROCESSING: u8 = 1;
 
+/// Type alias for the shared session pools map used across AppState and AgentEngine.
+pub type SessionPoolsMap = Arc<tokio::sync::RwLock<HashMap<Uuid, SessionAgentPool>>>;
+
 // ── AgentMessage ─────────────────────────────────────────────────────────────
 
 /// Message sent to a LiveAgent's processing loop.
@@ -149,4 +152,93 @@ pub struct AgentPoolEntry {
     pub status: String,
     pub iterations: usize,
     pub elapsed_secs: f64,
+}
+
+// ── spawn_live_agent ─────────────────────────────────────────────────────────
+
+/// Spawn a new LiveAgent with a background processing loop.
+pub fn spawn_live_agent(
+    name: String,
+    engine: Arc<AgentEngine>,
+    initial_task: String,
+) -> LiveAgent {
+    let (tx, rx) = mpsc::channel::<AgentMessage>(32);
+    let status = Arc::new(AtomicU8::new(STATUS_PROCESSING));
+    let last_result = Arc::new(RwLock::new(None));
+    let cancel = Arc::new(AtomicBool::new(false));
+    let iteration_count = Arc::new(AtomicUsize::new(0));
+
+    let task_handle = tokio::spawn(agent_processing_loop(
+        rx,
+        engine.clone(),
+        status.clone(),
+        last_result.clone(),
+        cancel.clone(),
+        iteration_count.clone(),
+    ));
+
+    // Send initial task
+    let tx_init = tx.clone();
+    tokio::spawn(async move {
+        let _ = tx_init.send(AgentMessage { text: initial_task }).await;
+    });
+
+    LiveAgent {
+        engine,
+        name,
+        message_tx: tx,
+        status,
+        last_result,
+        cancel,
+        created_at: Instant::now(),
+        iteration_count,
+        task_handle,
+    }
+}
+
+async fn agent_processing_loop(
+    mut rx: mpsc::Receiver<AgentMessage>,
+    engine: Arc<AgentEngine>,
+    status: Arc<AtomicU8>,
+    last_result: Arc<RwLock<Option<String>>>,
+    cancel: Arc<AtomicBool>,
+    iteration_count: Arc<AtomicUsize>,
+) {
+    let max_iterations = engine.tool_loop_config().effective_max_iterations();
+    let timeout = crate::agent::engine::parse_subagent_timeout(
+        &engine.app_config.subagents.in_process_timeout,
+    );
+
+    while let Some(msg) = rx.recv().await {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        status.store(STATUS_PROCESSING, Ordering::Relaxed);
+        let deadline = Some(Instant::now() + timeout);
+
+        let result = engine
+            .run_subagent(
+                &msg.text,
+                max_iterations,
+                deadline,
+                Some(cancel.clone()),
+                None,
+                None,
+            )
+            .await;
+
+        let result_text = match result {
+            Ok(text) => text,
+            Err(e) => format!("Error: {}", e),
+        };
+
+        iteration_count.fetch_add(1, Ordering::Relaxed);
+        *last_result.write().await = Some(result_text);
+        status.store(STATUS_IDLE, Ordering::Relaxed);
+
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+    }
+    tracing::debug!(agent = %engine.name(), "live agent processing loop exited");
 }
