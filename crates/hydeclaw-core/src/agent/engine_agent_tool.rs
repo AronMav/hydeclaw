@@ -25,9 +25,9 @@ impl AgentEngine {
 
     /// `run` — spawn a new live agent in the current session's pool.
     async fn handle_agent_run(&self, args: &serde_json::Value) -> String {
-        let target = match args.get("agent").and_then(|v| v.as_str()) {
+        let target = match args.get("target").and_then(|v| v.as_str()) {
             Some(n) if !n.is_empty() => n,
-            _ => return "Error: 'agent' parameter is required".to_string(),
+            _ => return "Error: 'target' parameter is required".to_string(),
         };
         let task = match args.get("task").and_then(|v| v.as_str()) {
             Some(t) if !t.is_empty() => t,
@@ -59,28 +59,20 @@ impl AgentEngine {
             None => return "Error: session_pools not available".to_string(),
         };
 
-        // Check for duplicate in the pool.
-        {
-            let pools_read = pools.read().await;
-            if let Some(pool) = pools_read.get(&session_id) {
-                if pool.contains(target) {
-                    return format!("Error: agent '{}' is already running in this session", target);
-                }
-            }
+        // Check for duplicate and insert — all under one write lock to prevent TOCTOU race.
+        let mut pools_write = pools.write().await;
+        let pool = pools_write
+            .entry(session_id)
+            .or_insert_with(|| SessionAgentPool::new(session_id));
+        if pool.contains(target) {
+            return format!("Error: {} is already running in this session. Use agent(action: \"message\") to communicate.", target);
         }
 
         // Spawn the live agent.
         let live_agent =
-            session_agent_pool::spawn_live_agent(target.to_string(), target_engine, task.to_string());
+            session_agent_pool::spawn_live_agent(target.to_string(), target_engine, task.to_string(), session_id);
 
-        // Insert into the pool (create pool if needed).
-        {
-            let mut pools_write = pools.write().await;
-            let pool = pools_write
-                .entry(session_id)
-                .or_insert_with(|| SessionAgentPool::new(session_id));
-            pool.insert(live_agent);
-        }
+        pool.insert(live_agent);
 
         serde_json::json!({
             "status": "ok",
@@ -93,9 +85,9 @@ impl AgentEngine {
 
     /// `message` — send a follow-up message to an already-running live agent.
     async fn handle_agent_message(&self, args: &serde_json::Value) -> String {
-        let target = match args.get("agent").and_then(|v| v.as_str()) {
+        let target = match args.get("target").and_then(|v| v.as_str()) {
             Some(n) if !n.is_empty() => n,
-            _ => return "Error: 'agent' parameter is required".to_string(),
+            _ => return "Error: 'target' parameter is required".to_string(),
         };
         let text = match args.get("text").and_then(|v| v.as_str()) {
             Some(t) if !t.is_empty() => t,
@@ -161,14 +153,20 @@ impl AgentEngine {
         };
 
         // Single agent query.
-        if let Some(target) = args.get("agent").and_then(|v| v.as_str()) {
+        if let Some(target) = args.get("agent_id").and_then(|v| v.as_str()) {
             if let Some(agent) = pool.get(target) {
-                let last_result = agent.last_result.read().await.clone();
+                let last_result_arc = agent.last_result.clone();
+                let status_str = if agent.is_processing() { "processing" } else { "idle" };
+                let iterations = agent.iterations();
+                let elapsed = agent.elapsed().as_secs_f64();
+                // Drop pools_read before awaiting last_result lock.
+                drop(pools_read);
+                let last_result = last_result_arc.read().await.clone();
                 return serde_json::json!({
                     "agent": target,
-                    "status": if agent.is_processing() { "processing" } else { "idle" },
-                    "iterations": agent.iterations(),
-                    "elapsed_secs": agent.elapsed().as_secs_f64(),
+                    "status": status_str,
+                    "iterations": iterations,
+                    "elapsed_secs": elapsed,
                     "last_result": last_result,
                 })
                 .to_string();
@@ -184,9 +182,9 @@ impl AgentEngine {
 
     /// `kill` — remove (and drop) a live agent from the session pool.
     async fn handle_agent_kill(&self, args: &serde_json::Value) -> String {
-        let target = match args.get("agent").and_then(|v| v.as_str()) {
+        let target = match args.get("target").and_then(|v| v.as_str()) {
             Some(n) if !n.is_empty() => n,
-            _ => return "Error: 'agent' parameter is required".to_string(),
+            _ => return "Error: 'target' parameter is required".to_string(),
         };
 
         let session_id = match self.processing_session_id().lock().await.as_ref().copied() {

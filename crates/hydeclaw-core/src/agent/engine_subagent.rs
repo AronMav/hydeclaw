@@ -482,11 +482,11 @@ impl AgentEngine {
         // Always include core tools
         const ALWAYS_INCLUDE: &[&str] = &[
             "workspace_read", "workspace_write", "workspace_edit", "workspace_list", "workspace_delete", "workspace_rename",
-            "memory", "code_exec", "subagent",
+            "memory", "code_exec", "agent",
             "tool_create", "tool_list", "tool_test", "tool_verify", "tool_disable",
             "skill", "git",
             // UI-critical tools: must never be filtered out by top-K selection
-            "canvas", "rich_card", "web_fetch", "handoff",
+            "canvas", "rich_card", "web_fetch",
             // Agent interaction & system tools
             "message", "cron", "session", "agents_list", "browser_action",
             "process", "secret_set", "skill_use", "graph_query", "tool_discover",

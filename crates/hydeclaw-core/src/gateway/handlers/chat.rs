@@ -786,8 +786,7 @@ pub(crate) async fn api_chat_sse(
                         }
                     }
                     streaming_guard.mark_finalized();
-                    // DON'T break here — agent-to-agent turn loop may send more events
-                    // (AgentSwitch → MessageStart → TextDelta → Finish for next agent).
+                    // DON'T break here — session-scoped agents may send more events.
                     // The loop exits naturally when event_tx is dropped (engine task completes).
                     // Send [DONE] only after all turns are done (handled in post-loop block).
                     // Reset accumulated state for next agent turn:
@@ -879,16 +878,8 @@ pub(crate) async fn api_chat_sse(
             });
         }
 
-        // Clean up session agent pool
-        if let Some(sid) = session_uuid {
-            let mut pools = state.session_pools.write().await;
-            if let Some(mut pool) = pools.remove(&sid) {
-                if !pool.is_empty() {
-                    tracing::info!(session = %sid, count = pool.len(), "cleaning up session agent pool");
-                    pool.kill_all();
-                }
-            }
-        }
+        // Session agent pool is NOT cleaned up here — agents live until
+        // explicitly killed via agent(action: "kill") or session expiry.
     });
 
     let stream = UnboundedReceiverStream::new(sse_rx);

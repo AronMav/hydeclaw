@@ -114,7 +114,7 @@ pub enum StreamEvent {
         action: String, // "approved" | "rejected" | "timeout_rejected"
         modified_input: Option<serde_json::Value>,
     },
-    /// Internal event: signals that a different agent is now responding (multi-agent turn loop).
+    /// Internal event: signals that a different agent is now responding (multi-agent session).
     /// Converter task updates current_responding_agent; no SSE is emitted to the client.
     AgentSwitch { agent_name: String },
     Error(String),
@@ -337,7 +337,7 @@ impl AgentEngine {
         self.agent.model.clone()
     }
 
-    /// Per-agent override for maximum agent turns in multi-agent handoff chains.
+    /// Per-agent override for maximum agent tool iterations.
     pub fn max_agent_turns(&self) -> Option<usize> {
         self.agent.max_agent_turns
     }
@@ -692,7 +692,7 @@ impl AgentEngine {
                 }
             }
 
-        // invite_agent removed (v3.0) — handoff is the only inter-agent tool
+        // invite_agent removed (v3.0) — agent is the inter-agent tool
 
         let user_text = msg.text.clone().unwrap_or_default();
         let enriched_text = self.enrich_message_text(&user_text, &msg.attachments).await;
