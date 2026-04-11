@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 /// Result delivered to the parent agent when a subagent finishes (oneshot push notification).
 /// Not Clone/Serialize — it is a one-shot message type.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct SubagentResult {
     pub status: SubagentStatus,
     pub result: Option<String>,
@@ -34,11 +35,13 @@ pub struct SubagentHandle {
     pub cancel: Arc<std::sync::atomic::AtomicBool>,
     /// Oneshot sender for push notification to parent agent when subagent finishes.
     #[serde(skip)]
+    #[allow(dead_code)]
     pub completion_tx: Option<tokio::sync::oneshot::Sender<SubagentResult>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
 pub enum SubagentStatus {
     Running,
     Completed,
@@ -48,6 +51,7 @@ pub enum SubagentStatus {
 
 /// Lightweight summary for list display (no logs/result cloning).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct SubagentSummary {
     pub id: String,
     pub task: String,
@@ -72,6 +76,7 @@ impl SubagentRegistry {
     /// cancel token and completion receiver are returned separately to avoid extra read locks.
     /// The completion_tx is stored in the handle; the receiver is returned to the caller
     /// so it can block until the subagent finishes (oneshot push notification).
+    #[allow(dead_code)]
     pub async fn register(&self, task: &str) -> (
         String,
         Arc<RwLock<SubagentHandle>>,
@@ -122,6 +127,7 @@ impl SubagentRegistry {
     }
 
     /// Remove completed/failed/killed entries older than max_age.
+    #[allow(dead_code)]
     pub async fn cleanup(&self, max_age: chrono::Duration) {
         let cutoff = Utc::now() - max_age;
         let arcs: Vec<(String, Arc<RwLock<SubagentHandle>>)> = {

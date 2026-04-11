@@ -19,6 +19,7 @@ use crate::db::sessions::MessageRow;
 /// - `"shared"` | `"per-peer"` → unique per agent+user (channel collapsed to `"*"`)
 /// - `"per-chat"` → unique per agent+channel (user collapsed to `"*"`, for groups)
 /// - anything else (`"per-channel-peer"` or unknown) → unique per agent+user+channel
+#[allow(dead_code)]
 pub fn resolve_dm_scope<'a>(
     user_id: &'a str,
     channel: &'a str,
@@ -35,6 +36,7 @@ pub fn resolve_dm_scope<'a>(
 ///
 /// If the text is shorter than `max_len` it is returned unchanged.
 /// If truncated, an ellipsis (`…`) is appended.
+#[allow(dead_code)]
 pub fn truncate_title(text: &str, max_len: usize) -> String {
     let trimmed = text.trim();
     if trimmed.len() <= max_len {
@@ -169,6 +171,7 @@ impl SessionManager {
 
     /// Save a message with branch metadata (parent pointer + fork origin).
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)]
     pub async fn save_message_branched(
         &self,
         session_id: Uuid,
@@ -202,6 +205,7 @@ impl SessionManager {
     }
 
     /// Set the session title from user text (no-op if already titled).
+    #[allow(dead_code)]
     pub async fn auto_title(&self, session_id: Uuid, user_text: &str) -> Result<()> {
         crate::db::sessions::auto_title_session(&self.db, session_id, user_text).await
     }
@@ -254,6 +258,7 @@ impl SessionManager {
     }
 
     /// Add an agent to the session's participants list (idempotent).
+    #[allow(dead_code)]
     pub async fn add_participant(
         &self,
         session_id: Uuid,

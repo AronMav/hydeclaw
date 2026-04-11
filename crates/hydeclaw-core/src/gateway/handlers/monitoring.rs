@@ -4,7 +4,7 @@ use axum::{
     http::StatusCode,
     middleware as axum_mw,
     response::{IntoResponse, Json},
-    routing::{get, post, put},
+    routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

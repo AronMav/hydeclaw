@@ -4,7 +4,7 @@ use axum::{
     extract::State,
     http::{Request, StatusCode},
     response::{IntoResponse, Json},
-    routing::{get, post, put, delete},
+    routing::{get, post, put},
 };
 use dashmap::DashMap;
 use serde::Deserialize;

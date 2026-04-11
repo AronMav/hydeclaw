@@ -138,11 +138,6 @@ impl SecretsManager {
         std::env::var(name).ok()
     }
 
-    /// Get a reference to the cache RwLock (for sync access in EnvResolver).
-    pub fn cache_ref(&self) -> &RwLock<HashMap<(String, String), String>> {
-        &self.cache
-    }
-
     /// Get a secret with per-agent scope fallback chain:
     ///   1. (name, scope) — agent-specific secret
     ///   2. (name, "")   — global fallback

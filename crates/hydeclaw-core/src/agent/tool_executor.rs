@@ -24,6 +24,7 @@ use crate::agent::tool_loop::LoopDetector;
 /// Per-call value type carrying the routing context for a single tool execution.
 /// Constructed fresh at each execute() call site; NOT stored long-lived.
 /// Limited to <=6 fields (TOOL-02).
+#[allow(dead_code)]
 pub struct ToolExecutorCtx {
     pub session_id: Uuid,
     pub channel: String,
@@ -38,6 +39,7 @@ pub struct ToolExecutorCtx {
 /// Abstraction over tool execution so unit tests can inject a `MockToolExecutor`
 /// without needing a live LLM stack or filesystem.
 #[async_trait]
+#[allow(dead_code)]
 pub trait ToolExecutor: Send + Sync {
     /// Execute a single tool call. Returns the tool result string.
     async fn execute(&self, name: &str, arguments: &serde_json::Value) -> String;
@@ -61,6 +63,7 @@ pub trait ToolExecutor: Send + Sync {
 /// `AgentEngine` implements this; the impl delegates to its own fields/methods.
 /// This avoids a direct Arc<AgentEngine> dependency from tool_executor.rs back to engine.rs.
 #[async_trait]
+#[allow(dead_code)]
 pub(crate) trait ToolExecutorDeps: Send + Sync {
     /// Tool dispatch — delegates to existing engine_dispatch.rs methods.
     fn execute_tool_call_raw<'a>(
@@ -118,6 +121,7 @@ pub struct DefaultToolExecutor {
     /// OAuth 2.0 connection manager for provider-based YAML tool auth.
     pub(crate) oauth: Option<Arc<crate::oauth::OAuthManager>>,
     /// Limits concurrent in-process subagents to prevent API token exhaustion.
+    #[allow(dead_code)]
     pub(crate) subagent_semaphore: Arc<tokio::sync::Semaphore>,
     /// Registry of async subagents for status/logs/kill management.
     pub(crate) subagent_registry: crate::agent::subagent_state::SubagentRegistry,

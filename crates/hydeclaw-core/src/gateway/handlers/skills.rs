@@ -3,7 +3,7 @@ use axum::{
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Json},
-    routing::{get, put, delete},
+    routing::get,
 };
 use super::super::AppState;
 

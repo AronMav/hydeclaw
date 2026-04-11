@@ -42,6 +42,7 @@ impl Default for ToolLoopConfig {
 }
 
 #[derive(Debug, PartialEq)]
+#[allow(dead_code)]
 pub enum LoopStatus {
     Ok,
     Warning(usize),
@@ -55,8 +56,10 @@ pub struct LoopDetector {
     recent_names: VecDeque<String>,
     consecutive: usize,
     last_hash: Option<u64>,
+    #[allow(dead_code)]
     warn_threshold: usize,
     break_threshold: usize,
+    #[allow(dead_code)]
     ngram_max_cycle: usize,
     tool_counts: HashMap<String, usize>,
     consecutive_errors: usize,
@@ -133,6 +136,7 @@ impl LoopDetector {
         LoopStatus::Ok
     }
 
+    #[allow(dead_code)]
     pub fn warm_up(&mut self, hash: u64, name: &str) {
         if self.last_hash == Some(hash) { self.consecutive += 1; } else { self.consecutive = 1; self.last_hash = Some(hash); }
         if self.recent.len() >= 64 { self.recent.pop_front(); self.recent_names.pop_front(); }
@@ -150,6 +154,7 @@ impl LoopDetector {
         hasher.finish()
     }
 
+    #[allow(dead_code)]
     fn detect_ngram_cycle(&self) -> Option<LoopStatus> {
         let len = self.recent.len();
         if len < 6 { return None; }

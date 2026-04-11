@@ -207,28 +207,6 @@ impl StreamRegistry {
         Some((snapshot, rx, finished))
     }
 
-    /// Replay events after the given `last_event_id` (exclusive — SSE spec: last successfully processed).
-    /// Returns (events after last_event_id, broadcast receiver, is_finished).
-    /// Returns None if the stream does not exist (expired or never registered).
-    pub async fn replay_from(
-        &self,
-        session_id: &str,
-        last_event_id: u64,
-    ) -> Option<(Vec<(u64, String)>, broadcast::Receiver<(u64, String)>, bool)> {
-        let streams = self.streams.read().await;
-        let stream = streams.get(session_id)?;
-        let inner = stream.inner.lock().await;
-        let rx = stream.broadcast_tx.subscribe();
-        let events: Vec<(u64, String)> = inner
-            .events
-            .iter()
-            .filter(|(id, _)| *id > last_event_id)
-            .cloned()
-            .collect();
-        let finished = stream.finished.load(Ordering::Relaxed);
-        Some((events, rx, finished))
-    }
-
     /// Remove finished streams older than max_age.
     /// Two-phase: read lock to identify candidates, write lock only for removal.
     pub async fn cleanup(&self, max_age: Duration) {
