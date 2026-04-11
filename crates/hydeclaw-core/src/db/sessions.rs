@@ -752,52 +752,6 @@ pub async fn get_participants(db: &PgPool, session_id: Uuid) -> Result<Vec<Strin
     Ok(row.get("participants"))
 }
 
-/// Get recent tool results from a session (tool name + output content).
-/// Legacy helper — no current callers.
-pub async fn get_recent_tool_results(db: &PgPool, session_id: Uuid, limit: i64) -> Result<Vec<(String, String)>> {
-    let rows = sqlx::query(
-        "SELECT m.content, tc.name as tool_name FROM messages m \
-         JOIN LATERAL (SELECT tc->>'name' as name FROM jsonb_array_elements(prev.tool_calls) tc LIMIT 1) tc ON true \
-         JOIN messages prev ON prev.id = ( \
-             SELECT id FROM messages WHERE session_id = $1 AND role = 'assistant' AND tool_calls IS NOT NULL \
-             AND created_at < m.created_at ORDER BY created_at DESC LIMIT 1 \
-         ) \
-         WHERE m.session_id = $1 AND m.role = 'tool' AND m.tool_call_id IS NOT NULL \
-         ORDER BY m.created_at DESC LIMIT $2"
-    )
-    .bind(session_id)
-    .bind(limit)
-    .fetch_all(db)
-    .await;
-
-    // Fallback: simpler query if the join fails
-    match rows {
-        Ok(rows) => Ok(rows.iter().map(|r| {
-            let name: String = sqlx::Row::try_get(r, "tool_name").unwrap_or_default();
-            let content: String = sqlx::Row::try_get(r, "content").unwrap_or_default();
-            (name, content)
-        }).collect()),
-        Err(_) => {
-            // Simple fallback: just get tool messages with their content
-            let simple_rows = sqlx::query(
-                "SELECT content, tool_call_id FROM messages \
-                 WHERE session_id = $1 AND role = 'tool' \
-                 ORDER BY created_at DESC LIMIT $2"
-            )
-            .bind(session_id)
-            .bind(limit)
-            .fetch_all(db)
-            .await?;
-
-            Ok(simple_rows.iter().map(|r| {
-                let tcid: String = sqlx::Row::try_get(r, "tool_call_id").unwrap_or_default();
-                let content: String = sqlx::Row::try_get(r, "content").unwrap_or_default();
-                (tcid, content)
-            }).collect())
-        }
-    }
-}
-
 /// Get the most recent UI session for an agent (within 4-hour window).
 pub async fn get_latest_ui_session(db: &PgPool, agent_id: &str) -> Result<Option<Session>> {
     let session = sqlx::query_as::<_, Session>(

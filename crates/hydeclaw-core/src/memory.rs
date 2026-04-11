@@ -48,6 +48,7 @@ fn default_compression_age_days() -> u32 {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub struct MemoryResult {
     pub id: String,
     pub content: String,
@@ -62,6 +63,7 @@ pub struct MemoryResult {
     pub archived: Option<bool>,
 }
 
+#[allow(dead_code)]
 pub struct MemoryChunk {
     pub id: String,
     pub content: String,
@@ -69,7 +71,6 @@ pub struct MemoryChunk {
     pub pinned: bool,
     pub relevance_score: f64,
     pub created_at: DateTime<Utc>,
-    #[allow(dead_code)]
     pub accessed_at: DateTime<Utc>,
     pub category: Option<String>,
     pub topic: Option<String>,

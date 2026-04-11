@@ -4,7 +4,7 @@ use axum::{
     extract::{Path, State},
     http::{header, StatusCode},
     response::{IntoResponse, Json},
-    routing::{get, post, delete},
+    routing::{get, post},
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
