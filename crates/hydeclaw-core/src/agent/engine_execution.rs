@@ -487,7 +487,7 @@ impl AgentEngine {
                 .into_iter()
                 .filter(|a| a.tool_call_id.as_deref().is_some_and(|id| turn_tc_ids.contains(id)))
                 .collect();
-            let combined_tc = if all_tool_calls.is_empty() { None } else { Some(serde_json::Value::Array(all_tool_calls.clone())) };
+            let combined_tc = if all_tool_calls.is_empty() { None } else { Some(serde_json::Value::Array(std::mem::take(&mut all_tool_calls))) };
             let parts_json = crate::agent::parts_builder::assemble_parts(
                 &final_response,
                 combined_tc.as_ref(),

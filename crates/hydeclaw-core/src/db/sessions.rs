@@ -225,7 +225,8 @@ pub async fn save_message_ex(
     Ok(id)
 }
 
-/// Update the finalized parts array on a completed assistant message.
+/// Update the finalized parts array on an assistant message.
+/// Sets `status = 'complete'` unless the message already has `status = 'failed'`.
 pub async fn update_message_parts(
     db: &PgPool,
     message_id: Uuid,
