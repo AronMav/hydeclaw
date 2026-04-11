@@ -1,0 +1,221 @@
+//! Session-scoped agent tool handler — run/message/status/kill live agents.
+//! Included in engine.rs via `#[path = "engine_agent_tool.rs"] mod agent_tool_impl;`.
+
+use super::*;
+use crate::agent::session_agent_pool::{self, SessionAgentPool};
+
+impl AgentEngine {
+    /// Dispatch `agent` tool calls to the appropriate sub-handler based on `action`.
+    ///
+    /// Actions: `run`, `message`, `status`, `kill`.
+    pub(super) async fn handle_agent_tool(&self, args: &serde_json::Value) -> String {
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        match action {
+            "run" => self.handle_agent_run(args).await,
+            "message" => self.handle_agent_message(args).await,
+            "status" => self.handle_agent_status(args).await,
+            "kill" => self.handle_agent_kill(args).await,
+            other => format!("Error: unknown agent action '{}'. Expected: run, message, status, kill", other),
+        }
+    }
+
+    /// `run` — spawn a new live agent in the current session's pool.
+    async fn handle_agent_run(&self, args: &serde_json::Value) -> String {
+        let target = match args.get("agent").and_then(|v| v.as_str()) {
+            Some(n) if !n.is_empty() => n,
+            _ => return "Error: 'agent' parameter is required".to_string(),
+        };
+        let task = match args.get("task").and_then(|v| v.as_str()) {
+            Some(t) if !t.is_empty() => t,
+            _ => return "Error: 'task' parameter is required".to_string(),
+        };
+
+        // Resolve session ID from the current processing context.
+        let session_id = match self.processing_session_id().lock().await.as_ref().copied() {
+            Some(id) => id,
+            None => return "Error: no active session — agent tool requires a session context".to_string(),
+        };
+
+        // Resolve target engine from the agent map.
+        let agent_map = match &self.agent_map {
+            Some(m) => m,
+            None => return "Error: agent_map not available (subagent context)".to_string(),
+        };
+        let target_engine = {
+            let map = agent_map.read().await;
+            match map.get(target) {
+                Some(handle) => handle.engine.clone(),
+                None => return format!("Error: agent '{}' not found", target),
+            }
+        };
+
+        // Get session pools.
+        let pools = match &self.session_pools {
+            Some(p) => p,
+            None => return "Error: session_pools not available".to_string(),
+        };
+
+        // Check for duplicate in the pool.
+        {
+            let pools_read = pools.read().await;
+            if let Some(pool) = pools_read.get(&session_id) {
+                if pool.contains(target) {
+                    return format!("Error: agent '{}' is already running in this session", target);
+                }
+            }
+        }
+
+        // Spawn the live agent.
+        let live_agent =
+            session_agent_pool::spawn_live_agent(target.to_string(), target_engine, task.to_string());
+
+        // Insert into the pool (create pool if needed).
+        {
+            let mut pools_write = pools.write().await;
+            let pool = pools_write
+                .entry(session_id)
+                .or_insert_with(|| SessionAgentPool::new(session_id));
+            pool.insert(live_agent);
+        }
+
+        serde_json::json!({
+            "status": "ok",
+            "agent": target,
+            "session_id": session_id.to_string(),
+            "message": format!("Agent '{}' started with initial task", target),
+        })
+        .to_string()
+    }
+
+    /// `message` — send a follow-up message to an already-running live agent.
+    async fn handle_agent_message(&self, args: &serde_json::Value) -> String {
+        let target = match args.get("agent").and_then(|v| v.as_str()) {
+            Some(n) if !n.is_empty() => n,
+            _ => return "Error: 'agent' parameter is required".to_string(),
+        };
+        let text = match args.get("text").and_then(|v| v.as_str()) {
+            Some(t) if !t.is_empty() => t,
+            _ => return "Error: 'text' parameter is required".to_string(),
+        };
+
+        let session_id = match self.processing_session_id().lock().await.as_ref().copied() {
+            Some(id) => id,
+            None => return "Error: no active session".to_string(),
+        };
+
+        let pools = match &self.session_pools {
+            Some(p) => p,
+            None => return "Error: session_pools not available".to_string(),
+        };
+
+        let pools_read = pools.read().await;
+        let pool = match pools_read.get(&session_id) {
+            Some(p) => p,
+            None => return format!("Error: no agent pool for session {}", session_id),
+        };
+        let agent = match pool.get(target) {
+            Some(a) => a,
+            None => return format!("Error: agent '{}' not found in session pool", target),
+        };
+
+        match agent.message_tx.try_send(session_agent_pool::AgentMessage {
+            text: text.to_string(),
+        }) {
+            Ok(()) => serde_json::json!({
+                "status": "ok",
+                "agent": target,
+                "message": "Message sent",
+            })
+            .to_string(),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                format!("Error: agent '{}' message queue is full — it may still be processing", target)
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                format!("Error: agent '{}' processing loop has exited", target)
+            }
+        }
+    }
+
+    /// `status` — return status of a single agent (if `agent` given) or all agents in the pool.
+    async fn handle_agent_status(&self, args: &serde_json::Value) -> String {
+        let session_id = match self.processing_session_id().lock().await.as_ref().copied() {
+            Some(id) => id,
+            None => return "Error: no active session".to_string(),
+        };
+
+        let pools = match &self.session_pools {
+            Some(p) => p,
+            None => return "Error: session_pools not available".to_string(),
+        };
+
+        let pools_read = pools.read().await;
+        let pool = match pools_read.get(&session_id) {
+            Some(p) => p,
+            None => {
+                return serde_json::json!({ "agents": [] }).to_string();
+            }
+        };
+
+        // Single agent query.
+        if let Some(target) = args.get("agent").and_then(|v| v.as_str()) {
+            if let Some(agent) = pool.get(target) {
+                let last_result = agent.last_result.read().await.clone();
+                return serde_json::json!({
+                    "agent": target,
+                    "status": if agent.is_processing() { "processing" } else { "idle" },
+                    "iterations": agent.iterations(),
+                    "elapsed_secs": agent.elapsed().as_secs_f64(),
+                    "last_result": last_result,
+                })
+                .to_string();
+            } else {
+                return format!("Error: agent '{}' not found in session pool", target);
+            }
+        }
+
+        // List all agents.
+        let entries = pool.list();
+        serde_json::json!({ "agents": entries }).to_string()
+    }
+
+    /// `kill` — remove (and drop) a live agent from the session pool.
+    async fn handle_agent_kill(&self, args: &serde_json::Value) -> String {
+        let target = match args.get("agent").and_then(|v| v.as_str()) {
+            Some(n) if !n.is_empty() => n,
+            _ => return "Error: 'agent' parameter is required".to_string(),
+        };
+
+        let session_id = match self.processing_session_id().lock().await.as_ref().copied() {
+            Some(id) => id,
+            None => return "Error: no active session".to_string(),
+        };
+
+        let pools = match &self.session_pools {
+            Some(p) => p,
+            None => return "Error: session_pools not available".to_string(),
+        };
+
+        let mut pools_write = pools.write().await;
+        let pool = match pools_write.get_mut(&session_id) {
+            Some(p) => p,
+            None => return format!("Error: no agent pool for session {}", session_id),
+        };
+
+        match pool.remove(target) {
+            Some(_dropped) => {
+                // Drop handles cleanup (cancel + abort).
+                serde_json::json!({
+                    "status": "ok",
+                    "agent": target,
+                    "message": format!("Agent '{}' killed", target),
+                })
+                .to_string()
+            }
+            None => format!("Error: agent '{}' not found in session pool", target),
+        }
+    }
+}
