@@ -67,7 +67,7 @@ impl AgentEngine {
             &start_event,
         );
 
-        // invite_agent removed (v3.0) — handoff is the only inter-agent tool
+        // invite_agent removed (v3.0) — agent tool is the inter-agent mechanism
 
         // Add current message, auto-fetch URLs if present
         let user_text = msg.text.clone().unwrap_or_default();

@@ -6,7 +6,7 @@ use super::*;
 
 impl AgentEngine {
     /// Execute a tool call — routes to internal tools, MCP servers, or ToolRegistry.
-    /// Returns a boxed future to allow recursive calls (subagent → execute_tool_call).
+    /// Returns a boxed future to allow recursive calls (approval re-injection → execute_tool_call).
     pub(super) fn execute_tool_call<'a>(
         &'a self,
         name: &'a str,

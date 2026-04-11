@@ -5,7 +5,7 @@ triggers:
   - orchestrate
   - coordinate agents
   - run in parallel
-  - spawn subagents
+  - spawn agents
   - task plan
   - multi-step task
   - orchestrate
@@ -17,17 +17,17 @@ priority: 9
 tools_required:
   - workspace_write
   - workspace_read
-  - subagent
+  - agent
 ---
 
 ## When to Create a Task Plan
 
 Create a task plan file when:
-- Task requires **2+ subagents** or **sequential steps with dependencies**
+- Task requires **2+ agents** or **sequential steps with dependencies**
 - Progress must be visible to the user or other agents
 - Task runs long and you want to checkpoint partial progress
 
-Single-subagent tasks do not need a plan file — just spawn and monitor.
+Single-agent tasks do not need a plan file — just spawn and monitor.
 
 ---
 
@@ -84,7 +84,7 @@ Plan files live at `tasks/task_YYYYMMDD_XXXXXX.json` in the workspace.
 
 ## Write Protocol (Before Spawning Subagents)
 
-**Before** spawning any subagent, write the full plan file using `workspace_write`:
+**Before** spawning any agent, write the full plan file using `workspace_write`:
 
 ```
 workspace_write(
@@ -93,13 +93,13 @@ workspace_write(
 )
 ```
 
-Start with `"status": "planning"`. Change to `"in_progress"` immediately before launching the first subagent.
+Start with `"status": "planning"`. Change to `"in_progress"` immediately before launching the first agent.
 
 ---
 
 ## Update Protocol (After Each Subagent Completes)
 
-After each subagent completes, **rewrite the ENTIRE file** via `workspace_write` (NOT `workspace_edit` — avoids whitespace sensitivity).
+After each agent completes, **rewrite the ENTIRE file** via `workspace_write` (NOT `workspace_edit` — avoids whitespace sensitivity).
 
 **Steps:**
 1. Read current plan: `workspace_read(path="tasks/task_20260408_a1b2c3.json")`
@@ -118,15 +118,15 @@ After each subagent completes, **rewrite the ENTIRE file** via `workspace_write`
 
 ## Parallel Steps
 
-When spawning parallel subagents, set ALL their steps to `"in_progress"` in the plan **before** launching:
+When spawning parallel agents, set ALL their steps to `"in_progress"` in the plan **before** launching:
 
 ```
 // 1. Update plan: steps 1 and 2 both → in_progress
 workspace_write(path="tasks/...", content=<plan with step_1 and step_2 as in_progress>)
 
-// 2. Spawn both subagents
-id1 = subagent(action="spawn", task="Task A...")
-id2 = subagent(action="spawn", task="Task B...")
+// 2. Spawn both agents
+id1 = agent(action="run", target="Alma", task="Task A...")
+id2 = agent(action="run", target="Hyde", task="Task B...")
 
 // 3. Monitor loop until both complete
 // 4. As each completes, rewrite plan with updated status
@@ -146,12 +146,12 @@ workspace_write(
 // Step 2: Mark step_1 in_progress, update plan status → in_progress
 workspace_write(path="tasks/task_20260408_x9y8z7.json", content=<step_1 in_progress, status in_progress>)
 
-// Step 3: Spawn subagent for step_1
-id1 = subagent(action="spawn", task="Fetch Q1 revenue data from reports/q1.csv and return totals by region")
+// Step 3: Spawn agent for step_1
+agent(action="run", target="Alma", task="Fetch Q1 revenue data from reports/q1.csv and return totals by region")
 
-// Step 4: Monitor and collect
-subagent(action="status", subagent_id=id1)  // repeat until done
-result1 = subagent(action="collect", subagent_id=id1)
+// Step 4: Monitor
+agent(action="status", agent_id="Alma")  // repeat until idle
+// Read last_result from status response
 
 // Step 5: Mark step_1 done, step_2 in_progress, write plan
 workspace_write(path="tasks/task_20260408_x9y8z7.json", content=<step_1 done, step_2 in_progress>)
@@ -169,4 +169,4 @@ workspace_write(path="tasks/task_20260408_x9y8z7.json", content=<all done, statu
 - DO NOT use `workspace_edit` to update plan files — always full rewrite via `workspace_write`
 - DO NOT forget to update `updated_at` on every rewrite
 - DO NOT set top-level `status: "done"` until ALL steps are done
-- DO NOT create a plan for single-subagent tasks — overhead not worth it
+- DO NOT create a plan for single-agent tasks — overhead not worth it
