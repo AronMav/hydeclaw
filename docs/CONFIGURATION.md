@@ -106,7 +106,7 @@ Rate limiting and concurrency controls applied globally across all agents.
 | `max_tool_concurrency` | integer | `10` | Maximum number of tool calls executing simultaneously across all agent sessions. Enforced by a tokio `Semaphore`. Prevents runaway tool loops from starving other sessions. |
 | `request_timeout_secs` | integer | `180` | Maximum duration for a single API request in seconds. Requests exceeding this limit are terminated. |
 | `max_agent_turns` | integer | `5` | Maximum agent-to-agent turns in a single request. Prevents infinite delegation loops between agents. |
-| `max_handoff_context_chars` | integer | `2000` | Maximum context size (in characters) passed during agent handoffs. Longer contexts are truncated. |
+| `max_handoff_context_chars` | integer | `2000` | Maximum context size (in characters) for inter-agent messages (legacy field name, still used in config API). Longer contexts are truncated. |
 
 ```toml
 [limits]
@@ -114,7 +114,7 @@ max_requests_per_minute = 100
 max_tool_concurrency = 10
 request_timeout_secs = 180
 max_agent_turns = 5
-max_handoff_context_chars = 2000
+max_handoff_context_chars = 2000  # legacy field name, still used in config API
 ```
 
 ### [typing]
@@ -132,12 +132,12 @@ mode = "instant"
 
 ### [subagents]
 
-Configuration for the sub-agent spawning system. Agents can spawn child agents to delegate sub-tasks.
+Configuration for the live agent pool system. Controls whether the `agent` tool can spawn live agents to delegate sub-tasks.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `true` | Master switch. When false, `spawn_subagent` tool calls are rejected. |
-| `default_mode` | string | `"in-process"` | Where sub-agents run by default. `"in-process"` runs them as tokio tasks inside Core. `"docker"` runs them in a sandbox container. |
+| `enabled` | bool | `true` | Master switch. When false, `agent(action="run")` tool calls are rejected. |
+| `default_mode` | string | `"in-process"` | Where live agents run by default. `"in-process"` runs them as tokio tasks inside Core. `"docker"` runs them in a sandbox container. |
 | `max_concurrent_in_process` | integer | `5` | Maximum simultaneously running in-process sub-agents. |
 | `max_concurrent_docker` | integer | `3` | Maximum simultaneously running Docker sandbox sub-agents. |
 | `docker_timeout` | string | `"5m"` | Maximum lifetime for a Docker sub-agent. Human-readable duration: `"5m"`, `"30s"`, `"2h"`. |

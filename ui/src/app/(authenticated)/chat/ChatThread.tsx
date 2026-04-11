@@ -886,7 +886,7 @@ export function ChatThread({
     return historyMessages;
   }, [messageSource, historyMessages]);
 
-  // Filter out inter-agent routing messages (internal handoff context passed between agents).
+  // Filter out inter-agent routing messages (internal inter-agent context passed between agents).
   // These have role="user" with content starting with "[Handoff from" or "[Response from".
   // Keep the original user message (no agentId or agentId matching current agent).
   const allMessages = useMemo(() => {

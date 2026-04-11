@@ -379,7 +379,7 @@ describe("Multi-Agent Identity (MAID)", () => {
 
     // AGENT-02: inter-agent sender message renders with distinct visual treatment
     it("AGENT-02: inter-agent sender message renders with data-role=agent-sender and bg-muted/20", () => {
-      // A user-role message with agentId set means it's an inter-agent handoff message.
+      // A user-role message with agentId set means it's an inter-agent message.
       // It must be visually distinct from regular user messages.
       const agentSenderMsg = makeMsg({
         id: "inter-1",

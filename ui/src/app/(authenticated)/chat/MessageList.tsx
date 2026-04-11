@@ -385,7 +385,7 @@ export function MessageList({
             msg.agentId != null;
 
           // Only animate messages that arrived AFTER streaming stopped and are very recent.
-          // ALSO animate the first message of a new agent after a handoff.
+          // ALSO animate the first message of a new agent after an agent switch.
           const isNew = (!isStreaming && isNewMessage(msg)) || (showSeparator && isStreaming);
 
           return (
