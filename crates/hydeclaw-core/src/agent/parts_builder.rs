@@ -175,7 +175,11 @@ fn extract_clean_output(raw: &str) -> (Value, Vec<Value>) {
             }
         } else if let Some(json_str) = line.strip_prefix("__rich_card__:") {
             if let Ok(meta) = serde_json::from_str::<Value>(json_str) {
-                let card_type = meta.get("cardType").and_then(|v| v.as_str()).unwrap_or("unknown");
+                // Producer uses snake_case "card_type" (engine_tools.rs), consistent with engine_sse.rs
+                let card_type = meta.get("card_type")
+                    .or_else(|| meta.get("cardType"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
                 let data = meta.get("data").cloned().unwrap_or(json!({}));
                 extra_parts.push(json!({
                     "type": "rich-card",
