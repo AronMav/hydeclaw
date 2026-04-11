@@ -397,7 +397,8 @@ impl AgentEngine {
                                     tracing::debug!("SSE event channel closed, engine continues for DB save");
                                 }
                             }
-                            ("Rich card displayed".to_string(), "Rich card displayed".to_string())
+                            // Preserve raw marker in db_result so parts_builder can extract rich-card parts
+                            ("Rich card displayed".to_string(), tool_result.clone())
                         } else if tool_result.contains(FILE_PREFIX) {
                             let db_result = tool_result.clone();
                             let mut clean_lines = Vec::new();
