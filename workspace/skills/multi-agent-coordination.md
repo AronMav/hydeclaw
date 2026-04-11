@@ -16,67 +16,78 @@ tools_required:
   - agent
 ---
 
-## Agent Coordination Strategy
+## Agent Tool — Reference
 
-### When to delegate
+The `agent` tool delegates tasks to other agents and manages their lifecycle.
 
-- The task requires another agent's expertise
-- Parallel execution of multiple tasks is needed
-- The task is long-running and does not require your attention
+### Actions
 
-### The `agent` Tool
+| Action | Parameters | Behavior |
+|--------|-----------|----------|
+| `run` | `target`, `task` | **Blocks** until agent completes (1-5 min). Returns result directly. |
+| `run` | `target`, `task`, `mode="async"` | Starts agent and returns immediately. Use `collect` to get result. |
+| `collect` | `target` | **Blocks** until async agent completes. Returns result. |
+| `message` | `target`, `text` | Sends follow-up to a running agent. Returns immediately. |
+| `status` | `target` (optional) | Without target: list all agents. With target: single agent details. |
+| `kill` | `target` | Terminates agent, frees resources. |
 
-#### Single agent (most common)
+### Patterns
 
-```
-agent(action="run", target="Alma", task="Analyze the investment portfolio and provide risk assessment")
-→ blocks until Alma completes (1-3 minutes) → returns result directly
-```
-
-The tool BLOCKS until the agent finishes. You get the result in one call — no polling needed.
-
-#### Parallel agents
+#### Single agent (most common — 1 tool call)
 
 ```
-// 1. Start both without waiting
+agent(action="run", target="Alma", task="Analyze portfolio risk and return summary table")
+→ blocks 1-3 min → returns Alma's analysis directly
+```
+
+Use this for simple delegation. One call, one result.
+
+#### Parallel agents (4 tool calls)
+
+```
 agent(action="run", target="Alma", task="Task A", mode="async")
 → "Agent Alma started"
 
 agent(action="run", target="Hyde", task="Task B", mode="async")
 → "Agent Hyde started"
 
-// 2. Do other useful work while they process
-bcs_portfolio()  // fetch data, run tools, etc.
-
-// 3. Collect results (blocks until each completes)
 agent(action="collect", target="Alma")
-→ blocks → returns Alma's result
+→ blocks → Alma's result
 
 agent(action="collect", target="Hyde")
-→ blocks → returns Hyde's result
-
-// 4. Synthesize both results for the user
+→ blocks → Hyde's result
 ```
 
-#### Follow-up messages
+Use when you need multiple agents working simultaneously.
+
+#### Follow-up question (2 tool calls)
 
 ```
-agent(action="message", target="Alma", text="Now compare with Hyde's analysis: ...")
-→ "Message queued"
+agent(action="message", target="Alma", text="Now compare your analysis with this data: ...")
+→ "Message sent"
 
 agent(action="collect", target="Alma")
-→ blocks → returns updated analysis
+→ blocks → updated analysis
 ```
 
-#### Other actions
+Use when an agent is already running and you want to give it more context.
+
+#### Chain delegation (agent calls agent)
+
+Agents can call other agents. Example:
 
 ```
-agent(action="status")                    // list all agents (diagnostic)
-agent(action="status", target="Alma")     // check specific agent
-agent(action="kill", target="Alma")       // terminate agent
+You → Arty: "Ask Alma to get weather from Hyde"
+Arty → agent(run, target=Alma, task="Use agent tool to ask Hyde for weather in Moscow")
+Alma → agent(run, target=Hyde, task="What's the weather in Moscow?")
+Hyde → searches web → returns weather
+Alma → returns weather to Arty
+Arty → returns weather to user
 ```
 
-### Agent Request Format
+Each agent in the chain uses the same `agent` tool.
+
+### Task Format
 
 ```
 Task: [specific description]
@@ -84,16 +95,13 @@ Context: [minimum needed — agent has NO access to your conversation]
 Response format: [what to return]
 ```
 
-### Lifecycle
+Agents work in isolated contexts. They don't see your conversation history. Include all necessary data in the task.
 
-- Agents are bound to the current session
-- They stay alive until killed or the session ends
-- Each agent maintains its own conversation context across messages
-- Agents can take 1-3 minutes to complete — this is normal
+### Rules
 
-### Anti-patterns
-
-- DO NOT use `status` polling in a loop — use blocking `run` or `collect` instead
-- DO NOT send the entire conversation context — only what's needed
-- DO NOT delegate simple tasks that are faster to do yourself
-- DO NOT leave agents running after their task is done — kill them
+- Default `run` **blocks** — no polling needed, result comes back directly
+- Agents take 1-5 minutes on this hardware — this is normal
+- Kill agents when done if using async mode
+- Do NOT poll `status` in a loop — use blocking `run` or `collect`
+- Do NOT send entire conversation — only what's needed
+- Do NOT delegate trivial tasks — faster to do yourself
