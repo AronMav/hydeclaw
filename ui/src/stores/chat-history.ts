@@ -95,38 +95,36 @@ export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean, s
     } else if (m.role === "tool" && m.tool_call_id) {
       // Tool result block — always attach to the latest assistant message
       if (!lastAssistantMsg) continue; // Skip: preceding assistant used pre-built parts
-      if (lastAssistantMsg) {
-        const tc = toolCallMap.get(m.tool_call_id);
+      const tc = toolCallMap.get(m.tool_call_id);
 
-        // Extract inline files (__file__: markers)
-        const lines = (m.content || "").split("\n");
-        const cleanLines: string[] = [];
-        for (const line of lines) {
-          if (line.startsWith("__file__:")) {
-            try {
-              const meta = JSON.parse(line.slice("__file__:".length));
-              if (meta.url) {
-                lastAssistantMsg.parts.push({
-                  type: "file",
-                  url: meta.url,
-                  mediaType: meta.mediaType || "image/png",
-                });
-              }
-            } catch { /* ignore */ }
-          } else {
-            cleanLines.push(line);
-          }
+      // Extract inline files (__file__: markers)
+      const lines = (m.content || "").split("\n");
+      const cleanLines: string[] = [];
+      for (const line of lines) {
+        if (line.startsWith("__file__:")) {
+          try {
+            const meta = JSON.parse(line.slice("__file__:".length));
+            if (meta.url) {
+              lastAssistantMsg.parts.push({
+                type: "file",
+                url: meta.url,
+                mediaType: meta.mediaType || "image/png",
+              });
+            }
+          } catch { /* ignore */ }
+        } else {
+          cleanLines.push(line);
         }
-
-        lastAssistantMsg.parts.push({
-          type: "tool",
-          toolCallId: m.tool_call_id,
-          toolName: tc?.name || "tool",
-          state: "output-available",
-          input: (tc?.arguments as Record<string, unknown>) ?? {},
-          output: cleanLines.join("\n"),
-        });
       }
+
+      lastAssistantMsg.parts.push({
+        type: "tool",
+        toolCallId: m.tool_call_id,
+        toolName: tc?.name || "tool",
+        state: "output-available",
+        input: (tc?.arguments as Record<string, unknown>) ?? {},
+        output: cleanLines.join("\n"),
+      });
     }
   }
 
