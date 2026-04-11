@@ -49,7 +49,7 @@ deploy-ui: ui
 	cd ui && tar cf - out | ssh $(PI_HOST) "mkdir -p $(PI_DIR)/ui && cd $(PI_DIR)/ui && tar xf -"
 
 deploy-migrations:
-	scp -r migrations/ $(PI_HOST):$(PI_DIR)/migrations/
+	scp migrations/*.sql $(PI_HOST):$(PI_DIR)/migrations/
 
 deploy-docker:
 	@echo "Syncing docker/ source to Pi (excludes workspace files)..."
