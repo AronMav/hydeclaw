@@ -332,19 +332,8 @@ impl AgentEngine {
             if name == "cron" {
                 return self.handle_cron(arguments).await;
             }
-            if name == "subagent" {
-                let action = arguments.get("action").and_then(|v| v.as_str()).unwrap_or("");
-                return match action {
-                    "spawn" => self.handle_spawn_subagent(arguments).await,
-                    "status" => self.handle_subagent_status(arguments).await,
-                    "logs" => self.handle_subagent_logs(arguments).await,
-                    "kill" => self.handle_subagent_kill(arguments).await,
-                    _ => format!("Error: unknown subagent action '{}'. Use: spawn, status, logs, kill.", action),
-                };
-            }
-            // invite_agent removed — replaced by handoff tool (v3.0)
-            if name == "handoff" {
-                return self.handle_handoff(arguments).await;
+            if name == "agent" {
+                return self.handle_agent_tool(arguments).await;
             }
             if name == "web_fetch" {
                 return self.handle_web_fetch(arguments).await;
@@ -714,7 +703,7 @@ impl AgentEngine {
                 if matches!(
                     name,
                     "workspace_write" | "workspace_read" | "workspace_list" | "workspace_edit" | "workspace_delete" | "workspace_rename" |
-                    "web_fetch" | "subagent" | "handoff" |
+                    "web_fetch" | "agent" |
                     "message" | "cron" | "code_exec" | "browser_action" |
                     "git" | "session" | "skill" | "skill_use" |
                     "canvas" | "rich_card" | "agents_list" | "secret_set" |

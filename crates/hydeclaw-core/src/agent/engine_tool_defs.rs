@@ -10,10 +10,10 @@ pub fn all_system_tool_names() -> &'static [&'static str] {
         // Core workspace
         "workspace_write", "workspace_read", "workspace_list", "workspace_edit",
         "workspace_delete", "workspace_rename",
-        // Subagents
-        "subagent",
+        // Agent management
+        "agent",
         // Communication
-        "handoff", "web_fetch", "message",
+        "web_fetch", "message",
         // Memory
         "memory",
         // Scheduling
@@ -153,54 +153,38 @@ impl AgentEngine {
                 }),
             },
             ToolDefinition {
-                name: "subagent".to_string(),
-                description: "Spawn a subagent to execute a subtask. The call blocks until the subagent completes or times out, then returns {status, output, error}. Use action='spawn' with 'task' to run. Use 'status'/'logs'/'kill' with subagent_id for management.".to_string(),
+                name: "agent".to_string(),
+                description: "Manage agents in the current session. Actions: \
+                    'run' — start a named agent with a task; \
+                    'message' — send a message to a running agent; \
+                    'status' — check agent status (omit agent_id to list all); \
+                    'kill' — terminate an agent.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["spawn", "status", "logs", "kill"],
-                            "description": "Subagent action to perform"
+                            "enum": ["run", "message", "status", "kill"],
+                            "description": "Action to perform"
+                        },
+                        "target": {
+                            "type": "string",
+                            "description": "Agent name (for run, message, kill)"
                         },
                         "task": {
                             "type": "string",
-                            "description": "Task description (for spawn). Omit when waiting for existing subagent."
+                            "description": "Initial task for the agent (for run)"
                         },
-                        "subagent_id": {
+                        "text": {
                             "type": "string",
-                            "description": "Subagent ID (for status/logs/kill actions)"
+                            "description": "Message text (for message)"
                         },
-                        "last_n": {
-                            "type": "integer",
-                            "description": "Show only last N log entries (for logs, default: all)"
+                        "agent_id": {
+                            "type": "string",
+                            "description": "Agent name to check (for status, omit to list all)"
                         }
                     },
                     "required": ["action"]
-                }),
-            },
-            ToolDefinition {
-                name: "handoff".to_string(),
-                description: "Transfer control to another agent. The target agent joins the session and responds next. \
-                    Use when you need a different agent's expertise (e.g. 'ask the base agent', 'delegate to Agent2'). \
-                    Provide the task description and relevant context.".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "agent": {
-                            "type": "string",
-                            "description": "Name of the agent to hand off to"
-                        },
-                        "task": {
-                            "type": "string",
-                            "description": "What the target agent should do"
-                        },
-                        "context": {
-                            "type": "string",
-                            "description": "Relevant context from the current conversation for the target agent"
-                        }
-                    },
-                    "required": ["agent", "task", "context"]
                 }),
             },
             ToolDefinition {
@@ -982,12 +966,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn handoff_in_system_tool_names() {
+    fn agent_in_system_tool_names() {
         let names = all_system_tool_names();
-        assert!(
-            names.contains(&"handoff"),
-            "handoff must be in all_system_tool_names(), got: {:?}",
-            names
-        );
+        assert!(names.contains(&"agent"), "agent must be in all_system_tool_names()");
+        assert!(!names.contains(&"handoff"), "handoff should be removed");
+        assert!(!names.contains(&"subagent"), "subagent should be removed");
     }
 }
