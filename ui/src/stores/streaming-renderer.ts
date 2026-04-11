@@ -21,7 +21,7 @@ import type {
   TextPart,
   ToolPart,
   ApprovalPart,
-  StepGroupPart,
+
   ConnectionPhase,
   AgentState,
 } from "./chat-types";
@@ -355,7 +355,6 @@ export function createStreamingRenderer(store: StoreAccess) {
     // Track finish event to distinguish natural end from connection drop
     let receivedFinishEvent = false;
     let currentRespondingAgent: string | null = agent;
-    let currentStepGroup: StepGroupPart | null = null;
 
     function flushText() {
       const flushed = incrementalParser.flush();
@@ -525,9 +524,6 @@ export function createStreamingRenderer(store: StoreAccess) {
                 input: {},
               };
               parts.push(toolPart);
-              if (currentStepGroup) {
-                currentStepGroup.toolParts.push({ ...toolPart });
-              }
               scheduleUpdate();
               break;
             }
@@ -558,12 +554,6 @@ export function createStreamingRenderer(store: StoreAccess) {
               );
               if (idx >= 0) {
                 parts[idx] = { ...(parts[idx] as ToolPart), state: "output-available", output };
-                if (currentStepGroup) {
-                  const sgIdx = currentStepGroup.toolParts.findIndex(tp => tp.toolCallId === tcId);
-                  if (sgIdx >= 0) {
-                    currentStepGroup.toolParts[sgIdx] = { ...currentStepGroup.toolParts[sgIdx], state: "output-available", output };
-                  }
-                }
               }
               scheduleUpdate();
               break;
@@ -601,27 +591,10 @@ export function createStreamingRenderer(store: StoreAccess) {
               break;
             }
 
-            case "step-start": {
-              flushText();
-              currentStepGroup = {
-                type: "step-group",
-                stepId: event.stepId,
-                toolParts: [],
-                isStreaming: true,
-              };
+            case "step-start":
+            case "step-finish":
+              // Step groups removed — tools render as flat parts (matching history view)
               break;
-            }
-
-            case "step-finish": {
-              if (currentStepGroup && currentStepGroup.toolParts.length > 0) {
-                currentStepGroup.isStreaming = false;
-                currentStepGroup.finishReason = event.finishReason;
-                parts.push(currentStepGroup);
-                scheduleUpdate();
-              }
-              currentStepGroup = null;
-              break;
-            }
 
             case "file": {
               flushText();
