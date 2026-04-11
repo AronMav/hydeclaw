@@ -224,12 +224,8 @@ impl ContextBuilder for DefaultContextBuilder {
             system_prompt.push_str("**Participants:** ");
             system_prompt.push_str(&participants.join(", "));
             system_prompt.push_str("\n\n");
-            system_prompt.push_str("**Collaborate with other agents:** Use the `agent` tool to work with other agents in this session.\n");
-            system_prompt.push_str("- `agent(action=\"run\", target=\"AgentName\", task=\"...\")` — start an agent\n");
-            system_prompt.push_str("- `agent(action=\"message\", target=\"AgentName\", text=\"...\")` — send a message\n");
-            system_prompt.push_str("- `agent(action=\"status\")` — list all active agents\n");
-            system_prompt.push_str("- `agent(action=\"status\", agent_id=\"AgentName\")` — check result\n");
-            system_prompt.push_str("- `agent(action=\"kill\", target=\"AgentName\")` — stop an agent\n");
+            // Agent tool usage instructions are in workspace.rs (SOUL.md "Agent Tool" section).
+            // Not duplicated here to avoid token waste and inconsistency.
         }
 
         // L0: pinned memory chunks

@@ -178,8 +178,8 @@ impl AgentEngine {
             }
         };
 
-        // Single agent query.
-        if let Some(target) = args.get("agent_id").and_then(|v| v.as_str()) {
+        // Single agent query — use "target" (same as other actions for consistency).
+        if let Some(target) = args.get("target").and_then(|v| v.as_str()) {
             if let Some(agent) = pool.get(target) {
                 let last_result_arc = agent.last_result.clone();
                 let status_str = if agent.is_processing() { "processing" } else { "idle" };

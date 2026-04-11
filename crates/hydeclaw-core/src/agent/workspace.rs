@@ -380,7 +380,7 @@ pub fn build_system_prompt(
         "The `agent` tool manages session-scoped live agents with four actions:\n",
         "- `agent(action=\"run\", target=\"Name\", task=\"...\")` — spawn a live agent in the current session (async, returns immediately)\n",
         "- `agent(action=\"message\", target=\"Name\", text=\"...\")` — send a follow-up message to a running agent\n",
-        "- `agent(action=\"status\")` — check status of all agents, or `agent(action=\"status\", agent_id=\"Name\")` for one\n",
+        "- `agent(action=\"status\")` — check status of all agents, or `agent(action=\"status\", target=\"Name\")` for one\n",
         "- `agent(action=\"kill\", target=\"Name\")` — stop and remove an agent from the session\n\n",
         "CRITICAL: You MUST monitor every agent you spawn until it completes.\n",
         "Workflow:\n",

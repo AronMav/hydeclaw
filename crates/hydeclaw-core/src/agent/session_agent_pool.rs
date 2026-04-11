@@ -145,16 +145,29 @@ impl SessionAgentPool {
     pub fn is_all_finished(&self) -> bool {
         self.agents.values().all(|a| a.task_handle.is_finished())
     }
+
+    /// Returns true if all agents are idle and have been alive longer than `duration`.
+    pub fn all_idle_longer_than(&self, duration: std::time::Duration) -> bool {
+        !self.agents.is_empty()
+            && self.agents.values().all(|a| a.is_idle() && a.elapsed() > duration)
+    }
 }
 
-/// Remove stale session pools where all agents have finished or the pool is empty.
+/// Maximum idle time for a pool before it's evicted (10 minutes).
+const POOL_IDLE_TIMEOUT_SECS: u64 = 600;
+
+/// Remove stale session pools: empty, all agents finished, or idle longer than timeout.
 pub async fn cleanup_stale_pools(
     pools: &tokio::sync::RwLock<std::collections::HashMap<uuid::Uuid, SessionAgentPool>>,
 ) -> usize {
     let stale_ids: Vec<uuid::Uuid> = {
         let pools_read = pools.read().await;
         pools_read.iter()
-            .filter(|(_, pool)| pool.is_empty() || pool.is_all_finished())
+            .filter(|(_, pool)| {
+                pool.is_empty()
+                    || pool.is_all_finished()
+                    || pool.all_idle_longer_than(std::time::Duration::from_secs(POOL_IDLE_TIMEOUT_SECS))
+            })
             .map(|(id, _)| *id)
             .collect()
     };
@@ -165,7 +178,9 @@ pub async fn cleanup_stale_pools(
     let mut removed = 0;
     for id in &stale_ids {
         if let Some(pool) = pools_write.get(id) {
-            if pool.is_empty() || pool.is_all_finished() {
+            if pool.is_empty() || pool.is_all_finished()
+                || pool.all_idle_longer_than(std::time::Duration::from_secs(POOL_IDLE_TIMEOUT_SECS))
+            {
                 pools_write.remove(id);
                 removed += 1;
             }

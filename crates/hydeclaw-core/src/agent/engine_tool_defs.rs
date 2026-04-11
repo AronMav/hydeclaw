@@ -157,7 +157,7 @@ impl AgentEngine {
                 description: "Manage agents in the current session. Actions: \
                     'run' — start a named agent with a task; \
                     'message' — send a message to a running agent; \
-                    'status' — check agent status (omit agent_id to list all); \
+                    'status' — check agent status (omit target to list all); \
                     'kill' — terminate an agent.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
@@ -169,7 +169,7 @@ impl AgentEngine {
                         },
                         "target": {
                             "type": "string",
-                            "description": "Agent name (for run, message, kill)"
+                            "description": "Agent name (for run, message, status, kill). Omit for status to list all."
                         },
                         "task": {
                             "type": "string",
@@ -178,10 +178,6 @@ impl AgentEngine {
                         "text": {
                             "type": "string",
                             "description": "Message text (for message)"
-                        },
-                        "agent_id": {
-                            "type": "string",
-                            "description": "Agent name to check (for status, omit to list all)"
                         }
                     },
                     "required": ["action"]

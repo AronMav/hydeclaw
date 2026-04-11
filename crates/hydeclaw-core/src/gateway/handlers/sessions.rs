@@ -276,6 +276,14 @@ pub(crate) async fn api_delete_session(
         }
         Ok(_) => {
             tracing::info!(session_id = %id, agent = %agent, "session deleted via API");
+            // Kill any live agents in the session pool
+            let mut pools = state.session_pools.write().await;
+            if let Some(mut pool) = pools.remove(&id) {
+                if !pool.is_empty() {
+                    tracing::info!(session_id = %id, count = pool.len(), "killing session agent pool on delete");
+                    pool.kill_all();
+                }
+            }
             Json(json!({"ok": true})).into_response()
         }
         Err(e) => (

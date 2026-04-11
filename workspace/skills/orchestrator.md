@@ -150,7 +150,7 @@ workspace_write(path="tasks/task_20260408_x9y8z7.json", content=<step_1 in_progr
 agent(action="run", target="Alma", task="Fetch Q1 revenue data from reports/q1.csv and return totals by region")
 
 // Step 4: Monitor
-agent(action="status", agent_id="Alma")  // repeat until idle
+agent(action="status", target="Alma")  // repeat until idle
 // Read last_result from status response
 
 // Step 5: Mark step_1 done, step_2 in_progress, write plan
