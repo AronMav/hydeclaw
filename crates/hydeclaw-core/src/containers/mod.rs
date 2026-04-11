@@ -140,6 +140,40 @@ impl ContainerManager {
         Ok(())
     }
 
+    /// Cleanup orphaned on-demand MCP containers that may be left from a previous crash.
+    /// Called once at startup before the idle reaper begins.
+    pub async fn cleanup_orphans(&self) {
+        let mcp = self.mcp.read().await.clone();
+        let mut stopped = 0;
+        for (name, entry) in &mcp {
+            if entry.url.is_some() || entry.mode != "on-demand" {
+                continue;
+            }
+            let container_name = match entry.container.as_deref() {
+                Some(c) => c,
+                None => continue,
+            };
+            // Check if container is running
+            match self.docker.inspect_container(container_name, None::<bollard::container::InspectContainerOptions>).await {
+                Ok(info) => {
+                    let running = info.state.as_ref().and_then(|s| s.running).unwrap_or(false);
+                    if running {
+                        tracing::info!(container = %container_name, mcp = %name, "stopping orphaned on-demand MCP container");
+                        let _ = self.docker.stop_container(
+                            container_name,
+                            Some(bollard::container::StopContainerOptions { t: 5 }),
+                        ).await;
+                        stopped += 1;
+                    }
+                }
+                Err(_) => {} // container doesn't exist — fine
+            }
+        }
+        if stopped > 0 {
+            tracing::info!(stopped, "cleaned up orphaned MCP containers at startup");
+        }
+    }
+
     /// Check idle MCP servers and stop those that exceeded their timeout.
     pub async fn reap_idle(&self) {
         let activity = self.activity.read().await.clone();

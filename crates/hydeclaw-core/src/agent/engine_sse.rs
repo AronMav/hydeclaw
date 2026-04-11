@@ -49,8 +49,8 @@ impl AgentEngine {
 
         let thinking_level = self.thinking_level.load(std::sync::atomic::Ordering::Relaxed);
 
-        // TODO(branching): When frontend sends leaf_message_id, use load_branch_messages
-        // instead of load_messages in build_context to provide branch-aware LLM context.
+        // Branch-aware context: when leaf_message_id is set (from frontend),
+        // build_context uses load_branch_messages instead of flat load_messages.
         let crate::agent::context_builder::ContextSnapshot { session_id, mut messages, tools: available_tools } =
             self.build_context(msg, true, resume_session_id, force_new_session).await?;
 

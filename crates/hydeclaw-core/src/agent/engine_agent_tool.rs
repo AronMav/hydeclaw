@@ -43,14 +43,11 @@ impl AgentEngine {
             _ => return "Error: 'task' parameter is required".to_string(),
         };
 
-        // Resolve session ID: prefer enriched _context (per-invocation, race-free),
-        // fall back to shared processing_session_id (host agent SSE path).
+        // Resolve session ID from enriched _context (injected by enrich_tool_args, race-free).
+        // No fallback to processing_session_id — that shared mutex causes deadlocks and races.
         let session_id = match extract_session_id(args) {
             Some(id) if id != uuid::Uuid::nil() => id,
-            _ => match self.processing_session_id().lock().await.as_ref().copied() {
-                Some(id) => id,
-                None => return "Error: no active session — agent tool requires a session context".to_string(),
-            },
+            _ => return "Error: no active session — agent tool requires session context via _context".to_string(),
         };
 
         // Resolve target engine from the agent map.

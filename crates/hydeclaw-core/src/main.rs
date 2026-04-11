@@ -392,6 +392,8 @@ async fn main() -> Result<()> {
             if let Err(e) = cm.start_persistent().await {
                 tracing::warn!(error = %e, "failed to start some persistent MCP MCP servers");
             }
+            // Cleanup orphaned on-demand containers from previous crash
+            cm.cleanup_orphans().await;
             // Spawn idle reaper
             {
                 let cm_clone = cm.clone();
