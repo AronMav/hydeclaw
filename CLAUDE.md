@@ -81,7 +81,7 @@ HydeClaw is a Rust-based AI gateway. The core binary (`crates/hydeclaw-core`) ha
 
 **Loop detection (`tool_loop.rs`):** Two-phase `LoopDetector` — `check_limits()` (pre-execution, read-only) + `record_execution()` (post-execution, tracks success/failure). Error-aware: 3 consecutive errors on same tool → break. WAL warm-up via `session_wal::warm_up_detector()` on crash recovery.
 
-**Handoff (`engine_handoff.rs` + `chat.rs` turn loop):** `handoff_target: Arc<Mutex<Option<HandoffRequest>>>` — set by handoff tool, consumed by turn loop. Turn loop uses a **handoff stack** (not single var) so A→B→C returns C→B→A. `take_handoff()` clears stale target before each iteration. `handle_sse` returns `Result<Uuid>` (assistant message ID) for parent_message_id chain tracking.
+**Session-scoped agents (`session_agent_pool.rs` + `engine_agent_tool.rs`):** Unified `agent` tool (run/message/status/kill) replaces old `subagent` + `handoff` tools. Agents are always-alive peers bound to a session via `SessionAgentPool` in `AppState.session_pools`. Each `LiveAgent` holds its own LLM dialog context in memory, receives messages via mpsc channel, and processes them in a background tokio task using `run_subagent()`. Polling-based — no automatic routing or turn loop. Peer-to-peer: any agent in a session can spawn, message, or kill any other.
 
 **Agent config** (TOML at `config/agents/{name}.toml`):
 - `base = true` — system agent: can't be renamed/deleted, runs on host (no sandbox), can write to service dirs and tools
@@ -103,7 +103,7 @@ Axum HTTP API on port 18789. **Sub-router pattern:** 27 handler modules each exp
 
 ### Tools (`src/tools/`)
 
-**System tools:** hardcoded in `engine.rs` (memory, workspace_write, workspace_edit, code_exec, subagent, etc.). Tool policy `deny` list applies to ALL tools including core system tools — deny is checked first, before the core tools allowlist.
+**System tools:** hardcoded in `engine.rs` (memory, workspace_write, workspace_edit, code_exec, agent, etc.). Tool policy `deny` list applies to ALL tools including core system tools — deny is checked first, before the core tools allowlist.
 
 **YAML tools:** `workspace/tools/*.yaml` — define HTTP API calls with optional response transforms:
 - `response_transform: "$.path.to.field"` (JSONPath) — extracts from JSON response
@@ -515,7 +515,7 @@ HydeClaw — Rust-based AI gateway (аналог OpenClaw с более безо
 - Purpose: Execute user-requested operations (workspace edit, web search, code execution, custom HTTP calls)
 - Location: `crates/hydeclaw-core/src/tools/`
 - Contains: YAML tool loader, HTTP client wrappers, SSRF protection, embedding service client
-- System tools: hardcoded in `engine.rs` (memory_write, workspace_write, workspace_edit, code_exec, subagent, process_start, browser_open, etc.)
+- System tools: hardcoded in `engine.rs` (memory_write, workspace_write, workspace_edit, code_exec, agent, browser_action, etc.)
 - YAML tools: loaded from `workspace/tools/*.yaml`, define HTTP API calls with response transforms
 - Depends on: Workspace, memory, HTTP client, docker sandbox
 - Used by: Agent engine tool execution loop
@@ -570,7 +570,7 @@ HydeClaw — Rust-based AI gateway (аналог OpenClaw с более безо
 - Agents: Loaded from `config/agents/{Name}.toml` at startup. In-memory Arc<AgentEngine> per agent. Hot-reload on config file change.
 - Sessions: Stored in PostgreSQL. Fetched on-demand (kept in UI memory via Zustand).
 - Messages: Stored in PostgreSQL. Streamed during processing, fetched on session load.
-- Workspace files: Read on each engine.process_message() call (not cached) unless in-process subagent.
+- Workspace files: Read on each handle_sse() call (not cached) unless in-process subagent.
 - Memory chunks: Stored in pgvector. Queried on build_context (hybrid semantic + FTS search).
 - Secrets: Stored encrypted in PostgreSQL. Cached in-memory by SecretsManager (refreshed on set).
 - Channel credentials: Stored in secrets vault under `CHANNEL_CREDENTIALS` (not in agent_channels config column).
@@ -589,13 +589,13 @@ HydeClaw — Rust-based AI gateway (аналог OpenClaw с более безо
 - Pattern: Prefix tool result with `__file__:` or `__rich_card__:`, engine extracts and routes
 - Purpose: Require human approval before executing sensitive tools (e.g. workspace_write, code_exec)
 - Pattern: Tool check needs_approval() → create approval record in DB → wait on approval_id waiter (tokio::oneshot) → webhook callback wakes waiter → continue or reject
-- Purpose: Track async subagents spawned by `subagent` tool, allow status checks and cancellation
-- Pattern: In-process: tokio task with cancellation token. Docker: container with timeout. UI polls `/api/tasks/{id}` for status.
+- Purpose: Track session-scoped agents spawned by `agent` tool, allow status checks and lifecycle management
+- Pattern: `SessionAgentPool` per session in `AppState.session_pools`. Each `LiveAgent` runs as a tokio task with cancellation token. Polling-based communication via `agent(action: "status")`.
 ## Entry Points
 - Location: `crates/hydeclaw-core/src/main.rs` (~43KB), `crates/hydeclaw-core/src/gateway/mod.rs`
 - Triggers: Startup (`cargo run` or systemd service)
 - Responsibilities: Load config, run migrations, spawn agent engines, start process_manager, bind Axum router to port 18789
-- Location: `crates/hydeclaw-core/src/agent/engine.rs` function `process_message()`
+- Location: `crates/hydeclaw-core/src/agent/engine.rs` / `engine_sse.rs` function `handle_sse()`
 - Triggers: POST `/api/chat`, resumed via `/api/chat/{id}/stream`, webhook tools
 - Responsibilities: Build context, call LLM, loop tool execution, stream results, persist session
 - Location: `crates/hydeclaw-core/src/agent/engine.rs` function `execute_tool_call()`
