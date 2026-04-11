@@ -206,6 +206,7 @@ pub(crate) async fn api_session_messages(
                         "status": m.status,
                         "parent_message_id": m.parent_message_id,
                         "branch_from_message_id": m.branch_from_message_id,
+                        "parts": m.parts,
                     })
                 })
                 .collect();
@@ -848,6 +849,7 @@ pub(crate) async fn api_active_path(
                     "status": m.status,
                     "parent_message_id": m.parent_message_id,
                     "branch_from_message_id": m.branch_from_message_id,
+                    "parts": m.parts,
                 })
             }).collect();
             Json(json!({ "messages": messages })).into_response()
