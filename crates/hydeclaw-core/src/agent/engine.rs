@@ -40,6 +40,7 @@ mod subagent_impl;
 #[path = "engine_parallel.rs"]
 mod parallel_impl;
 pub use parallel_impl::LoopBreak;
+pub(crate) use subagent_impl::parse_subagent_timeout;
 #[path = "engine_handoff.rs"]
 mod handoff_impl;
 #[path = "engine_sandbox.rs"]
@@ -48,6 +49,8 @@ mod sandbox_impl;
 mod execution_impl;
 #[path = "engine_sse.rs"]
 mod sse_impl;
+#[path = "engine_agent_tool.rs"]
+mod agent_tool_impl;
 
 /// Resolves env var names through SecretsManager (scoped to agent).
 struct SecretsEnvResolver {
@@ -203,6 +206,8 @@ pub struct AgentEngine {
     /// Stored as concrete `Arc<DefaultToolExecutor>` for direct field access in engine methods.
     /// Initialized via `set_tool_executor` after engine Arc creation.
     pub tool_executor: OnceLock<Arc<crate::agent::tool_executor::DefaultToolExecutor>>,
+    /// Session-scoped agent pools (None for subagents / isolated engines).
+    pub session_pools: Option<crate::agent::session_agent_pool::SessionPoolsMap>,
 }
 
 /// Snapshot of what's currently displayed on the canvas.
