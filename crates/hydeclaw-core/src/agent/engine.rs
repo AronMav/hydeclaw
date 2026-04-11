@@ -41,8 +41,6 @@ mod subagent_impl;
 mod parallel_impl;
 pub use parallel_impl::LoopBreak;
 pub(crate) use subagent_impl::parse_subagent_timeout;
-#[path = "engine_handoff.rs"]
-mod handoff_impl;
 #[path = "engine_sandbox.rs"]
 mod sandbox_impl;
 #[path = "engine_execution.rs"]
@@ -181,8 +179,6 @@ pub struct AgentEngine {
     pub self_ref: OnceLock<Weak<AgentEngine>>,
     /// Broadcast channel for UI events (agent_processing start/end).
     pub ui_event_tx: Option<tokio::sync::broadcast::Sender<String>>,
-    /// Async handoffs dispatched by `handoff` tool, awaited in turn loop after handle_sse.
-    pub pending_handoffs: Arc<tokio::sync::Mutex<Vec<PendingHandoff>>>,
     /// Shared tracker for currently processing agents (for WS reconnection).
     pub processing_tracker: Option<crate::gateway::ProcessingTracker>,
     /// Default timezone parsed from USER.md at startup (fallback: Europe/Samara).
@@ -218,13 +214,6 @@ pub struct CanvasContent {
     pub title: Option<String>,
 }
 
-/// Async handoff dispatched by `handoff` tool, awaited in turn loop after handle_sse.
-#[derive(Debug)]
-pub struct PendingHandoff {
-    pub subagent_id: String,
-    pub target_name: String,
-    pub completion_rx: tokio::sync::oneshot::Receiver<crate::agent::subagent_state::SubagentResult>,
-}
 
 /// Maximum canvas content size (5 MB) to protect constrained environments.
 const CANVAS_MAX_BYTES: usize = 5 * 1024 * 1024;
@@ -361,11 +350,6 @@ impl AgentEngine {
     /// Clone the LLM provider Arc for use outside the engine.
     pub fn provider_arc(&self) -> Arc<dyn LlmProvider> {
         self.provider.clone()
-    }
-
-    /// Drain all pending handoff receivers. Called by turn loop after handle_sse.
-    pub async fn take_pending_handoffs(&self) -> Vec<PendingHandoff> {
-        std::mem::take(&mut *self.pending_handoffs.lock().await)
     }
 
     /// Read the current channel formatting prompt.
