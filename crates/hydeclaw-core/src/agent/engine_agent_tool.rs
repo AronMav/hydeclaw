@@ -4,6 +4,15 @@
 use super::*;
 use crate::agent::session_agent_pool::{self, SessionAgentPool};
 
+/// Extract session_id from enriched `_context` (per-invocation, race-free) with
+/// fallback to the shared `processing_session_id` (for host agent SSE path).
+fn extract_session_id(args: &serde_json::Value) -> Option<uuid::Uuid> {
+    args.get("_context")
+        .and_then(|ctx| ctx.get("session_id"))
+        .and_then(|s| s.as_str())
+        .and_then(|s| uuid::Uuid::parse_str(s).ok())
+}
+
 impl AgentEngine {
     /// Dispatch `agent` tool calls to the appropriate sub-handler based on `action`.
     ///
@@ -34,10 +43,14 @@ impl AgentEngine {
             _ => return "Error: 'task' parameter is required".to_string(),
         };
 
-        // Resolve session ID from the current processing context.
-        let session_id = match self.processing_session_id().lock().await.as_ref().copied() {
-            Some(id) => id,
-            None => return "Error: no active session — agent tool requires a session context".to_string(),
+        // Resolve session ID: prefer enriched _context (per-invocation, race-free),
+        // fall back to shared processing_session_id (host agent SSE path).
+        let session_id = match extract_session_id(args) {
+            Some(id) if id != uuid::Uuid::nil() => id,
+            _ => match self.processing_session_id().lock().await.as_ref().copied() {
+                Some(id) => id,
+                None => return "Error: no active session — agent tool requires a session context".to_string(),
+            },
         };
 
         // Resolve target engine from the agent map.
@@ -70,7 +83,7 @@ impl AgentEngine {
 
         // Spawn the live agent.
         let live_agent = match session_agent_pool::spawn_live_agent(
-            target.to_string(), target_engine, task.to_string(),
+            target.to_string(), target_engine, task.to_string(), session_id,
         ) {
             Some(la) => la,
             None => return format!("Error: failed to deliver initial task to agent '{}'", target),

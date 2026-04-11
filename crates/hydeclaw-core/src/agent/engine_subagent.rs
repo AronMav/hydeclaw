@@ -25,7 +25,7 @@ pub(crate) fn parse_subagent_timeout(s: &str) -> std::time::Duration {
 /// Tools denied to subagents by default (prevent recursive spawning, destructive operations, and dangerous ops).
 /// workspace_write and workspace_edit are allowed so subagents can write shared state files (SUB-01).
 pub(super) const SUBAGENT_DENIED_TOOLS: &[&str] = &[
-    "agent", "workspace_delete",
+    "workspace_delete",
     "workspace_rename", "cron", "secret_set", "process",
 ];
 
@@ -231,6 +231,22 @@ impl AgentEngine {
         handle: Option<Arc<tokio::sync::RwLock<subagent_state::SubagentHandle>>>,
         allowed_tools: Option<Vec<String>>,
     ) -> Result<String> {
+        self.run_subagent_with_session(task, max_iterations, deadline, cancel, handle, allowed_tools, None).await
+    }
+
+    /// Like `run_subagent` but with an explicit session_id for tool context enrichment.
+    /// When `session_id` is Some, it is passed to `execute_tool_calls_partitioned` so tools
+    /// like `agent` can find the correct SessionAgentPool via enriched `_context`.
+    pub async fn run_subagent_with_session(
+        &self,
+        task: &str,
+        max_iterations: usize,
+        deadline: Option<std::time::Instant>,
+        cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+        handle: Option<Arc<tokio::sync::RwLock<subagent_state::SubagentHandle>>>,
+        allowed_tools: Option<Vec<String>>,
+        session_id: Option<uuid::Uuid>,
+    ) -> Result<String> {
         let ws_prompt =
             workspace::load_workspace_prompt(&self.workspace_dir, &self.agent.name).await?;
         let capabilities = workspace::CapabilityFlags {
@@ -340,8 +356,9 @@ impl AgentEngine {
                 thinking_blocks: vec![],
             });
 
+            let effective_session_id = session_id.unwrap_or_else(uuid::Uuid::nil);
             let loop_broken = match self.execute_tool_calls_partitioned(
-                &response.tool_calls, &serde_json::Value::Null, uuid::Uuid::nil(), crate::agent::channel_kind::channel::INTER_AGENT,
+                &response.tool_calls, &serde_json::Value::Null, effective_session_id, crate::agent::channel_kind::channel::INTER_AGENT,
                 messages.iter().map(|m| m.content.len()).sum(),
                 &mut detector, loop_config.detect_loops,
             ).await {
@@ -660,7 +677,9 @@ mod tests {
     #[test]
     fn denied_tools_list_contains_critical_entries() {
         // Safety: subagent, workspace_delete, workspace_rename, cron must always be denied
-        assert!(SUBAGENT_DENIED_TOOLS.contains(&"agent"));
+        // "agent" is NOT denied — pool agents need it for peer-to-peer communication.
+        // Session context is provided via enriched _context, not shared processing_session_id.
+        assert!(!SUBAGENT_DENIED_TOOLS.contains(&"agent"));
         assert!(SUBAGENT_DENIED_TOOLS.contains(&"workspace_delete"));
         assert!(SUBAGENT_DENIED_TOOLS.contains(&"workspace_rename"));
         assert!(SUBAGENT_DENIED_TOOLS.contains(&"cron"));
