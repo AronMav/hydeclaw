@@ -68,7 +68,7 @@ Every agent has one `AgentEngine` instance, owned by an `Arc<AgentEngine>`. Ther
 
 1. **HTTP SSE** (`POST /api/chat`): called from the UI or API. The engine streams `StreamEvent` variants over Server-Sent Events using the Vercel AI SDK UI Message Stream Protocol v1. The gateway handler calls `engine.handle_with_status()` and pipes `mpsc::Receiver<StreamEvent>` to the SSE response.
 
-2. **Internal `handle_isolated()`**: called by the Scheduler for cron jobs and heartbeats. Creates a fresh, throw-away session in the DB so cron runs never accumulate context from previous invocations. Also used by `handoff` for inter-agent communication.
+2. **Internal `handle_isolated()`**: called by the Scheduler for cron jobs and heartbeats. Creates a fresh, throw-away session in the DB so cron runs never accumulate context from previous invocations. Also used by `agent` tool for inter-agent communication.
 
 ### LLM Loop Flow
 
@@ -114,8 +114,7 @@ Tool calls returned by the LLM in a single turn are partitioned into two groups 
 ```
 web_fetch, memory_search, memory_get, workspace_read, workspace_list,
 tool_list, skill_list, sessions_list, sessions_history, session_search,
-session_context, session_export, canvas, rich_card, handoff,
-subagent_status, subagent_logs
+session_context, session_export, canvas, rich_card, agent
 ```
 
 YAML tools with `parallel: true` and no `channel_action` are also eligible for the parallel batch.
@@ -177,29 +176,27 @@ Errors from LLM provider calls are classified via regex patterns (compiled once 
 
 Only `TransientHttp` and `Overloaded` are retried at the engine level (`is_retryable()`). All other classes surface a localized user-facing message.
 
-### Subagent Spawning
+### Agent Tool
 
-`spawn_subagent` tool creates a background tokio task:
+The `agent` tool provides session-scoped live agent pools with four actions:
 
-1. Acquires an owned permit from `subagent_semaphore` (default capacity: 5). Returns an error immediately if all permits are taken — no queuing.
-2. Registers the subagent in `SubagentRegistry` (in-memory `RwLock<HashMap>`) with a generated UUID and a `CancellationToken`.
-3. `tokio::spawn`s an async closure that calls `engine.run_subagent()` — a simplified version of `handle_isolated()` that forwards logs to the registry handle.
-4. Returns the subagent ID to the LLM immediately.
+- **`agent(action="run", agent, task)`** — spawns a `LiveAgent` as a background tokio task. Acquires a permit from `subagent_semaphore` (default capacity: 5, no queuing). Registers in the session-scoped `LiveAgentPool` with a generated UUID and `CancellationToken`. Returns the agent ID immediately.
+- **`agent(action="message", id, message)`** — sends a follow-up message to a running live agent.
+- **`agent(action="status", id?)`** — returns status of one agent (by ID) or all agents in the pool. The parent polls this to check progress.
+- **`agent(action="kill", id)`** — cancels a running live agent via its `CancellationToken`.
 
-The parent can poll via `subagent_status(id)`, read logs via `subagent_logs(id)`, cancel via `subagent_kill(id)`, or block until completion via `spawn_subagent(subagent_id=id)` (polls up to 60s).
-
-Permits are held for the life of the spawned task and released on completion, cancellation, or failure.
+Permits are held for the life of the spawned task and released on completion, cancellation, or failure. There is no turn loop — the caller drives interaction through the polling model.
 
 ### Inter-Agent Communication
 
-`handoff(agent, task)` routes through the `AgentMap` (a `Arc<RwLock<HashMap<String, Arc<AgentEngine>>>>` shared across all agents):
+`agent(action="run")` routes through the `AgentMap` (a `Arc<RwLock<HashMap<String, Arc<AgentEngine>>>>` shared across all agents):
 
 1. Looks up the target agent by name.
 2. Constructs a synthetic `IncomingMessage` with `channel = "inter_agent"`.
-3. Calls `target.handle_isolated()` **in the caller's tokio task** (not a spawn) and waits for the response.
-4. Returns the response string as the tool result.
+3. Spawns a background tokio task running `engine.run_subagent()`.
+4. Returns the agent ID immediately; the caller polls via `agent(action="status")`.
 
-`handoff` is stripped from the available tool list when the incoming message is itself an inter-agent call, preventing broadcast loops.
+The `agent` tool is stripped from the available tool list when the incoming message is itself an inter-agent call, preventing broadcast loops.
 
 ### LLM Providers
 
@@ -471,7 +468,7 @@ IncomingMessage.tool_calls[]
 execute_tool_call(name, args)
          │
          ├── System tools ──────────────── handled in engine (Rust code)
-         │   (workspace_*, memory_*, handoff, subagent, etc.)
+         │   (workspace_*, memory_*, agent, etc.)
          │
          ├── YAML tools ─────────────────── loaded from workspace/tools/*.yaml
          │   (web APIs, external HTTP services)

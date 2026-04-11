@@ -656,7 +656,7 @@ export default function ChatPage() {
             <ParticipantBar sessionId={activeSessionId} currentAgent={currentAgent} />
             <ChatCanvasTabs />
           </div>
-          {/* HISTORY / Return to live badge removed — confusing for users during handoff */}
+          {/* HISTORY / Return to live badge removed — confusing for users during agent switch */}
           {streamError && (
             <div className="ml-auto flex items-center gap-1 text-destructive/60">
               <div className="h-2 w-2 rounded-full bg-destructive/60 animate-pulse" />

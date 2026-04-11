@@ -71,7 +71,7 @@ curl -X POST http://localhost:18789/api/agents \
 
 ## Features
 
-- **Multi-agent orchestration** -- agents collaborate in shared sessions with @-mention routing, structured handoff, configurable turn limits, and cycle detection
+- **Multi-agent orchestration** -- agents collaborate in shared sessions with @-mention routing, session-scoped agent pools with run/message/status/kill actions
 - **Multi-channel** -- Telegram, Discord, Matrix, IRC, Slack, WhatsApp adapters; agents opt in per channel
 - **Tool execution** -- YAML-defined HTTP tools (hot-reload, no restart), sandboxed code execution (Docker), MCP protocol support
 - **Long-term memory** -- PostgreSQL + pgvector hybrid search (semantic + FTS) with MMR reranking; two-tier: raw (time-decay) + pinned (permanent)

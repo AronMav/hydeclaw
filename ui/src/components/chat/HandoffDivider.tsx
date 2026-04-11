@@ -10,7 +10,7 @@ export function HandoffDivider({ agentName }: { agentName: string }) {
   return (
     <div
       role="separator"
-      aria-label={`Agent handoff to ${agentName}`}
+      aria-label={`Agent switch to ${agentName}`}
       className="flex items-center gap-2 px-4 py-2 text-sm animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out"
     >
       <div className="h-px flex-1 bg-border/30" />
