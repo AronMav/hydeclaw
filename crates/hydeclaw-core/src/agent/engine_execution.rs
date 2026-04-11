@@ -122,6 +122,9 @@ impl AgentEngine {
         let loop_config = self.tool_loop_config();
         let mut detector = LoopDetector::new(&loop_config);
         let mut loop_nudge_count: usize = 0;
+        let mut tool_results_for_parts: Vec<(String, String)> = Vec::new();
+        let mut step_groups: Vec<crate::agent::parts_builder::StepGroupInfo> = Vec::new();
+        let mut current_step_tool_ids: Vec<String> = Vec::new();
         let mut did_reset_session = false;
         let mut empty_retry_count: u8 = 0;
         let mut auto_continue_count: u8 = 0;
@@ -329,6 +332,15 @@ impl AgentEngine {
                             Ok(id) => { last_msg_id = id; }
                             Err(e) => { tracing::warn!(error = %e, session_id = %session_id, "failed to save tool result to DB"); }
                         }
+                        tool_results_for_parts.push((tc_id.clone(), tool_result.clone()));
+                        current_step_tool_ids.push(tc_id.clone());
+                    }
+                    if !current_step_tool_ids.is_empty() {
+                        step_groups.push(crate::agent::parts_builder::StepGroupInfo {
+                            step_id: format!("step-{}", tool_iterations),
+                            tool_call_ids: std::mem::take(&mut current_step_tool_ids),
+                            finish_reason: Some("tool-calls".to_string()),
+                        });
                     }
                     false
                 }
@@ -457,8 +469,26 @@ impl AgentEngine {
         } else {
             serde_json::to_value(&final_thinking_blocks).ok()
         };
-        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), thinking_json.as_ref(), Some(last_msg_id), None)
+        let final_msg_id = sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), thinking_json.as_ref(), Some(last_msg_id), None)
             .await?;
+
+        // Assemble and persist finalized parts for unified chat view
+        if !tool_results_for_parts.is_empty() || !final_response.is_empty() {
+            let approvals = crate::agent::parts_builder::load_session_approvals(&self.db, session_id)
+                .await
+                .unwrap_or_default();
+            let parts_json = crate::agent::parts_builder::assemble_parts(
+                &final_response,
+                None,
+                &tool_results_for_parts,
+                &approvals,
+                &step_groups,
+            );
+            if let Err(e) = crate::db::sessions::update_message_parts(&self.db, final_msg_id, &parts_json).await {
+                tracing::warn!(error = %e, "failed to persist message parts");
+            }
+        }
+
         self.maybe_trim_session(session_id).await;
 
         // Append usage footer (only for non-streaming, not saved to DB)
