@@ -84,11 +84,6 @@ impl SessionAgentPool {
         }
     }
 
-    /// Returns the session ID this pool is associated with.
-    pub fn session_id(&self) -> Uuid {
-        self.session_id
-    }
-
     /// Returns a reference to the named agent, if present.
     pub fn get(&self, name: &str) -> Option<&LiveAgent> {
         self.agents.get(name)

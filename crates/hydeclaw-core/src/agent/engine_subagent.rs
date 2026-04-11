@@ -270,7 +270,7 @@ impl AgentEngine {
         let runtime = workspace::RuntimeContext {
             agent_name: self.agent.name.clone(),
             owner_id: self.agent.access.as_ref().and_then(|a| a.owner_id.clone()),
-            channel: "subagent".to_string(),
+            channel: "agent".to_string(),
             model: self.provider.current_model(),
             datetime_display: workspace::format_local_datetime(&self.default_timezone),
             formatting_prompt: None,
