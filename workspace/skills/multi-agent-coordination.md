@@ -66,10 +66,14 @@ agent(action="kill", target="Alma")
 #### Simple delegation
 ```
 1. agent(action="run", target="Alma", task="Research topic X, return summary")
-2. Poll: agent(action="status", target="Alma")  // repeat until idle
-3. Read result from status response
-4. Present to user
+2. Do other useful work while agent processes (fetch data, etc.)
+3. agent(action="status", target="Alma")  // check once after ~60s
+4. If still processing, do more work, then check again (max 2-3 checks total)
+5. Read last_result from status response when idle
+6. Present to user
 ```
+
+IMPORTANT: Agents need 1-3 minutes on this hardware. Do NOT poll in a tight loop — each check costs an iteration.
 
 #### Parallel agents
 ```
