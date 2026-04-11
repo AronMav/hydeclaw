@@ -102,6 +102,7 @@ impl AgentEngine {
         // For inter-agent messages (user_id starts with "agent:"), save the sender agent_id
         let sender_agent_id = if msg.user_id.starts_with("agent:") { Some(msg.user_id.trim_start_matches("agent:")) } else { None };
         let user_msg_id = sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None, msg.leaf_message_id).await?;
+        let mut last_msg_id = user_msg_id;
 
         // Context compaction if needed (model-aware token budget)
         self.compact_messages(&mut messages, None).await;
@@ -278,15 +279,19 @@ impl AgentEngine {
 
             // Save assistant message with tool_calls to DB (thinking stripped)
             let tc_json = serde_json::to_value(&response.tool_calls).ok();
-            if let Err(e) = sm.save_message(
+            match sm.save_message_ex(
                 session_id,
                 "assistant",
                 &cleaned_content,
                 tc_json.as_ref(),
                 None,
+                Some(&self.agent.name),
+                None,
+                Some(last_msg_id),
             )
             .await {
-                tracing::warn!(error = %e, session_id = %session_id, "failed to save assistant message to DB");
+                Ok(id) => { last_msg_id = id; }
+                Err(e) => { tracing::warn!(error = %e, session_id = %session_id, "failed to save assistant message to DB"); }
             }
 
             if let Some(ref tx) = status_tx
@@ -312,10 +317,11 @@ impl AgentEngine {
                             thinking_blocks: vec![],
                         });
                         context_chars += tool_result.chars().count();
-                        if let Err(e) = sm.save_message(
-                            session_id, "tool", tool_result, None, Some(tc_id),
+                        match sm.save_message_ex(
+                            session_id, "tool", tool_result, None, Some(tc_id), None, None, Some(last_msg_id),
                         ).await {
-                            tracing::warn!(error = %e, session_id = %session_id, "failed to save tool result to DB");
+                            Ok(id) => { last_msg_id = id; }
+                            Err(e) => { tracing::warn!(error = %e, session_id = %session_id, "failed to save tool result to DB"); }
                         }
                     }
                     false
@@ -445,7 +451,7 @@ impl AgentEngine {
         } else {
             serde_json::to_value(&final_thinking_blocks).ok()
         };
-        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), thinking_json.as_ref(), Some(user_msg_id))
+        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), thinking_json.as_ref(), Some(last_msg_id))
             .await?;
         self.maybe_trim_session(session_id).await;
 
