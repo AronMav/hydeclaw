@@ -203,13 +203,14 @@ impl AgentEngine {
             None => return format!("Error: agent '{}' not found in session pool", target),
         };
 
+        // Set PROCESSING *before* try_send to close TOCTOU window: if we set it after,
+        // the agent loop may process the message and go IDLE before our store, then we
+        // overwrite IDLE→PROCESSING causing collect/status to hang.
+        agent.status.store(session_agent_pool::STATUS_PROCESSING, std::sync::atomic::Ordering::Release);
         match agent.message_tx.try_send(session_agent_pool::AgentMessage {
             text: text.to_string(),
         }) {
             Ok(()) => {
-                // Force status to PROCESSING immediately so `collect` doesn't see the old
-                // idle result before the agent picks up the message.
-                agent.status.store(session_agent_pool::STATUS_PROCESSING, std::sync::atomic::Ordering::Release);
                 serde_json::json!({
                     "status": "ok",
                     "agent": target,
@@ -218,9 +219,12 @@ impl AgentEngine {
                 .to_string()
             }
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                // Revert: send failed, agent didn't get the message
+                agent.status.store(session_agent_pool::STATUS_IDLE, std::sync::atomic::Ordering::Release);
                 format!("Error: agent '{}' message queue is full — it may still be processing", target)
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                agent.status.store(session_agent_pool::STATUS_IDLE, std::sync::atomic::Ordering::Release);
                 format!("Error: agent '{}' processing loop has exited", target)
             }
         }

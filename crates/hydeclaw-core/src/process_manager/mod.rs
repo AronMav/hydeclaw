@@ -276,6 +276,8 @@ impl ProcessManager {
                     && child.try_wait().ok().flatten().is_none() {
                         tracing::warn!(process = %name, "force-killing (still running after 5s)");
                         let _ = child.kill().await;
+                        // Reap the process to avoid zombies
+                        let _ = child.wait().await;
                     }
             }
         }

@@ -42,25 +42,21 @@ pub async fn get_or_create_session(
         _ => (user_id, channel), // per-channel-peer
     };
 
+    // Use a single CTE to atomically find-or-create, closing the race window
+    // between SELECT and INSERT that could create duplicate sessions.
     let row = sqlx::query(
-        "SELECT id FROM sessions \
-         WHERE agent_id = $1 AND user_id = $2 AND channel = $3 \
-           AND last_message_at > now() - interval '4 hours' \
-         ORDER BY last_message_at DESC LIMIT 1",
-    )
-    .bind(agent_id)
-    .bind(eff_user)
-    .bind(eff_channel)
-    .fetch_optional(db)
-    .await?;
-
-    if let Some(row) = row {
-        return Ok(row.get("id"));
-    }
-
-    let row = sqlx::query(
-        "INSERT INTO sessions (agent_id, user_id, channel, participants) \
-         VALUES ($1, $2, $3, ARRAY[$1]) RETURNING id",
+        "WITH existing AS ( \
+           SELECT id FROM sessions \
+           WHERE agent_id = $1 AND user_id = $2 AND channel = $3 \
+             AND last_message_at > now() - interval '4 hours' \
+           ORDER BY last_message_at DESC LIMIT 1 \
+         ), inserted AS ( \
+           INSERT INTO sessions (agent_id, user_id, channel, participants) \
+           SELECT $1, $2, $3, ARRAY[$1::text] \
+           WHERE NOT EXISTS (SELECT 1 FROM existing) \
+           RETURNING id \
+         ) \
+         SELECT id FROM existing UNION ALL SELECT id FROM inserted LIMIT 1",
     )
     .bind(agent_id)
     .bind(eff_user)
@@ -397,7 +393,8 @@ pub async fn insert_synthetic_tool_results(db: &PgPool, session_id: Uuid) -> Res
         return Ok(0);
     }
 
-    // Batch insert synthetic results for all missing tool_call_ids
+    // Batch insert synthetic results in a transaction to avoid partial inserts on error
+    let mut tx = db.begin().await?;
     let mut inserted = 0usize;
     for call_id in &missing {
         let synthetic_id = uuid::Uuid::new_v4();
@@ -409,10 +406,11 @@ pub async fn insert_synthetic_tool_results(db: &PgPool, session_id: Uuid) -> Res
         .bind(session_id)
         .bind("[interrupted] Tool execution was interrupted (process restart). Result unavailable.")
         .bind(call_id)
-        .execute(db)
+        .execute(&mut *tx)
         .await?;
         inserted += 1;
     }
+    tx.commit().await?;
     Ok(inserted)
 }
 
@@ -597,7 +595,12 @@ pub async fn search_messages(
     match rows {
         Ok(r) => Ok(r),
         Err(_) => {
-            // Fallback to ILIKE if tsv column doesn't exist yet
+            // Fallback to ILIKE if tsv column doesn't exist yet.
+            // Escape LIKE wildcards (%, _, \) to prevent wildcard injection.
+            let escaped = query
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
             let rows = sqlx::query_as::<_, SearchResult>(
                 "SELECT m.content, s.id as session_id, s.user_id, s.channel, m.role, m.created_at, \
                         0.0::float8 AS rank \
@@ -606,7 +609,7 @@ pub async fn search_messages(
                  ORDER BY m.created_at DESC LIMIT $3",
             )
             .bind(agent_id)
-            .bind(query)
+            .bind(&escaped)
             .bind(limit)
             .fetch_all(db)
             .await?;
