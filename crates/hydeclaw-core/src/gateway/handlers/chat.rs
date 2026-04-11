@@ -488,7 +488,7 @@ pub(crate) async fn api_chat_sse(
         attachments: vec![],
         agent_id: engine.name().to_string(),
         channel: crate::agent::channel_kind::channel::UI.to_string(),
-        context: serde_json::Value::Null,
+        context: serde_json::json!({}),
         timestamp: chrono::Utc::now(),
         formatting_prompt: None,
         tool_policy_override: None,
