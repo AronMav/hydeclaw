@@ -25,7 +25,7 @@ import type {
   ConnectionPhase,
   AgentState,
 } from "./chat-types";
-import { getCachedHistoryMessages } from "./chat-history";
+import { getCachedHistoryMessages, getCachedRawMessages } from "./chat-history";
 
 // ── Store access interface ─────────────────────────────────────────────────
 // Uses `any` for store shape to avoid circular dependency with ChatStore.
@@ -263,7 +263,15 @@ export function createStreamingRenderer(store: StoreAccess) {
     if (apiAttachments.length > 0) {
       body.attachments = apiAttachments;
     }
-    if (sessionId) body.session_id = sessionId;
+    if (sessionId) {
+      body.session_id = sessionId;
+      // Send leaf_message_id so backend can chain parent_message_id correctly.
+      // Use the last message from the previous turn (from cached raw messages).
+      const rawMsgs = getCachedRawMessages(sessionId);
+      if (rawMsgs.length > 0) {
+        body.leaf_message_id = rawMsgs[rawMsgs.length - 1].id;
+      }
+    }
     if (forceNew) {
       body.force_new_session = true;
       update(agent, { forceNewSession: false });
