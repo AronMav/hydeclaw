@@ -224,15 +224,12 @@ impl ContextBuilder for DefaultContextBuilder {
             system_prompt.push_str("**Participants:** ");
             system_prompt.push_str(&participants.join(", "));
             system_prompt.push_str("\n\n");
-            system_prompt.push_str("**CRITICAL RULE:** When another agent hands off to you or mentions you, ");
-            system_prompt.push_str("you MUST respond to the question or task directly. ");
-            system_prompt.push_str("Do NOT redirect back to the agent who called you. ");
-            system_prompt.push_str("Do NOT say 'ask them directly'. Answer the question yourself.\n\n");
-            system_prompt.push_str("**Forward handoff:** If the task requires ANOTHER agent's expertise ");
-            system_prompt.push_str("(not the one who called you), use the `handoff` tool to delegate forward. ");
-            system_prompt.push_str("Example: Agent A asks you to get info from Agent C — use handoff to Agent C.\n");
-            system_prompt.push_str("Provide: `agent` (target name), `task` (what they should do), ");
-            system_prompt.push_str("`context` (relevant facts — keep concise).\n");
+            system_prompt.push_str("**Collaborate with other agents:** Use the `agent` tool to work with other agents in this session.\n");
+            system_prompt.push_str("- `agent(action=\"run\", target=\"AgentName\", task=\"...\")` — start an agent\n");
+            system_prompt.push_str("- `agent(action=\"message\", target=\"AgentName\", text=\"...\")` — send a message\n");
+            system_prompt.push_str("- `agent(action=\"status\")` — list all active agents\n");
+            system_prompt.push_str("- `agent(action=\"status\", agent_id=\"AgentName\")` — check result\n");
+            system_prompt.push_str("- `agent(action=\"kill\", target=\"AgentName\")` — stop an agent\n");
         }
 
         // L0: pinned memory chunks
