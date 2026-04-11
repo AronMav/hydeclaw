@@ -153,6 +153,16 @@ impl CodeSandbox {
     /// `base`: if true, mount service source dirs (toolgate/, channels/) for editing.
     /// `oauth`: if provided, git credentials from OAuth bindings are injected as env vars.
     pub async fn ensure_container(&self, agent_id: &str, workspace_host_path: &str, base: bool, oauth: Option<&OAuthManager>) -> Result<String> {
+        // Timeout the entire container setup to avoid hanging if Docker daemon is stuck
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.ensure_container_inner(agent_id, workspace_host_path, base, oauth),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Docker container setup timed out after 30s"))?
+    }
+
+    async fn ensure_container_inner(&self, agent_id: &str, workspace_host_path: &str, base: bool, oauth: Option<&OAuthManager>) -> Result<String> {
         let name = self.container_name(agent_id);
 
         match self.docker.inspect_container(&name, None::<InspectContainerOptions>).await {

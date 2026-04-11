@@ -46,7 +46,12 @@ impl AgentEngine {
             tracing::warn!(session_id = %session_id, error = %e, "failed to mark session as running");
         }
         if let Err(e) = sm.log_wal_event(session_id, "running", None).await {
-            tracing::warn!(session_id = %session_id, error = %e, "failed to log WAL running event");
+            tracing::warn!(session_id = %session_id, error = %e, "failed to log WAL running event, retrying");
+            // One retry after a short delay — WAL consistency is important for crash recovery
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if let Err(e2) = sm.log_wal_event(session_id, "running", None).await {
+                tracing::error!(session_id = %session_id, error = %e2, "WAL running event retry also failed");
+            }
         }
         // RAII guard: if we exit early via `?` (error path), mark session as 'failed'.
         let mut lifecycle_guard = SessionLifecycleGuard::new(self.db.clone(), session_id);
