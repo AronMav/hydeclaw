@@ -386,7 +386,7 @@ export function createStreamingRenderer(store: StoreAccess) {
         const liveMessages = st.messageSource.messages;
         const existing = liveMessages.findIndex((m: ChatMessage) => m.id === assistantId);
 
-        const allParts = [...textParts, ...nonTextParts] as MessagePart[];
+        const allParts = [...nonTextParts, ...textParts] as MessagePart[];
 
         if (existing >= 0) {
           const msg = liveMessages[existing];
