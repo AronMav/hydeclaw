@@ -29,7 +29,7 @@ pub fn all_system_tool_names() -> &'static [&'static str] {
         // Sessions (group: session_tools)
         "session",
         // Misc
-        "agents_list", "secret_set", "canvas", "rich_card", "graph_query",
+        "agents_list", "secret_set", "canvas", "rich_card",
         "browser_action", "code_exec",
         // Process management (base)
         "process",
@@ -464,27 +464,6 @@ impl AgentEngine {
             },
             ]);
         }
-
-        // GraphRAG knowledge graph query
-        tools.push(ToolDefinition {
-            name: "graph_query".to_string(),
-            description: "Query the knowledge graph to find entities and their relations. Use this to explore connections between people, concepts, organizations.".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "entity": {
-                        "type": "string",
-                        "description": "Entity name to explore"
-                    },
-                    "max_hops": {
-                        "type": "integer",
-                        "description": "Max relation hops (1-3, default: 2)",
-                        "default": 2
-                    }
-                },
-                "required": ["entity"]
-            }),
-        });
 
         // secret_set: base agents get global option, regular agents only scoped
         {

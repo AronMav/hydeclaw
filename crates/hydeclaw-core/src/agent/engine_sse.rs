@@ -14,8 +14,6 @@ impl AgentEngine {
         resume_session_id: Option<Uuid>,
         force_new_session: bool,
     ) -> Result<Uuid> {
-        let _chat_guard = crate::graph_worker::ChatActiveGuard::new();
-
         // Hook: BeforeMessage
         if let crate::agent::hooks::HookAction::Block(reason) = self.hooks().fire(&crate::agent::hooks::HookEvent::BeforeMessage) {
             anyhow::bail!("blocked by hook: {}", reason);
@@ -614,19 +612,6 @@ impl AgentEngine {
         // Clear processing session context
         *self.processing_session_id().lock().await = None;
         *self.sse_event_tx().lock().await = None;
-
-        // Post-session graph extraction (background)
-        if self.memory_store.is_available() && messages.len() >= 5 {
-            let db = self.db.clone();
-            let provider = self.provider.clone();
-            let sid = session_id;
-            let msgs = std::sync::Arc::new(messages);
-            tokio::spawn(async move {
-                if let Err(e) = crate::memory_graph::extract_session_to_graph(&db, &provider, sid, msgs).await {
-                    tracing::debug!(session = %sid, error = %e, "post-session graph extraction skipped");
-                }
-            });
-        }
 
         Ok(assistant_msg_id)
     }
