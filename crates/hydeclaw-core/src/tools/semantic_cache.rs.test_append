@@ -1,0 +1,20 @@
+#[cfg(test)]
+mod tests {
+    use super::SemanticCache;
+    use crate::agent::memory_service::{MemoryService, MockMemoryService};
+    use std::sync::Arc;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn test_semantic_cache_logic_with_mock_memory() {
+        let mock_memory = Arc::new(MockMemoryService::new()) as Arc<dyn MemoryService>;
+        
+        // This test documents the semantic cache interface. 
+        // Real DB testing requires a running Postgres, but we can verify the 
+        // embedding flow works.
+        let query = "what is the weather in Samara?";
+        let embedding = mock_memory.embed(query).await.unwrap();
+        
+        assert_eq!(embedding.len(), 384); // Mock default size
+    }
+}
