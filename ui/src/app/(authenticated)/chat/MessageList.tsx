@@ -139,7 +139,7 @@ function VirtuosoHeader({ hiddenCount, onLoadEarlier }: { hiddenCount: number; o
 
 function VirtuosoFooter({ turnLimitMessage }: { turnLimitMessage: string | null }) {
   return (
-    <div className="mx-auto w-full max-w-4xl px-3 md:px-6 pb-4">
+    <div className="mx-auto w-full max-w-4xl px-3 md:px-6 pb-2">
       {turnLimitMessage && (
         <div
           data-testid="turn-limit-message"
@@ -269,17 +269,19 @@ export function MessageList({
     prevPartsLenRef.current = totalParts;
   }, [virtualItems]);
 
-  // Force scroll to bottom on session switch
-  const prevLenRef = useRef(messages.length);
+  // Force scroll to bottom on session switch.
+  const prevSessionIdRef = useRef(activeSessionId);
   useEffect(() => {
-    const wasEmpty = prevLenRef.current === 0;
-    prevLenRef.current = messages.length;
-    if (wasEmpty && messages.length > 0) {
-      virtuosoRef.current?.scrollToIndex({ index: "LAST" });
+    if (prevSessionIdRef.current !== activeSessionId) {
+      prevSessionIdRef.current = activeSessionId;
+      userScrolledUpRef.current = false;
       isAtBottomRef.current = true;
       setIsAtBottom(true);
+      // Wait for Virtuoso to process new data, then scroll to absolute bottom
+      const t = setTimeout(() => virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: "smooth" }), 200);
+      return () => clearTimeout(t);
     }
-  }, [messages.length]);
+  }, [activeSessionId]);
 
   // Force scroll when stream starts (user submitted a message)
   const prevStreamingRef = useRef(isStreaming);

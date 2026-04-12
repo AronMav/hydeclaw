@@ -871,19 +871,60 @@ export function ChatThread({
     return convertHistory(sessionMessagesData.messages, false, selectedBranches);
   }, [activeSessionId, sessionMessagesData, selectedBranches]);
 
-  // messageSource.mode is the single authority for message source selection (Fix C).
-  // "live" mode: use live stream messages (may be seeded with history for F5 resume).
-  // "history" mode: use React Query data.
-  // "new-chat" or empty live: fall back to historyMessages (handles cases where live seed is empty).
+  // Architecture C: history + SSE overlay.
+  // History (React Query) = all completed messages from DB.
+  // Overlay (live) = current streaming message not yet in DB.
+  // Dedup by toolCallId to prevent tool duplication.
   const sourceMessages = useMemo(() => {
-    if (messageSource.mode === "live" && messageSource.messages.length > 0) {
-      return messageSource.messages;
-    }
-    if (messageSource.mode === "history") {
+    if (messageSource.mode !== "live" || messageSource.messages.length === 0) {
       return historyMessages;
     }
-    // new-chat or empty live — use historyMessages if available (e.g. WS-driven session restore)
-    return historyMessages;
+
+    // Collect all toolCallIds already present in history
+    const historyToolIds = new Set<string>();
+    for (const m of historyMessages) {
+      for (const p of m.parts) {
+        if (p.type === "tool") historyToolIds.add(p.toolCallId);
+      }
+    }
+    // Collect history text fingerprints to dedup streaming text
+    const historyTextSet = new Set<string>();
+    for (const m of historyMessages) {
+      if (m.role === "assistant") {
+        for (const p of m.parts) {
+          if (p.type === "text" && p.text) historyTextSet.add(p.text.slice(0, 80));
+        }
+      }
+    }
+
+    const overlay: ChatMessage[] = [];
+    for (const m of messageSource.messages) {
+      if (m.role === "assistant" && m.parts.length === 0) continue;
+
+      // User message: keep only if still "sending" (not yet confirmed/in DB)
+      if (m.role === "user") {
+        if (m.status === "sending") {
+          overlay.push(m);
+        }
+        continue;
+      }
+
+      // Assistant: strip parts already in history (tools by ID, text by fingerprint)
+      if (m.role === "assistant") {
+        const uniqueParts = m.parts.filter(p => {
+          if (p.type === "tool") return !historyToolIds.has(p.toolCallId);
+          if (p.type === "text" && p.text) return !historyTextSet.has(p.text.slice(0, 80));
+          return true;
+        });
+        if (uniqueParts.length === 0) continue;
+        overlay.push({ ...m, parts: uniqueParts });
+        continue;
+      }
+
+      overlay.push(m);
+    }
+
+    return overlay.length > 0 ? [...historyMessages, ...overlay] : historyMessages;
   }, [messageSource, historyMessages]);
 
   // Filter out inter-agent routing messages (internal inter-agent context passed between agents).
