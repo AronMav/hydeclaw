@@ -802,7 +802,7 @@ pub async fn load_branch_messages(
            SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks, parent_message_id, branch_from_message_id \
            FROM messages WHERE id = $1 AND session_id = $2 \
            UNION ALL \
-           SELECT m.id, m.role, m.content, m.tool_calls, m.tool_call_id, m.created_at, m.agent_id, m.feedback, m.edited_at, m.status, m.thinking_blocks, m.parent_message_id, m.branch_from_message_id, m.parts \
+           SELECT m.id, m.role, m.content, m.tool_calls, m.tool_call_id, m.created_at, m.agent_id, m.feedback, m.edited_at, m.status, m.thinking_blocks, m.parent_message_id, m.branch_from_message_id \
            FROM messages m INNER JOIN chain c ON m.id = c.parent_message_id WHERE m.session_id = $2\
          ) SELECT * FROM chain ORDER BY created_at ASC",
     )
