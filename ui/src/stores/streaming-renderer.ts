@@ -782,7 +782,7 @@ export function createStreamingRenderer(store: StoreAccess) {
       }
     }
 
-    // Save and invalidate React Query caches
+    // Save and invalidate React Query caches, switch to history mode
     if (!signal.aborted) {
       if (receivedSessionId) {
         _onSessionId?.(agent, receivedSessionId);
@@ -791,6 +791,9 @@ export function createStreamingRenderer(store: StoreAccess) {
       const completedSessionId = receivedSessionId ?? store.get().agents[agent]?.activeSessionId;
       if (completedSessionId) {
         queryClient.invalidateQueries({ queryKey: qk.sessionMessages(completedSessionId) });
+        // Switch to history mode so UI renders from DB rows via convertHistory —
+        // identical to what the user sees after F5 reload.
+        update(agent, { messageSource: { mode: "history", sessionId: completedSessionId } });
       }
     }
   }
