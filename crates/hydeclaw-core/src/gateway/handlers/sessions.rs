@@ -3,7 +3,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
-    routing::{get, post, delete},
+    routing::{delete, get, post},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -17,6 +17,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/sessions", get(api_list_sessions).delete(api_delete_all_sessions))
         .route("/api/sessions/latest", get(api_latest_session))
         .route("/api/sessions/search", get(api_search_sessions))
+        .route("/api/sessions/stuck", get(api_stuck_sessions))
         .route("/api/sessions/{id}", delete(api_delete_session).patch(api_patch_session))
         .route("/api/sessions/{id}/compact", post(api_compact_session))
         .route("/api/sessions/{id}/export", get(api_export_session))
@@ -27,6 +28,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/messages/{id}/feedback", post(api_message_feedback))
         .route("/api/sessions/{id}/fork", post(api_fork_session))
         .route("/api/sessions/{id}/active-path", get(api_active_path))
+        .route("/api/sessions/{id}/retry", post(api_retry_session))
 }
 
 // ── Latest Session endpoint ──
@@ -823,6 +825,118 @@ fn chunk_text(text: &str, target_size: usize) -> Vec<String> {
 #[derive(Deserialize)]
 pub(crate) struct ActivePathQuery {
     leaf: Option<uuid::Uuid>,
+}
+
+// ── Session Auto-Retry ──────────────────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct StuckSessionsQuery {
+    stale_secs: Option<i64>,
+    max_retries: Option<i32>,
+}
+
+/// GET /api/sessions/stuck — find sessions needing retry
+pub(crate) async fn api_stuck_sessions(
+    State(state): State<AppState>,
+    Query(q): Query<StuckSessionsQuery>,
+) -> impl IntoResponse {
+    let stale_secs = q.stale_secs.unwrap_or(90);
+    let max_retries = q.max_retries.unwrap_or(3);
+
+    match sessions::find_stuck_sessions(&state.db, stale_secs, max_retries).await {
+        Ok(rows) => {
+            let sessions: Vec<serde_json::Value> = rows.iter().map(|(id, agent)| {
+                serde_json::json!({"id": id, "agent_id": agent})
+            }).collect();
+            Json(serde_json::json!({"sessions": sessions})).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+/// POST /api/sessions/{id}/retry — replay last user message through engine
+pub(crate) async fn api_retry_session(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    // 1. Load session
+    let session: crate::db::sessions::Session = match sqlx::query_as(
+        "SELECT * FROM sessions WHERE id = $1"
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await {
+        Ok(Some(s)) => s,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "session not found"}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+
+    // 2. Get last user message
+    let user_text = match sessions::get_last_user_message(&state.db, id).await {
+        Ok(Some(text)) => text,
+        Ok(None) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "no user message in session"}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+
+    // 3. Delete empty assistant messages (cleanup from crashed attempt)
+    if let Ok(deleted) = sessions::delete_empty_assistant_messages(&state.db, id).await {
+        if deleted > 0 {
+            tracing::info!(session_id = %id, deleted, "cleaned up empty assistant messages before retry");
+        }
+    }
+
+    // 4. Increment retry count
+    let retry_count = match sessions::increment_retry_count(&state.db, id).await {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+
+    tracing::info!(session_id = %id, agent = %session.agent_id, retry_count, "retrying stuck session");
+
+    // 5. Get engine
+    let engine = match state.get_engine(&session.agent_id).await {
+        Some(e) => e,
+        None => {
+            let _ = sessions::mark_session_failed(&state.db, id).await;
+            return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": format!("agent '{}' not found", session.agent_id)}))).into_response();
+        }
+    };
+
+    // 6. Build message and run via handle_sse with resume_session_id
+    let msg = hydeclaw_types::IncomingMessage {
+        text: Some(user_text),
+        user_id: session.user_id.clone(),
+        channel: session.channel.clone(),
+        agent_id: session.agent_id.clone(),
+        context: Default::default(),
+        attachments: vec![],
+        leaf_message_id: None,
+        tool_policy_override: None,
+        timestamp: chrono::Utc::now(),
+        formatting_prompt: None,
+    };
+
+    // Spawn background task
+    let db = state.db.clone();
+    let session_id = id;
+    tokio::spawn(async move {
+        // Use a dummy event channel — we don't need SSE events for retry
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        // Drain events in background to prevent channel backpressure
+        tokio::spawn(async move { while event_rx.recv().await.is_some() {} });
+
+        match engine.handle_sse(&msg, event_tx, Some(session_id), false).await {
+            Ok(_msg_id) => {
+                tracing::info!(session_id = %session_id, "retry succeeded");
+            }
+            Err(e) => {
+                tracing::error!(session_id = %session_id, error = %e, "retry failed");
+                sessions::mark_session_failed(&db, session_id).await.ok();
+            }
+        }
+    });
+
+    Json(serde_json::json!({"ok": true, "retry_count": retry_count, "session_id": id})).into_response()
 }
 
 /// GET /api/sessions/{id}/active-path -- resolve the linear message chain for display.

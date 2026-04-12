@@ -20,6 +20,8 @@ pub struct Session {
     pub activity_at: Option<DateTime<Utc>>,
     #[sqlx(default)]
     pub participants: Vec<String>,
+    #[sqlx(default)]
+    pub retry_count: i32,
 }
 
 /// Find or create a session for the user+agent pair.
@@ -352,6 +354,71 @@ pub async fn find_stale_running_sessions(
     .fetch_all(db)
     .await?;
     Ok(rows)
+}
+
+/// Find sessions stuck in 'running' where assistant never responded.
+pub async fn find_stuck_sessions(
+    db: &PgPool,
+    stale_secs: i64,
+    max_retries: i32,
+) -> Result<Vec<(Uuid, String)>> {
+    let rows: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT s.id, s.agent_id FROM sessions s \
+         WHERE s.run_status = 'running' \
+           AND s.last_message_at < NOW() - make_interval(secs => $1) \
+           AND s.retry_count < $2 \
+           AND (SELECT role FROM messages WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1) = 'user'"
+    )
+    .bind(stale_secs as f64)
+    .bind(max_retries)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
+/// Increment retry_count and reset run_status to 'running'.
+pub async fn increment_retry_count(db: &PgPool, session_id: Uuid) -> Result<i32> {
+    let new_count: i32 = sqlx::query_scalar(
+        "UPDATE sessions SET retry_count = retry_count + 1, run_status = 'running' \
+         WHERE id = $1 RETURNING retry_count"
+    )
+    .bind(session_id)
+    .fetch_one(db)
+    .await?;
+    Ok(new_count)
+}
+
+/// Mark a session as permanently failed after max retries exhausted.
+pub async fn mark_session_failed(db: &PgPool, session_id: Uuid) -> Result<()> {
+    sqlx::query("UPDATE sessions SET run_status = 'failed' WHERE id = $1")
+        .bind(session_id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// Get the last user message text from a session (for retry).
+pub async fn get_last_user_message(db: &PgPool, session_id: Uuid) -> Result<Option<String>> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT content FROM messages \
+         WHERE session_id = $1 AND role = 'user' \
+         ORDER BY created_at DESC LIMIT 1"
+    )
+    .bind(session_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.map(|(c,)| c))
+}
+
+/// Delete empty assistant messages from a session (cleanup before retry).
+pub async fn delete_empty_assistant_messages(db: &PgPool, session_id: Uuid) -> Result<u64> {
+    let result = sqlx::query(
+        "DELETE FROM messages WHERE session_id = $1 AND role = 'assistant' AND (content IS NULL OR content = '')"
+    )
+    .bind(session_id)
+    .execute(db)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 /// Insert synthetic tool results for all unmatched tool calls in a session.

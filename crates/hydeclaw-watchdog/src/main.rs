@@ -221,6 +221,51 @@ async fn main() -> anyhow::Result<()> {
             resource_status = Some(res);
         }
 
+        // ── Session auto-retry ──────────────────────────────────────────
+        if cfg.watchdog.session_retry_enabled {
+            match http
+                .get(format!("{}/api/sessions/stuck?stale_secs={}&max_retries={}",
+                    core_url, cfg.watchdog.session_retry_stale_secs, cfg.watchdog.session_retry_max_attempts))
+                .header("Authorization", format!("Bearer {}", auth_token))
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    if let Ok(body) = resp.json::<serde_json::Value>().await {
+                        if let Some(sessions) = body.get("sessions").and_then(|s| s.as_array()) {
+                            for s in sessions {
+                                let sid = s.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                let agent = s.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
+                                tracing::warn!(session_id = sid, agent, "retrying stuck session");
+                                match http
+                                    .post(format!("{}/api/sessions/{}/retry", core_url, sid))
+                                    .header("Authorization", format!("Bearer {}", auth_token))
+                                    .send()
+                                    .await
+                                {
+                                    Ok(r) if r.status().is_success() => {
+                                        tracing::info!(session_id = sid, "retry request accepted");
+                                        alerter.send(&alert_config,
+                                            &format!("Auto-retrying stuck session {} (agent: {})", sid, agent),
+                                            "session_retry",
+                                        ).await;
+                                    }
+                                    Ok(r) => {
+                                        let status = r.status();
+                                        let body = r.text().await.unwrap_or_default();
+                                        tracing::error!(session_id = sid, %status, body, "retry request failed");
+                                    }
+                                    Err(e) => tracing::error!(session_id = sid, error = %e, "retry request error"),
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => tracing::debug!(error = %e, "stuck sessions check failed"),
+            }
+        }
+
         // Docker container check
         let all_containers = checker::check_docker_containers().await;
         let container_statuses: Vec<status::ContainerInfo> = all_containers

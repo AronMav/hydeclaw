@@ -26,6 +26,12 @@ pub struct WatchdogSettings {
     pub flap_window_secs: u64,
     #[serde(default = "default_3")]
     pub flap_threshold: u32,
+    #[serde(default = "default_true")]
+    pub session_retry_enabled: bool,
+    #[serde(default = "default_90")]
+    pub session_retry_stale_secs: u64,
+    #[serde(default = "default_3")]
+    pub session_retry_max_attempts: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -70,6 +76,7 @@ impl Default for ResourceSettings {
 }
 
 fn default_true() -> bool { true }
+fn default_90() -> u64 { 90 }
 fn default_1() -> u64 { 1 }
 fn default_3() -> u32 { 3 }
 fn default_5() -> u64 { 5 }
