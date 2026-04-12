@@ -176,16 +176,15 @@ Errors from LLM provider calls are classified via regex patterns (compiled once 
 
 Only `TransientHttp` and `Overloaded` are retried at the engine level (`is_retryable()`). All other classes surface a localized user-facing message.
 
-### Agent Tool
+### Agent Tool (Evolution from Handoff)
 
-The `agent` tool provides session-scoped live agent pools with four actions:
+HydeClaw has transitioned from a linear `handoff` loop (where control was passed from agent to agent) to a **polling-based live agent pool** model. This provides better scalability and allows a single parent agent to drive multiple sub-tasks in parallel.
 
-- **`agent(action="run", agent, task)`** — spawns a `LiveAgent` as a background tokio task. Acquires a permit from `subagent_semaphore` (default capacity: 5, no queuing). Registers in the session-scoped `LiveAgentPool` with a generated UUID and `CancellationToken`. Returns the agent ID immediately.
-- **`agent(action="message", id, message)`** — sends a follow-up message to a running live agent.
-- **`agent(action="status", id?)`** — returns status of one agent (by ID) or all agents in the pool. The parent polls this to check progress.
-- **`agent(action="kill", id)`** — cancels a running live agent via its `CancellationToken`.
+- **Legacy Handoff (Removed):** Used to pass control via synthetic user messages. Difficult to parallelize and prone to infinite loops.
+- **Modern Agent Tool:** Spawns subagents as background tasks in a session-scoped pool. The parent agent uses `agent(action="run")` to start a task and `agent(action="status")` to poll for the result.
+- **Session Pooling:** Each session maintains its own `SessionAgentPool`, ensuring that agents are isolated and their lifecycle is tied to the current chat session.
 
-Permits are held for the life of the spawned task and released on completion, cancellation, or failure. There is no turn loop — the caller drives interaction through the polling model.
+The `handoff` name is preserved in some legacy configuration fields (e.g., `max_handoff_context_chars`) for backward compatibility with existing `hydeclaw.toml` files, but functionally it now refers to the context transfer between the initiator and the subagent.
 
 ### Inter-Agent Communication
 

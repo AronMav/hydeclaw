@@ -88,7 +88,7 @@ impl CheckResult {
     fn timeout(check_name: &str) -> Self {
         Self {
             status: CheckStatus::Error,
-            message: format!("{} check timed out after 3s", check_name),
+            message: format!("{check_name} check timed out after 3s"),
             latency_ms: Some(3000),
             fix_hint: None,
             details: None,
@@ -110,7 +110,7 @@ pub(crate) async fn api_setup_status(State(state): State<AppState>) -> Json<Valu
     Json(json!({ "needs_setup": !complete }))
 }
 
-/// POST /api/setup/complete — mark setup as done; guarded by setup_guard_middleware
+/// POST /api/setup/complete — mark setup as done; guarded by `setup_guard_middleware`
 pub(crate) async fn api_setup_complete(State(state): State<AppState>) -> impl IntoResponse {
     let result = sqlx::query(
         "INSERT INTO system_flags (key, value, updated_at)
@@ -189,7 +189,7 @@ async fn check_cli_tool(name: &str, command: &str) -> serde_json::Value {
 }
 
 /// GET /api/setup/requirements — pre-flight system requirements check for the setup wizard.
-/// Returns docker, postgresql, and disk_space check results. No auth required.
+/// Returns docker, postgresql, and `disk_space` check results. No auth required.
 pub(crate) async fn api_setup_requirements(State(state): State<AppState>) -> Json<Value> {
     // ── Docker check ──────────────────────────────────────────────────────────
     let docker_fut = async {
@@ -219,7 +219,7 @@ pub(crate) async fn api_setup_requirements(State(state): State<AppState>) -> Jso
                         Some("install Docker and ensure the daemon is running".into()),
                     )
                 } else {
-                    CheckResult::ok(format!("docker {}", version), ms)
+                    CheckResult::ok(format!("docker {version}"), ms)
                 }
             }
             Ok(Ok(_)) => CheckResult::error(
@@ -339,7 +339,7 @@ pub(crate) async fn api_setup_requirements(State(state): State<AppState>) -> Jso
     }))
 }
 
-/// Axum middleware: returns 403 when system_flags.setup_complete = true.
+/// Axum middleware: returns 403 when `system_flags.setup_complete` = true.
 /// Wraps POST /api/setup/complete to prevent re-entry after first setup.
 pub(crate) async fn setup_guard_middleware(
     State(state): State<AppState>,
@@ -575,7 +575,7 @@ async fn check_provider_reachability(state: &AppState) -> CheckResult {
     let providers = match crate::db::providers::list_providers(&state.db).await {
         Ok(p) => p,
         Err(e) => return CheckResult::error(
-            format!("failed to list providers: {}", e),
+            format!("failed to list providers: {e}"),
             start.elapsed().as_millis() as u64,
             Some("check database connectivity".into()),
         ),
@@ -749,7 +749,7 @@ async fn check_security_audit(state: &AppState) -> CheckResult {
 
             let is_base = val.get("agent")
                 .and_then(|a| a.get("base"))
-                .and_then(|b| b.as_bool())
+                .and_then(toml::Value::as_bool)
                 .unwrap_or(false);
             if is_base { continue; } // base agents are intentionally unrestricted
 
@@ -792,7 +792,7 @@ async fn check_security_audit(state: &AppState) -> CheckResult {
     let message = match (has_cred_leaks, has_deny_issues) {
         (true, _) => format!("{} credential leak(s) found in workspace files", credential_findings.len()),
         (false, true) => format!("{} agent(s) missing tool deny-list entries", deny_list_issues.len()),
-        (false, false) => format!("no issues found ({} files scanned)", files_scanned),
+        (false, false) => format!("no issues found ({files_scanned} files scanned)"),
     };
 
     CheckResult {
@@ -858,7 +858,7 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
         std::time::Duration::from_secs(3),
         async move {
             let start = std::time::Instant::now();
-            let result = tg_http.get(format!("{}/health", tg_url)).send().await;
+            let result = tg_http.get(format!("{tg_url}/health")).send().await;
             let ms = start.elapsed().as_millis() as u64;
             match result {
                 Ok(r) if r.status().is_success() => {
@@ -886,7 +886,7 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
         std::time::Duration::from_secs(3),
         async move {
             let start = std::time::Instant::now();
-            let ok = br_http.get(format!("{}/health", br_url)).send().await
+            let ok = br_http.get(format!("{br_url}/health")).send().await
                 .map(|r| r.status().is_success()).unwrap_or(false);
             let ms = start.elapsed().as_millis() as u64;
             if ok {
@@ -944,14 +944,14 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
     ).fetch_all(&state.db).await {
         for (id, agent, ch_type) in &channels {
             if state.secrets.get_scoped("CHANNEL_CREDENTIALS", &id.to_string()).await.is_none() {
-                missing_critical.push(format!("Channel:{}:{}", agent, ch_type));
+                missing_critical.push(format!("Channel:{agent}:{ch_type}"));
             }
         }
     }
     let secrets_count = state.secrets.list().await.map(|v| v.len()).unwrap_or(0);
     let secrets_check = {
         let mut cr = if missing_critical.is_empty() {
-            CheckResult::ok(format!("{} secrets configured", secrets_count), 0)
+            CheckResult::ok(format!("{secrets_count} secrets configured"), 0)
         } else {
             CheckResult::warn(
                 format!("{} missing credential(s)", missing_critical.len()),
@@ -998,7 +998,7 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
     }
     drop(agents_map);
     let agents_check = {
-        let mut cr = CheckResult::ok(format!("{} agent(s) loaded", agent_count), 0);
+        let mut cr = CheckResult::ok(format!("{agent_count} agent(s) loaded"), 0);
         cr.details = Some(Value::Object(agents_details));
         cr
     };
@@ -1012,7 +1012,7 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
             CheckResult::ok("all tools healthy", 0)
         } else {
             CheckResult::warn(
-                format!("{} degraded tool(s)", degraded_count),
+                format!("{degraded_count} degraded tool(s)"),
                 0,
                 Some("review tool audit log for repeated failures".into()),
             )
@@ -1044,12 +1044,12 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
             let ms = start.elapsed().as_millis() as u64;
             if pending > 0 {
                 CheckResult::warn(
-                    format!("{} migration(s) pending", pending),
+                    format!("{pending} migration(s) pending"),
                     ms,
                     Some("restart the service to apply pending migrations".into()),
                 )
             } else {
-                CheckResult::ok(format!("all {} migrations applied", total), ms)
+                CheckResult::ok(format!("all {total} migrations applied"), ms)
             }
         },
     )
@@ -1220,19 +1220,7 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
         let retention_days = backup_cfg.retention_days;
         drop(config);
 
-        if !enabled {
-            let mut cr = CheckResult::warn(
-                "automatic backups disabled",
-                0,
-                Some("enable in hydeclaw.toml: [backup] enabled = true".into()),
-            );
-            cr.details = Some(json!({
-                "enabled": false,
-                "cron": cron,
-                "retention_days": retention_days,
-            }));
-            cr
-        } else {
+        if enabled {
             // Find most recent backup file
             let mut latest: Option<(String, u64, chrono::DateTime<chrono::Utc>)> = None;
             if let Ok(mut dir) = tokio::fs::read_dir("backups").await {
@@ -1255,50 +1243,59 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
                 }
             }
 
-            match latest {
-                Some((filename, size_bytes, created_at)) => {
-                    let age_hours = (chrono::Utc::now() - created_at).num_hours();
-                    let status = if age_hours > 48 {
-                        CheckStatus::Warn
-                    } else {
-                        CheckStatus::Ok
-                    };
-                    let message = format!("last backup: {} ({} ago)", filename,
-                        if age_hours < 1 { "< 1h".to_string() }
-                        else if age_hours < 24 { format!("{}h", age_hours) }
-                        else { format!("{}d", age_hours / 24) }
-                    );
-                    let mut cr = CheckResult {
-                        status,
-                        message,
-                        latency_ms: None,
-                        fix_hint: if age_hours > 48 { Some("backup is stale — check cron schedule or run POST /api/backup".into()) } else { None },
-                        details: None,
-                    };
-                    cr.details = Some(json!({
-                        "enabled": true,
-                        "cron": cron,
-                        "retention_days": retention_days,
-                        "last_backup": filename,
-                        "last_backup_at": created_at,
-                        "size_bytes": size_bytes,
-                    }));
-                    cr
-                }
-                None => {
-                    let mut cr = CheckResult::warn(
-                        "no backups found",
-                        0,
-                        Some("run POST /api/backup to create first backup".into()),
-                    );
-                    cr.details = Some(json!({
-                        "enabled": true,
-                        "cron": cron,
-                        "retention_days": retention_days,
-                    }));
-                    cr
-                }
+            if let Some((filename, size_bytes, created_at)) = latest {
+                let age_hours = (chrono::Utc::now() - created_at).num_hours();
+                let status = if age_hours > 48 {
+                    CheckStatus::Warn
+                } else {
+                    CheckStatus::Ok
+                };
+                let message = format!("last backup: {} ({} ago)", filename,
+                    if age_hours < 1 { "< 1h".to_string() }
+                    else if age_hours < 24 { format!("{age_hours}h") }
+                    else { format!("{}d", age_hours / 24) }
+                );
+                let mut cr = CheckResult {
+                    status,
+                    message,
+                    latency_ms: None,
+                    fix_hint: if age_hours > 48 { Some("backup is stale — check cron schedule or run POST /api/backup".into()) } else { None },
+                    details: None,
+                };
+                cr.details = Some(json!({
+                    "enabled": true,
+                    "cron": cron,
+                    "retention_days": retention_days,
+                    "last_backup": filename,
+                    "last_backup_at": created_at,
+                    "size_bytes": size_bytes,
+                }));
+                cr
+            } else {
+                let mut cr = CheckResult::warn(
+                    "no backups found",
+                    0,
+                    Some("run POST /api/backup to create first backup".into()),
+                );
+                cr.details = Some(json!({
+                    "enabled": true,
+                    "cron": cron,
+                    "retention_days": retention_days,
+                }));
+                cr
             }
+        } else {
+            let mut cr = CheckResult::warn(
+                "automatic backups disabled",
+                0,
+                Some("enable in hydeclaw.toml: [backup] enabled = true".into()),
+            );
+            cr.details = Some(json!({
+                "enabled": false,
+                "cron": cron,
+                "retention_days": retention_days,
+            }));
+            cr
         }
     };
 
@@ -1367,7 +1364,7 @@ pub(crate) async fn api_watchdog_config() -> impl IntoResponse {
     }
 }
 
-/// POST /api/watchdog/restart/{name} — execute restart_cmd for a watchdog check
+/// POST /api/watchdog/restart/{name} — execute `restart_cmd` for a watchdog check
 pub(crate) async fn api_watchdog_restart_check(
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> impl IntoResponse {
@@ -1457,7 +1454,7 @@ pub(crate) async fn api_watchdog_config_update(Json(req): Json<serde_json::Value
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid TOML"}))).into_response();
     }
     match tokio::fs::write("config/watchdog.toml", text).await {
-        Ok(_) => Json(json!({"ok": true})).into_response(),
+        Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     }
 }

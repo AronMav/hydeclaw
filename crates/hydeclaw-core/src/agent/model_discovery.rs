@@ -11,13 +11,13 @@ use super::providers::OPENAI_COMPAT_PROVIDERS;
 
 /// Defense-in-depth: block ports that should never be targeted by model discovery,
 /// even from admin-configured URLs. Prevents accidental misconfiguration from
-/// reaching PostgreSQL, Docker API, or other dangerous internal services.
+/// reaching `PostgreSQL`, Docker API, or other dangerous internal services.
 fn reject_dangerous_ports(url: &str) -> Result<()> {
     const BLOCKED_PORTS: &[u16] = &[5432, 2375, 2376]; // postgres, docker
     if let Ok(parsed) = url::Url::parse(url)
         && let Some(port) = parsed.port()
             && BLOCKED_PORTS.contains(&port) {
-                anyhow::bail!("model discovery blocked: port {} is a protected service", port);
+                anyhow::bail!("model discovery blocked: port {port} is a protected service");
             }
     Ok(())
 }
@@ -37,8 +37,7 @@ pub struct ModelInfo {
 fn derive_models_url_from_base(provider_type: &str, base_url: &str) -> String {
     let chat_path = super::providers::PROVIDER_TYPES.iter()
         .find(|pt| pt.id == provider_type)
-        .map(|pt| pt.chat_path)
-        .unwrap_or("/v1/chat/completions");
+        .map_or("/v1/chat/completions", |pt| pt.chat_path);
     let models_path = chat_path.replace("/chat/completions", "/models");
     format!("{}{}", base_url.trim_end_matches('/'), models_path)
 }
@@ -55,7 +54,7 @@ async fn resolve_key(secrets: &SecretsManager, key_env: &str) -> Option<String> 
 ///
 /// Safety: URLs come from admin-configured providers (DB `providers` table).
 /// Only authenticated admins can add/modify providers, so these URLs are trusted.
-/// We still block Docker API and PostgreSQL ports as defense-in-depth.
+/// We still block Docker API and `PostgreSQL` ports as defense-in-depth.
 async fn fetch_openai_models(url: &str, api_key: Option<&str>) -> Result<Vec<ModelInfo>> {
     reject_dangerous_ports(url)?;
     let client = reqwest::Client::builder()
@@ -79,7 +78,7 @@ async fn fetch_openai_models(url: &str, api_key: Option<&str>) -> Result<Vec<Mod
             arr.iter()
                 .filter_map(|m| {
                     let id = m["id"].as_str()?.to_string();
-                    let owned_by = m["owned_by"].as_str().map(|s| s.to_string());
+                    let owned_by = m["owned_by"].as_str().map(std::string::ToString::to_string);
                     Some(ModelInfo { id, owned_by })
                 })
                 .collect()
@@ -149,7 +148,7 @@ async fn fetch_anthropic_models(api_key: Option<&str>, base_url: Option<&str>) -
             arr.iter()
                 .filter_map(|m| {
                     let id = m["id"].as_str()?.to_string();
-                    let display = m["display_name"].as_str().map(|s| s.to_string());
+                    let display = m["display_name"].as_str().map(std::string::ToString::to_string);
                     Some(ModelInfo { id, owned_by: display.or(Some("anthropic".into())) })
                 })
                 .collect()
@@ -186,7 +185,7 @@ async fn fetch_google_models(api_key: Option<&str>, base_url: Option<&str>) -> R
                     // name is "models/gemini-2.5-pro" → extract "gemini-2.5-pro"
                     let name = m["name"].as_str()?;
                     let id = name.strip_prefix("models/").unwrap_or(name).to_string();
-                    let display = m["displayName"].as_str().map(|s| s.to_string());
+                    let display = m["displayName"].as_str().map(std::string::ToString::to_string);
                     Some(ModelInfo { id, owned_by: display.or(Some("google".into())) })
                 })
                 // Filter to generative models only (skip embedding models)
@@ -219,7 +218,7 @@ pub async fn discover_models(
 
         "ollama" => {
             let base = base_url_override
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .or_else(|| std::env::var("OLLAMA_URL").ok())
                 .unwrap_or_else(|| "http://localhost:11434".to_string());
             fetch_ollama_models(&base).await
@@ -227,7 +226,7 @@ pub async fn discover_models(
 
         "openai" | "codex-cli" => {
             let base = base_url_override
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
                 .unwrap_or_else(|| "https://api.openai.com".to_string());
             let url = format!("{}/v1/models", base.trim_end_matches('/'));
@@ -251,7 +250,7 @@ pub async fn discover_models(
 }
 
 /// Discover models using a pre-resolved API key (from vault-scoped credential).
-/// Falls back to standard secret name resolution if api_key is None.
+/// Falls back to standard secret name resolution if `api_key` is None.
 pub async fn discover_models_with_key(
     provider: &str,
     secrets: &SecretsManager,
@@ -280,14 +279,14 @@ async fn discover_models_with_resolved_key(
         }
         "ollama" => {
             let base = base_url_override
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .or_else(|| std::env::var("OLLAMA_URL").ok())
                 .unwrap_or_else(|| "http://localhost:11434".to_string());
             fetch_ollama_models(&base).await
         }
         "openai" | "codex-cli" => {
             let base = base_url_override
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
                 .unwrap_or_else(|| "https://api.openai.com".to_string());
             let url = format!("{}/v1/models", base.trim_end_matches('/'));

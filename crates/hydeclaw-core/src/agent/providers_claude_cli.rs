@@ -1,10 +1,10 @@
 //! Generic CLI LLM provider — used for Claude CLI, Gemini CLI, and other CLI backends.
 
-use super::*;
+use super::{async_trait, LlmProvider, Message, ToolDefinition, Result, LlmResponse};
 use std::sync::Arc;
 use crate::agent::cli_backend::{CliBackendConfig, CliRunner, format_messages_for_cli};
 
-/// Generic CLI-based LLM provider. Wraps CliRunner with a provider name.
+/// Generic CLI-based LLM provider. Wraps `CliRunner` with a provider name.
 /// API key resolution order: direct `api_key` (from provider record) → vault by `env_key` → parent env.
 pub struct CliLlmProvider {
     runner: Arc<CliRunner>,
@@ -16,7 +16,7 @@ pub struct CliLlmProvider {
     base: bool,
     secrets: Arc<crate::secrets::SecretsManager>,
     env_key: Option<String>,
-    /// Direct API key from provider record (providers.api_key column).
+    /// Direct API key from provider record (`providers.api_key` column).
     api_key: Option<String>,
 }
 

@@ -15,7 +15,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/agents/{name}/skills/{skill}", get(api_skill_get).put(api_skill_upsert).delete(api_skill_delete))
 }
 
-/// Sanitize a skill name to a safe filename stem (same logic as write_skill).
+/// Sanitize a skill name to a safe filename stem (same logic as `write_skill`).
 pub(crate) fn skill_safe_name(name: &str) -> String {
     name.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|', ' '], "-")
 }
@@ -31,7 +31,7 @@ pub(crate) async fn find_skill_path(
 
     // 1. Try sanitized name (skills created/saved via UI)
     let safe = skill_safe_name(skill_name);
-    let candidate = skills_dir.join(format!("{}.md", safe));
+    let candidate = skills_dir.join(format!("{safe}.md"));
     if candidate.exists() {
         return Some(candidate);
     }
@@ -116,7 +116,7 @@ pub(crate) async fn api_skill_upsert_global(
         &frontmatter,
         &body.instructions,
     ).await {
-        Ok(_) => {
+        Ok(()) => {
             tracing::info!(skill = %skill_name, "skill upserted via UI (global)");
             Json(serde_json::json!({"ok": true})).into_response()
         }
@@ -134,7 +134,7 @@ pub(crate) async fn api_skill_delete_global(
     };
 
     match tokio::fs::remove_file(&path).await {
-        Ok(_) => {
+        Ok(()) => {
             tracing::info!(skill = %skill_name, "skill deleted via UI (global)");
             Json(serde_json::json!({"ok": true})).into_response()
         }
@@ -145,7 +145,7 @@ pub(crate) async fn api_skill_delete_global(
 // ── Per-agent skills endpoints (compat) ──────────────────────────────────────
 
 /// GET /api/agents/{name}/skills
-/// Returns list of all skills for the agent (name, description, triggers, tools_required, priority).
+/// Returns list of all skills for the agent (name, description, triggers, `tools_required`, priority).
 pub(crate) async fn api_skills_list(
     State(_state): State<AppState>,
     axum::extract::Path(_agent_name): axum::extract::Path<String>,
@@ -223,7 +223,7 @@ pub(crate) async fn api_skill_upsert(
         &frontmatter,
         &body.instructions,
     ).await {
-        Ok(_) => {
+        Ok(()) => {
             tracing::info!(agent = %agent_name, skill = %skill_name, "skill upserted via UI");
             Json(serde_json::json!({"ok": true})).into_response()
         }
@@ -242,7 +242,7 @@ pub(crate) async fn api_skill_delete(
     };
 
     match tokio::fs::remove_file(&path).await {
-        Ok(_) => {
+        Ok(()) => {
             tracing::info!(skill = %skill_name, "skill deleted via UI");
             Json(serde_json::json!({"ok": true})).into_response()
         }

@@ -16,7 +16,7 @@ use tokio::sync::RwLock;
 /// Shared across all agents via Arc<PenaltyCache>.
 pub struct PenaltyCache {
     db: PgPool,
-    /// (map, last_refreshed_at)
+    /// (map, `last_refreshed_at`)
     cache: RwLock<(HashMap<String, f32>, Instant)>,
 }
 
@@ -85,7 +85,7 @@ pub async fn record_tool_result(
     });
 
     sqlx::query(
-        r#"
+        r"
         INSERT INTO tool_quality (
             tool_name,
             total_calls,
@@ -140,11 +140,11 @@ pub async fn record_tool_result(
             last_error       = CASE WHEN $2 THEN tool_quality.last_error ELSE $5 END,
             last_call_at     = NOW(),
             updated_at       = NOW()
-        "#,
+        ",
     )
     .bind(tool_name)
     .bind(success)
-    .bind(duration_ms as i64)
+    .bind(i64::from(duration_ms))
     .bind(&call_entry)
     .bind(error)
     .execute(db)
@@ -173,12 +173,12 @@ async fn get_all_penalties(db: &PgPool) -> Result<HashMap<String, f32>> {
 /// Used by `GET /api/doctor` to surface degraded tools.
 pub async fn get_degraded_tools(db: &PgPool) -> Result<Vec<serde_json::Value>> {
     let rows = sqlx::query_as::<_, (String, f32, i64, i64, Option<String>)>(
-        r#"
+        r"
         SELECT tool_name, penalty_score, total_calls, fail_calls, last_error
         FROM tool_quality
         WHERE penalty_score < 0.8
         ORDER BY penalty_score ASC
-        "#,
+        ",
     )
     .fetch_all(db)
     .await?;

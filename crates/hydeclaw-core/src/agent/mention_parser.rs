@@ -1,4 +1,4 @@
-/// Parse @AgentName mentions from message text.
+/// Parse @`AgentName` mentions from message text.
 /// Returns all mentioned agent names (in order of appearance).
 ///
 /// Word boundary rule: `@` must be preceded by whitespace, start of string,
@@ -49,10 +49,10 @@ pub fn parse_first_mention(text: &str, known_agents: &[String]) -> Option<String
     parse_mentions(text, known_agents).into_iter().next()
 }
 
-/// Strip @AgentName mention from text, returning cleaned text.
+/// Strip @`AgentName` mention from text, returning cleaned text.
 /// Case-insensitive replacement.
 pub fn strip_mention(text: &str, agent_name: &str) -> String {
-    let pattern = format!("@{}", agent_name);
+    let pattern = format!("@{agent_name}");
     let lower_text = text.to_lowercase();
     let lower_pattern = pattern.to_lowercase();
     match lower_text.find(&lower_pattern) {

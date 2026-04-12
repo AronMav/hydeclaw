@@ -1,7 +1,7 @@
 /// Workspace-based MCP config loader.
 ///
 /// MCP server configs live in `workspace/mcp/*.yaml`.
-/// Each file defines one server: name, container/url, port, mode, idle_timeout.
+/// Each file defines one server: name, container/url, port, mode, `idle_timeout`.
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
@@ -47,7 +47,7 @@ pub async fn load_mcp_entries(mcp_dir: &str) -> Vec<McpFileEntry> {
     entries
 }
 
-/// Load MCP configs as a HashMap keyed by server name (for ContainerManager).
+/// Load MCP configs as a `HashMap` keyed by server name (for `ContainerManager`).
 /// Only includes enabled entries.
 pub async fn load_mcp_map(mcp_dir: &str) -> HashMap<String, McpConfig> {
     let entries = load_mcp_entries(mcp_dir).await;
@@ -65,7 +65,7 @@ pub async fn save_mcp_entry(mcp_dir: &str, entry: &McpFileEntry) -> Result<()> {
     }
 
     tokio::fs::create_dir_all(mcp_dir).await
-        .with_context(|| format!("failed to create mcp dir: {}", mcp_dir))?;
+        .with_context(|| format!("failed to create mcp dir: {mcp_dir}"))?;
 
     let yaml = serde_yaml::to_string(entry)
         .with_context(|| format!("failed to serialize MCP entry '{}'", entry.name))?;
@@ -80,9 +80,9 @@ pub async fn save_mcp_entry(mcp_dir: &str, entry: &McpFileEntry) -> Result<()> {
 /// Delete a MCP config file. Returns true if the file existed and was deleted.
 pub async fn delete_mcp_entry(mcp_dir: &str, name: &str) -> Result<bool> {
     if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        anyhow::bail!("invalid MCP entry name: '{}'", name);
+        anyhow::bail!("invalid MCP entry name: '{name}'");
     }
-    let path = Path::new(mcp_dir).join(format!("{}.yaml", name));
+    let path = Path::new(mcp_dir).join(format!("{name}.yaml"));
     if !path.exists() {
         return Ok(false);
     }

@@ -16,6 +16,6 @@ pub async fn dispatch(
 ) -> anyhow::Result<serde_json::Value> {
     match task.task_type.as_str() {
         "reindex" => reindex::handle(task, db, ctx.toolgate_url, ctx.workspace_dir, ctx.fts_language).await,
-        other => anyhow::bail!("unknown task type: {}", other),
+        other => anyhow::bail!("unknown task type: {other}"),
     }
 }

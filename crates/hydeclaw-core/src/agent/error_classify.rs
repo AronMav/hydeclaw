@@ -175,7 +175,7 @@ impl Default for RetryConfig {
 impl RetryConfig {
     /// Compute the delay for a given attempt index (0-based).
     ///
-    /// Formula: min(base * 2^attempt, max) + jitter * delay_before_jitter
+    /// Formula: min(base * 2^attempt, max) + jitter * `delay_before_jitter`
     pub fn delay(&self, attempt: u32) -> Duration {
         use rand::Rng as _;
         let exp = (self.base_delay_ms as f64) * (2u64.pow(attempt) as f64);
@@ -186,8 +186,8 @@ impl RetryConfig {
 
     /// Return the recommended delay for a given error class and attempt.
     ///
-    /// - RateLimit → full cooldown (60s) regardless of attempt
-    /// - TransientHttp / Overloaded → exponential backoff
+    /// - `RateLimit` → full cooldown (60s) regardless of attempt
+    /// - `TransientHttp` / Overloaded → exponential backoff
     /// - Others → exponential backoff as fallback
     pub fn retry_delay_for_error(&self, class: &LlmErrorClass, attempt: u32) -> Duration {
         match class {

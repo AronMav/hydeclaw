@@ -9,7 +9,7 @@ pub(crate) fn should_strip_thinking(msg: &IncomingMessage) -> bool {
     !msg.context
         .get("directives")
         .and_then(|d| d.get("think"))
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
 }
 
@@ -157,7 +157,7 @@ pub(crate) fn safe_emit_len(text: &str) -> usize {
     match text.rfind('<') {
         Some(pos) => {
             let tail = &text.as_bytes()[pos..];
-            let tail_lower: Vec<u8> = tail.iter().map(|b| b.to_ascii_lowercase()).collect();
+            let tail_lower: Vec<u8> = tail.iter().map(u8::to_ascii_lowercase).collect();
             // Check if tail could be a partial start of any thinking tag
             let could_be_tag = [
                 b"<think>" as &[u8],

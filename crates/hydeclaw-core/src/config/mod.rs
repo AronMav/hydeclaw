@@ -91,7 +91,7 @@ impl Default for BackupConfig {
 #[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 #[allow(dead_code)] // fields read only with `otel` feature
 pub struct OtelConfig {
-    /// Enable OTEL trace export. Also set OTEL_EXPORTER_OTLP_ENDPOINT env var.
+    /// Enable OTEL trace export. Also set `OTEL_EXPORTER_OTLP_ENDPOINT` env var.
     #[serde(default)]
     pub enabled: bool,
     /// Service name reported to the collector (default: "hydeclaw-core").
@@ -114,7 +114,7 @@ pub struct GatewayConfig {
     pub cors_origins: Vec<String>,
     /// Additional subnets whose gateway IPs should be added to auto-derived CORS origins.
     /// Useful for Docker bridge networks (e.g. ["172.17.0.0/16", "172.18.0.0/16"]).
-    /// Only used when cors_origins is empty (auto-derivation mode).
+    /// Only used when `cors_origins` is empty (auto-derivation mode).
     #[serde(default)]
     pub cors_docker_subnets: Vec<String>,
 }
@@ -144,15 +144,15 @@ pub struct LimitsConfig {
     pub max_agent_turns: usize,
     /// Maximum characters for inter-agent context (API-only, no internal consumer).
     /// Exposed via GET/PUT /api/config — not consumed internally by the turn loop.
-    #[serde(default = "default_max_handoff_context_chars")]
-    pub max_handoff_context_chars: usize,
+    #[serde(default = "default_max_inter_agent_context_chars")]
+    pub max_inter_agent_context_chars: usize,
 }
 
 fn default_max_requests() -> u32 { 300 }
 fn default_max_tool_concurrency() -> u32 { 10 }
 fn default_request_timeout() -> u64 { 180 }
 fn default_max_agent_turns() -> usize { 5 }
-fn default_max_handoff_context_chars() -> usize { 2000 }
+fn default_max_inter_agent_context_chars() -> usize { 2000 }
 
 impl Default for LimitsConfig {
     fn default() -> Self {
@@ -161,7 +161,7 @@ impl Default for LimitsConfig {
             max_tool_concurrency: default_max_tool_concurrency(),
             request_timeout_secs: default_request_timeout(),
             max_agent_turns: default_max_agent_turns(),
-            max_handoff_context_chars: default_max_handoff_context_chars(),
+            max_inter_agent_context_chars: default_max_inter_agent_context_chars(),
         }
     }
 }
@@ -308,7 +308,7 @@ fn default_mcp_mode() -> String { "on-demand".to_string() }
 fn default_protocol() -> String { "mcp".to_string() }
 
 /// One MCP server entry as stored in workspace/mcp/NAME.yaml.
-/// Identical to McpConfig but includes the server name.
+/// Identical to `McpConfig` but includes the server name.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpFileEntry {
     pub name: String,
@@ -374,7 +374,7 @@ pub struct ProviderRouteConfig {
     /// Routing condition: "default" | "short" | "long" | "fallback"
     #[serde(default = "default_condition")]
     pub condition: String,
-    /// Optional base_url override (useful for self-hosted Ollama, OpenAI-compatible)
+    /// Optional `base_url` override (useful for self-hosted Ollama, OpenAI-compatible)
     pub base_url: Option<String>,
     /// Optional env var name for API key override (defaults to provider default)
     pub api_key_env: Option<String>,
@@ -384,7 +384,7 @@ pub struct ProviderRouteConfig {
     pub api_key_envs: Vec<String>,
     /// Temperature override for this route (defaults to agent temperature)
     pub temperature: Option<f64>,
-    /// Enable Anthropic prompt caching (adds cache_control to system prompt and tools).
+    /// Enable Anthropic prompt caching (adds `cache_control` to system prompt and tools).
     #[serde(default)]
     pub prompt_cache: bool,
     /// Maximum output tokens for LLM responses. None = provider default.
@@ -407,7 +407,7 @@ pub struct AgentSettings {
     pub model: String,
     /// Named LLM provider connection (from providers table).
     /// If set, overrides `provider` and `model` for LLM calls (model can still be
-    /// specified here to override the connection's default_model).
+    /// specified here to override the connection's `default_model`).
     #[serde(default)]
     pub provider_connection: Option<String>,
     /// Optional fallback provider connection name. When set, the engine switches to this
@@ -520,7 +520,7 @@ pub struct ApprovalConfig {
     /// Master switch: if false, no approvals are required.
     #[serde(default)]
     pub enabled: bool,
-    /// Specific tool names that require approval (e.g. ["shell_exec", "code_exec"]).
+    /// Specific tool names that require approval (e.g. ["`shell_exec`", "`code_exec`"]).
     #[serde(default)]
     pub require_for: Vec<String>,
     /// Tool categories that require approval: "system", "destructive", "external".
@@ -551,7 +551,7 @@ fn default_access_open() -> String { "open".to_string() }
 pub struct HeartbeatConfig {
     pub cron: String,
     pub timezone: Option<String>,
-    /// Channel to announce heartbeat results to (e.g. "telegram"). Uses owner_id as chat_id.
+    /// Channel to announce heartbeat results to (e.g. "telegram"). Uses `owner_id` as `chat_id`.
     pub announce_to: Option<String>,
 }
 
@@ -574,16 +574,16 @@ pub struct AgentToolPolicy {
 /// Disabling a group removes those tools from LLM context entirely.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ToolGroups {
-    /// git_status, git_diff, git_commit, git_push, git_pull, git_ssh_key
+    /// `git_status`, `git_diff`, `git_commit`, `git_push`, `git_pull`, `git_ssh_key`
     #[serde(default = "default_true")]
     pub git: bool,
-    /// tool_create, tool_list, tool_test, tool_verify, tool_disable, tool_discover
+    /// `tool_create`, `tool_list`, `tool_test`, `tool_verify`, `tool_disable`, `tool_discover`
     #[serde(default = "default_true")]
     pub tool_management: bool,
-    /// skill_create, skill_update, skill_list
+    /// `skill_create`, `skill_update`, `skill_list`
     #[serde(default = "default_true")]
     pub skill_editing: bool,
-    /// sessions_list, sessions_history, session_search, session_context, session_send, session_export
+    /// `sessions_list`, `sessions_history`, `session_search`, `session_context`, `session_send`, `session_export`
     #[serde(default = "default_true")]
     pub session_tools: bool,
 }
@@ -632,7 +632,7 @@ fn default_preserve_last_n() -> u32 { 10 }
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct SessionConfig {
     /// DM scope: "shared" (all DMs one session), "per-channel-peer" (default),
-    /// "per-peer" (same user across channels shares session), "per-chat" (by chat_id).
+    /// "per-peer" (same user across channels shares session), "per-chat" (by `chat_id`).
     #[serde(default = "default_dm_scope")]
     pub dm_scope: String,
     /// Delete sessions older than this many days (0 = never).
@@ -642,7 +642,7 @@ pub struct SessionConfig {
     #[serde(default)]
     pub max_messages: u32,
     /// Proactively strip tool result content older than this many user turns at context load time.
-    /// Complements compact_tool_results (reactive, token-based) — this fires before the first LLM call.
+    /// Complements `compact_tool_results` (reactive, token-based) — this fires before the first LLM call.
     /// Tool results are replaced with "[output omitted, N chars]".
     /// None = no proactive pruning (default).
     #[serde(default)]
@@ -656,7 +656,7 @@ fn default_session_ttl_days() -> u32 { 30 }
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct WatchdogConfig {
     /// Seconds of inactivity before watchdog kills the session.
-    /// Inactivity = no upsert_streaming_message or tool result written.
+    /// Inactivity = no `upsert_streaming_message` or tool result written.
     /// Default: 600 (10 minutes).
     #[serde(default = "default_watchdog_inactivity_secs")]
     pub inactivity_secs: u64,
@@ -690,7 +690,7 @@ impl Default for SessionConfig {
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct SandboxConfig {
-    /// Enable the code_exec tool. Requires Docker.
+    /// Enable the `code_exec` tool. Requires Docker.
     #[serde(default)]
     pub enabled: bool,
     /// Docker image used for code execution.
@@ -827,13 +827,13 @@ pub fn load_agent_configs(dir: &str) -> Result<Vec<AgentConfig>> {
 // ── Config file update (preserves comments) ──
 
 /// Update service URLs in the TOML config file.
-/// Uses toml_edit to preserve comments and formatting.
+/// Uses `toml_edit` to preserve comments and formatting.
 pub fn update_service_urls(
     config_path: &str,
     toolgate_url: Option<&str>,
 ) -> Result<()> {
     let content = std::fs::read_to_string(config_path)
-        .with_context(|| format!("failed to read config: {}", config_path))?;
+        .with_context(|| format!("failed to read config: {config_path}"))?;
 
     let mut doc: toml_edit::DocumentMut = content.parse()
         .with_context(|| "failed to parse config TOML for editing")?;
@@ -853,7 +853,7 @@ pub fn update_service_urls(
     }
 
     std::fs::write(config_path, doc.to_string())
-        .with_context(|| format!("failed to write config: {}", config_path))?;
+        .with_context(|| format!("failed to write config: {config_path}"))?;
 
     Ok(())
 }
@@ -867,7 +867,7 @@ pub fn update_memory_config(
     embed_dim: Option<u32>,
 ) -> Result<()> {
     let content = std::fs::read_to_string(config_path)
-        .with_context(|| format!("failed to read config: {}", config_path))?;
+        .with_context(|| format!("failed to read config: {config_path}"))?;
 
     let mut doc: toml_edit::DocumentMut = content.parse()
         .with_context(|| "failed to parse config TOML for editing")?;
@@ -907,12 +907,12 @@ pub fn update_memory_config(
                 mem.as_table_mut().map(|t| t.remove("embed_dim"));
             }
         } else {
-            doc["memory"]["embed_dim"] = toml_edit::value(dim as i64);
+            doc["memory"]["embed_dim"] = toml_edit::value(i64::from(dim));
         }
     }
 
     std::fs::write(config_path, doc.to_string())
-        .with_context(|| format!("failed to write config: {}", config_path))?;
+        .with_context(|| format!("failed to write config: {config_path}"))?;
 
     Ok(())
 }
@@ -922,7 +922,7 @@ pub fn update_subagents_enabled(
     enabled: bool,
 ) -> Result<()> {
     let content = std::fs::read_to_string(config_path)
-        .with_context(|| format!("failed to read config: {}", config_path))?;
+        .with_context(|| format!("failed to read config: {config_path}"))?;
 
     let mut doc: toml_edit::DocumentMut = content.parse()
         .with_context(|| "failed to parse config TOML for editing")?;
@@ -934,7 +934,7 @@ pub fn update_subagents_enabled(
     doc["subagents"]["enabled"] = toml_edit::value(enabled);
 
     std::fs::write(config_path, doc.to_string())
-        .with_context(|| format!("failed to write config: {}", config_path))?;
+        .with_context(|| format!("failed to write config: {config_path}"))?;
 
     Ok(())
 }
@@ -947,7 +947,7 @@ pub fn update_limits_config(
     max_agent_turns: Option<usize>,
 ) -> Result<()> {
     let content = std::fs::read_to_string(config_path)
-        .with_context(|| format!("failed to read config: {}", config_path))?;
+        .with_context(|| format!("failed to read config: {config_path}"))?;
 
     let mut doc: toml_edit::DocumentMut = content.parse()
         .with_context(|| "failed to parse config TOML for editing")?;
@@ -957,11 +957,11 @@ pub fn update_limits_config(
     }
 
     if let Some(v) = max_requests_per_minute {
-        doc["limits"]["max_requests_per_minute"] = toml_edit::value(v as i64);
+        doc["limits"]["max_requests_per_minute"] = toml_edit::value(i64::from(v));
     }
 
     if let Some(v) = max_tool_concurrency {
-        doc["limits"]["max_tool_concurrency"] = toml_edit::value(v as i64);
+        doc["limits"]["max_tool_concurrency"] = toml_edit::value(i64::from(v));
     }
 
     if let Some(v) = max_agent_turns {
@@ -969,18 +969,18 @@ pub fn update_limits_config(
     }
 
     std::fs::write(config_path, doc.to_string())
-        .with_context(|| format!("failed to write config: {}", config_path))?;
+        .with_context(|| format!("failed to write config: {config_path}"))?;
 
     Ok(())
 }
 
-/// Update [gateway].public_url in TOML config file.
+/// Update [gateway].`public_url` in TOML config file.
 pub fn update_public_url(
     config_path: &str,
     public_url: &str,
 ) -> Result<()> {
     let content = std::fs::read_to_string(config_path)
-        .with_context(|| format!("failed to read config: {}", config_path))?;
+        .with_context(|| format!("failed to read config: {config_path}"))?;
 
     let mut doc: toml_edit::DocumentMut = content.parse()
         .with_context(|| "failed to parse config TOML for editing")?;
@@ -998,7 +998,7 @@ pub fn update_public_url(
     }
 
     std::fs::write(config_path, doc.to_string())
-        .with_context(|| format!("failed to write config: {}", config_path))?;
+        .with_context(|| format!("failed to write config: {config_path}"))?;
 
     Ok(())
 }
@@ -1011,7 +1011,7 @@ pub fn update_backup_config(
     retention_days: Option<u32>,
 ) -> Result<()> {
     let content = std::fs::read_to_string(config_path)
-        .with_context(|| format!("failed to read config: {}", config_path))?;
+        .with_context(|| format!("failed to read config: {config_path}"))?;
 
     let mut doc: toml_edit::DocumentMut = content.parse()
         .with_context(|| "failed to parse config TOML for editing")?;
@@ -1029,11 +1029,11 @@ pub fn update_backup_config(
     }
 
     if let Some(v) = retention_days {
-        doc["backup"]["retention_days"] = toml_edit::value(v as i64);
+        doc["backup"]["retention_days"] = toml_edit::value(i64::from(v));
     }
 
     std::fs::write(config_path, doc.to_string())
-        .with_context(|| format!("failed to write config: {}", config_path))?;
+        .with_context(|| format!("failed to write config: {config_path}"))?;
 
     Ok(())
 }
@@ -1671,21 +1671,21 @@ session_tools = false
         assert!(!tools.groups.session_tools);
     }
 
-    // ── LimitsConfig: max_handoff_context_chars (inter-agent context) ──
+    // ── LimitsConfig: max_inter_agent_context_chars (inter-agent context) ──
 
     #[test]
     fn limits_config_default_inter_agent_context_chars() {
         let cfg = LimitsConfig::default();
-        assert_eq!(cfg.max_handoff_context_chars, 2000);
+        assert_eq!(cfg.max_inter_agent_context_chars, 2000);
     }
 
     #[test]
     fn limits_config_custom_inter_agent_context_chars() {
         let toml_str = r#"
-max_handoff_context_chars = 500
+max_inter_agent_context_chars = 500
 "#;
         let cfg: LimitsConfig = toml::from_str(toml_str).expect("failed to parse");
-        assert_eq!(cfg.max_handoff_context_chars, 500);
+        assert_eq!(cfg.max_inter_agent_context_chars, 500);
         // Other fields should get defaults
         assert_eq!(cfg.max_requests_per_minute, 300);
         assert_eq!(cfg.max_agent_turns, 5);

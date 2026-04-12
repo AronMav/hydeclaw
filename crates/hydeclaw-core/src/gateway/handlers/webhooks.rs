@@ -326,7 +326,7 @@ pub(crate) async fn webhook_handler(
 ) -> impl IntoResponse {
     use axum::body::to_bytes;
 
-    let is_async = req.uri().query().map(|q| q.contains("async=true")).unwrap_or(false);
+    let is_async = req.uri().query().is_some_and(|q| q.contains("async=true"));
 
     // Throttle check before DB lookup — minimize load under attack
     if let Err(resp) = webhook_auth_check(&name) {
@@ -356,17 +356,17 @@ pub(crate) async fn webhook_handler(
         .headers()
         .get("x-github-event")
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
     let github_signature_header = req
         .headers()
         .get("x-hub-signature-256")
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
     let auth_header = req
         .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
 
     // Authenticate based on webhook type — Bearer token (generic) vs HMAC (github)
     match wh.webhook_type {
@@ -402,20 +402,14 @@ pub(crate) async fn webhook_handler(
             Some(s) => s,
             None => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "GitHub webhook has no HMAC secret configured"}))).into_response(),
         };
-        let sig_header = match &github_signature_header {
-            Some(s) => s.as_str(),
-            None => {
-                webhook_auth_failure(&name);
-                return (StatusCode::UNAUTHORIZED, Json(json!({"error": "missing X-Hub-Signature-256 header"}))).into_response();
-            }
+        let sig_header = if let Some(s) = &github_signature_header { s.as_str() } else {
+            webhook_auth_failure(&name);
+            return (StatusCode::UNAUTHORIZED, Json(json!({"error": "missing X-Hub-Signature-256 header"}))).into_response();
         };
         let hex_sig = sig_header.strip_prefix("sha256=").unwrap_or(sig_header);
-        let expected_bytes = match hex::decode(hex_sig) {
-            Ok(b) => b,
-            Err(_) => {
-                webhook_auth_failure(&name);
-                return (StatusCode::UNAUTHORIZED, Json(json!({"error": "invalid signature format"}))).into_response();
-            }
+        let expected_bytes = if let Ok(b) = hex::decode(hex_sig) { b } else {
+            webhook_auth_failure(&name);
+            return (StatusCode::UNAUTHORIZED, Json(json!({"error": "invalid signature format"}))).into_response();
         };
         let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
             .expect("HMAC can take key of any size");
@@ -458,7 +452,7 @@ pub(crate) async fn webhook_handler(
     } else {
         String::from_utf8_lossy(&body_bytes).into_owned()
     };
-    let text = if prefix.is_empty() { payload_text } else { format!("{}\n\n{}", prefix, payload_text) };
+    let text = if prefix.is_empty() { payload_text } else { format!("{prefix}\n\n{payload_text}") };
 
     // Get agent engine
     let Some(engine) = state.get_engine(&wh.agent_id).await else {
@@ -466,7 +460,7 @@ pub(crate) async fn webhook_handler(
     };
 
     let msg = hydeclaw_types::IncomingMessage {
-        user_id: format!("webhook:{}", name),
+        user_id: format!("webhook:{name}"),
         context: serde_json::json!({"webhook": name}),
         text: Some(text),
         attachments: vec![],

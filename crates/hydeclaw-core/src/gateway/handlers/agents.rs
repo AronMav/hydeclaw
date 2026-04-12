@@ -129,7 +129,7 @@ pub(crate) async fn api_agents(State(state): State<AppState>) -> Json<Value> {
 // ── Agent CRUD ──
 
 pub(crate) fn agent_config_path(name: &str) -> std::path::PathBuf {
-    std::path::Path::new("config/agents").join(format!("{}.toml", name))
+    std::path::Path::new("config/agents").join(format!("{name}.toml"))
 }
 
 pub(crate) fn validate_agent_name(name: &str) -> Result<(), String> {
@@ -388,7 +388,7 @@ pub(crate) struct WatchdogPayload {
 }
 
 pub(crate) fn build_agent_config(name: String, p: AgentCreatePayload) -> AgentConfig {
-    use crate::config::*;
+    use crate::config::{AgentConfig, AgentSettings, AgentAccessConfig, HeartbeatConfig, AgentToolPolicy, CompactionConfig};
 
     AgentConfig {
         agent: AgentSettings {
@@ -479,7 +479,7 @@ pub(crate) fn build_agent_config(name: String, p: AgentCreatePayload) -> AgentCo
 }
 
 /// Start an agent from config: create engine, channel adapter, scheduler jobs.
-/// Returns the AgentHandle and optional AccessGuard.
+/// Returns the `AgentHandle` and optional `AccessGuard`.
 pub async fn start_agent_from_config(
     agent_cfg: &AgentConfig,
     state: &AppState,
@@ -497,18 +497,7 @@ pub async fn start_agent_from_config(
 
     // Use routing provider if routing rules are configured, otherwise resolve provider
     // (named connection → legacy provider_type fallback).
-    let provider = if !agent_cfg.agent.routing.is_empty() {
-        tracing::info!(
-            agent = %name,
-            routes = agent_cfg.agent.routing.len(),
-            "using multi-provider routing"
-        );
-        providers::create_routing_provider(
-            &agent_cfg.agent.routing,
-            effective_temperature,
-            state.secrets.clone(),
-        )
-    } else {
+    let provider = if agent_cfg.agent.routing.is_empty() {
         providers::resolve_provider_for_agent(
             &state.db,
             &agent_cfg.agent,
@@ -520,6 +509,17 @@ pub async fn start_agent_from_config(
             &deps.workspace_dir,
             agent_cfg.agent.base,
         ).await
+    } else {
+        tracing::info!(
+            agent = %name,
+            routes = agent_cfg.agent.routing.len(),
+            "using multi-provider routing"
+        );
+        providers::create_routing_provider(
+            &agent_cfg.agent.routing,
+            effective_temperature,
+            state.secrets.clone(),
+        )
     };
 
     let channel_router = crate::agent::channel_actions::ChannelActionRouter::new();
@@ -705,12 +705,10 @@ pub(crate) async fn api_create_agent(
 
     // Save per-agent TTS voice as scoped secret
     if let Some(ref v) = voice {
-        if !v.is_empty() {
-            if let Err(e) = state.secrets.set_scoped("TTS_VOICE", &name, v, None).await {
-                tracing::warn!(error = %e, "failed to save TTS_VOICE secret");
-            }
-        } else {
+        if v.is_empty() {
             let _ = state.secrets.delete_scoped("TTS_VOICE", &name).await;
+        } else if let Err(e) = state.secrets.set_scoped("TTS_VOICE", &name, v, None).await {
+            tracing::warn!(error = %e, "failed to save TTS_VOICE secret");
         }
     }
 
@@ -1021,7 +1019,7 @@ pub(crate) async fn api_update_agent(
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("transaction start failed: {}", e)}))).into_response(),
         };
         for table in tables_agent_id {
-            let query = format!("UPDATE {} SET agent_id = $1 WHERE agent_id = $2", table);
+            let query = format!("UPDATE {table} SET agent_id = $1 WHERE agent_id = $2");
             if let Err(e) = sqlx::query(&query)
                 .bind(&new_name)
                 .bind(&name)
@@ -1092,12 +1090,10 @@ pub(crate) async fn api_update_agent(
 
     // Save per-agent TTS voice as scoped secret
     if let Some(ref v) = voice {
-        if !v.is_empty() {
-            if let Err(e) = state.secrets.set_scoped("TTS_VOICE", &new_name, v, None).await {
-                tracing::warn!(error = %e, "failed to save TTS_VOICE secret");
-            }
-        } else {
+        if v.is_empty() {
             let _ = state.secrets.delete_scoped("TTS_VOICE", &new_name).await;
+        } else if let Err(e) = state.secrets.set_scoped("TTS_VOICE", &new_name, v, None).await {
+            tracing::warn!(error = %e, "failed to save TTS_VOICE secret");
         }
     }
 
@@ -1161,7 +1157,7 @@ async fn cleanup_agent_data(db: &sqlx::PgPool, agent_name: &str) -> Result<(), s
         "gmail_triggers", "agent_github_repos", "approval_allowlist",
         "channel_allowed_users",
     ] {
-        sqlx::query(&format!("DELETE FROM {} WHERE agent_id = $1", table))
+        sqlx::query(&format!("DELETE FROM {table} WHERE agent_id = $1"))
             .bind(agent_name).execute(&mut *tx).await?;
     }
     tx.commit().await?;

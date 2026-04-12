@@ -52,7 +52,7 @@ pub(crate) async fn api_tool_definitions(State(state): State<AppState>) -> Json<
         }
     }
 
-    let sorted: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    let sorted: Vec<&str> = names.iter().map(std::string::String::as_str).collect();
     Json(json!({ "tools": sorted }))
 }
 
@@ -65,8 +65,7 @@ pub(crate) async fn api_list_tools(State(state): State<AppState>) -> Json<Value>
     let tools: Vec<_> = tools.into_iter().map(|mut t| {
         let is_managed = t.get("name")
             .and_then(|n| n.as_str())
-            .map(|n| managed.iter().any(|m| m == n))
-            .unwrap_or(false);
+            .is_some_and(|n| managed.iter().any(|m| m == n));
         t["managed"] = json!(is_managed);
         t
     }).collect();
@@ -87,7 +86,7 @@ pub(crate) async fn api_tool_service_create(
         Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response(),
     };
     match crate::tools::service_registry::save_service_entry(crate::config::WORKSPACE_DIR, &entry).await {
-        Ok(_) => {
+        Ok(()) => {
             reload_tool_registry(&state).await;
             Json(json!({"ok": true, "name": entry.name})).into_response()
         }
@@ -106,7 +105,7 @@ pub(crate) async fn api_tool_service_update(
     };
     entry.name = name;
     match crate::tools::service_registry::save_service_entry(crate::config::WORKSPACE_DIR, &entry).await {
-        Ok(_) => {
+        Ok(()) => {
             reload_tool_registry(&state).await;
             Json(json!({"ok": true})).into_response()
         }
@@ -194,7 +193,7 @@ pub(crate) async fn api_mcp_update(
     // so serde defaults it to `true`, which would reset a disabled server on every edit.
     // The toggle endpoint (/api/mcp/{name}/toggle) handles enabled changes separately.
     {
-        let path = std::path::Path::new(crate::config::MCP_DIR).join(format!("{}.yaml", name));
+        let path = std::path::Path::new(crate::config::MCP_DIR).join(format!("{name}.yaml"));
         if let Ok(existing_content) = tokio::fs::read_to_string(&path).await
             && let Ok(existing) = serde_yaml::from_str::<crate::config::McpFileEntry>(&existing_content)
         {

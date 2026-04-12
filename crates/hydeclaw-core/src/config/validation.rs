@@ -5,7 +5,7 @@ use super::AppConfig;
 /// A single field-level validation error returned by [`validate_config`].
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ValidationError {
-    /// Dot-separated field path (e.g. "toolgate_url", "gateway.listen").
+    /// Dot-separated field path (e.g. "`toolgate_url`", "gateway.listen").
     pub field: String,
     /// Human-readable error description.
     pub message: String,

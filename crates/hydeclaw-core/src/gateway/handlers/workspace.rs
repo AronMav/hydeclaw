@@ -16,7 +16,7 @@ pub(crate) fn routes() -> Router<AppState> {
 }
 
 /// Resolve and validate a path within the workspace/ directory.
-/// Returns (base_dir, target_path) where target is guaranteed strictly inside workspace.
+/// Returns (`base_dir`, `target_path`) where target is guaranteed strictly inside workspace.
 async fn resolve_workspace_path(rel_path: &str) -> Result<(std::path::PathBuf, std::path::PathBuf), (StatusCode, Json<Value>)> {
     let base = std::path::Path::new(crate::config::WORKSPACE_DIR);
     let _ = tokio::fs::create_dir_all(base).await;
@@ -79,7 +79,7 @@ async fn list_dir_entries(dir: &std::path::Path) -> Result<Vec<Value>, String> {
 }
 
 pub(crate) fn format_workspace_size(bytes: u64) -> String {
-    if bytes < 1024 { format!("{} B", bytes) }
+    if bytes < 1024 { format!("{bytes} B") }
     else if bytes < 1024 * 1024 { format!("{:.1} KB", bytes as f64 / 1024.0) }
     else { format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0)) }
 }
@@ -89,7 +89,7 @@ pub(crate) fn format_workspace_size(bytes: u64) -> String {
 pub(crate) async fn api_workspace_browse(
     path: Option<axum::extract::Path<String>>,
 ) -> impl IntoResponse {
-    let rel_path = path.as_ref().map(|p| p.as_str()).unwrap_or(".");
+    let rel_path = path.as_ref().map_or(".", |p| p.as_str());
 
     let (_, target) = match resolve_workspace_path(if rel_path.is_empty() { "." } else { rel_path }).await {
         Ok(v) => v,
@@ -152,7 +152,7 @@ pub(crate) async fn api_workspace_delete(
         // ENOTEMPTY = 39 on Linux, 145 on Windows.
         match tokio::fs::remove_dir(&target).await {
             Ok(()) => Json(json!({"ok": true})).into_response(),
-            Err(e) if matches!(e.raw_os_error(), Some(39) | Some(145)) => {
+            Err(e) if matches!(e.raw_os_error(), Some(39 | 145)) => {
                 (StatusCode::CONFLICT, Json(json!({"error": "Directory is not empty"}))).into_response()
             }
             Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),

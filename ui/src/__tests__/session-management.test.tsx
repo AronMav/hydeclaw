@@ -205,7 +205,7 @@ describe("Session Management (SESS)", () => {
   // ── SESS-01: ParticipantBar renders avatar chips ─────────────────────────
 
   describe("SESS-01: ParticipantBar renders participant avatars", () => {
-    it("renders avatar chips for each participant when session has multiple participants", () => {
+    it("renders nothing for sessions (ParticipantBar is hidden in this version)", () => {
       mockSessionsRef.current = {
         sessions: [{
           id: "s1",
@@ -225,71 +225,15 @@ describe("Session Management (SESS)", () => {
         { name: "Claude", model: "claude-3" },
       ];
 
-      render(<ParticipantBar sessionId="s1" currentAgent="Agent1" />);
-
-      // Both participants should have name labels
-      expect(screen.getByText("Agent1")).toBeInTheDocument();
-      expect(screen.getByText("Claude")).toBeInTheDocument();
-    });
-
-    it("renders nothing for single-participant sessions", () => {
-      mockSessionsRef.current = {
-        sessions: [{
-          id: "s1",
-          agent_id: "Agent1",
-          user_id: "user1",
-          channel: "web",
-          started_at: "2026-01-01T00:00:00Z",
-          last_message_at: "2026-01-01T00:01:00Z",
-          title: "Single agent session",
-          run_status: null,
-          metadata: null,
-          participants: ["Agent1"],
-        }],
-      };
-
       const { container } = render(<ParticipantBar sessionId="s1" currentAgent="Agent1" />);
       expect(container.innerHTML).toBe("");
-    });
-
-    it("renders nothing when sessionId is null", () => {
-      const { container } = render(<ParticipantBar sessionId={null} currentAgent="Agent1" />);
-      expect(container.innerHTML).toBe("");
-    });
-
-    it("renders agent icon image when agentIcons has entry for participant", () => {
-      mockSessionsRef.current = {
-        sessions: [{
-          id: "s1",
-          agent_id: "Agent1",
-          user_id: "user1",
-          channel: "web",
-          started_at: "2026-01-01T00:00:00Z",
-          last_message_at: "2026-01-01T00:01:00Z",
-          title: "Test",
-          run_status: null,
-          metadata: null,
-          participants: ["Agent1", "Claude"],
-        }],
-      };
-      mockAgentsRef.current = [
-        { name: "Agent1", model: "gpt-4" },
-        { name: "Claude", model: "claude-3" },
-      ];
-
-      const { container } = render(<ParticipantBar sessionId="s1" currentAgent="Agent1" />);
-
-      // Radix Avatar doesn't render <img> in jsdom (no image load events);
-      // verify the Avatar container is rendered for the participant with an icon
-      const avatars = container.querySelectorAll('[data-slot="avatar"]');
-      expect(avatars.length).toBe(2); // one per participant
     });
   });
 
   // ── SESS-02: Invite flow via (+) button ──────────────────────────────────
 
   describe("SESS-02: ParticipantBar invite flow", () => {
-    it("shows (+) button when there are uninvited agents available", () => {
+    it("shows nothing even when uninvited agents available (ParticipantBar is hidden)", () => {
       mockSessionsRef.current = {
         sessions: [{
           id: "s1",
@@ -311,139 +255,16 @@ describe("Session Management (SESS)", () => {
         { name: "Sage", model: "gpt-4" },
       ];
 
-      render(<ParticipantBar sessionId="s1" currentAgent="Agent1" />);
-
-      // The (+) button should be rendered (it's a Plus icon inside a button)
-      const plusButton = screen.getByRole("button");
-      expect(plusButton).toBeInTheDocument();
-    });
-
-    it("does NOT show (+) button when all agents are already participants", () => {
-      mockSessionsRef.current = {
-        sessions: [{
-          id: "s1",
-          agent_id: "Agent1",
-          user_id: "user1",
-          channel: "web",
-          started_at: "2026-01-01T00:00:00Z",
-          last_message_at: "2026-01-01T00:01:00Z",
-          title: "Test",
-          run_status: null,
-          metadata: null,
-          participants: ["Agent1", "Claude"],
-        }],
-      };
-      // All agents are already participants
-      mockAgentsRef.current = [
-        { name: "Agent1", model: "gpt-4" },
-        { name: "Claude", model: "claude-3" },
-      ];
-
-      render(<ParticipantBar sessionId="s1" currentAgent="Agent1" />);
-
-      // No button should exist since there are no agents to invite
-      expect(screen.queryByRole("button")).not.toBeInTheDocument();
-    });
-
-    it("renders (+) dropdown trigger with available uninvited agents and wires inviteAgent", () => {
-      mockSessionsRef.current = {
-        sessions: [{
-          id: "s1",
-          agent_id: "Agent1",
-          user_id: "user1",
-          channel: "web",
-          started_at: "2026-01-01T00:00:00Z",
-          last_message_at: "2026-01-01T00:01:00Z",
-          title: "Test",
-          run_status: null,
-          metadata: null,
-          participants: ["Agent1", "Claude"],
-        }],
-      };
-      mockAgentsRef.current = [
-        { name: "Agent1", model: "gpt-4" },
-        { name: "Claude", model: "claude-3" },
-        { name: "Sage", model: "gpt-4" },
-      ];
-
-      render(<ParticipantBar sessionId="s1" currentAgent="Agent1" />);
-
-      // The (+) button exists as a dropdown trigger
-      const plusButton = screen.getByRole("button");
-      expect(plusButton).toBeInTheDocument();
-
-      // Verify the dropdown trigger has data-slot attribute from Radix
-      expect(plusButton.getAttribute("data-slot")).toBe("dropdown-menu-trigger");
-
-      // The inviteAgent function is imported and wired into the onClick of DropdownMenuItem.
-      // Radix DropdownMenu content is rendered via portal which jsdom doesn't fully support,
-      // but the wiring is verified by the fact that:
-      // 1. The trigger button renders when available.length > 0
-      // 2. The inviteAgent import exists in page.tsx and is called in the onClick handler
-      // 3. queryClient.invalidateQueries is called after inviteAgent resolves (verified in source)
+      const { container } = render(<ParticipantBar sessionId="s1" currentAgent="Agent1" />);
+      expect(container.innerHTML).toBe("");
     });
   });
 
   // ── SESS-03: Sessions query includes currentAgent ────────────────────────
 
   describe("SESS-03: Sidebar session filtering by participant", () => {
-    it("useSessions receives currentAgent which maps to API query param for participant filtering", () => {
-      // This test verifies the frontend contract: useSessions(currentAgent) is called,
-      // which creates query key ["sessions", "list", agent] and fetches /api/sessions?agent=X.
-      // The backend SQL uses WHERE agent_id = $1 OR $1 = ANY(participants).
-      //
-      // We verify the hook is called with the correct agent by rendering ParticipantBar
-      // and checking that the sessions data is agent-specific.
-      mockSessionsRef.current = {
-        sessions: [{
-          id: "shared-session",
-          agent_id: "Claude",
-          user_id: "user1",
-          channel: "web",
-          started_at: "2026-01-01T00:00:00Z",
-          last_message_at: "2026-01-01T00:01:00Z",
-          title: "Shared session",
-          run_status: null,
-          metadata: null,
-          participants: ["Claude", "Agent1"],
-        }],
-      };
-      mockAgentsRef.current = [] as Array<{ name: string; model: string }>;
-
-      // Render with Agent1 as currentAgent -- session owned by Claude but with Agent1 as participant
-      render(<ParticipantBar sessionId="shared-session" currentAgent="Agent1" />);
-
-      // If filtering works, the session is found and participants are rendered
-      expect(screen.getByText("Claude")).toBeInTheDocument();
-      expect(screen.getByText("Agent1")).toBeInTheDocument();
-    });
-
-    it("query key includes agent name for proper cache invalidation", () => {
-      // The query key structure is ["sessions", "list", agent] -- verified by code inspection.
-      // This test documents the contract: different agents have different cache entries.
-      // We import qk directly to verify.
-      // Since qk is mocked, we verify the pattern through the useSessions mock behavior:
-      // changing currentAgent should conceptually return different session lists.
-
-      // With Agent1 sessions
-      mockSessionsRef.current = {
-        sessions: [{
-          id: "agent1-session",
-          agent_id: "Agent1",
-          user_id: "user1",
-          channel: "web",
-          started_at: "2026-01-01T00:00:00Z",
-          last_message_at: "2026-01-01T00:01:00Z",
-          title: "Agent1 only",
-          run_status: null,
-          metadata: null,
-          participants: ["Agent1", "Claude"],
-        }],
-      };
-
-      const { unmount } = render(<ParticipantBar sessionId="agent1-session" currentAgent="Agent1" />);
-      expect(screen.getByText("Agent1")).toBeInTheDocument();
-      unmount();
+    it("is skipped for ParticipantBar since it is hidden", () => {
+       // ParticipantBar returns null, so no need to verify its output here.
     });
   });
 

@@ -6,7 +6,7 @@ use serde::Serialize;
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
-/// Record a single tool execution (fire-and-forget via tokio::spawn).
+/// Record a single tool execution (fire-and-forget via `tokio::spawn`).
 #[allow(clippy::too_many_arguments)]
 pub async fn record_tool_execution(
     db: &PgPool,
@@ -73,7 +73,7 @@ pub async fn query_tool_audit(
     Ok(rows)
 }
 
-/// Delete audit_log entries older than retention_days.
+/// Delete `audit_log` entries older than `retention_days`.
 pub async fn cleanup_old_entries(db: &PgPool, retention_days: u32) -> Result<u64> {
     if retention_days == 0 {
         return Ok(0);

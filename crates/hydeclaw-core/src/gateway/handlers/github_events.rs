@@ -28,7 +28,7 @@ pub fn parse_github_event(event_type: &str, payload: &Value) -> GitHubEvent {
     let action = payload
         .get("action")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
 
     let (summary, url) = match event_type {
         "push" => parse_push(payload, &repo, &sender),
@@ -39,7 +39,7 @@ pub fn parse_github_event(event_type: &str, payload: &Value) -> GitHubEvent {
         "check_run" | "check_suite" => parse_ci(event_type, payload, &repo),
         "release" => parse_release(payload, &repo, &sender, action.as_deref()),
         _ => (
-            format!("GitHub event '{}' in {}", event_type, repo),
+            format!("GitHub event '{event_type}' in {repo}"),
             None,
         ),
     };
@@ -63,7 +63,7 @@ fn parse_push(payload: &Value, repo: &str, sender: &str) -> (String, Option<Stri
         .unwrap_or("unknown");
 
     let commits = payload.get("commits").and_then(|v| v.as_array());
-    let count = commits.map(|c| c.len()).unwrap_or(0);
+    let count = commits.map_or(0, std::vec::Vec::len);
 
     let messages: Vec<&str> = commits
         .map(|arr| {
@@ -80,7 +80,7 @@ fn parse_push(payload: &Value, repo: &str, sender: &str) -> (String, Option<Stri
         let quoted: Vec<String> = messages.iter().map(|m| {
             // Take first line only
             let first_line = m.lines().next().unwrap_or(m);
-            format!("'{}'", first_line)
+            format!("'{first_line}'")
         }).collect();
         format!(": {}", quoted.join(", "))
     };
@@ -88,7 +88,7 @@ fn parse_push(payload: &Value, repo: &str, sender: &str) -> (String, Option<Stri
     let url = payload
         .get("compare")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
 
     (
         format!(
@@ -113,7 +113,7 @@ fn parse_pull_request(
     let pr = payload.get("pull_request");
     let number = pr
         .and_then(|p| p.get("number"))
-        .and_then(|n| n.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     let title = pr
         .and_then(|p| p.get("title"))
@@ -122,13 +122,12 @@ fn parse_pull_request(
     let url = pr
         .and_then(|p| p.get("html_url"))
         .and_then(|u| u.as_str())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
     let action_str = action.unwrap_or("unknown");
 
     (
         format!(
-            "PR #{} {} by @{} in {}: '{}'",
-            number, action_str, sender, repo, title
+            "PR #{number} {action_str} by @{sender} in {repo}: '{title}'"
         ),
         url,
     )
@@ -143,7 +142,7 @@ fn parse_issues(
     let issue = payload.get("issue");
     let number = issue
         .and_then(|i| i.get("number"))
-        .and_then(|n| n.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     let title = issue
         .and_then(|i| i.get("title"))
@@ -152,13 +151,12 @@ fn parse_issues(
     let url = issue
         .and_then(|i| i.get("html_url"))
         .and_then(|u| u.as_str())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
     let action_str = action.unwrap_or("unknown");
 
     (
         format!(
-            "Issue #{} {} by @{} in {}: '{}'",
-            number, action_str, sender, repo, title
+            "Issue #{number} {action_str} by @{sender} in {repo}: '{title}'"
         ),
         url,
     )
@@ -171,7 +169,7 @@ fn parse_issue_comment(
 ) -> (String, Option<String>) {
     let issue_number = payload
         .pointer("/issue/number")
-        .and_then(|n| n.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     let body = payload
         .pointer("/comment/body")
@@ -185,12 +183,11 @@ fn parse_issue_comment(
     let url = payload
         .pointer("/comment/html_url")
         .and_then(|u| u.as_str())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
 
     (
         format!(
-            "Comment by @{} on issue #{} in {}: '{}'",
-            sender, issue_number, repo, body_preview
+            "Comment by @{sender} on issue #{issue_number} in {repo}: '{body_preview}'"
         ),
         url,
     )
@@ -203,7 +200,7 @@ fn parse_pr_review(
 ) -> (String, Option<String>) {
     let pr_number = payload
         .pointer("/pull_request/number")
-        .and_then(|n| n.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     let state = payload
         .pointer("/review/state")
@@ -212,12 +209,11 @@ fn parse_pr_review(
     let url = payload
         .pointer("/review/html_url")
         .and_then(|u| u.as_str())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
 
     (
         format!(
-            "Review {} by @{} on PR #{} in {}",
-            state, sender, pr_number, repo
+            "Review {state} by @{sender} on PR #{pr_number} in {repo}"
         ),
         url,
     )
@@ -250,8 +246,7 @@ fn parse_ci(
 
     (
         format!(
-            "CI '{}' {} on {} in {}",
-            name, conclusion, sha_short, repo
+            "CI '{name}' {conclusion} on {sha_short} in {repo}"
         ),
         None,
     )
@@ -271,13 +266,12 @@ fn parse_release(
     let url = release
         .and_then(|r| r.get("html_url"))
         .and_then(|u| u.as_str())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
     let action_str = action.unwrap_or("unknown");
 
     (
         format!(
-            "Release {} {} in {} by @{}",
-            tag_name, action_str, repo, sender
+            "Release {tag_name} {action_str} in {repo} by @{sender}"
         ),
         url,
     )

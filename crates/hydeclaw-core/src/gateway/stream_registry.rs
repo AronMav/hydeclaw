@@ -31,7 +31,7 @@ struct ActiveStream {
     finished: AtomicBool,
     #[allow(dead_code)]
     session_id: Uuid,
-    /// Link to stream_jobs row in PostgreSQL for persistence.
+    /// Link to `stream_jobs` row in `PostgreSQL` for persistence.
     pub job_id: Uuid,
     #[allow(dead_code)]
     created_at: Instant,
@@ -61,7 +61,7 @@ impl StreamRegistry {
     }
 
     /// Register a new active stream for a session.
-    /// Creates a DB job for persistence. Returns (CancellationToken, job_id).
+    /// Creates a DB job for persistence. Returns (`CancellationToken`, `job_id`).
     pub async fn register(&self, session_id: Uuid, agent_id: &str) -> Option<(CancellationToken, Uuid)> {
         // Create persistent job in DB
         let job_id = match stream_jobs::create_job(&self.db, session_id, agent_id).await {
@@ -133,7 +133,7 @@ impl StreamRegistry {
     /// Push an SSE JSON event string into the buffer and broadcast to subscribers.
     /// Returns the assigned monotonic event ID.
     ///
-    /// Uses a **read lock** on the HashMap (concurrent with other streams)
+    /// Uses a **read lock** on the `HashMap` (concurrent with other streams)
     /// plus a per-stream Mutex (serializes events within the same stream).
     pub async fn push_event(&self, session_id: &str, event_json: &str) -> u64 {
         let streams = self.streams.read().await;
@@ -156,7 +156,7 @@ impl StreamRegistry {
         }
     }
 
-    /// Set in-memory finished state and return job_id (under lock).
+    /// Set in-memory finished state and return `job_id` (under lock).
     async fn set_finished_state(&self, session_id: &str) -> Option<Uuid> {
         let streams = self.streams.read().await;
         let stream = streams.get(session_id)?;
@@ -187,11 +187,11 @@ impl StreamRegistry {
         &self.db
     }
 
-    /// Subscribe to a stream: returns (buffered events snapshot, broadcast receiver, is_finished).
+    /// Subscribe to a stream: returns (buffered events snapshot, broadcast receiver, `is_finished`).
     ///
     /// The subscribe + snapshot is atomic (same per-stream lock) to prevent event loss.
     /// The receiver is created BEFORE the snapshot, so any events pushed between
-    /// subscribe() and the first recv() will appear in both the snapshot and the receiver.
+    /// `subscribe()` and the first `recv()` will appear in both the snapshot and the receiver.
     /// The caller must deduplicate using the snapshot length as an offset.
     pub async fn subscribe(
         &self,
@@ -207,7 +207,7 @@ impl StreamRegistry {
         Some((snapshot, rx, finished))
     }
 
-    /// Remove finished streams older than max_age.
+    /// Remove finished streams older than `max_age`.
     /// Two-phase: read lock to identify candidates, write lock only for removal.
     pub async fn cleanup(&self, max_age: Duration) {
         let now = Instant::now();

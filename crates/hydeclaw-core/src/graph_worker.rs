@@ -1,5 +1,5 @@
 //! Background graph extraction worker.
-//! Processes graph_extraction_queue one document at a time
+//! Processes `graph_extraction_queue` one document at a time
 //! with adaptive rate limiting. Pauses during active chats.
 //! Auto-restarts on panic.
 
@@ -13,7 +13,7 @@ use crate::agent::providers::LlmProvider;
 /// Active chat counter. Worker pauses when > 0.
 pub static ACTIVE_CHATS: AtomicUsize = AtomicUsize::new(0);
 
-/// RAII guard that increments ACTIVE_CHATS on creation, decrements on drop.
+/// RAII guard that increments `ACTIVE_CHATS` on creation, decrements on drop.
 pub struct ChatActiveGuard;
 
 impl ChatActiveGuard {
@@ -66,11 +66,11 @@ pub fn spawn_worker(db: PgPool, provider: Arc<dyn LlmProvider>, cancel: Cancella
             if let Err(e) = worker_loop(&db, &provider, &cancel).await {
                 tracing::error!(error = %e, "graph extraction worker error, restarting in 30s");
                 tokio::select! {
-                    _ = cancel.cancelled() => {
+                    () = cancel.cancelled() => {
                         tracing::info!("graph extraction worker shutting down (cancelled during restart backoff)");
                         break;
                     }
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+                    () = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
                 }
             } else {
                 // worker_loop returned Ok — cancelled
@@ -91,8 +91,8 @@ async fn worker_loop(db: &PgPool, provider: &Arc<dyn LlmProvider>, cancel: &Canc
         // Pause while chats are active
         if ACTIVE_CHATS.load(Ordering::Relaxed) > 0 {
             tokio::select! {
-                _ = cancel.cancelled() => return Ok(()),
-                _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                () = cancel.cancelled() => return Ok(()),
+                () = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
             }
             continue;
         }
@@ -117,8 +117,8 @@ async fn worker_loop(db: &PgPool, provider: &Arc<dyn LlmProvider>, cancel: &Canc
                 tracing::warn!(error = %e, "graph worker: DB query failed");
                 consecutive_errors += 1;
                 tokio::select! {
-                    _ = cancel.cancelled() => return Ok(()),
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+                    () = cancel.cancelled() => return Ok(()),
+                    () = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
                 }
                 continue;
             }
@@ -127,8 +127,8 @@ async fn worker_loop(db: &PgPool, provider: &Arc<dyn LlmProvider>, cancel: &Canc
         let Some((chunk_id, content)) = item else {
             // Queue empty — sleep and check again
             tokio::select! {
-                _ = cancel.cancelled() => return Ok(()),
-                _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+                () = cancel.cancelled() => return Ok(()),
+                () = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
             }
             consecutive_errors = 0;
             continue;
@@ -152,7 +152,7 @@ async fn worker_loop(db: &PgPool, provider: &Arc<dyn LlmProvider>, cancel: &Canc
         while end > 0 && !content.is_char_boundary(end) { end -= 1; }
         let truncated = &content[..end];
         tokio::select! {
-            _ = cancel.cancelled() => {
+            () = cancel.cancelled() => {
                 tracing::info!("graph worker cancelled during extraction");
                 return Ok(());
             }
@@ -174,8 +174,8 @@ async fn worker_loop(db: &PgPool, provider: &Arc<dyn LlmProvider>, cancel: &Canc
                         consecutive_errors = 0;
                         tracing::debug!(chunk = %chunk_id, entities = count, "extraction ok");
                         tokio::select! {
-                            _ = cancel.cancelled() => return Ok(()),
-                            _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {}
+                            () = cancel.cancelled() => return Ok(()),
+                            () = tokio::time::sleep(std::time::Duration::from_secs(3)) => {}
                         }
                     }
                     Ok(Err(e)) => {
@@ -190,11 +190,11 @@ async fn worker_loop(db: &PgPool, provider: &Arc<dyn LlmProvider>, cancel: &Canc
                             tracing::error!(error = %db_err, "graph_worker: failed to update extraction status");
                         }
                         consecutive_errors += 1;
-                        let delay = std::cmp::min(10 * consecutive_errors as u64, 120);
+                        let delay = std::cmp::min(10 * u64::from(consecutive_errors), 120);
                         tracing::warn!(chunk = %chunk_id, error = %e, delay, "extraction failed");
                         tokio::select! {
-                            _ = cancel.cancelled() => return Ok(()),
-                            _ = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {}
+                            () = cancel.cancelled() => return Ok(()),
+                            () = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {}
                         }
                     }
                     Err(_) => {
@@ -210,8 +210,8 @@ async fn worker_loop(db: &PgPool, provider: &Arc<dyn LlmProvider>, cancel: &Canc
                         consecutive_errors += 1;
                         tracing::warn!(chunk = %chunk_id, "extraction timed out (60s)");
                         tokio::select! {
-                            _ = cancel.cancelled() => return Ok(()),
-                            _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {}
+                            () = cancel.cancelled() => return Ok(()),
+                            () = tokio::time::sleep(std::time::Duration::from_secs(10)) => {}
                         }
                     }
                 }

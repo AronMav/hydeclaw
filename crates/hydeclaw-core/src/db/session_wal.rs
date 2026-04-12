@@ -1,6 +1,6 @@
 //! Session WAL (Write-Ahead Log) — journal table for session lifecycle events.
 //!
-//! During normal operation, session state transitions (running, tool_start, tool_end,
+//! During normal operation, session state transitions (running, `tool_start`, `tool_end`,
 //! done, failed) are logged to `session_events`. On crash recovery, this WAL is read
 //! to identify what was in-flight and reconstruct state cleanly — no synthetic
 //! "[interrupted]" messages are injected.

@@ -1,7 +1,7 @@
 /// Workspace-based infrastructure service loader.
 ///
 /// Service configs live flat in `workspace/tools/*.yaml` alongside YAML tools.
-/// Each file defines one service endpoint: name, type, url, max_concurrent, healthcheck.
+/// Each file defines one service endpoint: name, type, url, `max_concurrent`, healthcheck.
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -77,21 +77,18 @@ pub async fn load_service_entries(workspace_dir: &str) -> Vec<ServiceFileEntry> 
             }
         };
 
-        match serde_yaml::from_str::<ServiceFileEntry>(&content) {
-            Ok(entry) => {
-                tracing::debug!(service = %entry.name, "loaded service config");
-                entries.push(entry);
-            }
-            Err(_) => {
-                // Silently skip non-service YAML files (e.g. tool definitions)
-            }
+        if let Ok(entry) = serde_yaml::from_str::<ServiceFileEntry>(&content) {
+            tracing::debug!(service = %entry.name, "loaded service config");
+            entries.push(entry);
+        } else {
+            // Silently skip non-service YAML files (e.g. tool definitions)
         }
     }
 
     entries
 }
 
-/// Load service configs as a HashMap keyed by name (for ToolRegistry).
+/// Load service configs as a `HashMap` keyed by name (for `ToolRegistry`).
 pub async fn load_service_map(workspace_dir: &str) -> HashMap<String, ToolConfig> {
     let entries = load_service_entries(workspace_dir).await;
     entries
@@ -118,7 +115,7 @@ pub async fn save_service_entry(workspace_dir: &str, entry: &ServiceFileEntry) -
 
 /// Delete a service config file. Returns true if the file existed and was deleted.
 pub async fn delete_service_entry(workspace_dir: &str, name: &str) -> Result<bool> {
-    let path = services_dir(workspace_dir).join(format!("{}.yaml", name));
+    let path = services_dir(workspace_dir).join(format!("{name}.yaml"));
     if !path.exists() {
         return Ok(false);
     }

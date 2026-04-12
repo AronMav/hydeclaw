@@ -1,7 +1,7 @@
 //! Prompt injection detection and external content wrapping.
 
-/// Injection pattern: (trigger, context_words, label).
-/// Trigger must be present. If context_words is non-empty, at least one must also match.
+/// Injection pattern: (trigger, `context_words`, label).
+/// Trigger must be present. If `context_words` is non-empty, at least one must also match.
 const INJECTION_PATTERNS: &[(&str, &[&str], &str)] = &[
     ("ignore", &["previous instructions", "prior instructions", "above instructions"], "ignore_previous_instructions"),
     ("disregard", &["above", "previous"], "disregard_previous"),
@@ -48,8 +48,7 @@ pub fn detect_prompt_injection(text: &str) -> Vec<&'static str> {
 /// This helps the LLM distinguish between user instructions and fetched data.
 pub fn wrap_external_content(content: &str, source: &str) -> String {
     format!(
-        "<<<EXTERNAL_CONTENT source=\"{}\">>>\n{}\n<<<END_EXTERNAL_CONTENT>>>",
-        source, content
+        "<<<EXTERNAL_CONTENT source=\"{source}\">>>\n{content}\n<<<END_EXTERNAL_CONTENT>>>"
     )
 }
 

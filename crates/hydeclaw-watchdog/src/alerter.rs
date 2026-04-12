@@ -97,9 +97,7 @@ impl Alerter {
             .unwrap_or_default();
 
         let events = body["alert_events"]
-            .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-            .unwrap_or_else(|| vec!["down".into(), "restart".into(), "recovery".into(), "resource".into()]);
+            .as_array().map_or_else(|| vec!["down".into(), "restart".into(), "recovery".into(), "resource".into()], |arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect());
 
         Some(AlertConfig { channel_ids, events })
     }
@@ -124,7 +122,7 @@ impl Alerter {
                 .await
             {
                 Ok(r) if r.status().is_success() => {
-                    tracing::info!(event = event_type, channel = %channel_id, "alert sent")
+                    tracing::info!(event = event_type, channel = %channel_id, "alert sent");
                 }
                 Ok(r) => {
                     let status = r.status();

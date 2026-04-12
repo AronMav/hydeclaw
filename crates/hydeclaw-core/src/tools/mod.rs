@@ -67,7 +67,7 @@ impl ToolRegistry {
         let new_map = Self::build_map(tools);
         let mut guard = self.tools.write().await;
         // Preserve health status for tools that still exist with same URL
-        for (name, new_entry) in new_map.iter() {
+        for (name, new_entry) in &new_map {
             if let Some(old) = guard.get(name)
                 && old.url == new_entry.url {
                     new_entry.available.store(
@@ -98,15 +98,15 @@ impl ToolRegistry {
             let guard = self.tools.read().await;
             let tool = guard
                 .get(name)
-                .ok_or_else(|| anyhow::anyhow!("tool not found: {}", name))?;
+                .ok_or_else(|| anyhow::anyhow!("tool not found: {name}"))?;
             if !tool.available.load(Ordering::Relaxed) {
-                anyhow::bail!("tool unavailable: {}", name);
+                anyhow::bail!("tool unavailable: {name}");
             }
             (tool.url.clone(), tool.semaphore.clone(), true)
         };
 
         if !available {
-            anyhow::bail!("tool unavailable: {}", name);
+            anyhow::bail!("tool unavailable: {name}");
         }
 
         let _permit = semaphore.acquire().await?;
@@ -122,7 +122,7 @@ impl ToolRegistry {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("tool {} returned {}: {}", name, status, body);
+            anyhow::bail!("tool {name} returned {status}: {body}");
         }
 
         let result: serde_json::Value = resp.json().await?;

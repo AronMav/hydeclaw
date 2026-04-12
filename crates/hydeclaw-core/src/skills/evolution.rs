@@ -79,11 +79,11 @@ pub async fn analyze_and_evolve(
         let skill_name = rest.split_whitespace().next().unwrap_or("");
         tracing::info!(skill = skill_name, agent = agent_name, "skill evolution: FIX suggested");
         if let Ok(content) = tokio::fs::read_to_string(
-            format!("workspace/skills/{}.md", skill_name)
+            format!("workspace/skills/{skill_name}.md")
         ).await {
             let _ = crate::db::skill_versions::save_version(
                 db, skill_name, &content, "pre-fix", None,
-                Some(&format!("Before auto-fix for agent {}", agent_name)),
+                Some(&format!("Before auto-fix for agent {agent_name}")),
             ).await;
         }
         tracing::info!(analysis = %analysis, "FIX analysis recorded");

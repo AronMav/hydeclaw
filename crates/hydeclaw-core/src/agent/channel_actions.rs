@@ -7,11 +7,11 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 #[derive(Debug)]
 pub struct ChannelAction {
     /// Action name: "react", "pin", "unpin", "edit", "delete", "reply",
-    /// "send_message", "send_voice", etc.
+    /// "`send_message`", "`send_voice`", etc.
     pub name: String,
     /// Action-specific parameters (e.g. {"emoji": "👍"}, {"text": "..."}).
     pub params: serde_json::Value,
-    /// Opaque context echoed from the incoming message (e.g. {"chat_id": 123, "message_id": 42}).
+    /// Opaque context echoed from the incoming message (e.g. {"`chat_id"`: 123, "`message_id"`: 42}).
     pub context: serde_json::Value,
     /// Reply channel for the action result.
     pub reply: oneshot::Sender<Result<(), String>>,
@@ -27,7 +27,7 @@ pub type ChannelActionRx = mpsc::Receiver<ChannelAction>;
 const CHANNEL_ACTION_CAPACITY: usize = 64;
 
 /// Multi-channel dispatcher: routes actions to the correct channel adapter.
-/// Key = "{channel_type}:{uuid}" (e.g. "telegram:abc-123").
+/// Key = "{`channel_type}:{uuid`}" (e.g. "telegram:abc-123").
 #[derive(Clone)]
 pub struct ChannelActionRouter {
     channels: Arc<RwLock<HashMap<String, mpsc::Sender<ChannelAction>>>>,
@@ -40,7 +40,7 @@ impl ChannelActionRouter {
         }
     }
 
-    /// Register a new channel adapter. Returns (connection_id, receiver).
+    /// Register a new channel adapter. Returns (`connection_id`, receiver).
     /// Uses unique connection ID to prevent race conditions on reconnect.
     pub async fn subscribe(&self, channel_type: &str) -> (String, ChannelActionRx) {
         let conn_id = format!("{}:{}", channel_type, uuid::Uuid::new_v4());
@@ -55,18 +55,18 @@ impl ChannelActionRouter {
     }
 
     /// Send an action to the appropriate channel.
-    /// If target_channel is set, routes to that specific channel.
+    /// If `target_channel` is set, routes to that specific channel.
     /// Otherwise sends to the first available channel.
     pub async fn send(&self, action: ChannelAction) -> Result<(), String> {
         let channels = self.channels.read().await;
         let target = action.target_channel.clone();
 
         if let Some(ref target_type) = target {
-            if let Some((_, tx)) = channels.iter().find(|(k, _)| k.starts_with(&format!("{}:", target_type))) {
+            if let Some((_, tx)) = channels.iter().find(|(k, _)| k.starts_with(&format!("{target_type}:"))) {
                 try_send_action(tx, action, target_type)?;
                 return Ok(());
             }
-            return Err(format!("channel '{}' not connected", target_type));
+            return Err(format!("channel '{target_type}' not connected"));
         }
 
         // No target specified — send to first available
@@ -89,7 +89,7 @@ impl ChannelActionRouter {
     pub async fn connected_types(&self) -> Vec<String> {
         let channels = self.channels.read().await;
         let mut types: Vec<String> = channels.keys()
-            .filter_map(|k| k.split(':').next().map(|s| s.to_string()))
+            .filter_map(|k| k.split(':').next().map(std::string::ToString::to_string))
             .collect();
         types.sort();
         types.dedup();
@@ -104,7 +104,7 @@ fn try_send_action(
     label: &str,
 ) -> Result<(), String> {
     tx.try_send(action).map_err(|e| match e {
-        mpsc::error::TrySendError::Full(_) => format!("channel '{}' queue full ({})", label, CHANNEL_ACTION_CAPACITY),
-        mpsc::error::TrySendError::Closed(_) => format!("channel '{}' disconnected", label),
+        mpsc::error::TrySendError::Full(_) => format!("channel '{label}' queue full ({CHANNEL_ACTION_CAPACITY})"),
+        mpsc::error::TrySendError::Closed(_) => format!("channel '{label}' disconnected"),
     })
 }

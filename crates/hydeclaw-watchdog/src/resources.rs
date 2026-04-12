@@ -99,8 +99,8 @@ async fn check_graph_worker_stuck(
     timeout_secs: u64,
 ) -> bool {
     let resp = http
-        .get(format!("{}/api/memory/extraction-queue", core_url))
-        .header("Authorization", format!("Bearer {}", auth_token))
+        .get(format!("{core_url}/api/memory/extraction-queue"))
+        .header("Authorization", format!("Bearer {auth_token}"))
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await;

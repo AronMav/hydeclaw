@@ -1,11 +1,11 @@
-//! ToolExecutor trait, ToolExecutorCtx value type, DefaultToolExecutor implementation,
-//! and ToolExecutorDeps private trait.
+//! `ToolExecutor` trait, `ToolExecutorCtx` value type, `DefaultToolExecutor` implementation,
+//! and `ToolExecutorDeps` private trait.
 //!
-//! Extracted from engine_dispatch.rs and engine_parallel.rs to decouple tool execution
+//! Extracted from `engine_dispatch.rs` and `engine_parallel.rs` to decouple tool execution
 //! from the engine god object, enabling mock injection in tests (TOOL-01..TOOL-03).
-//! Follows the same OnceLock + private deps trait pattern as ContextBuilder (Phase 38).
+//! Follows the same `OnceLock` + private deps trait pattern as `ContextBuilder` (Phase 38).
 //!
-//! Phase 39-02: DefaultToolExecutor now holds 13 tool-only fields migrated from AgentEngine,
+//! Phase 39-02: `DefaultToolExecutor` now holds 13 tool-only fields migrated from `AgentEngine`,
 //! reducing the engine struct by 13 fields (TOOL-04).
 
 use anyhow::Result;
@@ -38,12 +38,12 @@ pub trait ToolExecutor: Send + Sync {
 
 // ── ToolExecutorDeps private trait ───────────────────────────────────────────
 
-/// Private trait listing the AgentEngine capabilities consumed by DefaultToolExecutor.
+/// Private trait listing the `AgentEngine` capabilities consumed by `DefaultToolExecutor`.
 /// `AgentEngine` implements this; the impl delegates to its own fields/methods.
-/// This avoids a direct Arc<AgentEngine> dependency from tool_executor.rs back to engine.rs.
+/// This avoids a direct Arc<AgentEngine> dependency from `tool_executor.rs` back to engine.rs.
 #[async_trait]
 pub(crate) trait ToolExecutorDeps: Send + Sync {
-    /// Batch execution — delegates to engine_parallel.rs.
+    /// Batch execution — delegates to `engine_parallel.rs`.
     async fn execute_tool_calls_partitioned_raw(
         &self,
         tool_calls: &[ToolCall],
@@ -75,7 +75,7 @@ pub struct DefaultToolExecutor {
     pub(crate) bg_processes: Arc<tokio::sync::Mutex<std::collections::HashMap<String, crate::agent::engine::BgProcess>>>,
     /// Cached YAML tool definitions with TTL (avoids per-batch disk reads in parallel execution).
     pub(crate) yaml_tools_cache: tokio::sync::RwLock<(std::time::Instant, std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef>)>,
-    /// Per-engine web search cache (query_hash → (result, expiry)). TTL: 5 minutes.
+    /// Per-engine web search cache (`query_hash` → (result, expiry)). TTL: 5 minutes.
     pub(crate) search_cache: tokio::sync::RwLock<std::collections::HashMap<u64, (String, std::time::Instant)>>,
     /// In-memory cache for tool embeddings (semantic top-K selection).
     pub(crate) tool_embed_cache: Arc<crate::tools::embedding::ToolEmbeddingCache>,
@@ -165,7 +165,7 @@ impl DefaultToolExecutor {
         }
     }
 
-    /// Store self-reference for recursive tool calls (mirrors AgentEngine::set_self_ref).
+    /// Store self-reference for recursive tool calls (mirrors `AgentEngine::set_self_ref`).
     pub fn set_self_ref(&self, arc: &Arc<dyn ToolExecutor>) {
         let _ = self.self_ref.set(arc.clone());
     }

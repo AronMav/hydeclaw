@@ -139,7 +139,7 @@ pub(crate) struct TtsSynthesizeRequest {
 
 // ── Config API ──
 
-/// GET /api/config/schema — return the JSON Schema for AppConfig.
+/// GET /api/config/schema — return the JSON Schema for `AppConfig`.
 ///
 /// Schema is generated once at first call and cached for the process lifetime.
 /// The schema is static — it only changes when the binary is rebuilt.
@@ -394,8 +394,7 @@ pub(crate) async fn api_restart(req: Request<Body>) -> impl IntoResponse {
     let confirmed = req.headers()
         .get("X-Confirm-Restart")
         .and_then(|v| v.to_str().ok())
-        .map(|v| v == "true")
-        .unwrap_or(false);
+        .is_some_and(|v| v == "true");
     if !confirmed {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "missing X-Confirm-Restart: true header"}))).into_response();
     }

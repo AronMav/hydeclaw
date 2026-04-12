@@ -56,7 +56,7 @@ pub struct AuditEvent {
     pub created_at: DateTime<Utc>,
 }
 
-/// Record an audit event. Intended to be called via tokio::spawn (fire-and-forget).
+/// Record an audit event. Intended to be called via `tokio::spawn` (fire-and-forget).
 pub async fn record_event(
     db: &PgPool,
     agent_id: &str,
@@ -102,7 +102,7 @@ pub async fn query_events(
     Ok(rows)
 }
 
-/// Delete audit events older than retention_days.
+/// Delete audit events older than `retention_days`.
 pub async fn cleanup_old_events(db: &PgPool, retention_days: u32) -> Result<u64> {
     if retention_days == 0 {
         return Ok(0);

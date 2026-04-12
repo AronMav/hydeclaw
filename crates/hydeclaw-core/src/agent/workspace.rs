@@ -62,7 +62,7 @@ pub struct RuntimeContext {
 pub fn format_local_datetime(timezone: &str) -> String {
     let offset = crate::scheduler::timezone_offset_hours(timezone);
     let utc_now = chrono::Utc::now();
-    let local = utc_now + chrono::Duration::hours(offset as i64);
+    let local = utc_now + chrono::Duration::hours(i64::from(offset));
     format!(
         "{} ({}, UTC{:+})",
         local.format("%Y-%m-%d %H:%M"),
@@ -237,7 +237,7 @@ pub fn build_system_prompt(
     prompt.push_str(&format!("- Date/Time: {}\n", runtime.datetime_display));
     prompt.push_str(&format!("- Language: {} (ALWAYS respond in this language)\n", language_name(language)));
     if let Some(ref owner) = runtime.owner_id {
-        prompt.push_str(&format!("- Owner ID: {}\n", owner));
+        prompt.push_str(&format!("- Owner ID: {owner}\n"));
     }
     if !runtime.channels.is_empty() {
         prompt.push_str("\n## Connected Channels\n");
@@ -451,7 +451,7 @@ pub async fn write_workspace_file(
         path.clone()
     };
     if is_read_only(workspace_dir, &check_path, base) {
-        anyhow::bail!("'{}' is read-only and cannot be modified", filename);
+        anyhow::bail!("'{filename}' is read-only and cannot be modified");
     }
 
     // Create parent directories if they don't exist
@@ -519,18 +519,16 @@ async fn validate_workspace_path_inner(
     //   - shared root dirs (tools/, skills/, toolgate/, …) → workspace root
     //   - for read: if it exists at workspace root → workspace root (e.g. zettelkasten/)
     //   - everything else → agent-specific dir
-    let resolved = if !normalized.contains('/') {
-        if SHARED_ROOT_FILES.contains(&normalized) || SHARED_ROOT_DIRS.contains(&normalized) {
-            workspace_root.join(normalized)
-        } else if allow_read_any && workspace_root.join(normalized).exists() {
-            // Read mode: prefer workspace root if the path exists there
-            workspace_root.join(normalized)
-        } else {
-            agent_dir.join(normalized)
-        }
-    } else {
+    let resolved = if normalized.contains('/') {
         // Path with directories → relative to workspace root
         workspace_root.join(normalized)
+    } else if SHARED_ROOT_FILES.contains(&normalized) || SHARED_ROOT_DIRS.contains(&normalized) {
+        workspace_root.join(normalized)
+    } else if allow_read_any && workspace_root.join(normalized).exists() {
+        // Read mode: prefer workspace root if the path exists there
+        workspace_root.join(normalized)
+    } else {
+        agent_dir.join(normalized)
     };
 
     // Check that resolved path doesn't escape workspace after canonicalization.
@@ -547,7 +545,7 @@ async fn validate_workspace_path_inner(
                     canonical.starts_with(parent.join(prefix))
                 });
                 if !is_allowed {
-                    anyhow::bail!("path traversal via symlink denied: '{}' resolves outside workspace", filename);
+                    anyhow::bail!("path traversal via symlink denied: '{filename}' resolves outside workspace");
                 }
             }
         }
@@ -555,7 +553,7 @@ async fn validate_workspace_path_inner(
     // Block ".." components on the resolved path BEFORE strip_prefix
     // This catches traversal for both existing and non-existing files
     if resolved.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-        anyhow::bail!("path traversal denied: '{}' contains '..' component", filename);
+        anyhow::bail!("path traversal denied: '{filename}' contains '..' component");
     }
 
     // For non-existing paths, canonicalize the parent directory to catch
@@ -571,7 +569,7 @@ async fn validate_workspace_path_inner(
                             canonical_parent.starts_with(repo_root.join(prefix))
                         });
                         if !is_allowed {
-                            anyhow::bail!("path traversal denied: parent of '{}' resolves outside workspace", filename);
+                            anyhow::bail!("path traversal denied: parent of '{filename}' resolves outside workspace");
                         }
                     }
                 }
@@ -582,7 +580,7 @@ async fn validate_workspace_path_inner(
 
     // Double-check: relative path must not escape workspace
     if relative.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-        anyhow::bail!("path traversal denied: '{}' is outside workspace", filename);
+        anyhow::bail!("path traversal denied: '{filename}' is outside workspace");
     }
     let first = relative
         .components()
@@ -606,8 +604,7 @@ async fn validate_workspace_path_inner(
                     .starts_with(&own_prefix)
                 {
                     anyhow::bail!(
-                        "access denied: cannot write to another agent's directory ('{}')",
-                        filename
+                        "access denied: cannot write to another agent's directory ('{filename}')"
                     );
                 }
             }
@@ -617,8 +614,7 @@ async fn validate_workspace_path_inner(
             "toolgate" | "channels" => {}
             _ => {
                 anyhow::bail!(
-                    "access denied: writing to '{}' is not permitted",
-                    first
+                    "access denied: writing to '{first}' is not permitted"
                 );
             }
         }
@@ -650,26 +646,26 @@ pub async fn delete_workspace_file(
 
     // Read-only root files cannot be deleted (delete is never base)
     if is_read_only(workspace_dir, &path, false) {
-        anyhow::bail!("'{}' is a protected file and cannot be deleted", filename);
+        anyhow::bail!("'{filename}' is a protected file and cannot be deleted");
     }
     // Per-agent identity files cannot be deleted (but can be edited)
     if IDENTITY_FILES.contains(&file_basename(filename)) {
-        anyhow::bail!("'{}' is a protected file and cannot be deleted", filename);
+        anyhow::bail!("'{filename}' is a protected file and cannot be deleted");
     }
     if path.is_dir() {
         fs::remove_dir_all(&path).await
-            .with_context(|| format!("failed to remove directory '{}'", filename))?;
+            .with_context(|| format!("failed to remove directory '{filename}'"))?;
         tracing::info!(file = %path.display(), "workspace directory deleted by AI");
     } else {
         fs::remove_file(&path).await
-            .with_context(|| format!("file '{}' not found", filename))?;
+            .with_context(|| format!("file '{filename}' not found"))?;
         tracing::info!(file = %path.display(), "workspace file deleted by AI");
     }
     Ok(())
 }
 
 /// Move or rename a workspace file/directory.
-/// Both old_path and new_path are resolved through the same access-control rules.
+/// Both `old_path` and `new_path` are resolved through the same access-control rules.
 pub async fn rename_workspace_file(
     workspace_dir: &str,
     agent_name: &str,
@@ -689,9 +685,9 @@ pub async fn rename_workspace_file(
             anyhow::bail!("cannot move directories across mount points");
         }
         fs::copy(&src, &dst).await
-            .with_context(|| format!("failed to copy '{}' to '{}'", old_path, new_path))?;
+            .with_context(|| format!("failed to copy '{old_path}' to '{new_path}'"))?;
         fs::remove_file(&src).await
-            .with_context(|| format!("failed to remove source '{}'", old_path))?;
+            .with_context(|| format!("failed to remove source '{old_path}'"))?;
     }
 
     tracing::info!(src = %src.display(), dst = %dst.display(), "workspace file moved by AI");
@@ -716,7 +712,7 @@ pub async fn list_workspace_files(
         fs::create_dir_all(&target_dir).await?;
     }
     if !target_dir.is_dir() {
-        anyhow::bail!("'{}' is not a directory", directory);
+        anyhow::bail!("'{directory}' is not a directory");
     }
 
     let mut entries = Vec::new();
@@ -759,7 +755,7 @@ pub async fn edit_workspace_file(
         path.clone()
     };
     if is_read_only(workspace_dir, &check_path, base) {
-        anyhow::bail!("'{}' is read-only and cannot be modified", filename);
+        anyhow::bail!("'{filename}' is read-only and cannot be modified");
     }
     let raw = fs::read_to_string(&path).await?;
     // Normalize CRLF → LF for consistent matching.
@@ -767,7 +763,7 @@ pub async fn edit_workspace_file(
 
     let count = content.matches(old_text).count();
     if count == 0 {
-        anyhow::bail!("old_text not found in file '{}'", filename);
+        anyhow::bail!("old_text not found in file '{filename}'");
     }
 
     let updated = content.replacen(old_text, new_text, 1);
@@ -874,7 +870,7 @@ pub async fn parse_user_timezone(workspace_dir: &str) -> String {
 
 fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     } else if bytes < 1024 * 1024 {
         format!("{:.1} KB", bytes as f64 / 1024.0)
     } else {

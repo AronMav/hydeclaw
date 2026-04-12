@@ -68,7 +68,7 @@ pub(crate) async fn auto_transcribe_audio(
                     && let Some(transcript) = data["text"].as_str()
                         && !transcript.is_empty() {
                             let url_hint = format!("[User sent a voice message: {}]", att.url);
-                            let replacement = format!("[User's voice message (transcribed): {}]", transcript);
+                            let replacement = format!("[User's voice message (transcribed): {transcript}]");
                             *text = text.replace(&url_hint, &replacement);
                             tracing::info!(len = transcript.len(), "auto-transcribed voice message");
                         }
@@ -137,13 +137,13 @@ pub(crate) fn extract_readable_text(html: &str) -> String {
     if let Some(t) = title {
         let t = t.trim();
         if !t.is_empty() {
-            result.push_str(&format!("Title: {}\n", t));
+            result.push_str(&format!("Title: {t}\n"));
         }
     }
     if let Some(d) = desc {
         let d = d.trim();
         if !d.is_empty() {
-            result.push_str(&format!("Description: {}\n\n", d));
+            result.push_str(&format!("Description: {d}\n\n"));
         }
     }
     result.push_str(&text);

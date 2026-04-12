@@ -21,7 +21,7 @@ pub struct CliBackendConfig {
     /// Base args for fresh invocation
     #[serde(default)]
     pub args: Vec<String>,
-    /// Args for resuming a session (template: {session_id} is replaced)
+    /// Args for resuming a session (template: {`session_id`} is replaced)
     #[serde(default)]
     pub resume_args: Vec<String>,
     /// Output format
@@ -238,32 +238,32 @@ pub fn find_preset(id: &str) -> Option<&'static CliPreset> {
     CLI_PRESETS.iter().find(|p| p.id == id)
 }
 
-/// Convert a built-in preset to a CliBackendConfig with default values.
+/// Convert a built-in preset to a `CliBackendConfig` with default values.
 pub fn preset_to_config(preset: &CliPreset) -> CliBackendConfig {
     CliBackendConfig {
         command: preset.command.to_string(),
-        args: preset.args.iter().map(|s| s.to_string()).collect(),
-        resume_args: preset.resume_args.iter().map(|s| s.to_string()).collect(),
+        args: preset.args.iter().map(|s| (*s).to_string()).collect(),
+        resume_args: preset.resume_args.iter().map(|s| (*s).to_string()).collect(),
         output: preset.output.clone(),
         input: CliInputMode::Arg,
-        model_arg: preset.model_arg.map(|s| s.to_string()),
+        model_arg: preset.model_arg.map(std::string::ToString::to_string),
         model_aliases: HashMap::new(),
-        session_arg: preset.session_arg.map(|s| s.to_string()),
+        session_arg: preset.session_arg.map(std::string::ToString::to_string),
         session_mode: preset.session_mode.clone(),
-        system_prompt_arg: preset.system_prompt_arg.map(|s| s.to_string()),
-        prompt_arg: preset.prompt_arg.map(|s| s.to_string()),
+        system_prompt_arg: preset.system_prompt_arg.map(std::string::ToString::to_string),
+        prompt_arg: preset.prompt_arg.map(std::string::ToString::to_string),
         timeout_secs: 300,
         serialize: true,
         env: HashMap::new(),
         env_key: Some(preset.env_key.to_string()),
-        clear_env: preset.clear_env.iter().map(|s| s.to_string()).collect(),
+        clear_env: preset.clear_env.iter().map(|s| (*s).to_string()).collect(),
         system_prompt_when: preset.system_prompt_when.clone(),
         max_prompt_arg_chars: preset.max_prompt_arg_chars,
         no_output_timeout_secs: preset.no_output_timeout_secs,
     }
 }
 
-/// Apply DB provider options (JSONB) on top of a CliBackendConfig.
+/// Apply DB provider options (JSONB) on top of a `CliBackendConfig`.
 /// Only non-null fields in the JSON override the preset defaults.
 pub fn merge_db_overrides(config: &mut CliBackendConfig, options: &Value) {
     if let Some(obj) = options.as_object() {
@@ -291,7 +291,7 @@ pub fn merge_db_overrides(config: &mut CliBackendConfig, options: &Value) {
         if let Some(v) = obj.get("env_key").and_then(|v| v.as_str()) {
             config.env_key = Some(v.to_string());
         }
-        if let Some(v) = obj.get("timeout_secs").and_then(|v| v.as_u64()) {
+        if let Some(v) = obj.get("timeout_secs").and_then(serde_json::Value::as_u64) {
             config.timeout_secs = v;
         }
         if let Some(v) = obj.get("clear_env").and_then(|v| v.as_array()) {
@@ -301,10 +301,10 @@ pub fn merge_db_overrides(config: &mut CliBackendConfig, options: &Value) {
             && let Ok(spw) = serde_json::from_value::<SystemPromptWhen>(v.clone()) {
                 config.system_prompt_when = spw;
             }
-        if let Some(v) = obj.get("max_prompt_arg_chars").and_then(|v| v.as_u64()) {
+        if let Some(v) = obj.get("max_prompt_arg_chars").and_then(serde_json::Value::as_u64) {
             config.max_prompt_arg_chars = v as usize;
         }
-        if let Some(v) = obj.get("no_output_timeout_secs").and_then(|v| v.as_u64()) {
+        if let Some(v) = obj.get("no_output_timeout_secs").and_then(serde_json::Value::as_u64) {
             config.no_output_timeout_secs = v;
         }
         if let Some(v) = obj.get("env").and_then(|v| v.as_object()) {
@@ -390,10 +390,10 @@ impl CliErrorReason {
     }
 }
 
-/// Classify an error from CLI output using shared error_classify module.
+/// Classify an error from CLI output using shared `error_classify` module.
 fn classify_cli_error(stderr: &str, stdout: &str, _exit_code: i64) -> CliErrorReason {
     use crate::agent::error_classify::{classify_str, LlmErrorClass};
-    let combined = format!("{} {}", stderr, stdout);
+    let combined = format!("{stderr} {stdout}");
     match classify_str(&combined) {
         LlmErrorClass::RateLimit => CliErrorReason::RateLimit,
         LlmErrorClass::AuthPermanent => CliErrorReason::Auth,
@@ -534,8 +534,7 @@ impl CliRunner {
             .config
             .model_aliases
             .get(model)
-            .map(|s| s.as_str())
-            .unwrap_or(model);
+            .map_or(model, std::string::String::as_str);
 
         // Check for existing session
         let existing_session = self.sessions.read().await.get(agent_name).cloned();
@@ -643,7 +642,7 @@ impl CliRunner {
         Ok(output)
     }
 
-    /// Build CLI argument vector. Returns (argv, use_stdin) where use_stdin=true means
+    /// Build CLI argument vector. Returns (argv, `use_stdin`) where `use_stdin=true` means
     /// the prompt was excluded from argv and must be piped via stdin.
     fn build_argv(
         &self,
@@ -762,7 +761,7 @@ async fn execute_on_host(
         && let Some(mut stdin) = child.stdin.take() {
             use tokio::io::AsyncWriteExt;
             stdin.write_all(input.as_bytes()).await
-                .map_err(|e| anyhow::anyhow!("failed to write to CLI stdin: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("failed to write to CLI stdin: {e}"))?;
             // Drop stdin to close the pipe (signals EOF to child)
         }
 
@@ -789,12 +788,12 @@ async fn execute_on_host(
                 match read_result {
                     Ok(Ok(0)) => break, // EOF
                     Ok(Ok(n)) => stdout_buf.extend_from_slice(&chunk[..n]),
-                    Ok(Err(e)) => return Err(anyhow::anyhow!("stdout read error: {}", e)),
+                    Ok(Err(e)) => return Err(anyhow::anyhow!("stdout read error: {e}")),
                     Err(_) => {
                         // No output timeout fired -- kill the process
                         tracing::warn!("CLI killed: no stdout output for {}s", no_output_timeout_secs);
                         let _ = child.kill().await;
-                        anyhow::bail!("CLI killed: no stdout output for {}s", no_output_timeout_secs);
+                        anyhow::bail!("CLI killed: no stdout output for {no_output_timeout_secs}s");
                     }
                 }
             }
@@ -802,13 +801,13 @@ async fn execute_on_host(
 
         // Wait for process to complete
         let status = child.wait().await
-            .map_err(|e| anyhow::anyhow!("CLI process error: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("CLI process error: {e}"))?;
         let stderr_str = stderr_task.await.unwrap_or_default();
 
         Ok(ExecResult {
             stdout: String::from_utf8_lossy(&stdout_buf).to_string(),
             stderr: stderr_str,
-            exit_code: status.code().unwrap_or(-1) as i64,
+            exit_code: i64::from(status.code().unwrap_or(-1)),
         })
     };
 
@@ -854,9 +853,9 @@ fn parse_cli_json(raw: &str) -> CliOutput {
                     // Try nested usage object
                     p.usage.as_ref().and_then(|u| {
                         let inp =
-                            u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                            u.get("input_tokens").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32;
                         let out =
-                            u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                            u.get("output_tokens").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32;
                         if inp > 0 || out > 0 {
                             Some(hydeclaw_types::TokenUsage {
                                 input_tokens: inp,
@@ -899,7 +898,7 @@ fn parse_cli_jsonl(raw: &str) -> CliOutput {
                     .get("session_id")
                     .or_else(|| v.get("thread_id"))
                     .and_then(|s| s.as_str())
-                    .map(|s| s.to_string());
+                    .map(std::string::ToString::to_string);
             }
             // Extract text
             if let Some(text) = v
@@ -916,9 +915,9 @@ fn parse_cli_jsonl(raw: &str) -> CliOutput {
             // Extract usage
             if let Some(u) = v.get("usage") {
                 let inp =
-                    u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    u.get("input_tokens").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32;
                 let out =
-                    u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    u.get("output_tokens").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32;
                 if inp > 0 || out > 0 {
                     usage = Some(hydeclaw_types::TokenUsage {
                         input_tokens: inp,
@@ -938,7 +937,7 @@ fn parse_cli_jsonl(raw: &str) -> CliOutput {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Format messages for CLI prompt. Returns (user_prompt, system_prompt).
+/// Format messages for CLI prompt. Returns (`user_prompt`, `system_prompt`).
 pub fn format_messages_for_cli(
     messages: &[hydeclaw_types::Message],
 ) -> (String, Option<String>) {

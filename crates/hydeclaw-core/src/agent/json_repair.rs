@@ -1,6 +1,6 @@
 //! Repair malformed JSON from LLM tool call arguments.
 //!
-//! LLMs (especially MiniMax) sometimes wrap JSON in markdown fences,
+//! LLMs (especially `MiniMax`) sometimes wrap JSON in markdown fences,
 //! prefix with explanatory text, or include trailing commas.
 
 use std::sync::LazyLock;

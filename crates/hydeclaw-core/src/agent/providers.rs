@@ -36,7 +36,7 @@ pub trait LlmProvider: Send + Sync {
     ) -> Result<LlmResponse>;
 
     /// Streaming chat: sends content chunks via mpsc channel.
-    /// Returns the complete LlmResponse when done.
+    /// Returns the complete `LlmResponse` when done.
     async fn chat_stream(
         &self,
         messages: &[Message],
@@ -70,7 +70,7 @@ pub trait LlmProvider: Send + Sync {
 
 /// Shared model-override logic: stores a default model name and an optional
 /// runtime override (set via `/model` command). Eliminates identical code
-/// across OpenAI, Anthropic, and Google providers.
+/// across `OpenAI`, Anthropic, and Google providers.
 pub(crate) struct ModelOverride {
     default: String,
     current: std::sync::RwLock<Option<String>>,
@@ -111,8 +111,8 @@ impl ModelOverride {
     }
 }
 
-/// Known OpenAI-compatible providers: (name, default_base_url, api_key_env).
-/// base_url is the base URL without path — chat path is resolved via `resolve_chat_url()`.
+/// Known OpenAI-compatible providers: (name, `default_base_url`, `api_key_env`).
+/// `base_url` is the base URL without path — chat path is resolved via `resolve_chat_url()`.
 pub(crate) const OPENAI_COMPAT_PROVIDERS: &[(&str, &str, &str)] = &[
     ("minimax",    "https://api.minimax.io",         "MINIMAX_API_KEY"),
     ("deepseek",   "https://api.deepseek.com",       "DEEPSEEK_API_KEY"),
@@ -125,7 +125,7 @@ pub(crate) const OPENAI_COMPAT_PROVIDERS: &[(&str, &str, &str)] = &[
 ];
 
 /// Create a provider from agent config.
-/// API keys are read from SecretsManager on each LLM call (hot-reloadable).
+/// API keys are read from `SecretsManager` on each LLM call (hot-reloadable).
 /// `sandbox` + `agent_name` + `workspace_dir` are required for CLI providers (claude-cli, gemini-cli)
 /// that execute inside the agent's Docker container.
 #[allow(clippy::too_many_arguments)]
@@ -309,11 +309,11 @@ pub fn create_provider_from_route(
         other => {
             // Check known OpenAI-compatible providers
             if let Some((_, default_base, default_key)) = OPENAI_COMPAT_PROVIDERS.iter().find(|(n, _, _)| *n == other) {
-                let base = route.base_url.clone().unwrap_or_else(|| default_base.to_string());
+                let base = route.base_url.clone().unwrap_or_else(|| (*default_base).to_string());
                 let url = resolve_chat_url(other, &base);
                 (
                     url,
-                    route.api_key_env.clone().unwrap_or_else(|| default_key.to_string()),
+                    route.api_key_env.clone().unwrap_or_else(|| (*default_key).to_string()),
                 )
             } else {
                 tracing::error!(provider = %other, "unknown provider in routing rule — route will always fail; fix the agent config");
@@ -336,15 +336,15 @@ pub fn create_provider_from_route(
     );
 
     // Apply round-robin keys if configured
-    if !route.api_key_envs.is_empty() {
-        Arc::new(provider.with_keys(route.api_key_envs.clone()))
-    } else {
+    if route.api_key_envs.is_empty() {
         Arc::new(provider)
+    } else {
+        Arc::new(provider.with_keys(route.api_key_envs.clone()))
     }
 }
 
 /// Create a routing provider from ordered route configs.
-/// Returns a RoutingProvider that picks the right backend per request.
+/// Returns a `RoutingProvider` that picks the right backend per request.
 pub fn create_routing_provider(
     routes: &[crate::config::ProviderRouteConfig],
     default_temperature: f64,
@@ -370,24 +370,22 @@ pub fn create_routing_provider(
     })
 }
 
-/// Build full chat completions URL from base_url + provider's chat_path.
+/// Build full chat completions URL from `base_url` + provider's `chat_path`.
 pub fn resolve_chat_url(provider_type: &str, base_url: &str) -> String {
     let chat_path = PROVIDER_TYPES.iter()
         .find(|pt| pt.id == provider_type)
-        .map(|pt| pt.chat_path)
-        .unwrap_or("/v1/chat/completions");
+        .map_or("/v1/chat/completions", |pt| pt.chat_path);
     if chat_path.is_empty() {
         return base_url.to_string();
     }
     format!("{}{}", base_url.trim_end_matches('/'), chat_path)
 }
 
-/// Default base URL for a provider type (from PROVIDER_TYPES).
+/// Default base URL for a provider type (from `PROVIDER_TYPES`).
 pub fn default_base_url_for_type(provider_type: &str) -> &'static str {
     PROVIDER_TYPES.iter()
         .find(|pt| pt.id == provider_type)
-        .map(|pt| pt.default_base_url)
-        .unwrap_or("")
+        .map_or("", |pt| pt.default_base_url)
 }
 
 /// Migrate legacy agents (using `provider` field) to named connections (using `provider_connection`).
@@ -460,7 +458,7 @@ pub async fn migrate_legacy_providers(
         agent_cfg.agent.provider_connection = Some(provider_name.clone());
 
         // Save updated TOML
-        let path = format!("config/agents/{}.toml", agent_name);
+        let path = format!("config/agents/{agent_name}.toml");
         match agent_cfg.to_toml() {
             Ok(toml_str) => {
                 if let Err(e) = std::fs::write(&path, &toml_str) {
@@ -846,12 +844,12 @@ pub(crate) async fn resolve_credential(
 
 /// Extract `timeout_secs` from provider options JSONB. Default: 120s. 0 = no timeout.
 fn extract_timeout_secs(options: &serde_json::Value) -> Option<u64> {
-    options.get("timeout_secs").and_then(|v| v.as_u64())
+    options.get("timeout_secs").and_then(serde_json::Value::as_u64)
 }
 
 /// Build HTTP clients (request + streaming) with configurable timeout.
 /// `None` → 120s default, `Some(0)` → no timeout, `Some(n)` → n seconds.
-/// Streaming client never has a request timeout (only connect_timeout) — chunks arrive over time.
+/// Streaming client never has a request timeout (only `connect_timeout`) — chunks arrive over time.
 pub(crate) fn build_provider_clients(timeout_secs: Option<u64>) -> (reqwest::Client, reqwest::Client) {
     let timeout = timeout_secs.unwrap_or(120);
     let mut builder = reqwest::Client::builder()
@@ -883,8 +881,7 @@ pub async fn create_provider_from_connection(
     let model = model_override.unwrap_or(conn.default_model.as_deref().unwrap_or("")).to_string();
     let key_env = PROVIDER_TYPES.iter()
         .find(|pt| pt.id == conn.provider_type)
-        .map(|pt| pt.default_secret_name)
-        .unwrap_or("");
+        .map_or("", |pt| pt.default_secret_name);
     let credential_scope = conn.id.to_string();
     let timeout_secs = extract_timeout_secs(&conn.options);
 
@@ -1019,7 +1016,7 @@ pub async fn resolve_provider_for_agent(
 
 struct RouteEntry {
     condition: String,
-    /// Unique key for cooldown tracking: "{condition}:{provider_name}" to prevent
+    /// Unique key for cooldown tracking: "{`condition}:{provider_name`}" to prevent
     /// two routes that use the same provider (but different models/configs) from
     /// sharing a cooldown bucket.
     key: String,
@@ -1047,8 +1044,7 @@ impl RoutingProvider {
             .iter()
             .rev()
             .find(|m| m.role == hydeclaw_types::MessageRole::User)
-            .map(|m| m.content.as_str())
-            .unwrap_or("");
+            .map_or("", |m| m.content.as_str());
 
         let last_user_len = last_user_msg.len();
         let lower = last_user_msg.to_lowercase();
@@ -1083,7 +1079,7 @@ impl RoutingProvider {
             tracing::warn!("cooldowns Mutex poisoned, recovering");
             e.into_inner()
         });
-        map.get(name).map(|exp| std::time::Instant::now() < *exp).unwrap_or(false)
+        map.get(name).is_some_and(|exp| std::time::Instant::now() < *exp)
     }
 
     /// Put a provider on cooldown.
@@ -1164,15 +1160,15 @@ impl LlmProvider for RoutingProvider {
         let primary_cooldown = primary.cooldown_duration;
 
         let primary_skipped = self.is_on_cooldown(&primary_key);
-        if !primary_skipped {
+        if primary_skipped {
+            tracing::debug!(provider = %primary_display, "primary on cooldown, skipping");
+        } else {
             match primary.provider.chat(messages, tools).await {
                 Ok(resp) => return Ok(resp),
                 Err(e) => {
                     self.handle_provider_error(&e, &primary_key, primary_cooldown);
                 }
             }
-        } else {
-            tracing::debug!(provider = %primary_display, "primary on cooldown, skipping");
         }
 
         for fb in self.available_fallbacks(&primary_key) {
@@ -1203,7 +1199,9 @@ impl LlmProvider for RoutingProvider {
         let primary_cooldown = primary.cooldown_duration;
 
         let primary_skipped = self.is_on_cooldown(&primary_key);
-        if !primary_skipped {
+        if primary_skipped {
+            tracing::debug!(provider = %primary_display, "primary on cooldown, skipping for streaming");
+        } else {
             use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
             let chunks_sent = Arc::new(AtomicBool::new(false));
             let (tracking_tx, mut tracking_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -1238,8 +1236,6 @@ impl LlmProvider for RoutingProvider {
                     if !cd.is_zero() { self.set_cooldown(&primary_key, cd); }
                 }
             }
-        } else {
-            tracing::debug!(provider = %primary_display, "primary on cooldown, skipping for streaming");
         }
 
         for fb in self.available_fallbacks(&primary_key) {
@@ -1261,7 +1257,7 @@ impl LlmProvider for RoutingProvider {
         anyhow::bail!("all streaming providers failed (including fallbacks)")
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "routing"
     }
 
@@ -1273,9 +1269,7 @@ impl LlmProvider for RoutingProvider {
 
     fn current_model(&self) -> String {
         self.routes
-            .first()
-            .map(|e| e.provider.current_model())
-            .unwrap_or_else(|| "unknown".to_string())
+            .first().map_or_else(|| "unknown".to_string(), |e| e.provider.current_model())
     }
 }
 
@@ -1285,10 +1279,10 @@ impl LlmProvider for RoutingProvider {
 
 // ── OpenAI wire format helpers ──────────────────────────────────────────────
 
-/// Transform internal Message structs to OpenAI API wire format.
+/// Transform internal Message structs to `OpenAI` API wire format.
 /// Key differences from serde default:
 ///
-/// - tool_calls: wrapped in `{type: "function", function: {name, arguments_as_string}}`
+/// - `tool_calls`: wrapped in `{type: "function", function: {name, arguments_as_string}}`
 /// - Remove tool messages whose `tool_call_id` has no preceding assistant message with a
 ///   matching tool call. This prevents MiniMax/OpenAI "tool result does not follow tool call"
 ///   errors caused by history truncation cutting off the assistant message while keeping the
@@ -1346,7 +1340,7 @@ pub(super) fn strip_orphaned_tool_messages(messages: &[Message]) -> Vec<Message>
 }
 
 /// - tool messages: include `tool_call_id` at top level
-/// - assistant content must be null (not empty string) when only tool_calls present
+/// - assistant content must be null (not empty string) when only `tool_calls` present
 pub(super) fn messages_to_openai_format(messages: &[Message]) -> Vec<serde_json::Value> {
     let messages = strip_orphaned_tool_messages(messages);
     messages

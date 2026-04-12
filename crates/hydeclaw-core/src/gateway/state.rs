@@ -122,7 +122,7 @@ pub struct AppState {
     pub started_at: std::time::Instant,
     /// Broadcast channel for real-time log streaming to UI.
     pub log_tx: tokio::sync::broadcast::Sender<String>,
-    /// Shared deps for starting new agents at runtime (RwLock for hot-update via PUT /api/config).
+    /// Shared deps for starting new agents at runtime (`RwLock` for hot-update via PUT /api/config).
     pub agent_deps: Arc<tokio::sync::RwLock<AgentDeps>>,
     /// Native memory store (pgvector + external embedding endpoint).
     pub memory_store: Arc<MemoryStore>,
@@ -130,7 +130,7 @@ pub struct AppState {
     pub container_manager: Option<Arc<crate::containers::ContainerManager>>,
     /// Docker code execution sandbox (managed per-agent containers).
     pub sandbox: Option<Arc<crate::containers::sandbox::CodeSandbox>>,
-    /// Broadcast channel for UI events (session_updated, cron_completed, etc.).
+    /// Broadcast channel for UI events (`session_updated`, `cron_completed`, etc.).
     pub ui_event_tx: tokio::sync::broadcast::Sender<String>,
     /// In-memory registry of active SSE streams for resume support.
     pub stream_registry: Arc<stream_registry::StreamRegistry>,

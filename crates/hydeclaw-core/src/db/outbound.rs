@@ -80,7 +80,7 @@ pub async fn mark_failed(db: &PgPool, id: Uuid) -> Result<()> {
 
 /// Get pending/sent actions for a channel that haven't exceeded retry limit.
 /// Actions in 'sent' state older than 1 hour are considered stale and included.
-/// Returns (id, agent_id, action_name, payload).
+/// Returns (id, `agent_id`, `action_name`, payload).
 pub async fn get_pending(
     db: &PgPool,
     channel: &str,

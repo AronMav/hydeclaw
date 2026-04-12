@@ -192,7 +192,7 @@ pub async fn update_step_from_callback(
     Ok(())
 }
 
-/// Load pending steps for a task, ordered by step_order.
+/// Load pending steps for a task, ordered by `step_order`.
 pub async fn load_task_steps(
     db: &PgPool,
     task_id: Uuid,

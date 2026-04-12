@@ -11,7 +11,7 @@ pub mod stream_jobs;
 pub mod state;
 mod handlers;
 pub use state::*;
-use middleware::*;
+use middleware::{AuthRateLimiter, auth_middleware, RequestRateLimiter, WsConnectionBudget, request_rate_limit_middleware};
 // Re-export for use by main.rs
 pub use handlers::agents::start_agent_from_config;
 pub use handlers::email_triggers::renew_expiring_gmail_watches;
@@ -40,7 +40,7 @@ mod sse_types {
     pub const APPROVAL_RESOLVED: &str = "approval-resolved";
 }
 
-/// Public OpenAI-format message — used by gateway AND referenced from engine::handle_openai.
+/// Public OpenAI-format message — used by gateway AND referenced from `engine::handle_openai`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OpenAiMessage {
     pub role: String,
@@ -128,22 +128,22 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
         let host = state.config.gateway.listen.split(':').next().unwrap_or("0.0.0.0");
         let port = state.config.gateway.listen.rsplit(':').next().unwrap_or("18789");
         let mut origins = vec![
-            format!("http://{}:{}", host, port).parse().expect("valid CORS origin"),
-            format!("http://{}:5173", host).parse().expect("valid CORS origin"),
+            format!("http://{host}:{port}").parse().expect("valid CORS origin"),
+            format!("http://{host}:5173").parse().expect("valid CORS origin"),
         ];
         // For 0.0.0.0: also allow localhost + all local network interfaces
         if host == "0.0.0.0" {
             origins.push("http://localhost:5173".parse().expect("valid CORS origin"));
-            origins.push(format!("http://localhost:{}", port).parse().expect("valid CORS origin"));
+            origins.push(format!("http://localhost:{port}").parse().expect("valid CORS origin"));
             // Add all non-loopback IPv4 addresses (for LAN access)
             for iface in get_local_ipv4_addrs() {
-                if let Ok(v) = format!("http://{}:{}", iface, port).parse() { origins.push(v); }
-                if let Ok(v) = format!("http://{}:5173", iface).parse() { origins.push(v); }
+                if let Ok(v) = format!("http://{iface}:{port}").parse() { origins.push(v); }
+                if let Ok(v) = format!("http://{iface}:5173").parse() { origins.push(v); }
             }
             // Add Docker subnet gateway IPs for CORS
             for gw in get_docker_subnet_gateways(&state.config.gateway.cors_docker_subnets) {
-                if let Ok(v) = format!("http://{}:{}", gw, port).parse() { origins.push(v); }
-                if let Ok(v) = format!("http://{}:5173", gw).parse() { origins.push(v); }
+                if let Ok(v) = format!("http://{gw}:{port}").parse() { origins.push(v); }
+                if let Ok(v) = format!("http://{gw}:5173").parse() { origins.push(v); }
             }
         }
         // Also add public_url origin if configured

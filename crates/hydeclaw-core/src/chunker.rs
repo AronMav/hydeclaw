@@ -8,7 +8,7 @@ pub const DEFAULT_CHUNK_OVERLAP: usize = 200;
 
 /// Split `text` into chunks of at most `max_chars` with `overlap` chars of overlap.
 /// Splits on paragraph boundaries ("\n\n"), falling back to newlines ("\n"),
-/// then sentence boundaries (". "), then hard-cut at max_chars.
+/// then sentence boundaries (". "), then hard-cut at `max_chars`.
 /// Returns original text as single-element vec if it fits in one chunk.
 pub fn split_text(text: &str, max_chars: usize, overlap: usize) -> Vec<String> {
     if text.len() <= max_chars {

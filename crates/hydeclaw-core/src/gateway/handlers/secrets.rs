@@ -49,7 +49,7 @@ pub(crate) async fn set_secret(
             .into_response();
     }
     // Allow description-only update (no value)
-    if req.value.as_ref().is_none_or(|v| v.is_empty()) && req.description.is_none() {
+    if req.value.as_ref().is_none_or(std::string::String::is_empty) && req.description.is_none() {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "value or description is required"})),
@@ -106,7 +106,7 @@ pub(crate) async fn get_secret(
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let scope = params.get("scope").cloned().unwrap_or_default();
-    let reveal = params.get("reveal").map(|v| v == "true").unwrap_or(false);
+    let reveal = params.get("reveal").is_some_and(|v| v == "true");
 
     let value = if scope.is_empty() {
         state.secrets.get_strict(&name).await
@@ -141,7 +141,7 @@ pub(crate) async fn delete_secret(
     axum::extract::Path(name): axum::extract::Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let scope = params.get("scope").map(|s| s.as_str()).unwrap_or("");
+    let scope = params.get("scope").map_or("", std::string::String::as_str);
     match state.secrets.delete_scoped(&name, scope).await {
         Ok(true) => {
             crate::db::audit::audit_spawn(state.db.clone(), scope.to_string(), crate::db::audit::event_types::SECRET_DELETED, None, json!({"name": name, "scope": scope}));
@@ -166,6 +166,6 @@ pub(crate) fn mask_secret_value(value: &str) -> String {
     } else {
         let prefix: String = chars[..4].iter().collect();
         let suffix: String = chars[chars.len() - 4..].iter().collect();
-        format!("{}...{}", prefix, suffix)
+        format!("{prefix}...{suffix}")
     }
 }

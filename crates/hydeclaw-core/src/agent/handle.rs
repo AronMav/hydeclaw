@@ -10,7 +10,7 @@ pub struct AgentHandle {
     pub engine: Arc<AgentEngine>,
     /// Scheduler job UUIDs registered for this agent (heartbeat).
     pub scheduler_job_ids: Vec<Uuid>,
-    /// Multi-channel router — WS handlers subscribe via router.subscribe().
+    /// Multi-channel router — WS handlers subscribe via `router.subscribe()`.
     pub channel_router: Option<ChannelActionRouter>,
 }
 

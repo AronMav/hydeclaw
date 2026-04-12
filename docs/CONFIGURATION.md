@@ -114,7 +114,7 @@ max_requests_per_minute = 100
 max_tool_concurrency = 10
 request_timeout_secs = 180
 max_agent_turns = 5
-max_handoff_context_chars = 2000  # legacy field name, still used in config API
+max_inter_agent_context_chars = 2000  # limit context transfer size between agents
 ```
 
 ### [typing]

@@ -77,7 +77,7 @@ function renderPart(part: MessagePart, index: number, _meta?: { stepGroupToolIds
     case "source-url":
       return <SourceUrlDataPartView key={`src-${part.url}`} data={{ url: part.url, title: part.title }} />;
     case "rich-card":
-      // Skip agent-turn rich cards — HandoffDivider in ChatThread replaces this
+      // Skip agent-turn rich cards — AgentTransitionDivider in MessageList replaces this
       if (part.cardType === "agent-turn") return null;
       return <RichCardDataPartView key={`card-${part.cardType}-${index}`} data={{ cardType: part.cardType, ...part.data }} />;
     case "continuation-separator":

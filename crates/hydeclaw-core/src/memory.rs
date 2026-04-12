@@ -1,9 +1,9 @@
 /// Native pgvector memory store.
 ///
-/// pgvector queries run directly against the local PostgreSQL pool.
+/// pgvector queries run directly against the local `PostgreSQL` pool.
 /// Embedding generation is delegated to Toolgate (`POST /v1/embeddings`), which
-/// proxies to the configured embedding backend (Ollama, OpenAI, or any other
-/// OpenAI-compatible provider). Core never calls Ollama or OpenAI directly.
+/// proxies to the configured embedding backend (Ollama, `OpenAI`, or any other
+/// OpenAI-compatible provider). Core never calls Ollama or `OpenAI` directly.
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
@@ -20,15 +20,15 @@ pub struct MemoryConfig {
     pub enabled: bool,
     /// Vector dimension (optional, auto-detected at startup)
     pub embed_dim: Option<u32>,
-    /// PostgreSQL FTS dictionary name (e.g. "russian", "english", "simple").
+    /// `PostgreSQL` FTS dictionary name (e.g. "russian", "english", "simple").
     /// Auto-detected from first agent's language if not set.
     pub fts_language: Option<String>,
-    /// Whether GraphRAG graph-enhanced search is enabled. Defaults to true.
+    /// Whether `GraphRAG` graph-enhanced search is enabled. Defaults to true.
     #[serde(default = "default_true")]
     #[allow(dead_code)]
     pub graph_enabled: bool,
     /// Maximum tokens for pinned chunks in L0 context. Default: 2000.
-    /// Approximation: content.len() / 4.
+    /// Approximation: `content.len()` / 4.
     #[serde(default = "default_pinned_budget")]
     pub pinned_budget_tokens: u32,
     /// Age in days after which non-pinned chunks become eligible for compression. Default: 30.
@@ -87,7 +87,7 @@ pub struct MemoryStore {
     embed_model: OnceLock<String>,
     /// 0 = not yet detected
     embed_dim: AtomicU32,
-    /// PostgreSQL FTS dictionary (e.g. "russian", "english", "simple").
+    /// `PostgreSQL` FTS dictionary (e.g. "russian", "english", "simple").
     /// Mutable at runtime via API.
     fts_language: RwLock<String>,
     /// Lazy initialization guard: embedding probe runs on first memory operation.
@@ -135,7 +135,7 @@ impl MemoryStore {
 
     /// Returns the current FTS language.
     pub fn fts_language(&self) -> String {
-        self.fts_language.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.fts_language.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     /// Returns the FTS language after validating it is safe for SQL interpolation.
@@ -144,14 +144,14 @@ impl MemoryStore {
         let lang = self.fts_language();
         anyhow::ensure!(
             !lang.is_empty() && lang.chars().all(|c| c.is_ascii_lowercase()),
-            "invalid FTS language: {}", lang
+            "invalid FTS language: {lang}"
         );
         Ok(lang)
     }
 
     /// Update the FTS language at runtime (normalizes to lowercase).
     pub fn set_fts_language(&self, lang: &str) {
-        *self.fts_language.write().unwrap_or_else(|e| e.into_inner()) = lang.to_ascii_lowercase();
+        *self.fts_language.write().unwrap_or_else(std::sync::PoisonError::into_inner) = lang.to_ascii_lowercase();
     }
 
     /// Auto-detect FTS language from agent language code (e.g. "ru" → "russian").
@@ -177,7 +177,7 @@ impl MemoryStore {
     }
 
     /// Query toolgate /health to discover the active embedding provider display name.
-    /// Note: the display name (e.g. "OpenAI Embedding") is for logging only — it is NOT
+    /// Note: the display name (e.g. "`OpenAI` Embedding") is for logging only — it is NOT
     /// passed as the `model` field in embedding requests. Toolgate resolves the actual
     /// model internally from its provider registry.
     async fn fetch_embed_model_from_toolgate(&self) {
@@ -194,7 +194,7 @@ impl MemoryStore {
                     {
                         tracing::info!(embed_provider = %name, "discovered embedding provider from toolgate");
                         // Store display name for logging/status only — do NOT use as model param
-                        let _ = self.embed_model.set(format!("({})", name));
+                        let _ = self.embed_model.set(format!("({name})"));
                     }
             }
             Err(e) => {
@@ -331,7 +331,7 @@ impl MemoryStore {
         Ok(vec)
     }
 
-    /// Batch embed: sends multiple texts in one request (OpenAI API supports arrays).
+    /// Batch embed: sends multiple texts in one request (`OpenAI` API supports arrays).
     pub async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(vec![]);
@@ -402,7 +402,7 @@ impl MemoryStore {
     }
 
     /// Batch index: embed multiple texts and insert them all. Returns chunk IDs.
-    /// Long texts (> DEFAULT_CHUNK_SIZE) are delegated to `index()` for auto-chunking.
+    /// Long texts (> `DEFAULT_CHUNK_SIZE`) are delegated to `index()` for auto-chunking.
     /// Short texts are batch-embedded in a single request for efficiency.
     /// Category and topic are not supported in batch index (pass None/None per item).
     pub async fn index_batch(&self, items: &[(String, String, bool)]) -> Result<Vec<String>> {
@@ -462,7 +462,7 @@ impl MemoryStore {
 
     /// Deduplicate results: keep highest-scoring chunk per parent document.
     /// Results are pre-sorted by similarity, so the first occurrence of each
-    /// parent_id is the best one.
+    /// `parent_id` is the best one.
     fn dedup_by_parent(results: Vec<MemoryResult>) -> Vec<MemoryResult> {
         let mut seen = std::collections::HashSet::with_capacity(results.len());
         results.into_iter().filter(|r| {
@@ -471,8 +471,8 @@ impl MemoryStore {
     }
 
     /// Search memory: hybrid (semantic + FTS via RRF) when embedding available, pure FTS fallback.
-    /// When graph_enabled, appends graph-expanded results from the knowledge graph.
-    /// Returns (results, search_mode) where search_mode is "hybrid", "semantic", or "fts".
+    /// When `graph_enabled`, appends graph-expanded results from the knowledge graph.
+    /// Returns (results, `search_mode`) where `search_mode` is "hybrid", "semantic", or "fts".
     /// `exclude_ids`: chunk IDs already loaded via L0 pinned loading — excluded from results (CTX-04).
     /// `category` / `topic`: optional post-query filters; only chunks with matching values are returned.
     pub async fn search(
@@ -563,9 +563,9 @@ impl MemoryStore {
         // Score each result with RRF: 1/(k + rank_sem) + 1/(k + rank_fts)
         let mut scored: Vec<(f64, MemoryResult)> = all.into_values().map(|r| {
             let sem_rrf = sem_ranks.get(&r.id)
-                .map(|&rank| 1.0 / (K + rank as f64 + 1.0)).unwrap_or(0.0);
+                .map_or(0.0, |&rank| 1.0 / (K + rank as f64 + 1.0));
             let fts_rrf = fts_ranks.get(&r.id)
-                .map(|&rank| 1.0 / (K + rank as f64 + 1.0)).unwrap_or(0.0);
+                .map_or(0.0, |&rank| 1.0 / (K + rank as f64 + 1.0));
             (sem_rrf + fts_rrf, r)
         }).collect();
 
@@ -618,7 +618,7 @@ impl MemoryStore {
         Ok(results)
     }
 
-    /// Full-text search using PostgreSQL tsvector/tsquery with morphological stemming.
+    /// Full-text search using `PostgreSQL` tsvector/tsquery with morphological stemming.
     /// Used as fallback when embedding endpoint is unavailable.
     pub async fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<MemoryResult>> {
         if query.trim().is_empty() {
@@ -646,7 +646,7 @@ impl MemoryStore {
 
     /// Load L0 pinned chunks for an agent, respecting token budget.
     /// Returns (formatted text for prompt, list of chunk IDs for L2 dedup).
-    /// Budget is in tokens, approximated as content.len() / 4.
+    /// Budget is in tokens, approximated as `content.len()` / 4.
     /// When total exceeds budget, oldest chunks (FIFO) are dropped first.
     pub async fn load_pinned(
         &self,
@@ -707,8 +707,8 @@ impl MemoryStore {
     // ── Index ─────────────────────────────────────────────────────────────────
 
     /// Generate embedding and insert a new memory chunk. Returns the new chunk UUID.
-    /// If content exceeds DEFAULT_CHUNK_SIZE, splits into overlapping chunks
-    /// linked by parent_id. Returns the parent chunk's UUID.
+    /// If content exceeds `DEFAULT_CHUNK_SIZE`, splits into overlapping chunks
+    /// linked by `parent_id`. Returns the parent chunk's UUID.
     pub async fn index(
         &self,
         content: &str,
@@ -739,7 +739,7 @@ impl MemoryStore {
         }
 
         // Multiple chunks — batch embed and link via parent_id
-        let texts: Vec<&str> = chunks.iter().map(|c| c.as_str()).collect();
+        let texts: Vec<&str> = chunks.iter().map(std::string::String::as_str).collect();
         let embeddings = self.embed_batch(&texts).await?;
         let parent_id = uuid::Uuid::new_v4().to_string();
 
@@ -791,7 +791,7 @@ impl MemoryStore {
     // ── Delete ────────────────────────────────────────────────────────────────
 
     /// Rebuild all tsv columns with the current FTS language.
-    /// Called after changing fts_language to re-stem existing content.
+    /// Called after changing `fts_language` to re-stem existing content.
     pub async fn rebuild_fts(&self) -> Result<u64> {
         let lang = self.validated_fts_language()?;
         let rows = crate::db::memory_queries::rebuild_fts(&self.db, &lang).await?;
@@ -823,7 +823,7 @@ impl MemoryStore {
         crate::db::session_documents::search(&self.db, session_id, embedding_vec_str, limit).await
     }
 
-    /// Fetch memory chunks and their children for GraphRAG extraction.
+    /// Fetch memory chunks and their children for `GraphRAG` extraction.
     pub async fn fetch_chunks_for_graph(&self, chunk_id: &str) -> Result<Vec<(String, String)>> {
         sqlx::query_as::<_, (String, String)>(
             "SELECT id::text, content FROM memory_chunks \
@@ -875,7 +875,7 @@ impl MemoryStore {
         .map_err(Into::into)
     }
 
-    /// Find entities related to the given entity within max_hops in the knowledge graph.
+    /// Find entities related to the given entity within `max_hops` in the knowledge graph.
     pub async fn find_graph_related(
         &self,
         entity: &str,
@@ -884,7 +884,7 @@ impl MemoryStore {
         crate::memory_graph::find_related(&self.db, entity, max_hops).await
     }
 
-    /// Fetch compressible memory chunk groups older than age_days.
+    /// Fetch compressible memory chunk groups older than `age_days`.
     pub async fn fetch_compressible_groups(
         &self,
         age_days: u32,
@@ -892,7 +892,7 @@ impl MemoryStore {
         crate::db::memory_queries::fetch_compressible_groups(&self.db, age_days).await
     }
 
-    /// Spawn background GraphRAG entity extraction for the given chunks.
+    /// Spawn background `GraphRAG` entity extraction for the given chunks.
     pub async fn spawn_graph_extraction(
         &self,
         chunks: Vec<(String, String)>,
@@ -961,8 +961,7 @@ pub fn spawn_workspace_watcher(
 
         loop {
             let timeout = debounce_deadline
-                .map(|d| d.saturating_duration_since(std::time::Instant::now()))
-                .unwrap_or(std::time::Duration::from_secs(3600));
+                .map_or(std::time::Duration::from_secs(3600), |d| d.saturating_duration_since(std::time::Instant::now()));
 
             match rx.recv_timeout(timeout) {
                 Ok(Ok(Event { kind: EventKind::Create(_) | EventKind::Modify(_), paths, .. })) => {
@@ -974,8 +973,7 @@ pub fn spawn_workspace_watcher(
                             .ok()
                             .and_then(|rel| rel.components().next())
                             .and_then(|c| c.as_os_str().to_str())
-                            .map(|first| exclude_dirs.contains(&first))
-                            .unwrap_or(false);
+                            .is_some_and(|first| exclude_dirs.contains(&first));
                         if in_excluded {
                             continue;
                         }

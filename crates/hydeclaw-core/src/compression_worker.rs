@@ -34,11 +34,11 @@ pub fn spawn_worker(
             if let Err(e) = worker_loop(&db, &provider, &memory_store, compression_age_days, &cancel).await {
                 tracing::error!(error = %e, "compression worker error, restarting in 30s");
                 tokio::select! {
-                    _ = cancel.cancelled() => {
+                    () = cancel.cancelled() => {
                         tracing::info!("compression worker shutting down (cancelled during restart backoff)");
                         break;
                     }
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+                    () = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
                 }
             } else {
                 // worker_loop returned Ok — cancelled
@@ -64,8 +64,8 @@ async fn worker_loop(
         // Pause while chats are active (Pi resource contention)
         if ACTIVE_CHATS.load(Ordering::Relaxed) > 0 {
             tokio::select! {
-                _ = cancel.cancelled() => return Ok(()),
-                _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                () = cancel.cancelled() => return Ok(()),
+                () = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
             }
             continue;
         }
@@ -76,8 +76,8 @@ async fn worker_loop(
             Err(e) => {
                 tracing::warn!(error = %e, "compression worker: failed to fetch compressible groups");
                 tokio::select! {
-                    _ = cancel.cancelled() => return Ok(()),
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
+                    () = cancel.cancelled() => return Ok(()),
+                    () = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
                 }
                 continue;
             }
@@ -94,8 +94,8 @@ async fn worker_loop(
                 // Pause again between groups if chats become active
                 if ACTIVE_CHATS.load(Ordering::Relaxed) > 0 {
                     tokio::select! {
-                        _ = cancel.cancelled() => return Ok(()),
-                        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                        () = cancel.cancelled() => return Ok(()),
+                        () = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
                     }
                 }
                 match compress_group(db, provider, memory_store.as_ref(), group).await {
@@ -111,13 +111,13 @@ async fn worker_loop(
 
         // Sleep 1 hour before next scan
         tokio::select! {
-            _ = cancel.cancelled() => return Ok(()),
-            _ = tokio::time::sleep(std::time::Duration::from_secs(3600)) => {}
+            () = cancel.cancelled() => return Ok(()),
+            () = tokio::time::sleep(std::time::Duration::from_secs(3600)) => {}
         }
     }
 }
 
-/// Three-step idempotent compression for one (agent_id, topic) group:
+/// Three-step idempotent compression for one (`agent_id`, topic) group:
 /// 1. Concatenate chunk contents
 /// 2. LLM summarize (with 120s timeout)
 /// 3. Insert summary chunk + archive originals
@@ -145,8 +145,7 @@ pub async fn compress_group(
     let prompt = format!(
         "Summarize the following memory chunks into a single cohesive summary. \
          Preserve all key facts, decisions, and actionable information. \
-         Remove redundancy. Keep the summary concise but complete.\n\n{}",
-        concatenated
+         Remove redundancy. Keep the summary concise but complete.\n\n{concatenated}"
     );
 
     let result = tokio::time::timeout(
@@ -166,7 +165,7 @@ pub async fn compress_group(
 
     let response = match result {
         Ok(Ok(r)) => r,
-        Ok(Err(e)) => anyhow::bail!("LLM summarization failed: {}", e),
+        Ok(Err(e)) => anyhow::bail!("LLM summarization failed: {e}"),
         Err(_) => anyhow::bail!("LLM summarization timed out (120s)"),
     };
 

@@ -1,7 +1,7 @@
-/// MemoryService trait — abstraction over the concrete MemoryStore for testability.
+/// `MemoryService` trait — abstraction over the concrete `MemoryStore` for testability.
 ///
 /// Engine holds `Arc<dyn MemoryService>` instead of `Arc<MemoryStore>` so unit
-/// tests can inject a `MockMemoryService` without needing a live PostgreSQL + pgvector stack.
+/// tests can inject a `MockMemoryService` without needing a live `PostgreSQL` + pgvector stack.
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -64,7 +64,7 @@ pub trait MemoryService: Send + Sync {
     async fn recent(&self, limit: i64) -> Result<Vec<crate::memory::MemoryResult>>;
 
     /// Search session-scoped documents by embedding vector.
-    /// Returns vec of (filename, content_snippet, similarity_score).
+    /// Returns vec of (filename, `content_snippet`, `similarity_score`).
     async fn search_session_documents(
         &self,
         session_id: uuid::Uuid,
@@ -72,8 +72,8 @@ pub trait MemoryService: Send + Sync {
         limit: i64,
     ) -> Result<Vec<(String, String, f64)>>;
 
-    /// Fetch memory chunks and their children for GraphRAG extraction.
-    /// Returns vec of (chunk_id_str, content).
+    /// Fetch memory chunks and their children for `GraphRAG` extraction.
+    /// Returns vec of (`chunk_id_str`, content).
     async fn fetch_chunks_for_graph(&self, chunk_id: &str) -> Result<Vec<(String, String)>>;
 
     /// Wipe all memory for an agent: graph episodes, orphaned edges/entities, then memory chunks.
@@ -84,20 +84,20 @@ pub trait MemoryService: Send + Sync {
     /// Returns the task UUID.
     async fn enqueue_reindex_task(&self, params: serde_json::Value) -> Result<uuid::Uuid>;
 
-    /// Find entities related to the given entity within max_hops in the knowledge graph.
+    /// Find entities related to the given entity within `max_hops` in the knowledge graph.
     async fn find_graph_related(
         &self,
         entity: &str,
         max_hops: u8,
     ) -> Result<Vec<crate::memory_graph::GraphEntity>>;
 
-    /// Fetch compressible memory chunk groups older than age_days.
+    /// Fetch compressible memory chunk groups older than `age_days`.
     async fn fetch_compressible_groups(
         &self,
         age_days: u32,
     ) -> Result<Vec<crate::db::memory_queries::CompressibleGroup>>;
 
-    /// Spawn background GraphRAG entity extraction for the given chunks.
+    /// Spawn background `GraphRAG` entity extraction for the given chunks.
     /// The provider is needed for LLM-based extraction; implementations that don't
     /// support this (mock) should no-op.
     async fn spawn_graph_extraction(
@@ -106,7 +106,7 @@ pub trait MemoryService: Send + Sync {
         provider: std::sync::Arc<dyn crate::agent::providers::LlmProvider>,
     ) -> Result<()>;
 
-    /// Run memory compression for a single topic group via compression_worker.
+    /// Run memory compression for a single topic group via `compression_worker`.
     /// Wraps `compress_group` so callers don't need a `&PgPool`.
     async fn compress_memory_group(
         &self,
