@@ -121,13 +121,13 @@ export function createStreamingRenderer(store: StoreAccess) {
       ? existingSt.messageSource.messages
       : getCachedHistoryMessages(sessionId);
 
-    // Don't switch to "live" mode yet — wait for actual SSE data.
-    // This prevents empty screen flash if server returns 204 (no active stream).
+    // Switch to live mode immediately with seed. If server returns 204 (no active stream),
+    // the handler below switches back to history mode.
     update(agent, {
       streamError: null,
       connectionPhase: "streaming",
       connectionError: null,
-      ...(seedMessages.length > 0 ? { messageSource: { mode: "live" as const, messages: seedMessages } } : {}),
+      messageSource: { mode: "live" as const, messages: seedMessages },
     });
 
     const token = assertToken();
@@ -378,8 +378,9 @@ export function createStreamingRenderer(store: StoreAccess) {
         // Double-check generation inside draft to close race window
         if (st.streamGeneration !== generation) return;
         if (st.messageSource.mode !== "live") {
-          // Seed with history so user messages are preserved (Bug 3 fix)
-          const cached = getCachedHistoryMessages(st.activeSessionId ?? "");
+          // Seed with history so user messages are preserved
+          const branches = st.selectedBranches ?? {};
+          const cached = getCachedHistoryMessages(st.activeSessionId ?? "", branches);
           st.messageSource = { mode: "live", messages: cached.length > 0 ? [...cached] : [] };
         }
         const liveMessages = st.messageSource.messages;
@@ -482,7 +483,6 @@ export function createStreamingRenderer(store: StoreAccess) {
 
               // Don't reset if current message only has tool/approval parts —
               // accumulate tools across LLM iterations into one message block.
-              // Text will split into a new message via text-start handler below.
               const hasOnlyTools = parts.length > 0 && parts.every(p =>
                 p.type === "tool" || p.type === "approval"
               );
@@ -491,17 +491,18 @@ export function createStreamingRenderer(store: StoreAccess) {
                 break;
               }
 
+              const oldAssistantId = assistantId;
               assistantId = newId;
               assistantCreatedAt = new Date().toISOString();
               parts = [];
               incrementalParser.reset(); // CRITICAL: Reset parser to avoid text leakage from previous agent
               if (event.agentName) currentRespondingAgent = event.agentName;
-              // Dedup: remove resume placeholder and seeded message with same ID
+              // Dedup: remove resume placeholder, old placeholder, and seeded message with same ID
               const stNow = store.get().agents[agent];
               if (stNow && stNow.messageSource.mode === "live") {
                 const currentMessages = stNow.messageSource.messages;
                 const deduped = currentMessages.filter(
-                  (m: ChatMessage) => m.id !== newId && !m.id.startsWith("resume-")
+                  (m: ChatMessage) => m.id !== newId && m.id !== oldAssistantId && !m.id.startsWith("resume-")
                 );
                 if (deduped.length !== currentMessages.length) {
                   update(agent, { messageSource: { mode: "live", messages: deduped } });
