@@ -32,6 +32,7 @@ interface GraphNode {
   entity_type?: string;
   x?: number;
   y?: number;
+  _degree?: number;
 }
 
 interface GraphEdge {
@@ -42,17 +43,17 @@ interface GraphEdge {
   target: string;
 }
 
-// ── Color palette ────────────────────────────────────────────
+// ── Color palette — yFiles dual-tone: dark fill + bright ring ─
 
 const PALETTE = {
-  document: { core: "#60a5fa", glow: "rgba(96, 165, 250, 0.5)", text: "#93c5fd" },
-  person: { core: "#fb7185", glow: "rgba(251, 113, 133, 0.5)", text: "#fda4af" },
-  place: { core: "#4ade80", glow: "rgba(74, 222, 128, 0.5)", text: "#86efac" },
-  concept: { core: "#c084fc", glow: "rgba(192, 132, 252, 0.5)", text: "#d8b4fe" },
-  event: { core: "#fbbf24", glow: "rgba(251, 191, 36, 0.5)", text: "#fde68a" },
-  organization: { core: "#fb923c", glow: "rgba(251, 146, 60, 0.5)", text: "#fdba74" },
-  default: { core: "#2dd4bf", glow: "rgba(45, 212, 191, 0.5)", text: "#5eead4" },
-  pinned: { ring: "#facc15", glow: "rgba(250, 204, 21, 0.6)" },
+  document:     { ring: "#5B8AF5", fill: "#1a2040", text: "#93BBFD" },
+  person:       { ring: "#E06C75", fill: "#2a1520", text: "#F0A0A8" },
+  place:        { ring: "#98C379", fill: "#152a18", text: "#B8E0A0" },
+  concept:      { ring: "#C678DD", fill: "#221530", text: "#DCA8F0" },
+  event:        { ring: "#E6C84A", fill: "#2a2510", text: "#F0E090" },
+  organization: { ring: "#E07B54", fill: "#2a1810", text: "#F0A880" },
+  default:      { ring: "#4ECDC4", fill: "#102828", text: "#80E8E0" },
+  pinned:       { ring: "#facc15" },
 } as const;
 
 type PaletteKey = keyof Omit<typeof PALETTE, "pinned">;
@@ -63,23 +64,24 @@ function getNodeColors(node: GraphNode) {
   return PALETTE[key] ?? PALETTE.default;
 }
 
-// ── Theme-aware canvas colors ────────────────────────────────
+// ── Theme detection ──────────────────────────────────────────
 
 function isDarkMode(): boolean {
   if (typeof document === "undefined") return true;
   return document.documentElement.classList.contains("dark");
 }
 
-function themeColors() {
+function getThemeColors() {
   const dark = isDarkMode();
   return {
-    linkDefault: dark ? "rgba(255, 255, 255, 0.12)" : "rgba(0, 0, 0, 0.1)",
-    linkDimmed: dark ? "rgba(255, 255, 255, 0.04)" : "rgba(0, 0, 0, 0.04)",
-    linkHighlight: dark ? "rgba(107, 158, 255, 0.4)" : "rgba(59, 100, 200, 0.4)",
-    pillBg: dark ? "rgba(0, 0, 0, 0.65)" : "rgba(0, 0, 0, 0.7)",
-    highlightRing: dark ? "#ffffff" : "#1a1f2e",
-    centerDot: dark ? "#ffffff" : "#ffffff",
-    dimmedText: dark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.15)",
+    edgeDefault: dark ? "rgba(70, 85, 105, 0.35)" : "rgba(70, 85, 105, 0.25)",
+    edgeDimmed: dark ? "rgba(70, 85, 105, 0.06)" : "rgba(70, 85, 105, 0.06)",
+    edgeHighlight: dark ? "rgba(150, 170, 200, 0.85)" : "rgba(59, 100, 200, 0.5)",
+    pillBg: dark ? "rgba(8, 12, 18, 0.75)" : "rgba(0, 0, 0, 0.7)",
+    labelColor: dark ? "#CBD5E0" : "#2D3748",
+    labelDimmed: dark ? "rgba(203,213,224,0.15)" : "rgba(0,0,0,0.12)",
+    searchRing: dark ? "#E2E8F0" : "#1a1f2e",
+    particleColor: dark ? "rgba(150, 180, 220, 0.8)" : "rgba(59, 100, 200, 0.6)",
   };
 }
 
@@ -91,6 +93,7 @@ export function MemoryPalace() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [highlightNodes, setHighlightNodes] = useState<Set<string>>(new Set());
+  const [neighborNodes, setNeighborNodes] = useState<Set<string>>(new Set());
   const fgRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const animFrame = useRef(0);
@@ -111,7 +114,19 @@ export function MemoryPalace() {
         source: e.from,
         target: e.to,
       }));
-      setData({ nodes: json.nodes, links });
+
+      // Pre-compute degree for LOD labels
+      const degreeMap = new Map<string, number>();
+      for (const edge of json.edges) {
+        degreeMap.set(edge.from, (degreeMap.get(edge.from) ?? 0) + 1);
+        degreeMap.set(edge.to, (degreeMap.get(edge.to) ?? 0) + 1);
+      }
+      const nodes = json.nodes.map((n: GraphNode) => ({
+        ...n,
+        _degree: degreeMap.get(n.id) ?? 0,
+      }));
+
+      setData({ nodes, links });
     } catch {
       toast.error("Failed to load memory graph");
     } finally {
@@ -122,6 +137,22 @@ export function MemoryPalace() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // ── Adjacency map for neighborhood highlighting ────────────
+
+  const adjacencyMap = useMemo(() => {
+    if (!data) return new Map<string, Set<string>>();
+    const map = new Map<string, Set<string>>();
+    for (const link of data.links) {
+      const srcId = typeof link.source === "object" ? (link.source as unknown as GraphNode).id : link.source;
+      const tgtId = typeof link.target === "object" ? (link.target as unknown as GraphNode).id : link.target;
+      if (!map.has(srcId)) map.set(srcId, new Set());
+      if (!map.has(tgtId)) map.set(tgtId, new Set());
+      map.get(srcId)!.add(tgtId);
+      map.get(tgtId)!.add(srcId);
+    }
+    return map;
+  }, [data]);
 
   // ── Search highlighting ────────────────────────────────────
 
@@ -197,133 +228,209 @@ export function MemoryPalace() {
       ctx.save();
 
       const colors = getNodeColors(node);
-      const tc = themeColors();
-      const isHighlighted = highlightNodes.size > 0 && highlightNodes.has(node.id);
-      const isDimmed = highlightNodes.size > 0 && !highlightNodes.has(node.id);
+      const tc = getThemeColors();
+      const isSearchMatch = highlightNodes.size > 0 && highlightNodes.has(node.id);
+      const isSearchDimmed = highlightNodes.size > 0 && !highlightNodes.has(node.id);
       const isHovered = hoveredRef.current?.id === node.id;
+      const isNeighbor = neighborNodes.has(node.id);
+      const hasHoverFocus = neighborNodes.size > 0;
+      const isHoverDimmed = hasHoverFocus && !isNeighbor && !isHovered;
+      const isDimmed = isSearchDimmed || isHoverDimmed;
       const time = animFrame.current;
 
-      const baseRadius = node.kind === "document" ? 6 : 5;
-      const radius = baseRadius / globalScale;
+      // Node size — scale with degree (sqrt)
+      const degree = node._degree ?? 0;
+      const baseRadius = 4 + Math.sqrt(degree) * 1.5;
+      const clampedRadius = Math.min(baseRadius, 16);
+      const radius = clampedRadius / globalScale;
 
-      // Glow halo
-      if (!isDimmed) {
-        const glowRadius = radius * (isHovered ? 5 : 3.5);
-        const gradient = ctx.createRadialGradient(node.x, node.y, radius * 0.5, node.x, node.y, glowRadius);
-        gradient.addColorStop(0, colors.glow);
-        gradient.addColorStop(1, "transparent");
-        ctx.fillStyle = gradient;
+      // Enlarge neighbors slightly on hover
+      const displayRadius = isNeighbor && !isHovered ? radius * 1.1 : radius;
+
+      if (isDimmed) {
+        // Dimmed node — minimal rendering
         ctx.beginPath();
-        ctx.arc(node.x, node.y, glowRadius, 0, Math.PI * 2);
+        ctx.arc(node.x, node.y, displayRadius * 0.7, 0, Math.PI * 2);
+        ctx.fillStyle = colors.ring;
+        ctx.globalAlpha = 0.12;
         ctx.fill();
+        ctx.restore();
+        return;
       }
 
-      // Pinned pulsing ring
-      if (node.pinned && !isDimmed) {
+      // Hover glow — canvas shadowBlur (real GPU glow)
+      if (isHovered) {
+        ctx.shadowColor = colors.ring;
+        ctx.shadowBlur = 24;
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, displayRadius, 0, Math.PI * 2);
+        ctx.fillStyle = colors.ring;
+        ctx.fill();
+        // Second pass for stronger center bloom
+        ctx.shadowBlur = 10;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+      }
+
+      // Dark fill circle (yFiles pattern)
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, displayRadius, 0, Math.PI * 2);
+      ctx.fillStyle = colors.fill;
+      ctx.globalAlpha = 1;
+      ctx.fill();
+
+      // Bright ring
+      ctx.strokeStyle = colors.ring;
+      ctx.lineWidth = (isHovered ? 2.5 : 1.5) / globalScale;
+      ctx.globalAlpha = isNeighbor ? 1 : 0.85;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+
+      // Pinned pulsing outer ring
+      if (node.pinned) {
         const pulse = Math.sin(time * 0.003) * 0.3 + 0.7;
         ctx.strokeStyle = PALETTE.pinned.ring;
         ctx.lineWidth = 1.5 / globalScale;
         ctx.globalAlpha = pulse;
         ctx.beginPath();
-        ctx.arc(node.x, node.y, radius * 2.2, 0, Math.PI * 2);
+        ctx.arc(node.x, node.y, displayRadius + 4 / globalScale, 0, Math.PI * 2);
         ctx.stroke();
         ctx.globalAlpha = 1;
       }
 
-      // Core circle
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
-      ctx.fillStyle = colors.core;
-      ctx.globalAlpha = isDimmed ? 0.15 : 1;
-      ctx.fill();
-      ctx.globalAlpha = 1;
-
-      // Bright center dot
-      if (!isDimmed) {
+      // Search match ring
+      if (isSearchMatch) {
+        ctx.strokeStyle = tc.searchRing;
+        ctx.lineWidth = 2.5 / globalScale;
         ctx.beginPath();
-        ctx.arc(node.x, node.y, radius * 0.35, 0, Math.PI * 2);
-        ctx.fillStyle = tc.centerDot;
-        ctx.globalAlpha = 0.8;
-        ctx.fill();
-        ctx.globalAlpha = 1;
-      }
-
-      // Highlight ring for search matches
-      if (isHighlighted) {
-        ctx.strokeStyle = tc.highlightRing;
-        ctx.lineWidth = 2 / globalScale;
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, radius * 1.8, 0, Math.PI * 2);
+        ctx.arc(node.x, node.y, displayRadius + 3 / globalScale, 0, Math.PI * 2);
         ctx.stroke();
       }
 
-      // Label — only if zoomed in enough or hovered/highlighted
-      if (globalScale > 1.5 || isHovered || isHighlighted) {
-        const fontSize = Math.max(10, 12 / globalScale);
-        ctx.font = `500 ${fontSize}px system-ui, -apple-system, sans-serif`;
-        const label = node.label.length > 28 ? node.label.slice(0, 26) + "\u2026" : node.label;
-        const textMetrics = ctx.measureText(label);
-        const textW = textMetrics.width;
+      // ── LOD labels ─────────────────────────────────────────
+      // zoom < 0.4  → hide all
+      // zoom 0.4–1.0 → show only high-degree (>4) or hovered/pinned
+      // zoom > 1.0  → show all non-dimmed
+      const showLabel =
+        isHovered ||
+        isSearchMatch ||
+        (globalScale > 1.0) ||
+        (globalScale > 0.4 && (degree > 4 || node.pinned));
+
+      if (showLabel) {
+        const fontSize = Math.max(9, Math.min(14, 12 / globalScale));
+        const fontWeight = globalScale < 0.8 ? "600" : "500";
+        ctx.font = `${fontWeight} ${fontSize}px system-ui, -apple-system, sans-serif`;
+
+        const maxLen = globalScale < 0.8 ? 18 : 26;
+        const label = node.label.length > maxLen ? node.label.slice(0, maxLen - 2) + "\u2026" : node.label;
+        const textW = ctx.measureText(label).width;
         const textH = fontSize;
         const padX = 4 / globalScale;
         const padY = 2 / globalScale;
-        const labelY = node.y + radius + textH * 0.8;
+        const labelY = node.y + displayRadius + textH * 0.7;
 
-        // Text background pill
-        ctx.fillStyle = tc.pillBg;
-        ctx.globalAlpha = isDimmed ? 0.1 : 0.85;
+        // Semi-transparent pill backdrop
         const pillR = 3 / globalScale;
-        const x = node.x - textW / 2 - padX;
-        const y = labelY - textH / 2 - padY;
-        const w = textW + padX * 2;
-        const h = textH + padY * 2;
+        const px = node.x - textW / 2 - padX;
+        const py = labelY - textH / 2 - padY;
+        const pw = textW + padX * 2;
+        const ph = textH + padY * 2;
+
+        ctx.fillStyle = tc.pillBg;
+        ctx.globalAlpha = 0.82;
         ctx.beginPath();
-        ctx.moveTo(x + pillR, y);
-        ctx.lineTo(x + w - pillR, y);
-        ctx.quadraticCurveTo(x + w, y, x + w, y + pillR);
-        ctx.lineTo(x + w, y + h - pillR);
-        ctx.quadraticCurveTo(x + w, y + h, x + w - pillR, y + h);
-        ctx.lineTo(x + pillR, y + h);
-        ctx.quadraticCurveTo(x, y + h, x, y + h - pillR);
-        ctx.lineTo(x, y + pillR);
-        ctx.quadraticCurveTo(x, y, x + pillR, y);
+        ctx.moveTo(px + pillR, py);
+        ctx.lineTo(px + pw - pillR, py);
+        ctx.quadraticCurveTo(px + pw, py, px + pw, py + pillR);
+        ctx.lineTo(px + pw, py + ph - pillR);
+        ctx.quadraticCurveTo(px + pw, py + ph, px + pw - pillR, py + ph);
+        ctx.lineTo(px + pillR, py + ph);
+        ctx.quadraticCurveTo(px, py + ph, px, py + ph - pillR);
+        ctx.lineTo(px, py + pillR);
+        ctx.quadraticCurveTo(px, py, px + pillR, py);
         ctx.closePath();
         ctx.fill();
         ctx.globalAlpha = 1;
 
-        // Text
+        // Label text — use type color for hovered, neutral for rest
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillStyle = isDimmed ? tc.dimmedText : colors.text;
+        ctx.fillStyle = isHovered ? colors.text : tc.labelColor;
         ctx.fillText(label, node.x, labelY);
       }
 
       ctx.restore();
     },
-    [highlightNodes]
+    [highlightNodes, neighborNodes]
   );
 
   // ── Link colors ────────────────────────────────────────────
 
   const getLinkColor = useCallback(
     (link: any) => {
-      const tc = themeColors();
-      if (highlightNodes.size === 0) return tc.linkDefault;
+      const tc = getThemeColors();
       const srcId = typeof link.source === "object" ? link.source.id : link.source;
       const tgtId = typeof link.target === "object" ? link.target.id : link.target;
-      if (highlightNodes.has(srcId) || highlightNodes.has(tgtId)) {
-        return tc.linkHighlight;
+
+      // Search highlighting
+      if (highlightNodes.size > 0) {
+        if (highlightNodes.has(srcId) || highlightNodes.has(tgtId)) return tc.edgeHighlight;
+        return tc.edgeDimmed;
       }
-      return tc.linkDimmed;
+
+      // Hover neighborhood highlighting
+      if (neighborNodes.size > 0) {
+        const hovId = hoveredRef.current?.id;
+        if (hovId && (srcId === hovId || tgtId === hovId)) return tc.edgeHighlight;
+        return tc.edgeDimmed;
+      }
+
+      return tc.edgeDefault;
     },
-    [highlightNodes]
+    [highlightNodes, neighborNodes]
   );
 
-  // ── Hover handler ──────────────────────────────────────────
+  // ── Link width ─────────────────────────────────────────────
 
-  const handleNodeHover = useCallback((node: any) => {
-    hoveredRef.current = node ?? null;
-    setHoveredForUI(node ?? null);
+  const getLinkWidth = useCallback(
+    (link: any) => {
+      if (neighborNodes.size === 0 && highlightNodes.size === 0) return 0.5;
+      const srcId = typeof link.source === "object" ? link.source.id : link.source;
+      const tgtId = typeof link.target === "object" ? link.target.id : link.target;
+      const hovId = hoveredRef.current?.id;
+
+      if (hovId && (srcId === hovId || tgtId === hovId)) return 1.5;
+      if (highlightNodes.has(srcId) || highlightNodes.has(tgtId)) return 1.2;
+      return 0.3;
+    },
+    [neighborNodes, highlightNodes]
+  );
+
+  // ── Hover handler with neighborhood computation ────────────
+
+  const handleNodeHover = useCallback(
+    (node: any) => {
+      hoveredRef.current = node ?? null;
+      setHoveredForUI(node ?? null);
+
+      if (node) {
+        const neighbors = adjacencyMap.get(node.id) ?? new Set<string>();
+        const expanded = new Set(neighbors);
+        expanded.add(node.id);
+        setNeighborNodes(expanded);
+      } else {
+        setNeighborNodes(new Set());
+      }
+    },
+    [adjacencyMap]
+  );
+
+  // ── Node drag pinning (Obsidian pattern) ───────────────────
+
+  const handleNodeDragEnd = useCallback((node: any) => {
+    node.fx = node.x;
+    node.fy = node.y;
   }, []);
 
   // ── Render ─────────────────────────────────────────────────
@@ -354,12 +461,11 @@ export function MemoryPalace() {
 
   return (
     <div ref={containerRef} className="relative h-full w-full overflow-hidden bg-background">
-      {/* Dot grid background */}
+      {/* Radial vignette for depth */}
       <div
-        className="absolute inset-0 pointer-events-none opacity-[0.03]"
+        className="absolute inset-0 pointer-events-none z-[1]"
         style={{
-          backgroundImage: `radial-gradient(circle, currentColor 1px, transparent 1px)`,
-          backgroundSize: "24px 24px",
+          background: `radial-gradient(ellipse 70% 70% at 50% 50%, transparent 30%, rgba(4, 6, 10, 0.4) 100%)`,
         }}
       />
 
@@ -370,7 +476,7 @@ export function MemoryPalace() {
             variant="ghost"
             size="icon"
             className="h-7 w-7"
-            onClick={() => fgRef.current?.zoomToFit(400, 40)}
+            onClick={() => fgRef.current?.zoomToFit(400, 50)}
             title="Fit to view"
           >
             <Maximize2 className="h-3.5 w-3.5" />
@@ -429,15 +535,17 @@ export function MemoryPalace() {
         <div className="p-3 space-y-1.5 bg-background/80 backdrop-blur-sm border border-border/50 rounded-lg shadow-sm min-w-[140px]">
           {entityTypes.map(([type, count]) => {
             const key = type as PaletteKey;
-            const color = PALETTE[key]?.core ?? PALETTE.default.core;
+            const ringColor = PALETTE[key]?.ring ?? PALETTE.default.ring;
+            const fillColor = PALETTE[key]?.fill ?? PALETTE.default.fill;
             return (
               <div key={type} className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
                   <div
-                    className="h-2 w-2 rounded-full"
+                    className="h-2.5 w-2.5 rounded-full border-[1.5px]"
                     style={{
-                      backgroundColor: color,
-                      boxShadow: `0 0 6px ${color}`,
+                      borderColor: ringColor,
+                      backgroundColor: fillColor,
+                      boxShadow: `0 0 4px ${ringColor}`,
                     }}
                   />
                   <span className="text-[10px] text-muted-foreground capitalize">{type}</span>
@@ -450,10 +558,11 @@ export function MemoryPalace() {
             <div className="flex items-center justify-between gap-3 pt-1.5 mt-1.5 border-t border-border/50">
               <div className="flex items-center gap-2">
                 <div
-                  className="h-2 w-2 rounded-full"
+                  className="h-2.5 w-2.5 rounded-full border-[1.5px]"
                   style={{
-                    backgroundColor: PALETTE.pinned.ring,
-                    boxShadow: `0 0 6px ${PALETTE.pinned.ring}`,
+                    borderColor: PALETTE.pinned.ring,
+                    backgroundColor: "transparent",
+                    boxShadow: `0 0 4px ${PALETTE.pinned.ring}`,
                   }}
                 />
                 <span className="text-[10px] text-muted-foreground">pinned</span>
@@ -472,10 +581,13 @@ export function MemoryPalace() {
         <div className="absolute top-3 right-3 z-10 max-w-[220px]">
           <div className="p-3 bg-background/90 backdrop-blur-md border border-border/50 rounded-lg shadow-lg">
             <div className="text-xs font-semibold text-foreground truncate">{hoveredForUI.label}</div>
-            <div className="flex items-center gap-1.5 mt-1">
+            <div className="flex items-center gap-1.5 mt-1.5">
               <div
-                className="h-1.5 w-1.5 rounded-full"
-                style={{ backgroundColor: getNodeColors(hoveredForUI).core }}
+                className="h-2 w-2 rounded-full border"
+                style={{
+                  borderColor: getNodeColors(hoveredForUI).ring,
+                  backgroundColor: getNodeColors(hoveredForUI).fill,
+                }}
               />
               <span className="text-[10px] text-muted-foreground capitalize">
                 {hoveredForUI.kind === "document" ? "document" : hoveredForUI.entity_type ?? "entity"}
@@ -491,6 +603,11 @@ export function MemoryPalace() {
                 {hoveredForUI.source}
               </div>
             )}
+            {(hoveredForUI._degree ?? 0) > 0 && (
+              <div className="text-[10px] text-muted-foreground/40 mt-0.5">
+                {hoveredForUI._degree} connection{hoveredForUI._degree !== 1 ? "s" : ""}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -502,25 +619,31 @@ export function MemoryPalace() {
         nodeCanvasObject={paintNode}
         nodePointerAreaPaint={(node: any, color, ctx, globalScale) => {
           if (node.x == null || node.y == null) return;
-          const r = (node.kind === "document" ? 5 : 4) / globalScale;
+          const degree = node._degree ?? 0;
+          const r = Math.min(4 + Math.sqrt(degree) * 1.5, 16) / globalScale;
           ctx.fillStyle = color;
           ctx.beginPath();
-          ctx.arc(node.x, node.y, r * 2, 0, Math.PI * 2);
+          ctx.arc(node.x, node.y, r * 1.5, 0, Math.PI * 2);
           ctx.fill();
         }}
         linkColor={getLinkColor}
-        linkWidth={0.5}
+        linkWidth={getLinkWidth}
         linkDirectionalArrowLength={3}
         linkDirectionalArrowRelPos={1}
         linkDirectionalArrowColor={getLinkColor}
-        linkCurvature={0.2}
+        linkCurvature={0.25}
+        linkDirectionalParticles={1}
+        linkDirectionalParticleWidth={2}
+        linkDirectionalParticleSpeed={0.004}
+        linkDirectionalParticleColor={() => getThemeColors().particleColor}
         onNodeHover={handleNodeHover}
         onNodeClick={(node: any) => {
           if (fgRef.current && node.x != null && node.y != null) {
-            fgRef.current.centerAt(node.x, node.y, 600);
-            fgRef.current.zoom(3, 600);
+            fgRef.current.centerAt(node.x, node.y, 400);
+            fgRef.current.zoom(2.5, 400);
           }
         }}
+        onNodeDragEnd={handleNodeDragEnd}
         backgroundColor="transparent"
         warmupTicks={50}
         cooldownTime={3000}

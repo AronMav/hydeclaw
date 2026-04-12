@@ -362,12 +362,26 @@ pub async fn find_stuck_sessions(
     stale_secs: i64,
     max_retries: i32,
 ) -> Result<Vec<(Uuid, String)>> {
+    // Two cases:
+    // 1. run_status='running' + last message is user (agent never responded)
+    // 2. run_status='done' + last assistant has empty content (agent crashed mid-response)
     let rows: Vec<(Uuid, String)> = sqlx::query_as(
         "SELECT s.id, s.agent_id FROM sessions s \
-         WHERE s.run_status = 'running' \
+         WHERE s.retry_count < $2 \
            AND COALESCE(s.activity_at, s.last_message_at) < NOW() - make_interval(secs => $1) \
-           AND s.retry_count < $2 \
-           AND (SELECT role FROM messages WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1) = 'user'"
+           AND ( \
+             (s.run_status = 'running' \
+              AND (SELECT role FROM messages WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1) = 'user') \
+             OR \
+             (s.run_status = 'done' \
+              AND EXISTS ( \
+                SELECT 1 FROM messages m \
+                WHERE m.session_id = s.id AND m.role = 'assistant' \
+                  AND (m.content IS NULL OR m.content = '') \
+                  AND (m.tool_calls IS NULL OR m.tool_calls = '[]'::jsonb) \
+                  AND m.id = (SELECT id FROM messages WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1) \
+              )) \
+           )"
     )
     .bind(stale_secs as f64)
     .bind(max_retries)
@@ -376,12 +390,12 @@ pub async fn find_stuck_sessions(
     Ok(rows)
 }
 
-/// Increment retry_count atomically. Returns None if session is not in 'running' state
-/// (prevents concurrent double-retry).
+/// Increment retry_count atomically and set run_status to 'running'.
+/// Returns None if concurrent retry already changed the status (prevents double-fire).
 pub async fn increment_retry_count(db: &PgPool, session_id: Uuid) -> Result<Option<i32>> {
     let row: Option<(i32,)> = sqlx::query_as(
-        "UPDATE sessions SET retry_count = retry_count + 1 \
-         WHERE id = $1 AND run_status = 'running' \
+        "UPDATE sessions SET retry_count = retry_count + 1, run_status = 'running' \
+         WHERE id = $1 AND run_status IN ('running', 'done') \
          RETURNING retry_count"
     )
     .bind(session_id)

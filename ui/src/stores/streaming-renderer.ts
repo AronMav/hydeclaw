@@ -25,7 +25,7 @@ import type {
   ConnectionPhase,
   AgentState,
 } from "./chat-types";
-import { getCachedHistoryMessages, getCachedRawMessages, resolveActivePath } from "./chat-history";
+import { getCachedRawMessages, resolveActivePath } from "./chat-history";
 
 // ── Store access interface ─────────────────────────────────────────────────
 // Uses `any` for store shape to avoid circular dependency with ChatStore.
@@ -115,19 +115,13 @@ export function createStreamingRenderer(store: StoreAccess) {
     const controller = new AbortController();
     setAbortCtrl(agent, controller);
 
-    // Seed with history from React Query cache so UI shows messages immediately (Fix A).
-    const existingSt = store.get().agents[agent];
-    const seedMessages = existingSt?.messageSource.mode === "live"
-      ? existingSt.messageSource.messages
-      : getCachedHistoryMessages(sessionId);
-
-    // Switch to live mode immediately with seed. If server returns 204 (no active stream),
-    // the handler below switches back to history mode.
+    // Architecture C: live messages = overlay only (current streaming message).
+    // History comes from React Query. No seed needed.
     update(agent, {
       streamError: null,
       connectionPhase: "streaming",
       connectionError: null,
-      messageSource: { mode: "live" as const, messages: seedMessages },
+      messageSource: { mode: "live" as const, messages: [] },
     });
 
     const token = assertToken();
@@ -245,9 +239,10 @@ export function createStreamingRenderer(store: StoreAccess) {
       createdAt: new Date().toISOString(),
       status: "sending",
     };
-    const allMessages = [...messages, userMsg];
+    // Architecture C: live = overlay only. History provides past messages.
+    // Overlay contains just the optimistic user message (until history picks it up).
     update(agent, {
-      messageSource: { mode: "live", messages: allMessages },
+      messageSource: { mode: "live", messages: [userMsg] },
       streamError: null,
       connectionPhase: "submitted",
       connectionError: null,
@@ -378,11 +373,9 @@ export function createStreamingRenderer(store: StoreAccess) {
         // Double-check generation inside draft to close race window
         if (st.streamGeneration !== generation) return;
         if (st.messageSource.mode !== "live") {
-          // Seed with history so user messages are preserved
-          const branches = st.selectedBranches ?? {};
-          const cached = getCachedHistoryMessages(st.activeSessionId ?? "", branches);
-          st.messageSource = { mode: "live", messages: cached.length > 0 ? [...cached] : [] };
+          st.messageSource = { mode: "live", messages: [] };
         }
+        // Preserve existing overlay messages (e.g. optimistic user msg)
         const liveMessages = st.messageSource.messages;
         const existing = liveMessages.findIndex((m: ChatMessage) => m.id === assistantId);
 
@@ -482,32 +475,14 @@ export function createStreamingRenderer(store: StoreAccess) {
               const newId = event.messageId || assistantId;
 
               // Don't reset if current message only has tool/approval parts —
-              // accumulate tools across LLM iterations into one message block.
-              const hasOnlyTools = parts.length > 0 && parts.every(p =>
-                p.type === "tool" || p.type === "approval"
-              );
-              if (hasOnlyTools) {
-                if (event.agentName) currentRespondingAgent = event.agentName;
-                break;
-              }
-
-              const oldAssistantId = assistantId;
+              // Architecture C: each `start` = new LLM iteration.
+              // Reset overlay for new assistant message. History refresh happens
+              // via React Query polling (3-5s) — no forced invalidation to avoid races.
               assistantId = newId;
               assistantCreatedAt = new Date().toISOString();
               parts = [];
-              incrementalParser.reset(); // CRITICAL: Reset parser to avoid text leakage from previous agent
+              incrementalParser.reset();
               if (event.agentName) currentRespondingAgent = event.agentName;
-              // Dedup: remove resume placeholder, old placeholder, and seeded message with same ID
-              const stNow = store.get().agents[agent];
-              if (stNow && stNow.messageSource.mode === "live") {
-                const currentMessages = stNow.messageSource.messages;
-                const deduped = currentMessages.filter(
-                  (m: ChatMessage) => m.id !== newId && m.id !== oldAssistantId && !m.id.startsWith("resume-")
-                );
-                if (deduped.length !== currentMessages.length) {
-                  update(agent, { messageSource: { mode: "live", messages: deduped } });
-                }
-              }
               break;
             }
 
@@ -634,20 +609,9 @@ export function createStreamingRenderer(store: StoreAccess) {
             }
 
             case "sync": {
-              const { content: syncContent, toolCalls: syncToolCalls, status: syncStatus } = event;
-              const normalizedParts = parseContentParts(syncContent || "");
-
-              const syncParts: MessagePart[] = [...normalizedParts];
-              for (const tc of syncToolCalls as Array<Record<string, unknown>>) {
-                syncParts.push({
-                  type: "tool",
-                  toolCallId: (tc.toolCallId as string) ?? "",
-                  toolName: (tc.toolName as string) ?? "tool",
-                  state: "output-available",
-                  input: {},
-                  output: tc.output,
-                });
-              }
+              const { content: syncContent, status: syncStatus } = event;
+              // Architecture C: overlay = text only. Tools come from history (DB).
+              const syncParts: MessagePart[] = parseContentParts(syncContent || "");
 
               store.set((draft: any) => {
                 const st = draft.agents[agent];
