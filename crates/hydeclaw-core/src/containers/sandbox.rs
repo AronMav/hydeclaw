@@ -38,7 +38,7 @@ impl CodeSandbox {
         Ok(Self {
             docker,
             image: cfg.image.clone(),
-            memory_bytes: (cfg.memory_mb.max(512)) as i64 * 1024 * 1024,
+            memory_bytes: i64::from(cfg.memory_mb.max(512)) * 1024 * 1024,
             extra_binds: cfg.extra_binds.clone(),
             timeout_secs: cfg.timeout_secs,
         })
@@ -88,8 +88,8 @@ impl CodeSandbox {
     }
 
     /// Collect git-related environment variables from OAuth bindings.
-    /// For each binding to a git-capable provider, injects {PROVIDER}_GIT_TOKEN and {PROVIDER}_GIT_HOST.
-    /// Also sets GIT_AUTHOR_NAME/EMAIL and GIT_COMMITTER_NAME/EMAIL from userinfo.
+    /// For each binding to a git-capable provider, injects {PROVIDER}_`GIT_TOKEN` and {PROVIDER}_`GIT_HOST`.
+    /// Also sets `GIT_AUTHOR_NAME/EMAIL` and `GIT_COMMITTER_NAME/EMAIL` from userinfo.
     pub async fn collect_git_env(&self, agent_id: &str, oauth: Option<&OAuthManager>) -> Vec<String> {
         let mut env = Vec::new();
         let Some(oauth) = oauth else { return env };
@@ -117,8 +117,8 @@ impl CodeSandbox {
             match oauth.get_token(provider, agent_id).await {
                 Ok(token) => {
                     let upper = provider.to_uppercase();
-                    env.push(format!("{}_GIT_TOKEN={}", upper, token));
-                    env.push(format!("{}_GIT_HOST={}", upper, git_host));
+                    env.push(format!("{upper}_GIT_TOKEN={token}"));
+                    env.push(format!("{upper}_GIT_HOST={git_host}"));
                     tracing::info!(agent = %agent_id, provider = %provider, "sandbox: injected git credentials");
                 }
                 Err(e) => {
@@ -138,12 +138,12 @@ impl CodeSandbox {
         }
 
         if let Some(name) = git_name {
-            env.push(format!("GIT_AUTHOR_NAME={}", name));
-            env.push(format!("GIT_COMMITTER_NAME={}", name));
+            env.push(format!("GIT_AUTHOR_NAME={name}"));
+            env.push(format!("GIT_COMMITTER_NAME={name}"));
         }
         if let Some(email) = git_email {
-            env.push(format!("GIT_AUTHOR_EMAIL={}", email));
-            env.push(format!("GIT_COMMITTER_EMAIL={}", email));
+            env.push(format!("GIT_AUTHOR_EMAIL={email}"));
+            env.push(format!("GIT_COMMITTER_EMAIL={email}"));
         }
 
         env
@@ -165,35 +165,32 @@ impl CodeSandbox {
     async fn ensure_container_inner(&self, agent_id: &str, workspace_host_path: &str, base: bool, oauth: Option<&OAuthManager>) -> Result<String> {
         let name = self.container_name(agent_id);
 
-        match self.docker.inspect_container(&name, None::<InspectContainerOptions>).await {
-            Ok(inspect) => {
-                let state = inspect.state.context("missing container state")?;
-                if state.running.unwrap_or(false) {
-                    return Ok(name);
-                }
-                // Not running? Start it.
-                self.docker.start_container::<String>(&name, None).await?;
-                Ok(name)
+        if let Ok(inspect) = self.docker.inspect_container(&name, None::<InspectContainerOptions>).await {
+            let state = inspect.state.context("missing container state")?;
+            if state.running.unwrap_or(false) {
+                return Ok(name);
             }
-            Err(_) => {
-                let git_env = self.collect_git_env(agent_id, oauth).await;
-                // Try to create, pull image if missing
-                let res = self.create_and_start_container(&name, workspace_host_path, base, &git_env).await;
+            // Not running? Start it.
+            self.docker.start_container::<String>(&name, None).await?;
+            Ok(name)
+        } else {
+            let git_env = self.collect_git_env(agent_id, oauth).await;
+            // Try to create, pull image if missing
+            let res = self.create_and_start_container(&name, workspace_host_path, base, &git_env).await;
 
-                if let Err(e) = res {
-                    let err_str = e.to_string();
-                    if err_str.contains("No such image") || err_str.contains("404") {
-                        tracing::info!("image missing, attempting to pull...");
-                        self.pull_image_if_missing().await?;
-                        // Retry creation after pull
-                        self.create_and_start_container(&name, workspace_host_path, base, &git_env).await?;
-                        Ok(name)
-                    } else {
-                        Err(e)
-                    }
-                } else {
+            if let Err(e) = res {
+                let err_str = e.to_string();
+                if err_str.contains("No such image") || err_str.contains("404") {
+                    tracing::info!("image missing, attempting to pull...");
+                    self.pull_image_if_missing().await?;
+                    // Retry creation after pull
+                    self.create_and_start_container(&name, workspace_host_path, base, &git_env).await?;
                     Ok(name)
+                } else {
+                    Err(e)
                 }
+            } else {
+                Ok(name)
             }
         }
     }
@@ -244,8 +241,7 @@ impl CodeSandbox {
             if let Some((src, _dst)) = bind.split_once(':') {
                 let src_path = std::path::Path::new(src);
                 let check_path = if src_path.is_relative() {
-                    project_root.map(|r| r.join(src_path).display().to_string())
-                        .unwrap_or_else(|| src.to_string())
+                    project_root.map_or_else(|| src.to_string(), |r| r.join(src_path).display().to_string())
                 } else {
                     src.to_string()
                 };
@@ -334,9 +330,9 @@ impl CodeSandbox {
         let run_cmd = match language {
             "bash" | "sh" | "shell" => {
                 if code.contains('\n') || language == "bash" {
-                    format!("echo '{}' | base64 -d | bash", b64)
+                    format!("echo '{b64}' | base64 -d | bash")
                 } else {
-                    format!("echo '{}' | base64 -d | sh", b64)
+                    format!("echo '{b64}' | base64 -d | sh")
                 }
             }
             _ => {
@@ -350,7 +346,7 @@ impl CodeSandbox {
                             || "._-[],>=<!~".contains(c)) {
                             return Ok(ExecResult {
                                 stdout: String::new(),
-                                stderr: format!("Invalid package spec: '{}' (shell metacharacters not allowed)", pkg),
+                                stderr: format!("Invalid package spec: '{pkg}' (shell metacharacters not allowed)"),
                                 exit_code: 1,
                             });
                         }
@@ -358,7 +354,7 @@ impl CodeSandbox {
                         if pkg.contains("> ") || pkg.contains("< ") || pkg.contains("| ") || pkg.contains("; ") || pkg.contains("` ") {
                             return Ok(ExecResult {
                                 stdout: String::new(),
-                                stderr: format!("Invalid package spec: '{}' (shell metacharacters not allowed)", pkg),
+                                stderr: format!("Invalid package spec: '{pkg}' (shell metacharacters not allowed)"),
                                 exit_code: 1,
                             });
                         }
@@ -367,8 +363,7 @@ impl CodeSandbox {
                         packages.iter().map(|p| format!("'{}'", p.replace('\'', "'\\''"))).collect::<Vec<_>>().join(" "))
                 };
                 format!(
-                    "{}echo '{}' | base64 -d > /tmp/s.py && python3 /tmp/s.py",
-                    pip_part, b64
+                    "{pip_part}echo '{b64}' | base64 -d > /tmp/s.py && python3 /tmp/s.py"
                 )
             }
         };

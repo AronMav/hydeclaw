@@ -1,6 +1,6 @@
-//! Knowledge graph operations on pure PostgreSQL (relational tables).
+//! Knowledge graph operations on pure `PostgreSQL` (relational tables).
 //!
-//! Tables: graph_entities, graph_edges, graph_episodes.
+//! Tables: `graph_entities`, `graph_edges`, `graph_episodes`.
 //! Replaces the previous Apache AGE Cypher-based implementation.
 
 use anyhow::Result;
@@ -89,8 +89,8 @@ pub async fn upsert_entity_resolved(db: &PgPool, name: &str, entity_type: &str) 
 ///   edge (`valid_to = now()`) and insert a new active edge — non-destructive contradiction.
 /// - Transaction wraps expire + insert to guarantee atomicity.
 ///
-/// Signature is unchanged — existing callers in engine_memory.rs and
-/// extract_entities_for_chunk compile without modification.
+/// Signature is unchanged — existing callers in `engine_memory.rs` and
+/// `extract_entities_for_chunk` compile without modification.
 pub async fn upsert_relation(
     db: &PgPool,
     source_name: &str,
@@ -117,17 +117,14 @@ pub async fn upsert_relation(
     .fetch_optional(db)
     .await?;
 
-    let (source_id, target_id) = match ids {
-        Some(pair) => pair,
-        None => {
-            tracing::warn!(
-                source = source_name,
-                target = target_name,
-                rel = relation_type,
-                "upsert_relation: source or target entity not found, relation skipped"
-            );
-            return Ok(());
-        }
+    let (source_id, target_id) = if let Some(pair) = ids { pair } else {
+        tracing::warn!(
+            source = source_name,
+            target = target_name,
+            rel = relation_type,
+            "upsert_relation: source or target entity not found, relation skipped"
+        );
+        return Ok(());
     };
 
     // Check for an existing active edge (valid_to IS NULL).
@@ -300,7 +297,7 @@ pub async fn link_session_entities(
 
 // ── Query helpers (used by API handlers and search) ──────────────────────────
 
-/// Get (chunk_id, entity_name, entity_type) for given chunk IDs.
+/// Get (`chunk_id`, `entity_name`, `entity_type`) for given chunk IDs.
 pub async fn get_chunk_entity_rows(
     db: &PgPool,
     chunk_ids: &[Uuid],
@@ -370,7 +367,7 @@ pub async fn get_entity_edges_with_options(
 // ── Shared LLM entity extraction ─────────────────────────────────────────────
 
 /// Extract entities/relations from a chunk via LLM and link to graph.
-/// Single shared function used by: background worker, engine_memory, post-session.
+/// Single shared function used by: background worker, `engine_memory`, post-session.
 pub async fn extract_entities_for_chunk(
     db: &PgPool,
     provider: &std::sync::Arc<dyn crate::agent::providers::LlmProvider>,
@@ -388,8 +385,7 @@ pub async fn extract_entities_for_chunk(
         "Extract entities and relations from this text. Return JSON only:\n\
         {{\"entities\": [{{\"name\": \"...\", \"entity_type\": \"Person|Organization|Concept|Place|Event|Technology\"}}], \
         \"relations\": [{{\"source\": \"...\", \"target\": \"...\", \"relation_type\": \"KNOWS|WORKS_AT|LOCATED_IN|PART_OF|RELATED_TO|CREATED_BY|USES\"}}]}}\n\
-        Text: {}",
-        text
+        Text: {text}"
     );
 
     let response = provider
@@ -422,13 +418,11 @@ pub async fn extract_entities_for_chunk(
         let src_type = entities
             .iter()
             .find(|e| e.name == rel.source)
-            .map(|e| e.entity_type.as_str())
-            .unwrap_or("Concept");
+            .map_or("Concept", |e| e.entity_type.as_str());
         let tgt_type = entities
             .iter()
             .find(|e| e.name == rel.target)
-            .map(|e| e.entity_type.as_str())
-            .unwrap_or("Concept");
+            .map_or("Concept", |e| e.entity_type.as_str());
         let fact = format!("{} {} {}", rel.source, rel.relation_type, rel.target);
         if let Err(e) = upsert_relation(
             db, &rel.source, src_type, &rel.target, tgt_type, &rel.relation_type, Some(&fact),
@@ -445,7 +439,7 @@ pub async fn extract_entities_for_chunk(
 
 // ── Per-agent analytics ──────────────────────────────────────────────────────
 
-/// Get entity count per agent (via episodes → sessions.agent_id).
+/// Get entity count per agent (via episodes → `sessions.agent_id`).
 pub async fn get_entity_counts_by_agent(db: &PgPool) -> Result<Vec<(String, i64)>> {
     let rows: Vec<(String, i64)> = sqlx::query_as(
         "SELECT s.agent_id, COUNT(DISTINCT ep.entity_id)
@@ -540,8 +534,7 @@ pub async fn extract_session_to_graph(
         "Extract entities and relations from this conversation. Return JSON only:\n\
         {{\"entities\": [{{\"name\": \"...\", \"entity_type\": \"Person|Organization|Concept|Place|Event|Technology\"}}], \
         \"relations\": [{{\"source\": \"...\", \"target\": \"...\", \"relation_type\": \"KNOWS|WORKS_AT|LOCATED_IN|PART_OF|RELATED_TO|CREATED_BY|USES\"}}]}}\n\
-        Conversation:\n{}",
-        text
+        Conversation:\n{text}"
     );
 
     let response = provider
@@ -574,13 +567,11 @@ pub async fn extract_session_to_graph(
         let src_type = entities
             .iter()
             .find(|e| e.name == rel.source)
-            .map(|e| e.entity_type.as_str())
-            .unwrap_or("Concept");
+            .map_or("Concept", |e| e.entity_type.as_str());
         let tgt_type = entities
             .iter()
             .find(|e| e.name == rel.target)
-            .map(|e| e.entity_type.as_str())
-            .unwrap_or("Concept");
+            .map_or("Concept", |e| e.entity_type.as_str());
         let fact = format!("{} {} {}", rel.source, rel.relation_type, rel.target);
         if let Err(e) = upsert_relation(
             db, &rel.source, src_type, &rel.target, tgt_type, &rel.relation_type, Some(&fact),

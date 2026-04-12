@@ -166,8 +166,8 @@ pub async fn auto_title_session(db: &PgPool, session_id: Uuid, user_text: &str) 
     Ok(())
 }
 
-/// Resume an existing session by ID (update last_message_at).
-/// Returns the session_id if found, error if not.
+/// Resume an existing session by ID (update `last_message_at`).
+/// Returns the `session_id` if found, error if not.
 pub async fn resume_session(db: &PgPool, session_id: Uuid) -> Result<Uuid> {
     let rows = sqlx::query("UPDATE sessions SET last_message_at = now() WHERE id = $1")
         .bind(session_id)
@@ -175,7 +175,7 @@ pub async fn resume_session(db: &PgPool, session_id: Uuid) -> Result<Uuid> {
         .await?;
 
     if rows.rows_affected() == 0 {
-        anyhow::bail!("session not found: {}", session_id);
+        anyhow::bail!("session not found: {session_id}");
     }
     Ok(session_id)
 }
@@ -192,7 +192,7 @@ pub async fn save_message(
     save_message_ex(db, session_id, role, content, tool_calls, tool_call_id, None, None, None).await
 }
 
-/// Save a message with optional per-message agent_id (for multi-agent discuss sessions).
+/// Save a message with optional per-message `agent_id` (for multi-agent discuss sessions).
 #[allow(clippy::too_many_arguments)]
 pub async fn save_message_ex(
     db: &PgPool,
@@ -317,7 +317,7 @@ pub async fn finalize_streaming_message(db: &PgPool, message_id: Uuid) -> Result
     Ok(())
 }
 
-/// Set run_status for a session (called on enter/exit of handle_with_status).
+/// Set `run_status` for a session (called on enter/exit of `handle_with_status`).
 pub async fn set_session_run_status(db: &PgPool, session_id: Uuid, status: &str) -> Result<()> {
     // IS DISTINCT FROM handles NULLs correctly (NULL IS DISTINCT FROM 'done' = TRUE)
     sqlx::query("UPDATE sessions SET run_status = $1 WHERE id = $2 AND run_status IS DISTINCT FROM 'done'")
@@ -328,7 +328,7 @@ pub async fn set_session_run_status(db: &PgPool, session_id: Uuid, status: &str)
     Ok(())
 }
 
-/// Touch activity_at heartbeat — called from upsert_streaming_message every ~2s.
+/// Touch `activity_at` heartbeat — called from `upsert_streaming_message` every ~2s.
 pub async fn touch_session_activity(db: &PgPool, session_id: Uuid) -> Result<()> {
     sqlx::query("UPDATE sessions SET activity_at = NOW() WHERE id = $1")
         .bind(session_id)
@@ -337,8 +337,8 @@ pub async fn touch_session_activity(db: &PgPool, session_id: Uuid) -> Result<()>
     Ok(())
 }
 
-/// Find sessions stuck in 'running' with no activity for > inactivity_secs seconds.
-/// Returns Vec<(session_id, agent_id)>.
+/// Find sessions stuck in 'running' with no activity for > `inactivity_secs` seconds.
+/// Returns Vec<(`session_id`, `agent_id`)>.
 pub async fn find_stale_running_sessions(
     db: &PgPool,
     inactivity_secs: u64,
@@ -396,11 +396,11 @@ pub async fn insert_synthetic_tool_results(db: &PgPool, session_id: Uuid) -> Res
     .fetch_all(db)
     .await?;
 
-    let existing_set: std::collections::HashSet<&str> = existing.iter().map(|s| s.as_str()).collect();
+    let existing_set: std::collections::HashSet<&str> = existing.iter().map(std::string::String::as_str).collect();
 
     // Find missing tool_call_ids
     let missing: Vec<&str> = all_call_ids.iter()
-        .map(|s| s.as_str())
+        .map(std::string::String::as_str)
         .filter(|id| !existing_set.contains(id))
         .collect();
 
@@ -429,9 +429,9 @@ pub async fn insert_synthetic_tool_results(db: &PgPool, session_id: Uuid) -> Res
     Ok(inserted)
 }
 
-/// Insert synthetic "[interrupted]" tool results for specific tool_call_ids.
-/// Unlike insert_synthetic_tool_results (which scans the whole session),
-/// this takes pre-filtered call_ids from the caller -- used by build_context
+/// Insert synthetic "[interrupted]" tool results for specific `tool_call_ids`.
+/// Unlike `insert_synthetic_tool_results` (which scans the whole session),
+/// this takes pre-filtered `call_ids` from the caller -- used by `build_context`
 /// where the caller already knows which IDs are missing (ENG-01).
 pub async fn insert_missing_tool_results(
     db: &PgPool,
@@ -456,7 +456,7 @@ pub async fn insert_missing_tool_results(
 
 /// Startup cleanup: find all sessions interrupted by crash, repair their transcripts,
 /// delete orphaned streaming messages, mark as 'interrupted'.
-/// Also handles old sessions with orphaned streaming messages (no run_status set).
+/// Also handles old sessions with orphaned streaming messages (no `run_status` set).
 /// Returns count so caller can loop in batches.
 pub async fn cleanup_interrupted_sessions(db: &PgPool) -> Result<usize> {
     // Find sessions that were 'running' when the process died (batched)
@@ -585,7 +585,7 @@ pub async fn count_messages(db: &PgPool, session_id: Uuid) -> Result<i64> {
     Ok(count)
 }
 
-/// Search messages across all agent sessions using PostgreSQL FTS.
+/// Search messages across all agent sessions using `PostgreSQL` FTS.
 /// Falls back to ILIKE if FTS column is not yet available.
 pub async fn search_messages(
     db: &PgPool,
@@ -607,29 +607,26 @@ pub async fn search_messages(
     .fetch_all(db)
     .await;
 
-    match rows {
-        Ok(r) => Ok(r),
-        Err(_) => {
-            // Fallback to ILIKE if tsv column doesn't exist yet.
-            // Escape LIKE wildcards (%, _, \) to prevent wildcard injection.
-            let escaped = query
-                .replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_");
-            let rows = sqlx::query_as::<_, SearchResult>(
-                "SELECT m.content, s.id as session_id, s.user_id, s.channel, m.role, m.created_at, \
-                        0.0::float8 AS rank \
-                 FROM messages m JOIN sessions s ON m.session_id = s.id \
-                 WHERE s.agent_id = $1 AND m.content ILIKE '%' || $2 || '%' ESCAPE '\\' \
-                 ORDER BY m.created_at DESC LIMIT $3",
-            )
-            .bind(agent_id)
-            .bind(&escaped)
-            .bind(limit)
-            .fetch_all(db)
-            .await?;
-            Ok(rows)
-        }
+    if let Ok(r) = rows { Ok(r) } else {
+        // Fallback to ILIKE if tsv column doesn't exist yet.
+        // Escape LIKE wildcards (%, _, \) to prevent wildcard injection.
+        let escaped = query
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let rows = sqlx::query_as::<_, SearchResult>(
+            "SELECT m.content, s.id as session_id, s.user_id, s.channel, m.role, m.created_at, \
+                    0.0::float8 AS rank \
+             FROM messages m JOIN sessions s ON m.session_id = s.id \
+             WHERE s.agent_id = $1 AND m.content ILIKE '%' || $2 || '%' ESCAPE '\\' \
+             ORDER BY m.created_at DESC LIMIT $3",
+        )
+        .bind(agent_id)
+        .bind(&escaped)
+        .bind(limit)
+        .fetch_all(db)
+        .await?;
+        Ok(rows)
     }
 }
 
@@ -667,7 +664,7 @@ pub async fn trim_session_messages(db: &PgPool, session_id: Uuid, max_messages: 
          (SELECT id FROM messages WHERE session_id = $1 ORDER BY created_at DESC LIMIT $2)",
     )
     .bind(session_id)
-    .bind(max_messages as i64)
+    .bind(i64::from(max_messages))
     .execute(db)
     .await?;
     Ok(result.rows_affected())
@@ -748,16 +745,13 @@ pub async fn add_participant(db: &PgPool, session_id: Uuid, agent_name: &str) ->
     .bind(agent_name)
     .fetch_optional(db)
     .await?;
-    match row {
-        Some(r) => Ok(r.get("participants")),
-        None => {
-            // Agent was already a participant — return current list
-            let r = sqlx::query("SELECT participants FROM sessions WHERE id = $1")
-                .bind(session_id)
-                .fetch_one(db)
-                .await?;
-            Ok(r.get("participants"))
-        }
+    if let Some(r) = row { Ok(r.get("participants")) } else {
+        // Agent was already a participant — return current list
+        let r = sqlx::query("SELECT participants FROM sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_one(db)
+            .await?;
+        Ok(r.get("participants"))
     }
 }
 
@@ -789,7 +783,7 @@ pub async fn get_latest_ui_session(db: &PgPool, agent_id: &str) -> Result<Option
 
 // ── Branching support ────────────────────────────────────────────────────────
 
-/// Walk the parent_message_id chain from `leaf_message_id` back to root,
+/// Walk the `parent_message_id` chain from `leaf_message_id` back to root,
 /// returning messages in chronological (root-first) order.
 pub async fn load_branch_messages(
     db: &PgPool,
@@ -863,21 +857,18 @@ pub async fn find_parent_of_message(
     .fetch_optional(db)
     .await?;
 
-    match row {
-        Some((parent_id,)) => Ok(parent_id),
-        None => {
-            // Message not found — fall back to chronological ordering
-            let prev: Option<(Uuid,)> = sqlx::query_as(
-                "SELECT id FROM messages WHERE session_id = $1 AND created_at < \
-                 (SELECT created_at FROM messages WHERE id = $2) \
-                 ORDER BY created_at DESC LIMIT 1",
-            )
-            .bind(session_id)
-            .bind(message_id)
-            .fetch_optional(db)
-            .await?;
-            Ok(prev.map(|(id,)| id))
-        }
+    if let Some((parent_id,)) = row { Ok(parent_id) } else {
+        // Message not found — fall back to chronological ordering
+        let prev: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT id FROM messages WHERE session_id = $1 AND created_at < \
+             (SELECT created_at FROM messages WHERE id = $2) \
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .bind(message_id)
+        .fetch_optional(db)
+        .await?;
+        Ok(prev.map(|(id,)| id))
     }
 }
 

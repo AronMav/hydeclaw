@@ -646,7 +646,7 @@ fn collect_dir<'a>(
 
 const MEMORY_BACKUP_LIMIT: i64 = 100_000;
 
-/// DB-only variant of collect_memory — used by create_backup_internal (no AppState).
+/// DB-only variant of `collect_memory` — used by `create_backup_internal` (no `AppState`).
 async fn collect_memory_from_db(db: &PgPool) -> sqlx::Result<Vec<MemoryChunk>> {
     let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory_chunks")
         .fetch_one(db).await.unwrap_or(0);
@@ -679,7 +679,7 @@ async fn collect_memory_from_db(db: &PgPool) -> sqlx::Result<Vec<MemoryChunk>> {
         .collect())
 }
 
-/// DB-only variant of collect_cron — used by create_backup_internal (no AppState).
+/// DB-only variant of `collect_cron` — used by `create_backup_internal` (no `AppState`).
 async fn collect_cron_from_db(db: &PgPool) -> sqlx::Result<Vec<CronJob>> {
     #[allow(clippy::type_complexity)]
     let rows: Vec<(String, String, String, String, String, bool, Option<Value>, bool)> =

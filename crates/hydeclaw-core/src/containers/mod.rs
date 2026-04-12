@@ -51,7 +51,7 @@ impl ContainerManager {
     /// For Docker-based MCPs, starts the container if needed.
     pub async fn ensure_running(&self, mcp_name: &str) -> Result<String> {
         let entry = self.mcp.read().await.get(mcp_name).cloned()
-            .ok_or_else(|| anyhow::anyhow!("unknown MCP server: {}", mcp_name))?;
+            .ok_or_else(|| anyhow::anyhow!("unknown MCP server: {mcp_name}"))?;
 
         // URL-based MCP — no Docker, just return the URL.
         if let Some(ref url) = entry.url {
@@ -61,10 +61,10 @@ impl ContainerManager {
 
         // Docker-based MCP
         let container_name = entry.container.as_deref()
-            .ok_or_else(|| anyhow::anyhow!("MCP '{}' has no url or container", mcp_name))?
+            .ok_or_else(|| anyhow::anyhow!("MCP '{mcp_name}' has no url or container"))?
             .to_string();
         let port = entry.port
-            .ok_or_else(|| anyhow::anyhow!("MCP '{}' has no url or port", mcp_name))?;
+            .ok_or_else(|| anyhow::anyhow!("MCP '{mcp_name}' has no url or port"))?;
 
         // Check if already running
         match self
@@ -88,7 +88,7 @@ impl ContainerManager {
                 }
             }
             Err(e) => {
-                return Err(anyhow::anyhow!("container '{}' not found: {}", container_name, e));
+                return Err(anyhow::anyhow!("container '{container_name}' not found: {e}"));
             }
         }
 
@@ -96,13 +96,13 @@ impl ContainerManager {
         self.activity.write().await.insert(mcp_name.to_string(), Instant::now());
 
         // Use localhost since hydeclaw-core runs on the host, not inside Docker.
-        Ok(format!("http://localhost:{}", port))
+        Ok(format!("http://localhost:{port}"))
     }
 
     /// Stop a MCP container gracefully. No-op for URL-based MCPs.
     pub async fn stop(&self, mcp_name: &str) -> Result<()> {
         let entry = self.mcp.read().await.get(mcp_name).cloned()
-            .ok_or_else(|| anyhow::anyhow!("unknown MCP server: {}", mcp_name))?;
+            .ok_or_else(|| anyhow::anyhow!("unknown MCP server: {mcp_name}"))?;
 
         // URL-based MCPs don't have a container to stop.
         if entry.url.is_some() {
@@ -111,7 +111,7 @@ impl ContainerManager {
         }
 
         let container_name = entry.container
-            .ok_or_else(|| anyhow::anyhow!("MCP '{}' has no container", mcp_name))?;
+            .ok_or_else(|| anyhow::anyhow!("MCP '{mcp_name}' has no container"))?;
 
         tracing::info!(container = %container_name, "stopping idle MCP server");
         self.docker
@@ -206,7 +206,7 @@ impl ContainerManager {
         let deadline = Instant::now() + timeout;
         loop {
             if Instant::now() > deadline {
-                anyhow::bail!("container '{}' did not become healthy in time", container_name);
+                anyhow::bail!("container '{container_name}' did not become healthy in time");
             }
 
             match self
@@ -228,12 +228,12 @@ impl ContainerManager {
                             .as_ref()
                             .and_then(|s| s.health.as_ref())
                             .and_then(|h| h.status.as_ref())
-                            .map(|s| s.to_string());
+                            .map(std::string::ToString::to_string);
 
                         match health_status.as_deref() {
                             Some("healthy") => return Ok(()),
                             Some("unhealthy") => {
-                                anyhow::bail!("container '{}' is unhealthy", container_name)
+                                anyhow::bail!("container '{container_name}' is unhealthy")
                             }
                             None => return Ok(()), // No healthcheck defined, running is enough
                             _ => {}                 // starting — keep waiting

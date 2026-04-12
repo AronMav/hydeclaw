@@ -9,7 +9,7 @@ use crate::containers::ContainerManager;
 /// Manages MCP discovery and tool call routing.
 pub struct McpRegistry {
     container_manager: Arc<ContainerManager>,
-    /// Cached tool definitions from MCP servers (mcp_name → tools).
+    /// Cached tool definitions from MCP servers (`mcp_name` → tools).
     tool_cache: Arc<RwLock<HashMap<String, Vec<ToolDefinition>>>>,
     /// Shared HTTP client with timeouts for MCP calls.
     http_client: reqwest::Client,
@@ -47,7 +47,7 @@ impl McpRegistry {
         // return 406 if client doesn't advertise text/event-stream support).
         let resp = self
             .http_client
-            .post(format!("{}/mcp", base_url))
+            .post(format!("{base_url}/mcp"))
             .header("Accept", "application/json, text/event-stream")
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
@@ -58,7 +58,7 @@ impl McpRegistry {
             .await?;
 
         if !resp.status().is_success() {
-            anyhow::bail!("MCP tools/list failed for MCP '{}'", mcp_name);
+            anyhow::bail!("MCP tools/list failed for MCP '{mcp_name}'");
         }
 
         let body = parse_mcp_response(resp).await?;
@@ -85,7 +85,7 @@ impl McpRegistry {
 
         let resp = self
             .http_client
-            .post(format!("{}/mcp", base_url))
+            .post(format!("{base_url}/mcp"))
             .header("Accept", "application/json, text/event-stream")
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
@@ -102,7 +102,7 @@ impl McpRegistry {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("MCP tools/call failed for {}/{}: {} {}", mcp_name, tool_name, status, body);
+            anyhow::bail!("MCP tools/call failed for {mcp_name}/{tool_name}: {status} {body}");
         }
 
         let body = parse_mcp_response(resp).await?;
@@ -167,7 +167,7 @@ impl McpRegistry {
 
 /// Parse MCP HTTP response body, handling both JSON and SSE (text/event-stream) transports.
 ///
-/// Some servers (e.g. DeepWiki) always respond with SSE even when Accept includes
+/// Some servers (e.g. `DeepWiki`) always respond with SSE even when Accept includes
 /// application/json. SSE lines look like:
 ///   event: message
 ///   data: {"jsonrpc":"2.0","id":1,"result":{...}}
@@ -178,8 +178,7 @@ async fn parse_mcp_response(resp: reqwest::Response) -> Result<serde_json::Value
         .headers()
         .get("content-type")
         .and_then(|v| v.to_str().ok())
-        .map(|ct| ct.contains("text/event-stream"))
-        .unwrap_or(false);
+        .is_some_and(|ct| ct.contains("text/event-stream"));
 
     let text = resp.text().await?;
 

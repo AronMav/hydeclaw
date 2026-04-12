@@ -109,7 +109,7 @@ pub async fn store_pairing_code(
     Ok(())
 }
 
-/// Get and remove a pairing code. Returns (channel_user_id, display_name, expired).
+/// Get and remove a pairing code. Returns (`channel_user_id`, `display_name`, expired).
 pub async fn take_pairing_code(
     db: &PgPool,
     agent_id: &str,

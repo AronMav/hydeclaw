@@ -15,12 +15,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// Manages encrypted secrets in PostgreSQL with in-memory caching.
+/// Manages encrypted secrets in `PostgreSQL` with in-memory caching.
 ///
 /// Secrets are encrypted with ChaCha20-Poly1305 using a master key.
 /// Cache key is `(name, scope)`:
 ///   - scope = "" means global (default, visible to all)
-///   - scope = "AgentName" means per-agent (isolated to that agent)
+///   - scope = "`AgentName`" means per-agent (isolated to that agent)
 ///
 /// Falls back to environment variables for migration convenience.
 #[derive(Clone)]
@@ -58,7 +58,7 @@ struct SecretInfoRow {
 }
 
 impl SecretsManager {
-    /// Create a new SecretsManager.
+    /// Create a new `SecretsManager`.
     ///
     /// `master_key_hex` must be exactly 64 hex characters (32 bytes).
     pub fn new(master_key_hex: &str, db: PgPool) -> Result<Self> {
@@ -71,7 +71,7 @@ impl SecretsManager {
             );
         }
         let cipher = ChaCha20Poly1305::new_from_slice(&key_bytes)
-            .map_err(|e| anyhow::anyhow!("failed to create cipher: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("failed to create cipher: {e}"))?;
 
         Ok(Self {
             cipher: Arc::new(cipher),
@@ -224,7 +224,7 @@ impl SecretsManager {
         let ciphertext = self
             .cipher
             .encrypt(nonce, value.as_bytes())
-            .map_err(|e| anyhow::anyhow!("encryption failed: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("encryption failed: {e}"))?;
 
         // Hold write lock across DB + cache to ensure atomicity.
         // The DB upsert is fast (single row), so lock contention is minimal.
@@ -311,8 +311,7 @@ impl SecretsManager {
             .map(|r| {
                 let has_value = cache
                     .get(&(r.name.clone(), r.scope.clone()))
-                    .map(|v| !v.is_empty())
-                    .unwrap_or(false);
+                    .is_some_and(|v| !v.is_empty());
                 SecretInfo {
                     name: r.name,
                     scope: r.scope,

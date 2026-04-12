@@ -15,7 +15,7 @@ pub struct Notification {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Insert a new notification. Returns the inserted row (with generated id and created_at).
+/// Insert a new notification. Returns the inserted row (with generated id and `created_at`).
 pub async fn create_notification(
     db: &PgPool,
     notification_type: &str,
@@ -24,11 +24,11 @@ pub async fn create_notification(
     data: serde_json::Value,
 ) -> Result<Notification> {
     let row = sqlx::query_as::<_, Notification>(
-        r#"
+        r"
         INSERT INTO notifications (type, title, body, data)
         VALUES ($1, $2, $3, $4)
         RETURNING id, type AS notification_type, title, body, data, read, created_at
-        "#,
+        ",
     )
     .bind(notification_type)
     .bind(title)
@@ -40,19 +40,19 @@ pub async fn create_notification(
 }
 
 /// List notifications newest-first with pagination.
-/// Returns (rows, total_unread_count).
+/// Returns (rows, `total_unread_count`).
 pub async fn list_notifications(
     db: &PgPool,
     limit: i64,
     offset: i64,
 ) -> Result<(Vec<Notification>, i64)> {
     let rows = sqlx::query_as::<_, Notification>(
-        r#"
+        r"
         SELECT id, type AS notification_type, title, body, data, read, created_at
         FROM notifications
         ORDER BY created_at DESC
         LIMIT $1 OFFSET $2
-        "#,
+        ",
     )
     .bind(limit)
     .bind(offset)

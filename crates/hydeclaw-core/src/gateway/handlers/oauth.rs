@@ -239,15 +239,14 @@ pub(crate) async fn api_oauth_callback(
         Ok((agent_id, provider)) => {
             spawn_sandbox_restart(state.clone(), vec![agent_id.clone()]);
             Redirect::to(&format!(
-                "/integrations?connected={}&agent={}",
-                provider, agent_id
+                "/integrations?connected={provider}&agent={agent_id}"
             ))
             .into_response()
         }
         Err(e) => {
             let encoded: String =
                 url::form_urlencoded::byte_serialize(e.to_string().as_bytes()).collect();
-            Redirect::to(&format!("/integrations?error={}", encoded)).into_response()
+            Redirect::to(&format!("/integrations?error={encoded}")).into_response()
         }
     }
 }

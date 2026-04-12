@@ -1,8 +1,8 @@
-//! OpenAPI discovery helpers — parse OpenAPI 2.x/3.x specs
+//! `OpenAPI` discovery helpers — parse `OpenAPI` 2.x/3.x specs
 //! and generate draft YAML tool definitions.
 
 /// Minimal serializable struct for writing draft YAML tool files.
-/// Mirrors YamlToolDef field names so serde_yaml output is compatible.
+/// Mirrors `YamlToolDef` field names so `serde_yaml` output is compatible.
 #[derive(serde::Serialize)]
 pub(crate) struct DraftToolYaml {
     pub name: String,
@@ -24,7 +24,7 @@ pub(crate) struct DraftParamYaml {
     pub description: String,
 }
 
-/// Determine server base URL from OpenAPI spec.
+/// Determine server base URL from `OpenAPI` spec.
 pub(crate) fn discover_base_url(spec: &serde_json::Value, fallback_url: &str) -> String {
     // OpenAPI 3.x: servers[0].url
     if let Some(url) = spec["servers"][0]["url"].as_str()
@@ -41,12 +41,12 @@ pub(crate) fn discover_base_url(spec: &serde_json::Value, fallback_url: &str) ->
         let host_and_rest = &fallback_url[after_scheme..];
         let host = host_and_rest.split('/').next().unwrap_or(host_and_rest);
         let scheme = &fallback_url[..after_scheme - 3];
-        return format!("{}://{}", scheme, host);
+        return format!("{scheme}://{host}");
     }
     fallback_url.to_string()
 }
 
-/// Parse OpenAPI 2.x/3.x spec and return draft tool definitions for each operation.
+/// Parse `OpenAPI` 2.x/3.x spec and return draft tool definitions for each operation.
 pub(crate) fn extract_openapi_tools(
     spec: &serde_json::Value,
     base_url: &str,
@@ -74,13 +74,13 @@ pub(crate) fn extract_openapi_tools(
             // Build tool name from operationId or path+method
             let raw_name = operation["operationId"]
                 .as_str()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .unwrap_or_else(|| {
                     let slug = path
                         .trim_matches('/')
                         .replace(['/', '{', '}'], "_")
                         .to_lowercase();
-                    format!("{}_{}", method, slug)
+                    format!("{method}_{slug}")
                 });
 
             let name = if prefix.is_empty() {
@@ -95,7 +95,7 @@ pub(crate) fn extract_openapi_tools(
                 .unwrap_or(&raw_name)
                 .to_string();
 
-            let endpoint = format!("{}{}", base_url, path);
+            let endpoint = format!("{base_url}{path}");
 
             // Build parameters map
             let mut parameters = std::collections::HashMap::new();
@@ -165,7 +165,7 @@ pub(crate) fn extract_openapi_tools(
     tools
 }
 
-/// Convert an operationId or path slug to a valid snake_case tool name.
+/// Convert an operationId or path slug to a valid `snake_case` tool name.
 pub(crate) fn sanitize_tool_name(s: &str) -> String {
     let mut result = String::new();
     let mut prev_underscore = false;

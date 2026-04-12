@@ -86,7 +86,7 @@ pub struct MediaAttachment {
 #[derive(Debug, Clone)]
 pub struct IncomingMessage {
     pub user_id: String,
-    /// Opaque context set by the channel adapter (chat_id, message_id, etc.).
+    /// Opaque context set by the channel adapter (`chat_id`, `message_id`, etc.).
     /// Core echoes it back to the adapter with replies/actions.
     pub context: serde_json::Value,
     pub text: Option<String>,
@@ -131,7 +131,7 @@ pub struct LlmResponse {
     #[serde(default)]
     pub tool_calls: Vec<ToolCall>,
     pub usage: Option<TokenUsage>,
-    /// Why the LLM stopped: "stop", "length", "tool_calls", "content_filter", etc.
+    /// Why the LLM stopped: "stop", "length", "`tool_calls`", "`content_filter`", etc.
     #[serde(default)]
     pub finish_reason: Option<String>,
     /// Which model actually answered (filled by provider).
@@ -234,8 +234,8 @@ pub enum ChannelInbound {
     },
 }
 
-/// Serializable version of IncomingMessage for transport over WebSocket.
-/// The `context` field is opaque to core — set by the adapter (e.g. chat_id, message_id)
+/// Serializable version of `IncomingMessage` for transport over WebSocket.
+/// The `context` field is opaque to core — set by the adapter (e.g. `chat_id`, `message_id`)
 /// and echoed back unchanged in replies/actions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncomingMessageDto {
@@ -254,7 +254,8 @@ pub struct IncomingMessageDto {
 }
 
 impl IncomingMessageDto {
-    /// Convert to the internal IncomingMessage used by the engine.
+    /// Convert to the internal `IncomingMessage` used by the engine.
+    #[must_use] 
     pub fn into_incoming(self, agent_id: String, channel: String, formatting_prompt: Option<String>) -> IncomingMessage {
         IncomingMessage {
             user_id: self.user_id,
@@ -337,8 +338,8 @@ pub enum ChannelOutbound {
     #[serde(rename = "reload")]
     Reload,
     /// Channel configuration sent by core after adapter Ready.
-    /// Contains only non-secret info (language, owner_id for access control UI).
-    /// Channel secrets (bot_token, api_url) are read by the adapter from its own env.
+    /// Contains only non-secret info (language, `owner_id` for access control UI).
+    /// Channel secrets (`bot_token`, `api_url`) are read by the adapter from its own env.
     #[serde(rename = "config")]
     Config {
         /// Agent language code (e.g., "ru", "en").
@@ -358,11 +359,11 @@ pub enum ChannelOutbound {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelActionDto {
     /// Action name: "react", "pin", "unpin", "edit", "delete", "reply",
-    /// "send_message", "send_voice", etc.
+    /// "`send_message`", "`send_voice`", etc.
     pub action: String,
     /// Action-specific parameters (e.g. {"emoji": "👍"}, {"text": "..."}).
     pub params: serde_json::Value,
-    /// Opaque context echoed from the original message (e.g. {"chat_id": 123, "message_id": 42}).
+    /// Opaque context echoed from the original message (e.g. {"`chat_id"`: 123, "`message_id"`: 42}).
     pub context: serde_json::Value,
 }
 

@@ -35,7 +35,7 @@ pub(crate) async fn api_latest_session(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let agent = params.get("agent").map(|s| s.as_str()).unwrap_or("");
+    let agent = params.get("agent").map_or("", std::string::String::as_str);
     if agent.is_empty() {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "agent parameter required"}))).into_response();
     }
@@ -278,12 +278,11 @@ pub(crate) async fn api_delete_session(
             tracing::info!(session_id = %id, agent = %agent, "session deleted via API");
             // Kill any live agents in the session pool
             let mut pools = state.session_pools.write().await;
-            if let Some(mut pool) = pools.remove(&id) {
-                if !pool.is_empty() {
+            if let Some(mut pool) = pools.remove(&id)
+                && !pool.is_empty() {
                     tracing::info!(session_id = %id, count = pool.len(), "killing session agent pool on delete");
                     pool.kill_all();
                 }
-            }
             Json(json!({"ok": true})).into_response()
         }
         Err(e) => (
@@ -664,13 +663,13 @@ pub(crate) async fn api_export_session(
             return resp;
         }
 
-    let format = params.get("format").map(|s| s.as_str()).unwrap_or("json");
+    let format = params.get("format").map_or("json", std::string::String::as_str);
     match format {
         "markdown" | "md" => {
             match crate::db::sessions::export_session(&state.db, id).await {
                 Ok(Some(data)) => {
                     let md = format_session_as_markdown(&data);
-                    let disposition = format!("attachment; filename=\"session-{}.md\"", id);
+                    let disposition = format!("attachment; filename=\"session-{id}.md\"");
                     (
                         [(axum::http::header::CONTENT_TYPE, "text/markdown; charset=utf-8"),
                          (axum::http::header::CONTENT_DISPOSITION, disposition.as_str())],
@@ -698,8 +697,8 @@ fn format_session_as_markdown(data: &serde_json::Value) -> String {
     let agent = session["agent_id"].as_str().unwrap_or("unknown");
     let started = session["started_at"].as_str().unwrap_or("");
 
-    md.push_str(&format!("# {}\n\n", title));
-    md.push_str(&format!("**Agent:** {} | **Started:** {}\n\n---\n\n", agent, started));
+    md.push_str(&format!("# {title}\n\n"));
+    md.push_str(&format!("**Agent:** {agent} | **Started:** {started}\n\n---\n\n"));
 
     if let Some(messages) = data["messages"].as_array() {
         for msg in messages {
@@ -716,13 +715,13 @@ fn format_session_as_markdown(data: &serde_json::Value) -> String {
                 _ => role,
             };
 
-            md.push_str(&format!("## {} ({})\n\n", role_label, ts_short));
+            md.push_str(&format!("## {role_label} ({ts_short})\n\n"));
 
             if let Some(tool_calls) = msg["tool_calls"].as_array() {
                 for tc in tool_calls {
                     let name = tc["name"].as_str().unwrap_or("unknown");
                     let args = tc["arguments"].to_string();
-                    md.push_str(&format!("### Tool: {}\n```json\n{}\n```\n\n", name, args));
+                    md.push_str(&format!("### Tool: {name}\n```json\n{args}\n```\n\n"));
                 }
             }
 
@@ -781,7 +780,7 @@ pub(crate) async fn api_session_upload_document(
                 continue;
             }
         };
-        let vec_str = format!("[{}]", embedding.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
+        let vec_str = format!("[{}]", embedding.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join(","));
         if let Err(e) = crate::db::session_documents::insert_chunk(
             &state.db, session_id, &filename, chunk, i as i32, &vec_str,
         ).await {

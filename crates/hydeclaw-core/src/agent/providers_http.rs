@@ -49,10 +49,10 @@ pub async fn retry_http_post(
     retryable_codes: &[u16],
 ) -> Result<String> {
     retry_http_post_custom(client, url, body, provider_name, retryable_codes, |req| {
-        if !api_key.is_empty() {
-            req.bearer_auth(api_key)
-        } else {
+        if api_key.is_empty() {
             req
+        } else {
+            req.bearer_auth(api_key)
         }
     }).await
 }
@@ -95,7 +95,7 @@ pub async fn retry_http_post_custom(
                 }
 
                 let err_text = resp.text().await.unwrap_or_default();
-                last_error = format!("{} API error {}: {}", provider_name, status, err_text);
+                last_error = format!("{provider_name} API error {status}: {err_text}");
 
                 if status.as_u16() == 400 {
                     let body_preview = serde_json::to_string(body).unwrap_or_default();
@@ -111,7 +111,7 @@ pub async fn retry_http_post_custom(
 
                 let retryable = retryable_codes.contains(&status.as_u16());
                 if !retryable || attempt == policy.max_retries - 1 {
-                    anyhow::bail!("{}", last_error);
+                    anyhow::bail!("{last_error}");
                 }
 
                 let backoff = policy.delay(attempt);
@@ -125,7 +125,7 @@ pub async fn retry_http_post_custom(
                 tokio::time::sleep(backoff).await;
             }
             Err(e) => {
-                last_error = format!("{} request error: {}", provider_name, e);
+                last_error = format!("{provider_name} request error: {e}");
                 tracing::warn!(
                     provider = %provider_name,
                     error = %e,
@@ -134,7 +134,7 @@ pub async fn retry_http_post_custom(
                 );
 
                 if attempt == policy.max_retries - 1 {
-                    anyhow::bail!("{}", last_error);
+                    anyhow::bail!("{last_error}");
                 }
 
                 tokio::time::sleep(policy.delay(attempt)).await;
@@ -143,9 +143,9 @@ pub async fn retry_http_post_custom(
     }
 
     if !last_error.is_empty() {
-        anyhow::bail!("{}", last_error);
+        anyhow::bail!("{last_error}");
     }
-    anyhow::bail!("{} request failed after all retries", provider_name)
+    anyhow::bail!("{provider_name} request failed after all retries")
 }
 
 /// Standard retryable HTTP status codes for OpenAI-compatible providers.

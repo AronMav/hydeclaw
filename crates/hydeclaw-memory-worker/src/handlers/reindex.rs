@@ -58,7 +58,7 @@ pub async fn handle(
             .to_string();
 
         match embed_and_insert(db, &http, toolgate_url, &content, &source, fts_language, agent_id).await {
-            Ok(_) => indexed += 1,
+            Ok(()) => indexed += 1,
             Err(e) => {
                 tracing::warn!(source = %source, error = %e, "index failed");
                 errors += 1;
@@ -93,7 +93,7 @@ pub async fn handle(
     }))
 }
 
-/// Collect all .md and .txt files from workspace_root, skipping excluded top-level dirs.
+/// Collect all .md and .txt files from `workspace_root`, skipping excluded top-level dirs.
 pub(crate) async fn collect_workspace_files(
     workspace_root: &std::path::Path,
     exclude_dirs: &[&str],
@@ -130,7 +130,7 @@ pub(crate) async fn collect_workspace_files(
     Ok(files)
 }
 
-/// Index session transcripts from DB into memory_chunks.
+/// Index session transcripts from DB into `memory_chunks`.
 async fn index_sessions(
     db: &PgPool,
     http: &reqwest::Client,
@@ -149,7 +149,7 @@ async fn index_sessions(
 
     let mut indexed = 0u32;
     for (session_id,) in &sessions {
-        let source = format!("session:{}", session_id);
+        let source = format!("session:{session_id}");
 
         let messages: Vec<(String, String)> = sqlx::query_as(
             "SELECT role, content FROM messages WHERE session_id = $1 \
@@ -167,7 +167,7 @@ async fn index_sessions(
 
         let transcript: String = messages
             .iter()
-            .map(|(role, content)| format!("[{}]: {}", role, content))
+            .map(|(role, content)| format!("[{role}]: {content}"))
             .collect::<Vec<_>>()
             .join("\n\n");
 
@@ -176,7 +176,7 @@ async fn index_sessions(
         }
 
         match embed_and_insert(db, http, toolgate_url, &transcript, &source, fts_language, agent_id).await {
-            Ok(_) => indexed += 1,
+            Ok(()) => indexed += 1,
             Err(e) => tracing::debug!(session = %session_id, error = %e, "session index failed"),
         }
     }
@@ -197,7 +197,7 @@ async fn handle_legacy_directory(
 
     let base = std::path::PathBuf::from(workspace_dir).join(directory);
     if !base.exists() || !base.is_dir() {
-        anyhow::bail!("directory '{}' not found", directory);
+        anyhow::bail!("directory '{directory}' not found");
     }
 
     // Collect .md files
@@ -260,7 +260,7 @@ async fn handle_legacy_directory(
             .to_string();
 
         match embed_and_insert(db, &http, toolgate_url, &content, &source, fts_language, agent_id).await {
-            Ok(_) => indexed += 1,
+            Ok(()) => indexed += 1,
             Err(e) => {
                 tracing::warn!(source = %source, error = %e, "index failed");
                 errors += 1;
@@ -278,7 +278,7 @@ async fn handle_legacy_directory(
     Ok(json!({"indexed": indexed, "errors": errors, "total": total}))
 }
 
-/// Embed content and insert into memory_chunks (transactional replace).
+/// Embed content and insert into `memory_chunks` (transactional replace).
 async fn embed_and_insert(
     db: &PgPool,
     http: &reqwest::Client,
@@ -290,7 +290,7 @@ async fn embed_and_insert(
 ) -> anyhow::Result<()> {
     // Split into chunks
     let chunks = split_text(content, 1500, 200);
-    let texts: Vec<&str> = chunks.iter().map(|c| c.as_str()).collect();
+    let texts: Vec<&str> = chunks.iter().map(std::string::String::as_str).collect();
 
     // Embed via toolgate
     let body = serde_json::json!({"input": texts});
@@ -303,7 +303,7 @@ async fn embed_and_insert(
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("embedding API error {}: {}", status, text);
+        anyhow::bail!("embedding API error {status}: {text}");
     }
 
     let resp_body: serde_json::Value = resp.json().await?;
@@ -333,13 +333,12 @@ async fn embed_and_insert(
     // fts_language is configurable per-deployment (e.g. 'russian', 'english') instead of hardcoded
     let insert_sql = format!(
         "INSERT INTO memory_chunks (id, user_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, agent_id)
-         VALUES ($1::uuid, '', $2, $3::halfvec, $4, false, 1.0, to_tsvector('{lang}', $2), $5::uuid, $6, $7)",
-        lang = fts_language
+         VALUES ($1::uuid, '', $2, $3::halfvec, $4, false, 1.0, to_tsvector('{fts_language}', $2), $5::uuid, $6, $7)"
     );
     for (i, (chunk, emb)) in chunks.iter().zip(embeddings.iter()).enumerate() {
         let vec_str = format!(
             "[{}]",
-            emb.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(",")
+            emb.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join(",")
         );
         let id = if i == 0 { parent_id.clone() } else { uuid::Uuid::new_v4().to_string() };
         let parent = if i == 0 { None } else { Some(parent_id.as_str()) };

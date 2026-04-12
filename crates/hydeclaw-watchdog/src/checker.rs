@@ -18,14 +18,14 @@ pub async fn run_check(cfg: &CheckConfig, http: &reqwest::Client) -> CheckResult
         {
             Ok(Ok(resp)) if resp.status().is_success() => (true, None),
             Ok(Ok(resp)) => (false, Some(format!("HTTP {}", resp.status()))),
-            Ok(Err(e)) => (false, Some(format!("{}", e))),
+            Ok(Err(e)) => (false, Some(format!("{e}"))),
             Err(_) => (false, Some(format!("timeout {}s", cfg.timeout_secs))),
         }
     } else if let Some(ref cmd) = cfg.check_cmd {
         match run_shell(cmd).await {
             Ok(true) => (true, None),
             Ok(false) => (false, Some("exit code != 0".into())),
-            Err(e) => (false, Some(format!("{}", e))),
+            Err(e) => (false, Some(format!("{e}"))),
         }
     } else {
         (true, None)

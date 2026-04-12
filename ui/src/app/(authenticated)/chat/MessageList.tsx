@@ -7,8 +7,9 @@ import type { ChatMessage } from "@/stores/chat-store";
 import { Button } from "@/components/ui/button";
 import { BarsLoader } from "@/components/ui/loader";
 import { RoleAvatar } from "./ChatThread";
-import { HandoffDivider } from "@/components/chat/HandoffDivider";
+
 import { MessageItem } from "./MessageItem";
+import { AgentTransitionDivider } from "@/components/chat/AgentTransitionDivider";
 import { useAuthStore } from "@/stores/auth-store";
 import { useSessions } from "@/lib/queries";
 import { ChevronDown } from "lucide-react";
@@ -391,7 +392,7 @@ export function MessageList({
           return (
             <div className="mx-auto w-full max-w-4xl px-3 md:px-6">
               {showSeparator && (
-                <HandoffDivider agentName={msg.agentId!} />
+                <AgentTransitionDivider agentName={msg.agentId!} />
               )}
               <div className={cn(
                 isNew && "animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out",

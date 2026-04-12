@@ -14,12 +14,12 @@ use super::engine::AgentEngine;
 pub const STATUS_IDLE: u8 = 0;
 pub const STATUS_PROCESSING: u8 = 1;
 
-/// Type alias for the shared session pools map used across AppState and AgentEngine.
+/// Type alias for the shared session pools map used across `AppState` and `AgentEngine`.
 pub type SessionPoolsMap = Arc<tokio::sync::RwLock<HashMap<Uuid, SessionAgentPool>>>;
 
 // ── AgentMessage ─────────────────────────────────────────────────────────────
 
-/// Message sent to a LiveAgent's processing loop.
+/// Message sent to a `LiveAgent`'s processing loop.
 pub struct AgentMessage {
     pub text: String,
 }
@@ -137,7 +137,7 @@ impl SessionAgentPool {
         self.agents.is_empty()
     }
 
-    /// Returns true if all agents in this pool have finished (task_handle.is_finished()).
+    /// Returns true if all agents in this pool have finished (`task_handle.is_finished()`).
     pub fn is_all_finished(&self) -> bool {
         self.agents.values().all(|a| a.task_handle.is_finished())
     }
@@ -173,14 +173,13 @@ pub async fn cleanup_stale_pools(
     let mut pools_write = pools.write().await;
     let mut removed = 0;
     for id in &stale_ids {
-        if let Some(pool) = pools_write.get(id) {
-            if pool.is_empty() || pool.is_all_finished()
-                || pool.all_idle_longer_than(std::time::Duration::from_secs(POOL_IDLE_TIMEOUT_SECS))
+        if let Some(pool) = pools_write.get(id)
+            && (pool.is_empty() || pool.is_all_finished()
+                || pool.all_idle_longer_than(std::time::Duration::from_secs(POOL_IDLE_TIMEOUT_SECS)))
             {
                 pools_write.remove(id);
                 removed += 1;
             }
-        }
     }
     if removed > 0 {
         tracing::info!(removed, "cleaned up stale session agent pools");
@@ -201,7 +200,7 @@ pub struct AgentPoolEntry {
 
 // ── spawn_live_agent ─────────────────────────────────────────────────────────
 
-/// Spawn a new LiveAgent with a background processing loop.
+/// Spawn a new `LiveAgent` with a background processing loop.
 /// Returns `None` if the initial task could not be delivered (channel closed).
 /// `session_id` is passed to `run_subagent_with_session` so pool agents can use the `agent` tool.
 pub fn spawn_live_agent(
@@ -283,7 +282,7 @@ async fn agent_processing_loop(
 
         let result_text = match result {
             Ok(text) => text,
-            Err(e) => format!("Error: {}", e),
+            Err(e) => format!("Error: {e}"),
         };
 
         iteration_count.fetch_add(1, Ordering::Relaxed);

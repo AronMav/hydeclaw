@@ -1,7 +1,7 @@
 //! Google Gemini API provider —
 //! extracted from providers.rs for readability.
 
-use super::*;
+use super::{Deserialize, async_trait, Arc, SecretsManager, ModelOverride, Message, MessageRole, LlmProvider, ToolDefinition, Result, LlmResponse, mpsc};
 
 // ── Google Gemini API Provider ──────────────────────────────────────────────
 
@@ -10,7 +10,7 @@ pub struct GoogleProvider {
     streaming_client: reqwest::Client,
     base_url: String,
     api_key_name: String,
-    /// Vault scope for LLM_CREDENTIALS (provider UUID). When set, checked first.
+    /// Vault scope for `LLM_CREDENTIALS` (provider UUID). When set, checked first.
     credential_scope: Option<String>,
     secrets: Arc<SecretsManager>,
     model: ModelOverride,
@@ -46,7 +46,7 @@ impl GoogleProvider {
         }
     }
 
-    /// Set vault credential scope (provider UUID) for LLM_CREDENTIALS lookup.
+    /// Set vault credential scope (provider UUID) for `LLM_CREDENTIALS` lookup.
     pub fn with_credential_scope(mut self, scope: String) -> Self {
         self.credential_scope = Some(scope);
         self
@@ -230,7 +230,7 @@ impl LlmProvider for GoogleProvider {
             let preview_len = body_text.len().min(500);
             let preview = &body_text[..body_text.floor_char_boundary(preview_len)];
             tracing::error!(provider = "google", body_preview = %preview, "failed to parse response");
-            anyhow::anyhow!("google response parse error: {}", e)
+            anyhow::anyhow!("google response parse error: {e}")
         })?;
 
         let mut content = String::new();
@@ -251,7 +251,7 @@ impl LlmProvider for GoogleProvider {
                             }
                             if let Some(fc) = part.function_call {
                                 tool_calls.push(hydeclaw_types::ToolCall {
-                                    id: format!("call_{}", i),
+                                    id: format!("call_{i}"),
                                     name: fc.name,
                                     arguments: fc.args.unwrap_or(serde_json::Value::Object(Default::default())),
                                 });
@@ -270,8 +270,8 @@ impl LlmProvider for GoogleProvider {
             content_len = content.len(),
             tool_calls = tool_calls.len(),
             finish_reason = ?finish_reason,
-            input_tokens = usage.as_ref().map(|u| u.input_tokens).unwrap_or(0),
-            output_tokens = usage.as_ref().map(|u| u.output_tokens).unwrap_or(0),
+            input_tokens = usage.as_ref().map_or(0, |u| u.input_tokens),
+            output_tokens = usage.as_ref().map_or(0, |u| u.output_tokens),
             "Google response parsed"
         );
 
@@ -343,13 +343,12 @@ impl LlmProvider for GoogleProvider {
             let retry_after = resp.headers()
                 .get("retry-after")
                 .and_then(|v| v.to_str().ok())
-                .map(|v| v.to_string());
+                .map(std::string::ToString::to_string);
             let err_text = resp.text().await.unwrap_or_default();
             if let Some(ra) = retry_after {
-                anyhow::bail!("google API error (retry-after: {}): {}", ra, err_text);
-            } else {
-                anyhow::bail!("google API error: {}", err_text);
+                anyhow::bail!("google API error (retry-after: {ra}): {err_text}");
             }
+            anyhow::bail!("google API error: {err_text}");
         }
 
         let mut full_content = String::new();
@@ -418,7 +417,7 @@ impl LlmProvider for GoogleProvider {
         })
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "google"
     }
 
@@ -435,7 +434,7 @@ impl LlmProvider for GoogleProvider {
 /// Google's Gemini API rejects empty required arrays.
 fn strip_empty_required(value: &mut serde_json::Value) {
     if let Some(obj) = value.as_object_mut() {
-        obj.retain(|k, v| !(k == "required" && v.as_array().is_some_and(|a| a.is_empty())));
+        obj.retain(|k, v| !(k == "required" && v.as_array().is_some_and(std::vec::Vec::is_empty)));
         for v in obj.values_mut() {
             strip_empty_required(v);
         }

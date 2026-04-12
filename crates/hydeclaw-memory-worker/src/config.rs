@@ -27,7 +27,7 @@ struct AppConfigPartial {
     pub database: DatabaseConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
-    /// Base URL for toolgate. Falls back to env TOOLGATE_URL, then localhost:9011.
+    /// Base URL for toolgate. Falls back to env `TOOLGATE_URL`, then localhost:9011.
     pub toolgate_url: Option<String>,
 }
 
@@ -75,7 +75,7 @@ fn detect_fts_language(lang: &str) -> &'static str {
 ///
 /// The base agent (`base = true`) sets the deployment locale via its `[agent] language`
 /// field (e.g. "ru", "en"). The memory worker reads this to select the correct
-/// PostgreSQL FTS dictionary for `to_tsvector()`.
+/// `PostgreSQL` FTS dictionary for `to_tsvector()`.
 ///
 /// Scans all agent TOML files in config/agents/ and picks the first one with `base = true`.
 fn read_base_agent_language(config_path: &str) -> String {

@@ -50,7 +50,7 @@ mod sse_impl;
 #[path = "engine_agent_tool.rs"]
 mod agent_tool_impl;
 
-/// Resolves env var names through SecretsManager (scoped to agent).
+/// Resolves env var names through `SecretsManager` (scoped to agent).
 struct SecretsEnvResolver {
     secrets: Arc<crate::secrets::SecretsManager>,
     agent_name: String,
@@ -73,7 +73,7 @@ pub enum ProcessingPhase {
 }
 
 impl ProcessingPhase {
-    /// Convert to wire format: (phase_name, optional_tool_name).
+    /// Convert to wire format: (`phase_name`, `optional_tool_name`).
     pub fn to_wire(&self) -> (String, Option<String>) {
         match self {
             ProcessingPhase::Thinking => ("thinking".to_string(), None),
@@ -87,7 +87,7 @@ impl ProcessingPhase {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum StreamEvent {
-    /// Session ID resolved/created by build_context — emitted first so the UI can track it.
+    /// Session ID resolved/created by `build_context` — emitted first so the UI can track it.
     SessionId(String),
     MessageStart { message_id: String },
     StepStart { step_id: String },
@@ -115,7 +115,7 @@ pub enum StreamEvent {
         modified_input: Option<serde_json::Value>,
     },
     /// Internal event: signals that a different agent is now responding (multi-agent session).
-    /// Converter task updates current_responding_agent; no SSE is emitted to the client.
+    /// Converter task updates `current_responding_agent`; no SSE is emitted to the client.
     /// Retained for API compatibility — not currently emitted.
     AgentSwitch { agent_name: String },
     Error(String),
@@ -138,7 +138,7 @@ pub struct AgentEngine {
     pub tools: ToolRegistry,
     pub workspace_dir: String,
     /// Memory service abstraction (pgvector queries + external embedding endpoint).
-    /// Held as a trait object so unit tests can inject a MockMemoryService.
+    /// Held as a trait object so unit tests can inject a `MockMemoryService`.
     pub memory_store: Arc<dyn crate::agent::memory_service::MemoryService>,
     /// Multi-channel router for sending actions to channel adapters.
     pub channel_router: Option<ChannelActionRouter>,
@@ -148,7 +148,7 @@ pub struct AgentEngine {
     pub agent_map: Option<crate::gateway::AgentMap>,
     /// Weak self-reference for hot-scheduling cron jobs. Set once after Arc creation.
     pub self_ref: OnceLock<Weak<AgentEngine>>,
-    /// Broadcast channel for UI events (agent_processing start/end).
+    /// Broadcast channel for UI events (`agent_processing` start/end).
     pub ui_event_tx: Option<tokio::sync::broadcast::Sender<String>>,
     /// Shared tracker for currently processing agents (for WS reconnection).
     pub processing_tracker: Option<crate::gateway::ProcessingTracker>,
@@ -166,8 +166,8 @@ pub struct AgentEngine {
     /// Dedicated LLM provider for context compaction (cheap model). None = use primary provider.
     pub compaction_provider: Option<Arc<dyn LlmProvider>>,
     /// Context builder — builds session/messages/tools for each LLM call.
-    /// Initialized via `set_context_builder` after engine Arc creation (mirrors self_ref pattern).
-    /// Holds `Arc<dyn ContextBuilder>` for testability (MockContextBuilder in plan 02).
+    /// Initialized via `set_context_builder` after engine Arc creation (mirrors `self_ref` pattern).
+    /// Holds `Arc<dyn ContextBuilder>` for testability (`MockContextBuilder` in plan 02).
     pub context_builder: OnceLock<Arc<dyn crate::agent::context_builder::ContextBuilder>>,
     /// Tool executor — owns tool-only state (sandbox, caches, subagent registry, etc.).
     /// Stored as concrete `Arc<DefaultToolExecutor>` for direct field access in engine methods.
@@ -219,12 +219,12 @@ pub enum ApprovalResult {
 }
 
 /// RAII guard: inserts into processing tracker on creation, removes + broadcasts "end" on drop.
-/// Uses session_id as tracker key (not agent_name) to support concurrent sessions per agent.
+/// Uses `session_id` as tracker key (not `agent_name`) to support concurrent sessions per agent.
 struct ProcessingGuard {
     tx: Option<tokio::sync::broadcast::Sender<String>>,
     processing_tracker: Option<crate::gateway::ProcessingTracker>,
     agent_name: String,
-    /// Tracker key — session_id for unique identification across concurrent sessions.
+    /// Tracker key — `session_id` for unique identification across concurrent sessions.
     tracker_key: String,
     session_id: Option<String>,
 }
@@ -236,7 +236,7 @@ impl ProcessingGuard {
         agent_name: String,
         start_event: &serde_json::Value,
     ) -> Self {
-        let session_id = start_event.get("session_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let session_id = start_event.get("session_id").and_then(|v| v.as_str()).map(std::string::ToString::to_string);
         // Use session_id as key (supports multiple concurrent sessions for same agent).
         // Fallback to agent_name if session_id is missing (shouldn't happen).
         let tracker_key = session_id.clone().unwrap_or_else(|| agent_name.clone());
@@ -271,8 +271,8 @@ impl Drop for ProcessingGuard {
 
 use crate::agent::session_manager::{SessionLifecycleGuard, SessionManager};
 
-/// Convert a DB MessageRow into a typed Message.
-/// Parses tool_calls JSON exactly once per row (ENG-02).
+/// Convert a DB `MessageRow` into a typed Message.
+/// Parses `tool_calls` JSON exactly once per row (ENG-02).
 pub(crate) fn row_to_message(row: &crate::db::sessions::MessageRow) -> Message {
     let tool_calls = row.tool_calls.as_ref().and_then(|tc| {
         serde_json::from_value::<Vec<hydeclaw_types::ToolCall>>(tc.clone()).ok()
@@ -379,73 +379,73 @@ impl AgentEngine {
         self.tool_executor.get().expect("tool_executor not initialized")
     }
 
-    /// Sandbox accessor — delegates to DefaultToolExecutor.
+    /// Sandbox accessor — delegates to `DefaultToolExecutor`.
     #[inline]
     pub(crate) fn sandbox(&self) -> &Option<Arc<crate::containers::sandbox::CodeSandbox>> {
         &self.tex().sandbox
     }
 
-    /// SSRF-safe HTTP client accessor — delegates to DefaultToolExecutor.
+    /// SSRF-safe HTTP client accessor — delegates to `DefaultToolExecutor`.
     #[inline]
     pub(crate) fn ssrf_http_client(&self) -> &reqwest::Client {
         &self.tex().ssrf_http_client
     }
 
-    /// Tool embed cache accessor — delegates to DefaultToolExecutor.
+    /// Tool embed cache accessor — delegates to `DefaultToolExecutor`.
     #[inline]
     pub(crate) fn tool_embed_cache(&self) -> &Arc<crate::tools::embedding::ToolEmbeddingCache> {
         &self.tex().tool_embed_cache
     }
 
-    /// Subagent registry accessor — delegates to DefaultToolExecutor.
+    /// Subagent registry accessor — delegates to `DefaultToolExecutor`.
     #[inline]
     pub(crate) fn subagent_registry(&self) -> &crate::agent::subagent_state::SubagentRegistry {
         &self.tex().subagent_registry
     }
 
-    /// OAuth manager accessor — delegates to DefaultToolExecutor.
+    /// OAuth manager accessor — delegates to `DefaultToolExecutor`.
     #[inline]
     pub(crate) fn oauth(&self) -> &Option<Arc<crate::oauth::OAuthManager>> {
         &self.tex().oauth
     }
 
-    /// Secrets vault accessor — delegates to DefaultToolExecutor.
+    /// Secrets vault accessor — delegates to `DefaultToolExecutor`.
     #[inline]
     pub(crate) fn secrets(&self) -> &Arc<crate::secrets::SecretsManager> {
         &self.tex().secrets
     }
 
-    /// MCP registry accessor — delegates to DefaultToolExecutor.
+    /// MCP registry accessor — delegates to `DefaultToolExecutor`.
     #[inline]
     pub(crate) fn mcp(&self) -> &Option<Arc<McpRegistry>> {
         &self.tex().mcp
     }
 
-    /// Standard HTTP client accessor — delegates to DefaultToolExecutor.
+    /// Standard HTTP client accessor — delegates to `DefaultToolExecutor`.
     #[inline]
     pub(crate) fn http_client(&self) -> &reqwest::Client {
         &self.tex().http_client
     }
 
-    /// Hooks registry accessor — delegates to DefaultToolExecutor.
+    /// Hooks registry accessor — delegates to `DefaultToolExecutor`.
     #[inline]
     pub(crate) fn hooks(&self) -> &Arc<super::hooks::HookRegistry> {
         &self.tex().hooks
     }
 
-    /// Approval waiters accessor — delegates to DefaultToolExecutor.
+    /// Approval waiters accessor — delegates to `DefaultToolExecutor`.
     #[inline]
     pub(crate) fn approval_waiters(&self) -> &Arc<tokio::sync::RwLock<std::collections::HashMap<Uuid, (tokio::sync::oneshot::Sender<ApprovalResult>, std::time::Instant)>>> {
         &self.tex().approval_waiters
     }
 
-    /// Current processing session ID accessor — delegates to DefaultToolExecutor.
+    /// Current processing session ID accessor — delegates to `DefaultToolExecutor`.
     #[inline]
     pub(crate) fn processing_session_id(&self) -> &Arc<tokio::sync::Mutex<Option<Uuid>>> {
         &self.tex().processing_session_id
     }
 
-    /// SSE event TX accessor — delegates to DefaultToolExecutor.
+    /// SSE event TX accessor — delegates to `DefaultToolExecutor`.
     #[inline]
     pub(crate) fn sse_event_tx(&self) -> &Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<StreamEvent>>>> {
         &self.tex().sse_event_tx
@@ -454,7 +454,7 @@ impl AgentEngine {
     /// Invalidate the cached YAML tool definitions so the next request reloads from disk.
     pub(crate) async fn invalidate_yaml_tools_cache(&self) {
         *self.tex().yaml_tools_cache.write().await = (
-            std::time::Instant::now() - std::time::Duration::from_secs(60),
+            std::time::Instant::now().checked_sub(std::time::Duration::from_secs(60)).unwrap(),
             std::collections::HashMap::new(),
         );
     }
@@ -517,7 +517,7 @@ impl AgentEngine {
         let status = if approved { "approved" } else { "rejected" };
         let updated = crate::db::approvals::resolve_approval(&self.db, approval_id, status, resolved_by).await?;
         if !updated {
-            anyhow::bail!("approval {} not found or already resolved", approval_id);
+            anyhow::bail!("approval {approval_id} not found or already resolved");
         }
 
         self.audit(crate::db::audit::event_types::APPROVAL_RESOLVED, Some(resolved_by), serde_json::json!({
@@ -550,7 +550,7 @@ impl AgentEngine {
                     None => ApprovalResult::Approved,
                 }
             } else {
-                ApprovalResult::Rejected(format!("rejected by {}", resolved_by))
+                ApprovalResult::Rejected(format!("rejected by {resolved_by}"))
             };
             tx.send(result).ok();
         }
@@ -568,9 +568,9 @@ impl AgentEngine {
         Ok(())
     }
 
-    /// Enrich tool arguments with `_context` (message context + session_id).
+    /// Enrich tool arguments with `_context` (message context + `session_id`).
     /// Uses `insert` (not `or_insert`) intentionally — LLM must not be able to
-    /// forge `_context` (e.g., spoofing chat_id for channel actions).
+    /// forge `_context` (e.g., spoofing `chat_id` for channel actions).
     fn enrich_tool_args(args: &serde_json::Value, context: &serde_json::Value, session_id: Uuid, channel: &str) -> serde_json::Value {
         let mut args = args.clone();
         if let Some(obj) = args.as_object_mut() {
@@ -609,7 +609,7 @@ impl AgentEngine {
             .unwrap_or(false)
     }
 
-    /// Trim session messages if max_messages is configured.
+    /// Trim session messages if `max_messages` is configured.
     async fn maybe_trim_session(&self, session_id: Uuid) {
         if let Some(max) = self.agent.session.as_ref().and_then(|s| {
             if s.max_messages > 0 { Some(s.max_messages) } else { None }
@@ -631,7 +631,7 @@ impl AgentEngine {
     pub async fn handle_isolated(&self, msg: &IncomingMessage) -> Result<String> {
         // Hook: BeforeMessage
         if let super::hooks::HookAction::Block(reason) = self.hooks().fire(&super::hooks::HookEvent::BeforeMessage) {
-            anyhow::bail!("blocked by hook: {}", reason);
+            anyhow::bail!("blocked by hook: {reason}");
         }
 
         let sm = SessionManager::new(self.db.clone());
@@ -752,8 +752,8 @@ impl AgentEngine {
                             tokio::spawn(async move {
                                 crate::gateway::notify(
                                     &db, &tx, "auto_continue",
-                                    &format!("Auto-continue: {}", agent_name),
-                                    &format!("Agent continued unfinished task (attempt {}/{})", cnt, max),
+                                    &format!("Auto-continue: {agent_name}"),
+                                    &format!("Agent continued unfinished task (attempt {cnt}/{max})"),
                                     serde_json::json!({"agent": agent_name}),
                                 ).await.ok();
                             });
@@ -835,10 +835,9 @@ impl AgentEngine {
                     if loop_nudge_count < loop_config.max_loop_nudges {
                         let nudge_desc = reason.as_deref().unwrap_or("repeating pattern");
                         let nudge_msg = format!(
-                            "LOOP DETECTED: You have repeated the same sequence of actions ({desc}). \
+                            "LOOP DETECTED: You have repeated the same sequence of actions ({nudge_desc}). \
                              Change your approach entirely. If the task is too large for a single session, \
-                             tell the user and suggest breaking it into smaller steps. Do NOT retry the same approach.",
-                            desc = nudge_desc
+                             tell the user and suggest breaking it into smaller steps. Do NOT retry the same approach."
                         );
                         messages.push(Message {
                             role: MessageRole::System,
@@ -883,16 +882,16 @@ impl AgentEngine {
                         tokio::spawn(async move {
                             crate::gateway::notify(
                                 &db, &tx, "iteration_limit",
-                                &format!("Iteration limit: {}", agent_name),
-                                &format!("Agent {} reached its iteration limit ({} iterations). The task may be incomplete.", agent_name, max_iter),
+                                &format!("Iteration limit: {agent_name}"),
+                                &format!("Agent {agent_name} reached its iteration limit ({max_iter} iterations). The task may be incomplete."),
                                 serde_json::json!({"agent": agent_name, "max_iterations": max_iter}),
                             ).await.ok();
                         });
                     }
                 }
                 // Notify if loop was broken after max nudges
-                if loop_broken && loop_nudge_count >= loop_config.max_loop_nudges {
-                    if let Some(ref ui_tx) = self.ui_event_tx {
+                if loop_broken && loop_nudge_count >= loop_config.max_loop_nudges
+                    && let Some(ref ui_tx) = self.ui_event_tx {
                         let db = self.db.clone();
                         let tx = ui_tx.clone();
                         let agent_name = self.agent.name.clone();
@@ -900,13 +899,12 @@ impl AgentEngine {
                         tokio::spawn(async move {
                             crate::gateway::notify(
                                 &db, &tx, "agent_loop_detected",
-                                &format!("Agent stuck in loop: {}", agent_name),
-                                &format!("Agent {} was stopped after detecting a repeating pattern. Session: {}", agent_name, sid),
+                                &format!("Agent stuck in loop: {agent_name}"),
+                                &format!("Agent {agent_name} was stopped after detecting a repeating pattern. Session: {sid}"),
                                 serde_json::json!({"agent": agent_name, "session_id": sid.to_string()}),
                             ).await.ok();
                         });
                     }
-                }
                 match self.provider.chat(&messages, &[]).await {
                     Ok(forced) => {
                         final_response = strip_thinking(&forced.content);
@@ -942,7 +940,7 @@ impl AgentEngine {
         }
     }
 
-    /// Get channel info for this agent (cached, refreshed on channels_changed).
+    /// Get channel info for this agent (cached, refreshed on `channels_changed`).
     async fn get_channel_info(&self) -> Vec<workspace::ChannelInfo> {
         // Check cache first
         {
@@ -1070,8 +1068,7 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
 
     fn agent_dm_scope(&self) -> &str {
         self.agent.session.as_ref()
-            .map(|s| s.dm_scope.as_str())
-            .unwrap_or("per-channel-peer")
+            .map_or("per-channel-peer", |s| s.dm_scope.as_str())
     }
 
     fn agent_prune_tool_output_after_turns(&self) -> Option<usize> {

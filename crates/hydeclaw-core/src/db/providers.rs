@@ -92,10 +92,10 @@ pub async fn get_provider_by_name(db: &PgPool, name: &str) -> sqlx::Result<Optio
 
 pub async fn create_provider(db: &PgPool, input: CreateProvider) -> sqlx::Result<ProviderRow> {
     sqlx::query_as::<_, ProviderRow>(
-        r#"INSERT INTO providers
+        r"INSERT INTO providers
                (name, type, provider_type, base_url, default_model, enabled, options, notes)
            VALUES ($1, $2, $3, $4, $5, COALESCE($6, TRUE), COALESCE($7, '{}'), $8)
-           RETURNING *"#,
+           RETURNING *",
     )
     .bind(input.name)
     .bind(input.category)
@@ -115,7 +115,7 @@ pub async fn update_provider(
     input: UpdateProvider,
 ) -> sqlx::Result<Option<ProviderRow>> {
     sqlx::query_as::<_, ProviderRow>(
-        r#"UPDATE providers SET
+        r"UPDATE providers SET
                name          = COALESCE($2, name),
                type          = COALESCE($3, type),
                provider_type = COALESCE($4, provider_type),
@@ -126,7 +126,7 @@ pub async fn update_provider(
                notes         = CASE WHEN $9::text IS NOT NULL THEN $9 ELSE notes END,
                updated_at    = NOW()
            WHERE id = $1
-           RETURNING *"#,
+           RETURNING *",
     )
     .bind(id)
     .bind(input.name)
@@ -163,10 +163,10 @@ pub async fn set_provider_active(
     provider_name: Option<&str>,
 ) -> sqlx::Result<ProviderActiveRow> {
     sqlx::query_as::<_, ProviderActiveRow>(
-        r#"INSERT INTO provider_active (capability, provider_name)
+        r"INSERT INTO provider_active (capability, provider_name)
            VALUES ($1, $2)
            ON CONFLICT (capability) DO UPDATE SET provider_name = EXCLUDED.provider_name
-           RETURNING *"#,
+           RETURNING *",
     )
     .bind(capability)
     .bind(provider_name)
@@ -181,7 +181,7 @@ pub async fn get_provider_active(db: &PgPool, capability: &str) -> sqlx::Result<
     .bind(capability)
     .fetch_optional(db)
     .await
-    .map(|opt| opt.flatten())
+    .map(std::option::Option::flatten)
 }
 
 #[cfg(test)]

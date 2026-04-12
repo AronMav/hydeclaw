@@ -1,7 +1,7 @@
 //! Anthropic Messages API provider —
 //! extracted from providers.rs for readability.
 
-use super::*;
+use super::{Deserialize, async_trait, Arc, SecretsManager, ModelOverride, Message, ToolDefinition, MessageRole, LlmProvider, LlmResponse, Result, mpsc};
 
 // ── Anthropic Messages API Provider ──────────────────────────────────────────
 
@@ -10,7 +10,7 @@ pub struct AnthropicProvider {
     streaming_client: reqwest::Client,
     base_url: String,
     api_key_name: String,
-    /// Vault scope for LLM_CREDENTIALS (provider UUID). When set, checked first.
+    /// Vault scope for `LLM_CREDENTIALS` (provider UUID). When set, checked first.
     credential_scope: Option<String>,
     secrets: Arc<SecretsManager>,
     model: ModelOverride,
@@ -49,7 +49,7 @@ impl AnthropicProvider {
         }
     }
 
-    /// Set vault credential scope (provider UUID) for LLM_CREDENTIALS lookup.
+    /// Set vault credential scope (provider UUID) for `LLM_CREDENTIALS` lookup.
     pub fn with_credential_scope(mut self, scope: String) -> Self {
         self.credential_scope = Some(scope);
         self
@@ -295,7 +295,7 @@ impl LlmProvider for AnthropicProvider {
             let preview_len = body_text.len().min(500);
             let preview = &body_text[..body_text.floor_char_boundary(preview_len)];
             tracing::error!(provider = "anthropic", body_preview = %preview, "failed to parse response");
-            anyhow::anyhow!("anthropic response parse error: {}", e)
+            anyhow::anyhow!("anthropic response parse error: {e}")
         })?;
 
         let effective_model = self.model.effective();
@@ -305,8 +305,8 @@ impl LlmProvider for AnthropicProvider {
             provider = "anthropic",
             content_len = response.content.len(),
             tool_calls = response.tool_calls.len(),
-            input_tokens = response.usage.as_ref().map(|u| u.input_tokens).unwrap_or(0),
-            output_tokens = response.usage.as_ref().map(|u| u.output_tokens).unwrap_or(0),
+            input_tokens = response.usage.as_ref().map_or(0, |u| u.input_tokens),
+            output_tokens = response.usage.as_ref().map_or(0, |u| u.output_tokens),
             "Anthropic response parsed"
         );
 
@@ -353,13 +353,12 @@ impl LlmProvider for AnthropicProvider {
             let retry_after = resp.headers()
                 .get("retry-after")
                 .and_then(|v| v.to_str().ok())
-                .map(|v| v.to_string());
+                .map(std::string::ToString::to_string);
             let err_text = resp.text().await.unwrap_or_default();
             if let Some(ra) = retry_after {
-                anyhow::bail!("anthropic API error (retry-after: {}): {}", ra, err_text);
-            } else {
-                anyhow::bail!("anthropic API error: {}", err_text);
+                anyhow::bail!("anthropic API error (retry-after: {ra}): {err_text}");
             }
+            anyhow::bail!("anthropic API error: {err_text}");
         }
 
         let mut full_content = String::new();
@@ -420,7 +419,7 @@ impl LlmProvider for AnthropicProvider {
         })
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "anthropic"
     }
 

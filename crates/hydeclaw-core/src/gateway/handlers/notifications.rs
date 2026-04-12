@@ -100,7 +100,7 @@ pub(crate) async fn api_clear_all_notifications(
 /// Create a notification, persist it to the DB, and broadcast it to all connected WS clients.
 ///
 /// Called by Phase 6 trigger sites (access.rs, approvals handler, engine.rs, watchdog).
-/// `notification_type` examples: "access_request", "tool_approval", "agent_error", "watchdog_alert"
+/// `notification_type` examples: "`access_request`", "`tool_approval`", "`agent_error`", "`watchdog_alert`"
 pub async fn notify(
     db: &sqlx::PgPool,
     ui_event_tx: &tokio::sync::broadcast::Sender<String>,

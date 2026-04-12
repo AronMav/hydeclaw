@@ -124,7 +124,7 @@ impl OAuthManager {
             .fetch_one(&self.db)
             .await?;
         let cfg = find_provider(&provider_name)
-            .ok_or_else(|| anyhow::anyhow!("unknown provider: {}", provider_name))?;
+            .ok_or_else(|| anyhow::anyhow!("unknown provider: {provider_name}"))?;
         Ok((provider_name, cfg))
     }
 
@@ -132,7 +132,7 @@ impl OAuthManager {
     async fn load_credentials(&self, account_id: Uuid) -> Result<(String, String)> {
         let scope = account_id.to_string();
         let raw = self.secrets.get_scoped(VAULT_CREDENTIALS, &scope).await
-            .ok_or_else(|| anyhow::anyhow!("no credentials for account {}", account_id))?;
+            .ok_or_else(|| anyhow::anyhow!("no credentials for account {account_id}"))?;
         let val: serde_json::Value = serde_json::from_str(&raw)?;
         let client_id = val["client_id"].as_str().unwrap_or_default().to_string();
         let client_secret = val["client_secret"].as_str().unwrap_or_default().to_string();
@@ -164,7 +164,7 @@ impl OAuthManager {
         client_secret: &str,
     ) -> Result<Uuid> {
         find_provider(provider)
-            .ok_or_else(|| anyhow::anyhow!("unsupported provider: {}", provider))?;
+            .ok_or_else(|| anyhow::anyhow!("unsupported provider: {provider}"))?;
 
         let id = Uuid::new_v4();
         let scope_str = find_provider(provider)
@@ -275,7 +275,7 @@ impl OAuthManager {
         .bind(account_id)
         .fetch_optional(&self.db)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("account {} not found", account_id))?;
+        .ok_or_else(|| anyhow::anyhow!("account {account_id} not found"))?;
 
         if row.0 != provider {
             anyhow::bail!(
@@ -484,9 +484,7 @@ impl OAuthManager {
         .await?
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "no OAuth binding for {}/{} \u{2014} connect via /integrations",
-                provider,
-                agent_id
+                "no OAuth binding for {provider}/{agent_id} \u{2014} connect via /integrations"
             )
         })?;
 
@@ -496,7 +494,7 @@ impl OAuthManager {
             .get_scoped(VAULT_TOKENS, &scope)
             .await
             .ok_or_else(|| {
-                anyhow::anyhow!("no OAuth tokens for account {} \u{2014} reconnect", account_id)
+                anyhow::anyhow!("no OAuth tokens for account {account_id} \u{2014} reconnect")
             })?;
         let tokens: serde_json::Value = serde_json::from_str(&tokens_json)?;
 
@@ -516,7 +514,7 @@ impl OAuthManager {
     /// Refresh the access token for a given account.
     async fn refresh_token(&self, account_id: Uuid, provider_name: &str) -> Result<String> {
         let p = find_provider(provider_name)
-            .ok_or_else(|| anyhow::anyhow!("unknown provider: {}", provider_name))?;
+            .ok_or_else(|| anyhow::anyhow!("unknown provider: {provider_name}"))?;
 
         let (client_id, client_secret) = self.load_credentials(account_id).await?;
 
@@ -526,12 +524,12 @@ impl OAuthManager {
             .secrets
             .get_scoped(VAULT_TOKENS, &scope)
             .await
-            .ok_or_else(|| anyhow::anyhow!("no tokens for account {}", account_id))?;
+            .ok_or_else(|| anyhow::anyhow!("no tokens for account {account_id}"))?;
         let old_tokens: serde_json::Value = serde_json::from_str(&tokens_json)?;
         let refresh = old_tokens["refresh_token"]
             .as_str()
             .ok_or_else(|| {
-                anyhow::anyhow!("no refresh_token for account {}", account_id)
+                anyhow::anyhow!("no refresh_token for account {account_id}")
             })?;
 
         let resp = self
@@ -757,13 +755,13 @@ pub async fn migrate_oauth_vault(
         );
 
         let access = secrets
-            .get_scoped(&format!("{}_ACCESS", old_prefix), &row.agent_id)
+            .get_scoped(&format!("{old_prefix}_ACCESS"), &row.agent_id)
             .await;
         let refresh = secrets
-            .get_scoped(&format!("{}_REFRESH", old_prefix), &row.agent_id)
+            .get_scoped(&format!("{old_prefix}_REFRESH"), &row.agent_id)
             .await;
         let expiry = secrets
-            .get_scoped(&format!("{}_EXPIRY", old_prefix), &row.agent_id)
+            .get_scoped(&format!("{old_prefix}_EXPIRY"), &row.agent_id)
             .await;
 
         if let Some(at) = &access {
@@ -780,10 +778,10 @@ pub async fn migrate_oauth_vault(
         // Migrate global credentials
         let provider_upper = row.provider.to_uppercase();
         let client_id = secrets
-            .get_scoped(&format!("{}_CLIENT_ID", provider_upper), "")
+            .get_scoped(&format!("{provider_upper}_CLIENT_ID"), "")
             .await;
         let client_secret = secrets
-            .get_scoped(&format!("{}_CLIENT_SECRET", provider_upper), "")
+            .get_scoped(&format!("{provider_upper}_CLIENT_SECRET"), "")
             .await;
 
         if let (Some(cid), Some(csec)) = (&client_id, &client_secret) {
@@ -800,7 +798,7 @@ pub async fn migrate_oauth_vault(
         for suffix in &["ACCESS", "REFRESH", "EXPIRY"] {
             let _ = secrets
                 .delete_scoped(
-                    &format!("{}_{}", old_prefix, suffix),
+                    &format!("{old_prefix}_{suffix}"),
                     &row.agent_id,
                 )
                 .await;

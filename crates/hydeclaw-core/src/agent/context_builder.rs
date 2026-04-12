@@ -1,8 +1,8 @@
-//! ContextBuilder trait, ContextSnapshot return type, and DefaultContextBuilder implementation.
+//! `ContextBuilder` trait, `ContextSnapshot` return type, and `DefaultContextBuilder` implementation.
 //!
-//! Extracted from engine_context.rs (build_context body) to decouple context building
+//! Extracted from `engine_context.rs` (`build_context` body) to decouple context building
 //! from the engine god object (CTX-01) and replace the fragile unnamed tuple with a
-//! self-documenting struct (CTX-02). Enables MockContextBuilder injection in tests (CTX-03).
+//! self-documenting struct (CTX-02). Enables `MockContextBuilder` injection in tests (CTX-03).
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -36,9 +36,9 @@ pub trait ContextBuilder: Send + Sync {
 
 // ── Private engine-deps trait ─────────────────────────────────────────────────
 
-/// Private trait listing the AgentEngine capabilities consumed by DefaultContextBuilder.
+/// Private trait listing the `AgentEngine` capabilities consumed by `DefaultContextBuilder`.
 /// `AgentEngine` implements this; the impl delegates to its own fields/methods.
-/// This avoids a direct Arc<AgentEngine> dependency from context_builder.rs back to engine.rs.
+/// This avoids a direct Arc<AgentEngine> dependency from `context_builder.rs` back to engine.rs.
 #[async_trait]
 pub(crate) trait ContextBuilderDeps: Send + Sync {
     // Session management
@@ -95,7 +95,7 @@ pub(crate) trait ContextBuilderDeps: Send + Sync {
 
     // Memory
     fn pinned_budget_tokens(&self) -> u32;
-    /// Returns (pinned_text, pinned_ids)
+    /// Returns (`pinned_text`, `pinned_ids`)
     async fn build_memory_context(&self, budget_tokens: u32) -> (String, Vec<String>);
     async fn store_pinned_chunk_ids(&self, ids: Vec<String>);
 
@@ -496,7 +496,7 @@ fn prune_old_tool_outputs(messages: &[hydeclaw_types::Message], keep_turns: usiz
             if i < cutoff && m.role == hydeclaw_types::MessageRole::Tool && !m.content.is_empty() {
                 let n = m.content.len();
                 hydeclaw_types::Message {
-                    content: format!("[output omitted, {} chars]", n),
+                    content: format!("[output omitted, {n} chars]"),
                     ..m.clone()
                 }
             } else {

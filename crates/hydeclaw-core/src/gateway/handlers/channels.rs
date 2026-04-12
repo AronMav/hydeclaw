@@ -293,7 +293,7 @@ pub(crate) async fn api_channel_update(
     if let Some(ref new_cfg) = body.config {
         // Store new credentials in vault if provided
         if let Some(creds_json) = extract_credentials(new_cfg) {
-            let desc = format!("Channel credentials for agent {}", agent_name);
+            let desc = format!("Channel credentials for agent {agent_name}");
             if let Err(e) = state.secrets.set_scoped(
                 "CHANNEL_CREDENTIALS",
                 &uuid.to_string(),
@@ -319,7 +319,7 @@ pub(crate) async fn api_channel_update(
         let merged = if let Some(serde_json::Value::Object(mut old)) = existing_cfg {
             if let serde_json::Value::Object(new_map) = new_non_cred {
                 for (k, v) in new_map {
-                    if v.as_str().map(|s| !s.is_empty()).unwrap_or(true) {
+                    if v.as_str().is_none_or(|s| !s.is_empty()) {
                         old.insert(k, v);
                     }
                 }
@@ -376,7 +376,7 @@ pub(crate) async fn api_list_all_channels(
     State(state): State<AppState>,
     query: axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let reveal = query.get("reveal").map(|v| v == "true").unwrap_or(false);
+    let reveal = query.get("reveal").is_some_and(|v| v == "true");
     let rows = sqlx::query_as::<_, AgentChannelRow>(
         "SELECT id, agent_name, channel_type, display_name, config, container_name, status, error_msg \
          FROM agent_channels ORDER BY agent_name, created_at",
@@ -454,8 +454,8 @@ fn extract_credentials(config: &serde_json::Value) -> Option<String> {
         .filter_map(|k| {
             obj.get(*k)
                 .filter(|v| !v.is_null())
-                .filter(|v| v.as_str().map(|s| !s.is_empty()).unwrap_or(false))
-                .map(|v| (k.to_string(), v.clone()))
+                .filter(|v| v.as_str().is_some_and(|s| !s.is_empty()))
+                .map(|v| ((*k).to_string(), v.clone()))
         })
         .collect();
 
@@ -500,7 +500,7 @@ fn channel_row_json(r: &AgentChannelRow) -> Value {
 }
 
 /// POST /api/channels/notify — send a text message to a specific channel.
-/// Body: {"channel_id": "uuid", "text": "message"}
+/// Body: {"`channel_id"`: "uuid", "text": "message"}
 /// Used by watchdog for alerting.
 pub(crate) async fn api_channel_notify(
     State(state): State<AppState>,
@@ -580,7 +580,7 @@ pub(crate) async fn api_channel_notify(
     }
 }
 
-/// One-time startup migration: move credential fields from agent_channels.config
+/// One-time startup migration: move credential fields from `agent_channels.config`
 /// into the encrypted secrets vault. Idempotent — rows with no credentials are skipped.
 pub async fn migrate_credentials_to_vault(
     db: &sqlx::PgPool,

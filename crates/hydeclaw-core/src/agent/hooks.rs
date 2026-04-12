@@ -74,7 +74,7 @@ pub fn block_tools_hook(blocked: Vec<String>) -> HookHandler {
     Box::new(move |event| {
         if let HookEvent::BeforeToolCall { tool_name, .. } = event
             && blocked.iter().any(|b| b == tool_name) {
-                return HookAction::Block(format!("tool '{}' is blocked by policy", tool_name));
+                return HookAction::Block(format!("tool '{tool_name}' is blocked by policy"));
             }
         HookAction::Continue
     })

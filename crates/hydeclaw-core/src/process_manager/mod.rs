@@ -1,8 +1,8 @@
 //! Manages long-lived child processes (channels, toolgate) spawned by Core.
 //!
 //! Each managed process is:
-//! - Spawned at Core startup via `systemd-run --scope --user` (gives MemoryMax, CPUQuota,
-//!   NoNewPrivileges, PrivateTmp without Docker overhead).
+//! - Spawned at Core startup via `systemd-run --scope --user` (gives `MemoryMax`, `CPUQuota`,
+//!   `NoNewPrivileges`, `PrivateTmp` without Docker overhead).
 //! - Automatically restarted on crash (with backoff).
 //! - Reachable via `POST /api/services/{name}/restart` (kill + respawn with port release wait).
 //! - Given only the env vars it needs (minimal passthrough, no DB credentials leaked to channels).
@@ -154,10 +154,10 @@ impl ProcessManager {
     pub async fn start(&self, name: &str) -> anyhow::Result<()> {
         let is_running = {
             let states = self.states.lock().await;
-            states.get(name).map(|s| s.child.is_some()).unwrap_or(false)
+            states.get(name).is_some_and(|s| s.child.is_some())
         };
         if is_running {
-            anyhow::bail!("process '{}' is already running", name);
+            anyhow::bail!("process '{name}' is already running");
         }
         self.spawn_process(name).await
     }
@@ -300,8 +300,7 @@ impl ProcessManager {
                                     // Process has exited
                                     let uptime = state
                                         .last_started
-                                        .map(|t| t.elapsed().as_secs())
-                                        .unwrap_or(0);
+                                        .map_or(0, |t| t.elapsed().as_secs());
                                     tracing::warn!(
                                         process = %name,
                                         exit = %exit_status,
@@ -338,7 +337,7 @@ impl ProcessManager {
                 if should_restart {
                     let count = {
                         let states = self.states.lock().await;
-                        states.get(&name).map(|s| s.restart_count).unwrap_or(0)
+                        states.get(&name).map_or(0, |s| s.restart_count)
                     };
 
                     // Circuit breaker: after 10 consecutive failures, wait 5 minutes then retry

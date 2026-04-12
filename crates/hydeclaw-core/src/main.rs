@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 /// Load .env file from binary's directory or current working directory.
-/// In production (systemd), env vars come from EnvironmentFile.
+/// In production (systemd), env vars come from `EnvironmentFile`.
 fn load_env() {
     let mut env_path = std::path::PathBuf::from(".env");
 
@@ -81,7 +81,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for BroadcastLogLayer 
         impl Visit for Visitor {
             fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
                 if field.name() == "message" {
-                    self.message = format!("{:?}", value);
+                    self.message = format!("{value:?}");
                 }
             }
         }
@@ -297,7 +297,7 @@ async fn main() -> Result<()> {
         if let Ok(mut content) = std::fs::read_to_string(&env_path)
             && !content.contains("HYDECLAW_MASTER_KEY") {
                 if !content.ends_with('\n') { content.push('\n'); }
-                content.push_str(&format!("HYDECLAW_MASTER_KEY={}\n", generated));
+                content.push_str(&format!("HYDECLAW_MASTER_KEY={generated}\n"));
                 if std::fs::write(&env_path, content).is_ok() {
                     eprintln!("[dotenv] HYDECLAW_MASTER_KEY auto-generated and saved to .env");
                 }
@@ -307,7 +307,7 @@ async fn main() -> Result<()> {
         eprintln!("!!! HYDECLAW_MASTER_KEY is not set !!!");
         eprintln!("Secrets encrypted this session will be LOST on restart.");
         eprintln!("Add this to your .env file and restart:");
-        eprintln!("  HYDECLAW_MASTER_KEY={}", generated);
+        eprintln!("  HYDECLAW_MASTER_KEY={generated}");
         eprintln!();
         tracing::error!(
             "HYDECLAW_MASTER_KEY not set — ephemeral key in use, secrets will NOT survive restart"
@@ -527,7 +527,7 @@ async fn main() -> Result<()> {
     let public_url = cfg.gateway.public_url.clone().unwrap_or_else(|| {
         // Extract port from listen address (e.g. "0.0.0.0:18789" → 18789)
         let port = cfg.gateway.listen.rsplit(':').next().unwrap_or("18789");
-        format!("http://localhost:{}", port)
+        format!("http://localhost:{port}")
     });
     let oauth_manager = Arc::new(crate::oauth::OAuthManager::new(
         db_pool.clone(),
@@ -720,18 +720,15 @@ async fn main() -> Result<()> {
         let graph_provider: Option<Arc<dyn agent::providers::LlmProvider>> =
             match db::providers::get_provider_active(&db_pool, "graph_extraction").await {
                 Ok(Some(name)) => {
-                    match db::providers::get_provider_by_name(&db_pool, &name).await {
-                        Ok(Some(conn)) => {
-                            tracing::info!(provider = %name, model = ?conn.default_model, "graph worker using configured provider");
-                            Some(agent::providers::create_provider_from_connection(
-                                &conn, None, 0.3, None,
-                                state.secrets.clone(), None, "__graph_worker__", "", false,
-                            ).await)
-                        }
-                        _ => {
-                            tracing::warn!(provider = %name, "graph_extraction provider not found, falling back");
-                            None
-                        }
+                    if let Ok(Some(conn)) = db::providers::get_provider_by_name(&db_pool, &name).await {
+                        tracing::info!(provider = %name, model = ?conn.default_model, "graph worker using configured provider");
+                        Some(agent::providers::create_provider_from_connection(
+                            &conn, None, 0.3, None,
+                            state.secrets.clone(), None, "__graph_worker__", "", false,
+                        ).await)
+                    } else {
+                        tracing::warn!(provider = %name, "graph_extraction provider not found, falling back");
+                        None
                     }
                 }
                 _ => None,
@@ -740,12 +737,9 @@ async fn main() -> Result<()> {
             Some(p) => Some(p),
             None => state.first_engine().await.map(|e| e.provider.clone()),
         };
-        match provider {
-            Some(p) => Some(graph_worker::spawn_worker(db_pool.clone(), p, graph_cancel.clone())),
-            None => {
-                tracing::warn!("no graph_extraction provider configured and no agents running, graph worker not started");
-                None
-            }
+        if let Some(p) = provider { Some(graph_worker::spawn_worker(db_pool.clone(), p, graph_cancel.clone())) } else {
+            tracing::warn!("no graph_extraction provider configured and no agents running, graph worker not started");
+            None
         }
     };
 
@@ -755,18 +749,15 @@ async fn main() -> Result<()> {
         let comp_provider: Option<Arc<dyn agent::providers::LlmProvider>> =
             match db::providers::get_provider_active(&db_pool, "graph_extraction").await {
                 Ok(Some(name)) => {
-                    match db::providers::get_provider_by_name(&db_pool, &name).await {
-                        Ok(Some(conn)) => {
-                            tracing::info!(provider = %name, "compression worker using configured provider");
-                            Some(agent::providers::create_provider_from_connection(
-                                &conn, None, 0.3, None,
-                                state.secrets.clone(), None, "__compression_worker__", "", false,
-                            ).await)
-                        }
-                        _ => {
-                            tracing::warn!(provider = %name, "graph_extraction provider not found, falling back for compression");
-                            None
-                        }
+                    if let Ok(Some(conn)) = db::providers::get_provider_by_name(&db_pool, &name).await {
+                        tracing::info!(provider = %name, "compression worker using configured provider");
+                        Some(agent::providers::create_provider_from_connection(
+                            &conn, None, 0.3, None,
+                            state.secrets.clone(), None, "__compression_worker__", "", false,
+                        ).await)
+                    } else {
+                        tracing::warn!(provider = %name, "graph_extraction provider not found, falling back for compression");
+                        None
                     }
                 }
                 _ => None,
@@ -776,18 +767,15 @@ async fn main() -> Result<()> {
             None => state.first_engine().await.map(|e| e.provider.clone()),
         };
         let age_days = cfg.memory.compression_age_days;
-        match provider {
-            Some(p) => Some(compression_worker::spawn_worker(
-                db_pool.clone(),
-                p,
-                state.memory_store.clone(),
-                age_days,
-                compression_cancel.clone(),
-            )),
-            None => {
-                tracing::warn!("no provider available, compression worker not started");
-                None
-            }
+        if let Some(p) = provider { Some(compression_worker::spawn_worker(
+            db_pool.clone(),
+            p,
+            state.memory_store.clone(),
+            age_days,
+            compression_cancel.clone(),
+        )) } else {
+            tracing::warn!("no provider available, compression worker not started");
+            None
         }
     };
 
@@ -927,7 +915,7 @@ async fn main() -> Result<()> {
                     Some(props),
                 ) {
                     Ok(info) => match daemon.register(info) {
-                        Ok(_) => tracing::info!(
+                        Ok(()) => tracing::info!(
                             port,
                             hostname = %hostname,
                             "mDNS registered: {}._hydeclaw._tcp.local.",
@@ -952,7 +940,7 @@ async fn main() -> Result<()> {
     // Tailscale Funnel: expose gateway via `tailscale serve` or `tailscale funnel`
     if cfg.tailscale.enabled {
         let port = cfg.gateway.listen.split(':').next_back().unwrap_or("18789");
-        let target = format!("https+insecure://localhost:{}", port);
+        let target = format!("https+insecure://localhost:{port}");
         let cmd = if cfg.tailscale.funnel { "funnel" } else { "serve" };
         tracing::info!(command = cmd, target = %target, "setting up Tailscale");
         match tokio::process::Command::new("tailscale")
@@ -1116,8 +1104,8 @@ async fn shutdown_signal() {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => tracing::info!("received Ctrl+C"),
-        _ = terminate => tracing::info!("received SIGTERM"),
+        () = ctrl_c => tracing::info!("received Ctrl+C"),
+        () = terminate => tracing::info!("received SIGTERM"),
     }
 
     // Safety net: force-exit after 15s if graceful shutdown hangs

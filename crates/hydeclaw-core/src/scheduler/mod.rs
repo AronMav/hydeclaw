@@ -86,7 +86,7 @@ impl Scheduler {
             let raw = heartbeat.cron.trim();
             let fields: Vec<&str> = raw.split_whitespace().collect();
             if fields.len() == 5 {
-                format!("0 {}", raw)
+                format!("0 {raw}")
             } else {
                 raw.to_string()
             }
@@ -148,7 +148,7 @@ impl Scheduler {
                         broadcast_session_event(&ui_tx, &agent_name, "heartbeat");
                     }
                     Err(e) => {
-                        tracing::error!(agent = %agent_name, error = %e, "heartbeat failed")
+                        tracing::error!(agent = %agent_name, error = %e, "heartbeat failed");
                     }
                 }
             })
@@ -240,7 +240,7 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Add pending_messages cleanup job (daily at 6:30 UTC — delete rows older than 7 days).
+    /// Add `pending_messages` cleanup job (daily at 6:30 UTC — delete rows older than 7 days).
     pub async fn add_pending_messages_cleanup(&self, db: PgPool) -> Result<()> {
         tracing::info!("scheduling pending_messages cleanup (daily 06:30 UTC)");
 
@@ -337,7 +337,7 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Add usage_log cleanup job (daily at 07:00 UTC — delete entries older than 90 days).
+    /// Add `usage_log` cleanup job (daily at 07:00 UTC — delete entries older than 90 days).
     pub async fn add_usage_log_cleanup(&self, db: PgPool) -> Result<()> {
         tracing::info!("scheduling usage_log cleanup (daily 07:00 UTC) retention_days=90");
 
@@ -404,7 +404,7 @@ impl Scheduler {
                     &db,
                     &secrets,
                     &agent_deps,
-                    retention_days as i64,
+                    i64::from(retention_days),
                 ).await {
                     Ok(f) => tracing::info!(filename = %f, "scheduled backup created"),
                     Err(e) => tracing::error!(error = %e, "scheduled backup failed"),
@@ -439,7 +439,7 @@ impl Scheduler {
             let raw = cron_expr.trim();
             let fields: Vec<&str> = raw.split_whitespace().collect();
             if fields.len() == 5 {
-                format!("0 {}", raw)
+                format!("0 {raw}")
             } else {
                 raw.to_string()
             }
@@ -459,7 +459,7 @@ impl Scheduler {
                 user_id: "system".to_string(),
                 text: Some(task_message),
                 attachments: vec![],
-                agent_id: agent_name.to_string(),
+                agent_id: agent_name.clone(),
                 channel: crate::agent::channel_kind::channel::CRON.to_string(),
                 context: announce_to.unwrap_or(serde_json::Value::Null),
                 timestamp: chrono::Utc::now(),
@@ -585,7 +585,7 @@ impl Scheduler {
                     user_id: "system".to_string(),
                     text: Some(task_message),
                     attachments: vec![],
-                    agent_id: agent_name.to_string(),
+                    agent_id: agent_name.clone(),
                     channel: crate::agent::channel_kind::channel::CRON.to_string(),
                     context: announce_to.clone().unwrap_or(serde_json::Value::Null),
                     timestamp: chrono::Utc::now(),
@@ -681,7 +681,7 @@ impl Scheduler {
                 if let Err(panic_err) = futures_util::FutureExt::catch_unwind(exec_result).await {
                     let panic_msg = panic_err
                         .downcast_ref::<&str>()
-                        .map(|s| s.to_string())
+                        .map(|s| (*s).to_string())
                         .or_else(|| panic_err.downcast_ref::<String>().cloned())
                         .unwrap_or_else(|| "unknown panic".to_string());
                     tracing::error!(agent = %agent_name, job_id = %db_id, error = %panic_msg, "dynamic job panicked");
@@ -703,7 +703,7 @@ impl Scheduler {
             .write()
             .await
             .remove(&db_id)
-            .ok_or_else(|| anyhow::anyhow!("job {} not found in scheduler", db_id))?;
+            .ok_or_else(|| anyhow::anyhow!("job {db_id} not found in scheduler"))?;
 
         self.scheduler.remove(&scheduler_uuid).await?;
         tracing::info!(db_id = %db_id, "dynamic job removed");
@@ -865,8 +865,7 @@ async fn run_heartbeat(
     let msg = hydeclaw_types::IncomingMessage {
         user_id: "system".to_string(),
         text: Some(format!(
-            "[Heartbeat] Complete the tasks from the checklist:\n\n{}",
-            checklist
+            "[Heartbeat] Complete the tasks from the checklist:\n\n{checklist}"
         )),
         attachments: vec![],
         agent_id: agent_name.to_string(),
@@ -948,7 +947,7 @@ pub async fn run_first_run_onboarding(
     let msg = hydeclaw_types::IncomingMessage {
         user_id: "system".to_string(),
         text: Some(format!(
-            "[FIRST RUN — agent: {agent}]\n\
+            "[FIRST RUN — agent: {agent_name}]\n\
             This is the first launch after a clean installation. \
             Your configuration files contain empty templates that need to be filled in.\n\n\
             Instructions:\n\
@@ -961,14 +960,13 @@ pub async fn run_first_run_onboarding(
                - How they want you to be: your name, personality, communication style\n\
             3. After receiving their answers, use workspace_write to update these EXACT paths:\n\
                - workspace/USER.md — shared user profile (name, timezone, preferences)\n\
-               - workspace/agents/{agent}/IDENTITY.md — YOUR identity (name, role, style) — agent-specific!\n\
-               - workspace/agents/{agent}/SOUL.md — YOUR character and values — agent-specific!\n\
-            IMPORTANT: SOUL.md and IDENTITY.md must be written to workspace/agents/{agent}/ (not to workspace/ root).\n\n\
+               - workspace/agents/{agent_name}/IDENTITY.md — YOUR identity (name, role, style) — agent-specific!\n\
+               - workspace/agents/{agent_name}/SOUL.md — YOUR character and values — agent-specific!\n\
+            IMPORTANT: SOUL.md and IDENTITY.md must be written to workspace/agents/{agent_name}/ (not to workspace/ root).\n\n\
             Current templates (placeholders to replace):\n\
-            workspace/agents/{agent}/SOUL.md:\n{soul}\n\n\
-            workspace/agents/{agent}/IDENTITY.md:\n{identity}\n\n\
-            workspace/USER.md:\n{user_md}",
-            agent = agent_name, soul = soul, identity = identity, user_md = user_md
+            workspace/agents/{agent_name}/SOUL.md:\n{soul}\n\n\
+            workspace/agents/{agent_name}/IDENTITY.md:\n{identity}\n\n\
+            workspace/USER.md:\n{user_md}"
         )),
         attachments: vec![],
         agent_id: agent_name.to_string(),
@@ -1003,7 +1001,7 @@ pub async fn run_first_run_onboarding(
     Ok(())
 }
 
-/// Broadcast a session_updated event to UI via the shared broadcast channel.
+/// Broadcast a `session_updated` event to UI via the shared broadcast channel.
 fn broadcast_session_event(
     tx: &tokio::sync::broadcast::Sender<String>,
     agent: &str,
@@ -1017,8 +1015,8 @@ fn broadcast_session_event(
     tx.send(event.to_string()).ok();
 }
 
-/// Decay relevance_score for raw (non-pinned) memory chunks.
-/// half_life = 30 days. Deletes chunks with score < 0.05.
+/// Decay `relevance_score` for raw (non-pinned) memory chunks.
+/// `half_life` = 30 days. Deletes chunks with score < 0.05.
 async fn run_memory_decay(db: &PgPool) -> Result<(u64, u64)> {
     // Exponential decay: score *= exp(-0.693 / 30 * days_since_access)
     let decay_result = sqlx::query(
@@ -1079,7 +1077,7 @@ pub fn compute_next_run(cron_expr: &str, timezone: &str) -> Option<String> {
         let raw = cron_expr.trim();
         let fields: Vec<&str> = raw.split_whitespace().collect();
         if fields.len() == 5 {
-            format!("0 {}", raw)
+            format!("0 {raw}")
         } else {
             raw.to_string()
         }
@@ -1089,14 +1087,14 @@ pub fn compute_next_run(cron_expr: &str, timezone: &str) -> Option<String> {
     let cron_utc = convert_cron_to_utc(&cron_6field, timezone);
 
     // cron crate expects 7 fields (sec min hour dom mon dow year) — append year wildcard
-    let cron_7field = format!("{} *", cron_utc);
+    let cron_7field = format!("{cron_utc} *");
 
     let schedule = Schedule::from_str(&cron_7field).ok()?;
     let next = schedule.upcoming(chrono::Utc).next()?;
 
     // Convert back to local timezone for display
     let offset_hours = timezone_offset_hours(timezone);
-    let local = next + chrono::Duration::hours(offset_hours as i64);
+    let local = next + chrono::Duration::hours(i64::from(offset_hours));
     Some(local.to_rfc3339())
 }
 
@@ -1147,9 +1145,7 @@ pub fn convert_cron_to_utc(cron: &str, timezone: &str) -> String {
             .split(',')
             .map(|h| {
                 h.trim()
-                    .parse::<i32>()
-                    .map(|v| (v - offset).rem_euclid(24).to_string())
-                    .unwrap_or_else(|_| h.trim().to_string())
+                    .parse::<i32>().map_or_else(|_| h.trim().to_string(), |v| (v - offset).rem_euclid(24).to_string())
             })
             .collect::<Vec<_>>()
             .join(",")
@@ -1157,7 +1153,7 @@ pub fn convert_cron_to_utc(cron: &str, timezone: &str) -> String {
         if let (Ok(s), Ok(e)) = (start.parse::<i32>(), end.parse::<i32>()) {
             let s_utc = (s - offset).rem_euclid(24);
             let e_utc = (e - offset).rem_euclid(24);
-            format!("{}-{}", s_utc, e_utc)
+            format!("{s_utc}-{e_utc}")
         } else {
             hour_field.to_string()
         }

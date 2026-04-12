@@ -4,7 +4,7 @@ use sqlx::PgPool;
 use crate::db::access;
 
 /// Manages access control for a channel bot.
-/// Pairing codes are stored in PostgreSQL (survive restarts).
+/// Pairing codes are stored in `PostgreSQL` (survive restarts).
 pub struct AccessGuard {
     pub agent_id: String,
     pub(crate) owner_id: Option<String>,
@@ -56,7 +56,7 @@ impl AccessGuard {
     }
 
     /// Try to approve a pairing by code.
-    /// Returns (success, user_display_info).
+    /// Returns (success, `user_display_info`).
     pub async fn approve_pairing(&self, code: &str, approver_id: &str) -> (bool, String) {
         match access::take_pairing_code(&self.db, &self.agent_id, code).await {
             Ok(Some((user_id, name, false))) => {

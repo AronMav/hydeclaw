@@ -1,7 +1,7 @@
-//! OpenAI-compatible LLM provider (MiniMax, OpenAI, Ollama, etc.) —
+//! OpenAI-compatible LLM provider (`MiniMax`, `OpenAI`, Ollama, etc.) —
 //! extracted from providers.rs for readability.
 
-use super::*;
+use super::{async_trait, Deserialize, Arc, SecretsManager, ModelOverride, LlmProvider, Message, ToolDefinition, Result, LlmResponse, messages_to_openai_format, mpsc};
 
 // ── OpenAI-Compatible Provider (works with MiniMax, OpenAI, Ollama, etc.) ──
 
@@ -10,17 +10,17 @@ pub struct OpenAiCompatibleProvider {
     client: reqwest::Client,
     streaming_client: reqwest::Client,
     url: String,
-    /// Optional secret name for dynamic base URL resolution (e.g. "OLLAMA_URL").
+    /// Optional secret name for dynamic base URL resolution (e.g. "`OLLAMA_URL`").
     /// When set, the URL is resolved from secrets on each call, overriding `url`.
     base_url_env: Option<String>,
-    /// URL path suffix appended to base_url when resolving dynamically.
+    /// URL path suffix appended to `base_url` when resolving dynamically.
     url_suffix: String,
     api_key_name: String,
     /// Optional list of API key env names for round-robin rotation.
     api_key_names: Vec<String>,
     /// Atomic counter for round-robin key selection.
     key_counter: std::sync::atomic::AtomicUsize,
-    /// Vault scope for LLM_CREDENTIALS (provider UUID). When set, checked first.
+    /// Vault scope for `LLM_CREDENTIALS` (provider UUID). When set, checked first.
     credential_scope: Option<String>,
     secrets: Arc<SecretsManager>,
     model: ModelOverride,
@@ -58,7 +58,7 @@ impl OpenAiCompatibleProvider {
         }
     }
 
-    /// Set vault credential scope (provider UUID) for LLM_CREDENTIALS lookup.
+    /// Set vault credential scope (provider UUID) for `LLM_CREDENTIALS` lookup.
     pub fn with_credential_scope(mut self, scope: String) -> Self {
         self.credential_scope = Some(scope);
         self
@@ -70,7 +70,7 @@ impl OpenAiCompatibleProvider {
         self
     }
 
-    /// Set dynamic base URL resolution from secrets (e.g. "OLLAMA_URL").
+    /// Set dynamic base URL resolution from secrets (e.g. "`OLLAMA_URL`").
     /// On each LLM call, resolves the secret and appends `suffix` to form the full URL.
     pub fn with_base_url_env(mut self, env_name: &str, suffix: &str) -> Self {
         self.base_url_env = Some(env_name.to_string());
@@ -88,7 +88,7 @@ impl OpenAiCompatibleProvider {
         self.url.clone()
     }
 
-    /// Whether this provider supports parallel_tool_calls parameter.
+    /// Whether this provider supports `parallel_tool_calls` parameter.
     fn supports_parallel_tools(&self) -> bool {
         matches!(self.provider_name.as_str(), "openai" | "ollama")
     }
@@ -281,8 +281,8 @@ impl LlmProvider for OpenAiCompatibleProvider {
             content_len = content.len(),
             tool_calls = tool_calls.len(),
             finish_reason = ?choice.finish_reason,
-            input_tokens = usage.as_ref().map(|u| u.input_tokens).unwrap_or(0),
-            output_tokens = usage.as_ref().map(|u| u.output_tokens).unwrap_or(0),
+            input_tokens = usage.as_ref().map_or(0, |u| u.input_tokens),
+            output_tokens = usage.as_ref().map_or(0, |u| u.output_tokens),
             "LLM response parsed"
         );
 
@@ -356,7 +356,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
             let retry_after = resp.headers()
                 .get("retry-after")
                 .and_then(|v| v.to_str().ok())
-                .map(|v| v.to_string());
+                .map(std::string::ToString::to_string);
             let err_text = resp.text().await.unwrap_or_default();
             if status.as_u16() == 400 {
                 let body_preview = serde_json::to_string(&body).unwrap_or_default();
@@ -371,9 +371,8 @@ impl LlmProvider for OpenAiCompatibleProvider {
             }
             if let Some(ra) = retry_after {
                 anyhow::bail!("{} API error (retry-after: {}): {}", self.provider_name, ra, err_text);
-            } else {
-                anyhow::bail!("{} API error: {}", self.provider_name, err_text);
             }
+            anyhow::bail!("{} API error: {}", self.provider_name, err_text);
         }
 
         // Parse SSE stream: accumulate content (streamed) + tool calls (buffered)
@@ -551,7 +550,7 @@ where
     D: serde::Deserializer<'de>,
     T: serde::Deserialize<'de>,
 {
-    Option::<Vec<T>>::deserialize(deserializer).map(|v| v.unwrap_or_default())
+    Option::<Vec<T>>::deserialize(deserializer).map(std::option::Option::unwrap_or_default)
 }
 
 #[derive(Debug, Deserialize)]
@@ -588,12 +587,12 @@ struct ChatUsage {
 
 /// Extract `<minimax:tool_call>` XML blocks from LLM response content.
 ///
-/// MiniMax sometimes leaks its internal XML tool-calling format in the text body
+/// `MiniMax` sometimes leaks its internal XML tool-calling format in the text body
 /// instead of using the standard `tool_calls` JSON array. This function parses
 /// those blocks, strips them from the visible content, and returns them as proper
 /// [`hydeclaw_types::ToolCall`] values so the engine can execute them normally.
 ///
-/// Format emitted by MiniMax:
+/// Format emitted by `MiniMax`:
 /// ```xml
 /// <minimax:tool_call>
 /// <invoke name="tool_name">

@@ -23,8 +23,7 @@ impl RecoveryState {
     pub fn in_cooldown(&self, name: &str) -> bool {
         self.cooldown_until
             .get(name)
-            .map(|t| Instant::now() < *t)
-            .unwrap_or(false)
+            .is_some_and(|t| Instant::now() < *t)
     }
 
     pub fn can_restart(

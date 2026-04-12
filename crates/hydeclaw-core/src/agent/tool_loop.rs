@@ -106,7 +106,10 @@ impl LoopDetector {
 
     /// Record only the result (used for WAL warm-up and after execution).
     pub fn record_result(&mut self, tool_name: &str, success: bool) -> LoopStatus {
-        if !success {
+        if success {
+            self.consecutive_errors = 0;
+            self.last_error_tool = None;
+        } else {
             if self.last_error_tool.as_deref() == Some(tool_name) {
                 self.consecutive_errors += 1;
             } else {
@@ -116,9 +119,6 @@ impl LoopDetector {
             if self.consecutive_errors >= self.error_break_threshold {
                 return LoopStatus::Break(format!("tool '{}' failed {} times consecutively", tool_name, self.consecutive_errors));
             }
-        } else {
-            self.consecutive_errors = 0;
-            self.last_error_tool = None;
         }
         LoopStatus::Ok
     }

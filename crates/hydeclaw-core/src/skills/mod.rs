@@ -173,18 +173,18 @@ pub async fn write_skill(
     fs::create_dir_all(&skills_dir).await?;
 
     let safe_name = name.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|', ' '], "-");
-    let path = skills_dir.join(format!("{}.md", safe_name));
+    let path = skills_dir.join(format!("{safe_name}.md"));
 
     let triggers_yaml = frontmatter
         .triggers
         .iter()
-        .map(|t| format!("  - {}", t))
+        .map(|t| format!("  - {t}"))
         .collect::<Vec<_>>()
         .join("\n");
     let tools_yaml = frontmatter
         .tools_required
         .iter()
-        .map(|t| format!("  - {}", t))
+        .map(|t| format!("  - {t}"))
         .collect::<Vec<_>>()
         .join("\n");
 

@@ -89,7 +89,7 @@ pub fn is_internal_endpoint(url: &str) -> bool {
     let Ok(parsed) = reqwest::Url::parse(url) else { return false };
     let host = parsed.host_str().unwrap_or("");
     let port = parsed.port_or_known_default().unwrap_or(80);
-    let authority = format!("{}:{}", host, port);
+    let authority = format!("{host}:{port}");
     INTERNAL_BLOCKLIST.iter().any(|a| *a == authority)
 }
 
@@ -112,12 +112,12 @@ pub fn ssrf_safe_client(timeout: std::time::Duration) -> reqwest::Client {
 /// by `SsrfSafeResolver` at connection time.
 pub fn validate_url_scheme(url: &str) -> Result<()> {
     let parsed = reqwest::Url::parse(url)
-        .map_err(|e| anyhow::anyhow!("invalid URL: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("invalid URL: {e}"))?;
 
     // Block non-HTTP schemes
     match parsed.scheme() {
         "http" | "https" => {}
-        scheme => anyhow::bail!("blocked scheme: {}", scheme),
+        scheme => anyhow::bail!("blocked scheme: {scheme}"),
     }
 
     let host = parsed
@@ -125,13 +125,12 @@ pub fn validate_url_scheme(url: &str) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("URL has no host"))?;
 
     let port = parsed.port_or_known_default().unwrap_or(80);
-    let authority = format!("{}:{}", host, port);
+    let authority = format!("{host}:{port}");
 
     // Block internal services (these should only be reached via service-to-service calls)
     if INTERNAL_BLOCKLIST.iter().any(|a| *a == authority) {
         anyhow::bail!(
-            "blocked: URL targets internal service ({})",
-            authority
+            "blocked: URL targets internal service ({authority})"
         );
     }
 
@@ -145,7 +144,7 @@ pub fn validate_url_scheme(url: &str) -> Result<()> {
     if let Some(ip) = ip
         && is_private_ip(ip)
     {
-        anyhow::bail!("blocked: URL targets private IP address ({})", host);
+        anyhow::bail!("blocked: URL targets private IP address ({host})");
     }
 
     Ok(())

@@ -89,8 +89,8 @@ fn build_tools_json(
 }
 
 /// Append-mode streaming message upsert. Text is APPENDED to existing content (not replaced).
-/// Used for bounded text accumulation -- caller clears accumulated_text after success.
-/// Also touches session activity for watchdog heartbeat, mirroring upsert_streaming_message behavior.
+/// Used for bounded text accumulation -- caller clears `accumulated_text` after success.
+/// Also touches session activity for watchdog heartbeat, mirroring `upsert_streaming_message` behavior.
 async fn upsert_streaming_append(
     db: &sqlx::PgPool,
     message_id: uuid::Uuid,
@@ -119,8 +119,8 @@ async fn upsert_streaming_append(
 }
 
 /// Read the accumulated content from a streaming message row.
-/// Used at Finish/Error/unexpected-exit to get full text for stream_jobs set_content,
-/// since accumulated_text is cleared after each periodic flush.
+/// Used at Finish/Error/unexpected-exit to get full text for `stream_jobs` `set_content`,
+/// since `accumulated_text` is cleared after each periodic flush.
 async fn read_streaming_content(db: &sqlx::PgPool, message_id: uuid::Uuid) -> String {
     sqlx::query_scalar::<_, String>("SELECT COALESCE(content, '') FROM messages WHERE id = $1")
         .bind(message_id)
@@ -142,7 +142,7 @@ pub(crate) struct ChatCompletionRequest {
     temperature: Option<f64>,
     #[serde(default)]
     stream: bool,
-    /// Agent to route to (HydeClaw extension). Defaults to first available.
+    /// Agent to route to (`HydeClaw` extension). Defaults to first available.
     agent: Option<String>,
 }
 
@@ -326,7 +326,7 @@ pub(crate) async fn embeddings_proxy(
 
     let input = req.get("input").cloned().unwrap_or(json!(""));
     let texts: Vec<String> = if let Some(arr) = input.as_array() {
-        arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
+        arr.iter().filter_map(|v| v.as_str().map(std::string::ToString::to_string)).collect()
     } else if let Some(s) = input.as_str() {
         vec![s.to_string()]
     } else {
@@ -341,7 +341,7 @@ pub(crate) async fn embeddings_proxy(
         }))).into_response();
     }
 
-    let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+    let refs: Vec<&str> = texts.iter().map(std::string::String::as_str).collect();
     match state.memory_store.embed_batch(&refs).await {
         Ok(embeddings) => {
             let data: Vec<Value> = embeddings.iter().enumerate().map(|(i, emb)| {
@@ -367,13 +367,13 @@ pub(crate) struct ChatSseRequest {
     messages: Vec<OpenAiMessage>,
     agent: Option<String>,
     session_id: Option<String>,
-    /// Chat ID from AI SDK frontend (used as session_id alias for resume).
+    /// Chat ID from AI SDK frontend (used as `session_id` alias for resume).
     #[serde(default)]
     id: Option<String>,
     /// Force creation of a new session (UI "New Chat" button).
     #[serde(default)]
     force_new_session: bool,
-    /// Last message ID in the active path — used as parent_message_id for the new user message.
+    /// Last message ID in the active path — used as `parent_message_id` for the new user message.
     #[serde(default)]
     leaf_message_id: Option<uuid::Uuid>,
 }
@@ -384,10 +384,10 @@ pub(crate) async fn api_chat_sse(
     Json(req): Json<ChatSseRequest>,
 ) -> impl IntoResponse {
     let agent_name = req.agent.clone().unwrap_or_default();
-    let engine = if !agent_name.is_empty() {
-        state.get_engine(&agent_name).await
-    } else {
+    let engine = if agent_name.is_empty() {
         state.first_engine().await
+    } else {
+        state.get_engine(&agent_name).await
     };
 
     let engine = match engine {
@@ -592,7 +592,7 @@ pub(crate) async fn api_chat_sse(
         let flush_interval = std::time::Duration::from_secs(2);
         while let Some(event) = event_rx.recv().await {
             // Abort engine on explicit cancel via API
-            if cancel_token.as_ref().is_some_and(|t| t.is_cancelled()) {
+            if cancel_token.as_ref().is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
                 engine_handle.abort();
                 break;
             }
@@ -658,7 +658,7 @@ pub(crate) async fn api_chat_sse(
                     }
                     // AI SDK v3: text-start → text-delta → text-end
                     text_id_counter += 1;
-                    let text_id = format!("text-{}", text_id_counter);
+                    let text_id = format!("text-{text_id_counter}");
                     let start_data = json!({"type": sse_types::TEXT_START, "id": text_id.clone(), "agentName": current_responding_agent}).to_string();
                     let delta_data = json!({"type": sse_types::TEXT_DELTA, "id": text_id.clone(), "delta": text}).to_string();
                     let _ = send_and_buffer!(start_data);

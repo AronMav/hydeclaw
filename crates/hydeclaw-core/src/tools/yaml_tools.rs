@@ -11,19 +11,19 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Trait for resolving environment variable names to values.
-/// Falls back to std::env::var if no resolver is provided.
+/// Falls back to `std::env::var` if no resolver is provided.
 #[async_trait]
 pub trait EnvResolver: Send + Sync {
     async fn resolve(&self, key: &str) -> Option<String>;
 }
 
-/// Resolve an env var: try the resolver first, then fall back to std::env::var.
+/// Resolve an env var: try the resolver first, then fall back to `std::env::var`.
 async fn resolve_env(key: &str, resolver: Option<&dyn EnvResolver>) -> Result<String> {
     if let Some(r) = resolver
         && let Some(val) = r.resolve(key).await {
             return Ok(val);
         }
-    std::env::var(key).with_context(|| format!("env var '{}' not set", key))
+    std::env::var(key).with_context(|| format!("env var '{key}' not set"))
 }
 use std::path::Path;
 use tokio::fs;
@@ -87,26 +87,26 @@ fn default_string_type() -> String {
 /// Authentication configuration for the tool endpoint.
 #[derive(Debug, Clone, Deserialize)]
 pub struct YamlAuth {
-    /// bearer_env | basic_env | api_key_header | api_key_query | custom | oauth_refresh | oauth_provider | none
+    /// `bearer_env` | `basic_env` | `api_key_header` | `api_key_query` | custom | `oauth_refresh` | `oauth_provider` | none
     #[serde(rename = "type")]
     pub auth_type: String,
-    /// Env var name containing the token/key (or refresh token for oauth_refresh).
+    /// Env var name containing the token/key (or refresh token for `oauth_refresh`).
     pub key: Option<String>,
-    /// For basic_env: env var for username.
+    /// For `basic_env`: env var for username.
     pub username_key: Option<String>,
-    /// For basic_env: env var for password.
+    /// For `basic_env`: env var for password.
     pub password_key: Option<String>,
-    /// For api_key_header: header name (e.g. "X-API-Key").
+    /// For `api_key_header`: header name (e.g. "X-API-Key").
     pub header_name: Option<String>,
-    /// For api_key_query: query param name.
+    /// For `api_key_query`: query param name.
     pub param_name: Option<String>,
-    /// For custom: map of header → template (${ENV_VAR} substituted).
+    /// For custom: map of header → template (${`ENV_VAR`} substituted).
     pub headers: Option<HashMap<String, String>>,
-    /// For oauth_refresh: token endpoint URL.
+    /// For `oauth_refresh`: token endpoint URL.
     pub token_url: Option<String>,
-    /// For oauth_refresh: POST body template ({{bearer}} → refresh token).
+    /// For `oauth_refresh`: POST body template ({{bearer}} → refresh token).
     pub token_body: Option<String>,
-    /// For oauth_refresh: JSON field containing the access token (default: "access_token").
+    /// For `oauth_refresh`: JSON field containing the access token (default: "`access_token`").
     pub token_field: Option<String>,
 }
 
@@ -163,9 +163,9 @@ pub struct YamlPaginationConfig {
     pub limit: Option<u32>,
     /// Maximum pages to fetch.
     pub max_pages: Option<u32>,
-    /// JSONPath to results array in response.
+    /// `JSONPath` to results array in response.
     pub results_path: Option<String>,
-    /// JSONPath to next cursor value (for cursor pagination).
+    /// `JSONPath` to next cursor value (for cursor pagination).
     pub next_path: Option<String>,
 }
 
@@ -213,7 +213,7 @@ impl ToolExecutionContext {
         }
 
         if entry.count >= entry.max_per_minute {
-            anyhow::bail!("rate limit exceeded for tool '{}': {} calls/min", tool_name, max_per_minute);
+            anyhow::bail!("rate limit exceeded for tool '{tool_name}': {max_per_minute} calls/min");
         }
 
         entry.count += 1;
@@ -347,8 +347,8 @@ fn apply_pipeline(value: serde_json::Value, pipeline: &[ResponsePipelineStep]) -
                 if let Some(arr) = current.as_array() {
                     let mut sorted = arr.clone();
                     sorted.sort_by(|a, b| {
-                        let va = a.get(field).and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        let vb = b.get(field).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let va = a.get(field).and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+                        let vb = b.get(field).and_then(serde_json::Value::as_f64).unwrap_or(0.0);
                         if *desc { vb.partial_cmp(&va).unwrap_or(std::cmp::Ordering::Equal) }
                         else { va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal) }
                     });
@@ -375,7 +375,7 @@ fn apply_pipeline(value: serde_json::Value, pipeline: &[ResponsePipelineStep]) -
 /// using the binary response body (e.g. send TTS audio as a Telegram voice message).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChannelActionConfig {
-    /// Action name: "send_voice", "send_file", etc.
+    /// Action name: "`send_voice`", "`send_file`", etc.
     pub action: String,
     /// Where to take the data from:
     /// - "_binary" — use the raw binary response body
@@ -406,7 +406,7 @@ pub struct YamlToolDef {
     pub auth: Option<YamlAuth>,
     /// Optional Mustache-style body template with {{param}} substitution.
     pub body_template: Option<String>,
-    /// Optional JSONPath expression to extract a sub-value from the response.
+    /// Optional `JSONPath` expression to extract a sub-value from the response.
     /// Example: "$.data.items" extracts items array from {"data":{"items":[...]}}.
     pub response_transform: Option<String>,
     /// If set, after a successful HTTP call the engine performs a channel action
@@ -432,9 +432,9 @@ pub struct YamlToolDef {
     pub pagination: Option<YamlPaginationConfig>,
     /// Response schema hint for LLM (appended to description).
     pub response_schema: Option<serde_json::Value>,
-    /// GraphQL query configuration (overrides body_template).
+    /// GraphQL query configuration (overrides `body_template`).
     pub graphql: Option<YamlGraphqlConfig>,
-    /// Response processing pipeline (applied after response_transform).
+    /// Response processing pipeline (applied after `response_transform`).
     #[serde(default)]
     pub response_pipeline: Vec<ResponsePipelineStep>,
     /// If true, this tool is only available to base (system) agents.
@@ -456,7 +456,7 @@ pub struct OAuthContext {
 }
 
 impl YamlToolDef {
-    /// Convert to ToolDefinition (JSON Schema) for the LLM.
+    /// Convert to `ToolDefinition` (JSON Schema) for the LLM.
     pub fn to_tool_definition(&self) -> ToolDefinition {
         let mut properties = serde_json::Map::new();
         let mut required_fields = Vec::new();
@@ -511,10 +511,10 @@ impl YamlToolDef {
         if let Some(ref auth) = self.auth
             && let Some(ref key) = auth.key
         {
-            description.push_str(&format!(" [requires secret: {}]", key));
+            description.push_str(&format!(" [requires secret: {key}]"));
         }
         for secret in &self.required_secrets {
-            description.push_str(&format!(" [requires secret: {}]", secret));
+            description.push_str(&format!(" [requires secret: {secret}]"));
         }
         if let Some(ref rs) = self.response_schema
             && let Ok(pretty) = serde_json::to_string_pretty(rs) {
@@ -556,12 +556,12 @@ impl YamlToolDef {
                 };
                 let has_default = param.default.is_some();
                 if !has_env_default && !has_default {
-                    anyhow::bail!("required parameter '{}' is missing", name);
+                    anyhow::bail!("required parameter '{name}' is missing");
                 }
             }
             if let Some(v) = val
                 && param.param_type == "integer" && !v.is_number() && !v.is_null() {
-                    anyhow::bail!("parameter '{}' must be integer, got {}", name, v);
+                    anyhow::bail!("parameter '{name}' must be integer, got {v}");
                 }
         }
 
@@ -600,7 +600,7 @@ impl YamlToolDef {
 
             match param.location {
                 ParamLocation::Path => {
-                    url = url.replace(&format!("{{{}}}", name), &urlencoding::encode(&value_str));
+                    url = url.replace(&format!("{{{name}}}"), &urlencoding::encode(&value_str));
                 }
                 ParamLocation::Query => {
                     query_params.push((name.clone(), value_str));
@@ -623,7 +623,7 @@ impl YamlToolDef {
                 "bearer_env" => {
                     if let Some(ref key) = auth.key {
                         let token = resolve_env(key, env_resolver).await?;
-                        auth_headers.push(("Authorization".into(), format!("Bearer {}", token)));
+                        auth_headers.push(("Authorization".into(), format!("Bearer {token}")));
                     }
                 }
                 "basic_env" => {
@@ -632,8 +632,8 @@ impl YamlToolDef {
                     let user_val = resolve_env(user, env_resolver).await.unwrap_or_default();
                     let pass_val = resolve_env(pass, env_resolver).await.unwrap_or_default();
                     let encoded = base64::engine::general_purpose::STANDARD
-                        .encode(format!("{}:{}", user_val, pass_val));
-                    auth_headers.push(("Authorization".into(), format!("Basic {}", encoded)));
+                        .encode(format!("{user_val}:{pass_val}"));
+                    auth_headers.push(("Authorization".into(), format!("Basic {encoded}")));
                 }
                 "api_key_header" => {
                     if let (Some(hdr), Some(key)) = (&auth.header_name, &auth.key) {
@@ -684,17 +684,17 @@ impl YamlToolDef {
                         let access_token = json.get(token_field)
                             .and_then(|v| v.as_str())
                             .ok_or_else(|| anyhow::anyhow!("oauth response missing '{token_field}' field"))?;
-                        auth_headers.push(("Authorization".into(), format!("Bearer {}", access_token)));
+                        auth_headers.push(("Authorization".into(), format!("Bearer {access_token}")));
                     }
                 }
                 "oauth_provider" => {
                     let provider = auth.key.as_deref()
                         .ok_or_else(|| anyhow::anyhow!("oauth_provider auth requires 'key' field (provider name)"))?;
                     let ctx = oauth_context
-                        .ok_or_else(|| anyhow::anyhow!("oauth_provider auth for '{}' requires OAuth connection — connect via /integrations", provider))?;
+                        .ok_or_else(|| anyhow::anyhow!("oauth_provider auth for '{provider}' requires OAuth connection — connect via /integrations"))?;
                     let token = ctx.manager.get_token(provider, &ctx.agent_id).await
-                        .map_err(|e| anyhow::anyhow!("OAuth token for {}: {}", provider, e))?;
-                    auth_headers.push(("Authorization".into(), format!("Bearer {}", token)));
+                        .map_err(|e| anyhow::anyhow!("OAuth token for {provider}: {e}"))?;
+                    auth_headers.push(("Authorization".into(), format!("Bearer {token}")));
                 }
                 _ => {} // "none" or unknown — no auth
             }
@@ -708,7 +708,7 @@ impl YamlToolDef {
             "PUT" => http_client.put(&url),
             "PATCH" => http_client.patch(&url),
             "DELETE" => http_client.delete(&url),
-            other => anyhow::bail!("unsupported HTTP method: {}", other),
+            other => anyhow::bail!("unsupported HTTP method: {other}"),
         };
 
         // Static headers from tool definition
@@ -742,7 +742,7 @@ impl YamlToolDef {
                                 serde_json::Value::String(s) => s.clone(),
                                 other => other.to_string(),
                             };
-                            val = val.replace(&format!("{{{{{}}}}}", name), &pv_str);
+                            val = val.replace(&format!("{{{{{name}}}}}"), &pv_str);
                         }
                         vars.insert(k.clone(), serde_json::Value::String(val));
                     }
@@ -769,7 +769,7 @@ impl YamlToolDef {
                         .replace('\n', "\\n")
                         .replace('\r', "\\r")
                         .replace('\t', "\\t");
-                    body = body.replace(&format!("{{{{{}}}}}", name), &escaped);
+                    body = body.replace(&format!("{{{{{name}}}}}"), &escaped);
                 }
                 builder = builder
                     .header("Content-Type", &self.content_type)
@@ -826,7 +826,7 @@ impl YamlToolDef {
 
     /// Max retry attempts (from config or default 1 = no retry).
     fn max_attempts(&self) -> u32 {
-        self.retry.as_ref().map(|r| r.max_attempts).unwrap_or(1)
+        self.retry.as_ref().map_or(1, |r| r.max_attempts)
     }
 
     /// Check if status code is retryable.
@@ -836,7 +836,7 @@ impl YamlToolDef {
 
     /// Backoff base in ms.
     fn backoff_base_ms(&self) -> u64 {
-        self.retry.as_ref().map(|r| r.backoff_base_ms).unwrap_or(1000)
+        self.retry.as_ref().map_or(1000, |r| r.backoff_base_ms)
     }
 
     /// Execute this tool with the given parameters. Returns the response body as a string.
@@ -904,7 +904,7 @@ impl YamlToolDef {
                 Ok(r) => r,
                 Err(e) => {
                     last_err = Some(e);
-                    if attempt + 1 < max { continue; } else { break; }
+                    if attempt + 1 < max { continue; }                    break;
                 }
             };
             let status = resp.status();
@@ -1020,7 +1020,7 @@ impl YamlToolDef {
             if pagination.pagination_type == "cursor" {
                 cursor = pagination.next_path.as_ref()
                     .and_then(|np| apply_jsonpath(&json, np))
-                    .and_then(|v| v.as_str().map(|s| s.to_string()));
+                    .and_then(|v| v.as_str().map(std::string::ToString::to_string));
                 if cursor.is_none() {
                     break;
                 }
@@ -1037,7 +1037,7 @@ impl YamlToolDef {
         Ok(result)
     }
 
-    /// Execute a single HTTP call without pagination (used by execute_paginated).
+    /// Execute a single HTTP call without pagination (used by `execute_paginated`).
     async fn execute_single(
         &self,
         params: &serde_json::Value,
@@ -1058,7 +1058,7 @@ impl YamlToolDef {
                 Ok(r) => r,
                 Err(e) => {
                     last_err = Some(e);
-                    if attempt + 1 < max { continue; } else { break; }
+                    if attempt + 1 < max { continue; }                    break;
                 }
             };
             let status = resp.status();
@@ -1068,7 +1068,7 @@ impl YamlToolDef {
                 return Ok(body);
             }
             if attempt + 1 < max && self.is_retryable(status.as_u16()) {
-                last_err = Some(anyhow::anyhow!("HTTP {}: {}", status, body));
+                last_err = Some(anyhow::anyhow!("HTTP {status}: {body}"));
                 continue;
             }
             anyhow::bail!("tool '{}' returned HTTP {}: {}", self.name, status, body);
@@ -1078,7 +1078,7 @@ impl YamlToolDef {
     }
 
     /// Execute this tool and return the raw binary response body.
-    /// Used by the engine for channel_action tools (e.g. TTS → send_voice).
+    /// Used by the engine for `channel_action` tools (e.g. TTS → `send_voice`).
     pub async fn execute_binary(
         &self,
         params: &serde_json::Value,
@@ -1099,7 +1099,7 @@ impl YamlToolDef {
                 Ok(r) => r,
                 Err(e) => {
                     last_err = Some(e);
-                    if attempt + 1 < max { continue; } else { break; }
+                    if attempt + 1 < max { continue; }                    break;
                 }
             };
             let status = resp.status();
@@ -1108,7 +1108,7 @@ impl YamlToolDef {
                 const MAX_BINARY_SIZE: usize = 50 * 1024 * 1024; // 50MB
                 if let Some(cl) = resp.content_length()
                     && cl > MAX_BINARY_SIZE as u64 {
-                        anyhow::bail!("response too large: {} bytes (max {})", cl, MAX_BINARY_SIZE);
+                        anyhow::bail!("response too large: {cl} bytes (max {MAX_BINARY_SIZE})");
                     }
                 let bytes = resp.bytes().await.context("failed to read response bytes")?;
                 if bytes.len() > MAX_BINARY_SIZE {
@@ -1134,7 +1134,7 @@ impl YamlToolDef {
     }
 }
 
-/// JSONPath resolver supporting "$.key", "$.key.nested", "$.arr[0]", "$.arr[*]", "$.arr[-1]", "$.arr[0:3]".
+/// `JSONPath` resolver supporting "$.key", "$.key.nested", "$.arr[0]", "$.arr[*]", "$.arr[-1]", "$.arr[0:3]".
 fn apply_jsonpath(value: &serde_json::Value, path: &str) -> Option<serde_json::Value> {
     let path = path.trim_start_matches("$.").trim_start_matches('$');
     if path.is_empty() {
@@ -1215,14 +1215,14 @@ fn process_conditionals(template: &str, params: &serde_json::Map<String, serde_j
         let full_end = block_start + end_pos + end_tag.len();
 
         let has_value = params.get(param_name).is_some_and(|v| !v.is_null());
-        let replacement = if !has_value { block_content.to_string() } else { String::new() };
+        let replacement = if has_value { String::new() } else { block_content.to_string() };
         result = format!("{}{}{}", &result[..start], replacement, &result[full_end..]);
     }
 
     result
 }
 
-/// Substitute ${ENV_VAR} in a template string, using EnvResolver if available.
+/// Substitute ${`ENV_VAR`} in a template string, using `EnvResolver` if available.
 async fn resolve_env_template(template: &str, env_resolver: Option<&dyn EnvResolver>) -> String {
     let mut result = template.to_string();
     // Find all ${VAR} patterns and replace
@@ -1289,7 +1289,7 @@ fn merge_yaml_values(base: serde_yaml::Value, overlay: serde_yaml::Value) -> ser
     }
 }
 
-/// Read all *.yaml files in a directory and parse them as YamlToolDef.
+/// Read all *.yaml files in a directory and parse them as `YamlToolDef`.
 /// Supports template inheritance via `extends:` field — templates are loaded from `_templates/` subdirectory.
 async fn load_from_dir(dir: &Path) -> Vec<YamlToolDef> {
     let mut tools = Vec::new();
@@ -1346,7 +1346,7 @@ async fn load_from_dir(dir: &Path) -> Vec<YamlToolDef> {
         let extends_name = parsed
             .get("extends")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         let tool_def = if let Some(extends_name) = &extends_name {
             // Merge with template
@@ -1411,12 +1411,12 @@ pub async fn find_yaml_tool(
 pub fn tool_file_path(workspace_dir: &str, _status: &ToolStatus, name: &str) -> std::path::PathBuf {
     Path::new(workspace_dir)
         .join("tools")
-        .join(format!("{}.yaml", name))
+        .join(format!("{name}.yaml"))
 }
 
 // ── OpenAPI security scheme → YamlAuth translation ──────────────────────────
 
-/// Convert an OpenAPI security scheme JSON to a YamlAuth config.
+/// Convert an `OpenAPI` security scheme JSON to a `YamlAuth` config.
 /// Supports apiKey (header/query), http (bearer/basic), and oauth2 schemes.
 #[allow(dead_code)]
 pub fn openapi_security_to_yaml_auth(scheme: &serde_json::Value) -> Option<YamlAuth> {

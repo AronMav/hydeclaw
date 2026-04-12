@@ -373,7 +373,7 @@ pub(crate) async fn api_list_documents(
 
                     // Batch fetch metadata for all docs in one query
                     let doc_ids: Vec<String> = page.iter().map(|(_, r)| r.parent_id.as_deref().unwrap_or(&r.id).to_string()).collect();
-                    let meta_rows: Vec<(uuid::Uuid, i64, Option<i64>, Option<String>)> = if !doc_ids.is_empty() {
+                    let meta_rows: Vec<(uuid::Uuid, i64, Option<i64>, Option<String>)> = if doc_ids.is_empty() { vec![] } else {
                         sqlx::query_as(
                             "SELECT m.id, \
                                (SELECT COUNT(*) FROM memory_chunks WHERE parent_id = m.id) + 1, \
@@ -385,7 +385,7 @@ pub(crate) async fn api_list_documents(
                         .fetch_all(&state.db)
                         .await
                         .unwrap_or_default()
-                    } else { vec![] };
+                    };
                     let meta_map: std::collections::HashMap<String, (i64, Option<i64>, Option<String>)> =
                         meta_rows.into_iter().map(|(id, cnt, chars, prev)| (id.to_string(), (cnt, chars, prev))).collect();
 
@@ -879,7 +879,7 @@ pub(crate) async fn api_memory_graph(
         for (chunk_id, entity_name, etype) in &entity_rows {
             if seen_entities.insert(entity_name.clone()) {
                 nodes.push(GraphApiNode {
-                    id: format!("entity:{}", entity_name),
+                    id: format!("entity:{entity_name}"),
                     kind: "entity".to_string(),
                     label: entity_name.clone(),
                     content: None, source: None, pinned: None, score: None,
@@ -887,8 +887,8 @@ pub(crate) async fn api_memory_graph(
                 });
             }
             if let Some(doc_id) = chunk_to_doc.get(chunk_id) {
-                let from = format!("doc:{}", doc_id);
-                let to = format!("entity:{}", entity_name);
+                let from = format!("doc:{doc_id}");
+                let to = format!("entity:{entity_name}");
                 if doc_entity_edges.insert((from.clone(), to.clone())) {
                     edges.push(GraphApiEdge { from, to, kind: "mentions".to_string() });
                 }

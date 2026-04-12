@@ -6,14 +6,14 @@ use crate::memory::{MemoryChunk, MemoryResult};
 /// Validate FTS language is a safe identifier (letters only, no SQL injection).
 fn validate_fts_lang(lang: &str) -> Result<()> {
     if lang.is_empty() || !lang.chars().all(|c| c.is_ascii_lowercase()) {
-        anyhow::bail!("invalid FTS language: {}", lang);
+        anyhow::bail!("invalid FTS language: {lang}");
     }
     Ok(())
 }
 
 // ── Helper ───────────────────────────────────────────────────────────────────
 
-/// Map a sqlx Row to MemoryResult.
+/// Map a sqlx Row to `MemoryResult`.
 fn row_to_memory_result(r: &sqlx::postgres::PgRow) -> MemoryResult {
     use sqlx::Row;
     MemoryResult {
@@ -31,7 +31,7 @@ fn row_to_memory_result(r: &sqlx::postgres::PgRow) -> MemoryResult {
     }
 }
 
-/// Map a sqlx Row to MemoryChunk.
+/// Map a sqlx Row to `MemoryChunk`.
 fn row_to_memory_chunk(r: &sqlx::postgres::PgRow) -> MemoryChunk {
     use sqlx::Row;
     MemoryChunk {
@@ -98,13 +98,13 @@ pub async fn ensure_hnsw_index(db: &PgPool, dim: u32) -> Result<()> {
 /// Used by L0 context loading — no embedding or search query needed.
 pub async fn fetch_pinned(db: &PgPool, agent_id: &str) -> Result<Vec<MemoryChunk>> {
     let rows = sqlx::query(
-        r#"SELECT id::text, content, COALESCE(source,'') AS source, pinned,
+        r"SELECT id::text, content, COALESCE(source,'') AS source, pinned,
                   COALESCE(relevance_score, 1.0)::float8 AS relevance_score,
                   created_at, accessed_at,
                   category, topic, archived
            FROM memory_chunks
            WHERE agent_id = $1 AND pinned = true AND archived = false
-           ORDER BY created_at ASC"#,
+           ORDER BY created_at ASC",
     )
     .bind(agent_id)
     .fetch_all(db)
@@ -121,7 +121,7 @@ pub async fn search_semantic(
     candidate_limit: i64,
 ) -> Result<Vec<MemoryResult>> {
     let rows = sqlx::query(
-        r#"SELECT id::text,
+        r"SELECT id::text,
                   content,
                   COALESCE(source, '') AS source,
                   pinned,
@@ -135,7 +135,7 @@ pub async fn search_semantic(
            FROM memory_chunks
            WHERE embedding IS NOT NULL
            ORDER BY embedding <=> $1::halfvec
-           LIMIT $2"#,
+           LIMIT $2",
     )
     .bind(vec_str)
     .bind(candidate_limit)
@@ -146,7 +146,7 @@ pub async fn search_semantic(
     Ok(rows.iter().map(row_to_memory_result).collect())
 }
 
-/// Full-text search using PostgreSQL tsvector/tsquery.
+/// Full-text search using `PostgreSQL` tsvector/tsquery.
 pub async fn search_fts(
     db: &PgPool,
     query: &str,
@@ -157,7 +157,7 @@ pub async fn search_fts(
     // SAFETY: `lang` is validated by validate_fts_lang() which only allows lowercase ASCII
     // letters. Not user input -- comes from server config.
     let sql = format!(
-        r#"SELECT id::text,
+        r"SELECT id::text,
                   content,
                   COALESCE(source, '') AS source,
                   pinned,
@@ -172,7 +172,7 @@ pub async fn search_fts(
            WHERE tsv @@ plainto_tsquery('{lang}', $1)
            ORDER BY ts_rank_cd(tsv, plainto_tsquery('{lang}', $1)) DESC,
                     relevance_score DESC
-           LIMIT $2"#,
+           LIMIT $2",
     );
 
     let rows = sqlx::query(&sql)
@@ -185,7 +185,7 @@ pub async fn search_fts(
     Ok(rows.iter().map(row_to_memory_result).collect())
 }
 
-/// Update accessed_at timestamp for the given chunk IDs.
+/// Update `accessed_at` timestamp for the given chunk IDs.
 pub async fn touch_accessed(db: &PgPool, ids: &[uuid::Uuid]) {
     if ids.is_empty() {
         return;
@@ -201,7 +201,7 @@ pub async fn touch_accessed(db: &PgPool, ids: &[uuid::Uuid]) {
 /// Return the most-recently-accessed memory chunks (pinned first).
 pub async fn fetch_recent(db: &PgPool, limit: i64) -> Result<Vec<MemoryResult>> {
     let rows = sqlx::query(
-        r#"SELECT id::text,
+        r"SELECT id::text,
                   content,
                   COALESCE(source, '') AS source,
                   pinned,
@@ -214,7 +214,7 @@ pub async fn fetch_recent(db: &PgPool, limit: i64) -> Result<Vec<MemoryResult>> 
                   archived
            FROM memory_chunks
            ORDER BY pinned DESC, COALESCE(accessed_at, created_at) DESC
-           LIMIT $1"#,
+           LIMIT $1",
     )
     .bind(limit)
     .fetch_all(db)
@@ -245,8 +245,8 @@ pub async fn insert_chunk(
     // SAFETY: `lang` is validated by validate_fts_lang() which only allows lowercase ASCII
     // letters. Not user input -- comes from server config.
     let sql = format!(
-        r#"INSERT INTO memory_chunks (id, user_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic)
-           VALUES ($1::uuid, '', $2, $3::halfvec, $4, $5, 1.0, to_tsvector('{lang}', $2), $6::uuid, $7, $8, $9)"#,
+        r"INSERT INTO memory_chunks (id, user_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic)
+           VALUES ($1::uuid, '', $2, $3::halfvec, $4, $5, 1.0, to_tsvector('{lang}', $2), $6::uuid, $7, $8, $9)",
     );
 
     sqlx::query(&sql)
@@ -271,11 +271,11 @@ pub async fn insert_chunk(
 /// Retrieve a single chunk by ID.
 pub async fn get_chunk_by_id(db: &PgPool, id: &str) -> Result<Vec<MemoryChunk>> {
     let rows = sqlx::query(
-        r#"SELECT id::text, content, COALESCE(source,'') AS source, pinned,
+        r"SELECT id::text, content, COALESCE(source,'') AS source, pinned,
                   COALESCE(relevance_score,1.0)::float8 AS relevance_score,
                   created_at, accessed_at,
                   category, topic, archived
-           FROM memory_chunks WHERE id = $1::uuid"#,
+           FROM memory_chunks WHERE id = $1::uuid",
     )
     .bind(id)
     .fetch_all(db)
@@ -291,12 +291,12 @@ pub async fn get_chunks_by_source(
     limit: i64,
 ) -> Result<Vec<MemoryChunk>> {
     let rows = sqlx::query(
-        r#"SELECT id::text, content, COALESCE(source,'') AS source, pinned,
+        r"SELECT id::text, content, COALESCE(source,'') AS source, pinned,
                   COALESCE(relevance_score,1.0)::float8 AS relevance_score,
                   created_at, accessed_at,
                   category, topic, archived
            FROM memory_chunks WHERE source = $1
-           ORDER BY created_at DESC LIMIT $2"#,
+           ORDER BY created_at DESC LIMIT $2",
     )
     .bind(source)
     .bind(limit)
@@ -309,12 +309,12 @@ pub async fn get_chunks_by_source(
 /// Retrieve most recently accessed chunks.
 pub async fn get_chunks_recent(db: &PgPool, limit: i64) -> Result<Vec<MemoryChunk>> {
     let rows = sqlx::query(
-        r#"SELECT id::text, content, COALESCE(source,'') AS source, pinned,
+        r"SELECT id::text, content, COALESCE(source,'') AS source, pinned,
                   COALESCE(relevance_score,1.0)::float8 AS relevance_score,
                   created_at, accessed_at,
                   category, topic, archived
            FROM memory_chunks
-           ORDER BY accessed_at DESC LIMIT $1"#,
+           ORDER BY accessed_at DESC LIMIT $1",
     )
     .bind(limit)
     .fetch_all(db)
@@ -359,15 +359,15 @@ pub struct CompressibleChunk {
     pub category: Option<String>,
 }
 
-/// A group of chunks sharing the same agent_id and topic, eligible for compression.
+/// A group of chunks sharing the same `agent_id` and topic, eligible for compression.
 pub struct CompressibleGroup {
     pub agent_id: String,
     pub topic: String,
     pub chunks: Vec<CompressibleChunk>,
 }
 
-/// Fetch chunks eligible for compression: not pinned, not archived, older than age_days,
-/// topic IS NOT NULL. Groups by (agent_id, topic) in Rust.
+/// Fetch chunks eligible for compression: not pinned, not archived, older than `age_days`,
+/// topic IS NOT NULL. Groups by (`agent_id`, topic) in Rust.
 pub async fn fetch_compressible_groups(
     db: &PgPool,
     age_days: u32,

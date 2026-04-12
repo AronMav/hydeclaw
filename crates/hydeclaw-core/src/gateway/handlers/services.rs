@@ -187,7 +187,7 @@ pub(crate) async fn api_service_action(
             ).into_response();
         }
         // Validate each pipe segment: "pip list | head -5" -> ["pip list", "head -5"]
-        let segments: Vec<&str> = command.split('|').map(|s| s.trim()).collect();
+        let segments: Vec<&str> = command.split('|').map(str::trim).collect();
         let mut all_safe = true;
         let mut blocked_cmd = "";
         for seg in &segments {
@@ -243,7 +243,7 @@ pub(crate) async fn api_service_action(
     // Inspect action: container details (ports, mounts, env with secrets masked)
     if action == "inspect" {
         let cid = match docker_compose_ps(&compose_file, &name).await
-            .and_then(|v| v.get("ID").or(v.get("id")).and_then(|id| id.as_str().map(|s| s.to_string())))
+            .and_then(|v| v.get("ID").or(v.get("id")).and_then(|id| id.as_str().map(std::string::ToString::to_string)))
         {
             Some(id) => id,
             None => return Json(json!({"ok": false, "error": "container not found or not running"})).into_response(),
@@ -301,12 +301,12 @@ pub(crate) async fn api_service_action(
     // Logs action: return container logs with optional filters (since, grep, tail)
     if action == "logs" {
         let tail = body.as_ref()
-            .and_then(|b| b.get("tail")).and_then(|v| v.as_u64())
+            .and_then(|b| b.get("tail")).and_then(serde_json::Value::as_u64)
             .unwrap_or(100).min(500).to_string();
         let since = body.as_ref()
-            .and_then(|b| b.get("since")).and_then(|v| v.as_str()).map(|s| s.to_string());
+            .and_then(|b| b.get("since")).and_then(|v| v.as_str()).map(std::string::ToString::to_string);
         let grep = body.as_ref()
-            .and_then(|b| b.get("grep")).and_then(|v| v.as_str()).map(|s| s.to_string());
+            .and_then(|b| b.get("grep")).and_then(|v| v.as_str()).map(std::string::ToString::to_string);
 
         let mut args = vec![
             "compose".to_string(), "-f".to_string(), compose_file.clone(),
@@ -355,13 +355,13 @@ pub(crate) async fn api_service_action(
 
     let args: Vec<String> = match action.as_str() {
         "rebuild" => ["compose", "-f", &compose_file, "up", "-d", "--build", "--no-deps", &name]
-            .iter().map(|s| s.to_string()).collect(),
+            .iter().map(|s| (*s).to_string()).collect(),
         "restart" => ["compose", "-f", &compose_file, "restart", &name]
-            .iter().map(|s| s.to_string()).collect(),
+            .iter().map(|s| (*s).to_string()).collect(),
         "stop" => ["compose", "-f", &compose_file, "stop", &name]
-            .iter().map(|s| s.to_string()).collect(),
+            .iter().map(|s| (*s).to_string()).collect(),
         "start" => ["compose", "-f", &compose_file, "start", &name]
-            .iter().map(|s| s.to_string()).collect(),
+            .iter().map(|s| (*s).to_string()).collect(),
         _ => unreachable!(),
     };
 

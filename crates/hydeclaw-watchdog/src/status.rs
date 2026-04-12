@@ -32,7 +32,7 @@ pub struct ServiceStatus {
 const STATUS_PATH: &str = "/tmp/hydeclaw-watchdog.json";
 
 pub fn write_status(status: &WatchdogStatus) {
-    let tmp = format!("{}.tmp", STATUS_PATH);
+    let tmp = format!("{STATUS_PATH}.tmp");
     if let Ok(json) = serde_json::to_string_pretty(status)
         && std::fs::write(&tmp, &json).is_ok() {
             let _ = std::fs::rename(&tmp, STATUS_PATH);

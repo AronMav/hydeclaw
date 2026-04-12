@@ -48,7 +48,7 @@ pub(crate) async fn api_media_upload(
     ];
     let ext = if SAFE_EXTENSIONS.contains(&ext.as_str()) { ext } else { "bin".to_string() };
     let uuid = uuid::Uuid::new_v4();
-    let filename = format!("{}.{}", uuid, ext);
+    let filename = format!("{uuid}.{ext}");
     let path = uploads_dir.join(&filename);
 
     let data = match field.bytes().await {
@@ -69,9 +69,9 @@ pub(crate) async fn api_media_upload(
         pu.trim_end_matches('/').to_string()
     } else {
         let port = state.config.gateway.listen.rsplit(':').next().unwrap_or("18789");
-        format!("http://localhost:{}", port)
+        format!("http://localhost:{port}")
     };
-    let url = format!("{}/uploads/{}", base, filename);
+    let url = format!("{base}/uploads/{filename}");
     Json(json!({"url": url, "filename": filename, "size": data.len()})).into_response()
 }
 

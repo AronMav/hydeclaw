@@ -67,7 +67,7 @@ async fn enumerate_lan_addresses() -> Vec<serde_json::Value> {
     let ifaces = tokio::task::spawn_blocking(if_addrs::get_if_addrs)
         .await
         .ok()
-        .and_then(|r| r.ok())
+        .and_then(std::result::Result::ok)
         .unwrap_or_default();
 
     ifaces
@@ -109,7 +109,7 @@ async fn fetch_wan_ip(state: &AppState) -> serde_json::Value {
         public_ip_address::perform_lookup(None),
     )
     .await;
-    match lookup_result.ok().and_then(|r| r.ok()) {
+    match lookup_result.ok().and_then(std::result::Result::ok) {
         Some(info) => {
             let ip_addr = info.ip;
             let ip_str = ip_addr.to_string();
@@ -158,7 +158,7 @@ pub(crate) async fn fetch_network_summary(state: &AppState) -> serde_json::Value
                 .as_array()
                 .map(|arr| {
                     arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
                         .collect()
                 })
                 .unwrap_or_default();

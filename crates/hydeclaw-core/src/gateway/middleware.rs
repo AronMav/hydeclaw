@@ -9,7 +9,7 @@ use std::time::Instant;
 use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
 
-/// Eviction threshold for rate limiter HashMaps.
+/// Eviction threshold for rate limiter `HashMaps`.
 /// When the map exceeds this size, expired entries are cleaned up.
 const RATE_LIMITER_EVICT_THRESHOLD: usize = 50;
 
@@ -18,7 +18,7 @@ const RATE_LIMITER_EVICT_THRESHOLD: usize = 50;
 pub(crate) struct AuthRateLimiter {
     max_attempts: u32,
     lockout_secs: u64,
-    /// IP → (fail_count, first_fail_time, locked_until)
+    /// IP → (`fail_count`, `first_fail_time`, `locked_until`)
     #[allow(clippy::type_complexity)]
     state: Mutex<HashMap<String, (u32, Instant, Option<Instant>)>>,
 }
@@ -82,7 +82,7 @@ impl AuthRateLimiter {
 /// Protects the Pi from overload by limiting requests per minute.
 pub(crate) struct RequestRateLimiter {
     max_per_minute: u32,
-    /// IP → (request_count, window_start)
+    /// IP → (`request_count`, `window_start`)
     state: Mutex<HashMap<String, (u32, Instant)>>,
 }
 
@@ -94,7 +94,7 @@ impl RequestRateLimiter {
         }
     }
 
-    /// Returns Ok(()) if allowed, Err(seconds_until_reset) if rate-limited.
+    /// Returns Ok(()) if allowed, `Err(seconds_until_reset)` if rate-limited.
     async fn check(&self, ip: &str) -> std::result::Result<(), u64> {
         let mut state = self.state.lock().await;
         let now = Instant::now();
@@ -125,7 +125,7 @@ impl RequestRateLimiter {
 }
 
 /// Per-IP budget for concurrent WebSocket upgrades (pre-auth).
-/// Prevents DoS via mass WS upgrade requests before auth is checked.
+/// Prevents `DoS` via mass WS upgrade requests before auth is checked.
 pub(crate) struct WsConnectionBudget {
     max_per_ip: u32,
     /// IP → active connection count
@@ -203,7 +203,7 @@ pub(crate) async fn request_rate_limit_middleware(
             tracing::warn!(ip = %client_ip, "rate limited: {} req/min exceeded", limiter.max_per_minute);
             let mut response = (
                 StatusCode::TOO_MANY_REQUESTS,
-                format!("Rate limit exceeded. Retry after {}s.", retry_after),
+                format!("Rate limit exceeded. Retry after {retry_after}s."),
             ).into_response();
             response.headers_mut().insert(
                 "Retry-After",
@@ -218,14 +218,12 @@ pub(crate) fn extract_client_ip(req: &Request<Body>) -> String {
     // Use actual TCP peer address (ConnectInfo) — not spoofable.
     // X-Forwarded-For/X-Real-IP are ignored because there is no trusted reverse proxy.
     req.extensions()
-        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        .map(|ci| ci.0.ip().to_string())
-        .unwrap_or_else(|| "unknown".to_string())
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map_or_else(|| "unknown".to_string(), |ci| ci.0.ip().to_string())
 }
 
 /// Check if an IP string represents a loopback address.
-/// Handles: "127.0.0.1", "::1", "::ffff:127.0.0.1".
-/// "unknown" (missing ConnectInfo) is NOT treated as loopback — unknown origin must authenticate.
+/// Handles: "127.0.0.1", "`::1`", "`::ffff:127.0.0.1`".
+/// "unknown" (missing `ConnectInfo`) is NOT treated as loopback — unknown origin must authenticate.
 pub(crate) fn is_loopback(ip: &str) -> bool {
     ip == "127.0.0.1" || ip == "::1" || ip.starts_with("::ffff:127.")
 }

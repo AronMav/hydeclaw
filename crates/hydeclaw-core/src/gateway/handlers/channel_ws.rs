@@ -43,12 +43,9 @@ pub(crate) async fn channel_ws_handler(
 ) -> impl IntoResponse {
     // Look up the agent — check it exists and has channel support.
     let agents = state.agents.read().await;
-    let handle = match agents.get(&agent_name) {
-        Some(h) => h,
-        None => {
-            drop(agents);
-            return (StatusCode::NOT_FOUND, Json(json!({"error": "agent not found"}))).into_response();
-        }
+    let handle = if let Some(h) = agents.get(&agent_name) { h } else {
+        drop(agents);
+        return (StatusCode::NOT_FOUND, Json(json!({"error": "agent not found"}))).into_response();
     };
 
     if handle.channel_router.is_none() {
@@ -66,12 +63,9 @@ async fn handle_channel_ws(socket: WebSocket, state: AppState, agent_name: Strin
     // Subscribe to channel actions (non-exclusive — multiple channels per agent).
     let (engine, access_guard) = {
         let agents = state.agents.read().await;
-        let handle = match agents.get(&agent_name) {
-            Some(h) => h,
-            None => {
-                tracing::warn!(agent = %agent_name, "agent disappeared before WS upgrade");
-                return;
-            }
+        let handle = if let Some(h) = agents.get(&agent_name) { h } else {
+            tracing::warn!(agent = %agent_name, "agent disappeared before WS upgrade");
+            return;
         };
 
         let engine = handle.engine.clone();
@@ -98,7 +92,7 @@ async fn handle_channel_ws(socket: WebSocket, state: AppState, agent_name: Strin
     tracing::info!(agent = %agent_name, channel = %connected_channel_type, "channel adapter disconnected");
 }
 
-/// Main WS event loop for a channel adapter. Returns the channel_type on disconnect.
+/// Main WS event loop for a channel adapter. Returns the `channel_type` on disconnect.
 async fn channel_ws_loop(
     socket: WebSocket,
     state: &AppState,
@@ -154,7 +148,7 @@ async fn channel_ws_loop(
                     Err(e) => {
                         let err = ChannelOutbound::Error {
                             request_id: String::new(),
-                            message: format!("invalid message: {}", e),
+                            message: format!("invalid message: {e}"),
                         };
                         if ws_sink.send(ws_json(&err)).await.is_err() { break; }
                         continue;
@@ -199,7 +193,7 @@ async fn channel_ws_loop(
 
                             let (ch_id, ch_display) = match ch_row {
                                 Some((id, name)) => (Some(id), name),
-                                None => (None, format!("{}/{}", agent_name, channel_type)),
+                                None => (None, format!("{agent_name}/{channel_type}")),
                             };
 
                             let now = chrono::Utc::now();
@@ -346,7 +340,7 @@ async fn channel_ws_loop(
                         }
                         state.polling_diagnostics.record_inbound();
                         // Intercept approval callback buttons (approve:UUID / reject:UUID)
-                        let is_callback = msg.context.get("is_callback").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let is_callback = msg.context.get("is_callback").and_then(serde_json::Value::as_bool).unwrap_or(false);
                         if is_callback {
                             let text = msg.text.as_deref().unwrap_or("");
                             if let Some(approval_id_str) = text.strip_prefix("approve:").or_else(|| text.strip_prefix("reject:")) {
@@ -378,7 +372,7 @@ async fn channel_ws_loop(
                                             tracing::warn!(approval_id = %approval_id, error = %e, "failed to resolve approval via callback");
                                             let reply = ChannelOutbound::Error {
                                                 request_id: request_id.clone(),
-                                                message: format!("Failed to resolve approval: {}", e),
+                                                message: format!("Failed to resolve approval: {e}"),
                                             };
                                             ws_sink.send(ws_json(&reply)).await.ok();
                                         }
@@ -406,8 +400,7 @@ async fn channel_ws_loop(
                                 ).await {
                                     Ok(result) => result,
                                     Err(_) => Err(anyhow::anyhow!(
-                                        "Request timed out after {}s. The task was too complex or an external service was slow.",
-                                        timeout_secs
+                                        "Request timed out after {timeout_secs}s. The task was too complex or an external service was slow."
                                     )),
                                 }
                             } else {
@@ -628,7 +621,7 @@ async fn channel_ws_loop(
                             Ok(Ok(response)) => Some(("done", response)),
                             Ok(Err(e)) => Some(("error", e.to_string())),
                             Err(e) if e.is_cancelled() => None, // already handled above
-                            Err(e) => Some(("error", format!("engine panicked: {}", e))),
+                            Err(e) => Some(("error", format!("engine panicked: {e}"))),
                         };
                         if let Some((msg_type, text)) = delivery {
                             let outbound = if msg_type == "done" {
@@ -704,8 +697,8 @@ async fn channel_ws_loop(
                                 let dname = display_name.clone();
                                 let code_val = c.clone();
                                 tokio::spawn(async move {
-                                    let display_label = dname.as_deref().map(|s| s.to_string()).unwrap_or_else(|| uid.clone());
-                                    let body = format!("User {} is requesting access (code: {})", display_label, code_val);
+                                    let display_label = dname.as_deref().map_or_else(|| uid.clone(), std::string::ToString::to_string);
+                                    let body = format!("User {display_label} is requesting access (code: {code_val})");
                                     let data = serde_json::json!({"user_id": uid, "code": code_val, "display_name": dname});
                                     crate::gateway::handlers::notifications::notify(
                                         &db, &tx, "access_request", "Access Request", &body, data,
@@ -903,7 +896,7 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
     // Send current processing state to newly connected client
     {
         let events: Vec<String> = match state.processing_tracker.read() {
-            Ok(t) => t.values().map(|e| e.to_string()).collect(),
+            Ok(t) => t.values().map(std::string::ToString::to_string).collect(),
             Err(_) => vec![],
         };
         if !events.is_empty() {
@@ -940,7 +933,7 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                 let client_msg: WsClientMessage = match serde_json::from_str(&ws_msg) {
                     Ok(m) => m,
                     Err(e) => {
-                        let err = WsServerMessage::Error { message: format!("invalid message: {}", e) };
+                        let err = WsServerMessage::Error { message: format!("invalid message: {e}") };
                         if ws_sink.send(ws_json(&err)).await.is_err() { break; }
                         continue;
                     }
@@ -960,19 +953,16 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                     }
                     WsClientMessage::Chat { agent, text } => {
                         let agent_name = agent.as_deref().unwrap_or("");
-                        let engine = if !agent_name.is_empty() {
-                            state.get_engine(agent_name).await
-                        } else {
+                        let engine = if agent_name.is_empty() {
                             state.first_engine().await
+                        } else {
+                            state.get_engine(agent_name).await
                         };
 
-                        let engine = match engine {
-                            Some(e) => e,
-                            None => {
-                                let err = WsServerMessage::Error { message: "no agent available".to_string() };
-                                ws_sink.send(ws_json(&err)).await.ok();
-                                continue;
-                            }
+                        let engine = if let Some(e) = engine { e } else {
+                            let err = WsServerMessage::Error { message: "no agent available".to_string() };
+                            ws_sink.send(ws_json(&err)).await.ok();
+                            continue;
                         };
 
                         let incoming = hydeclaw_types::IncomingMessage {
@@ -1008,7 +998,7 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                                 ws_sink.send(ws_json(&err)).await.ok();
                             }
                             Err(e) => {
-                                let err = WsServerMessage::Error { message: format!("engine panicked: {}", e) };
+                                let err = WsServerMessage::Error { message: format!("engine panicked: {e}") };
                                 ws_sink.send(ws_json(&err)).await.ok();
                             }
                         }

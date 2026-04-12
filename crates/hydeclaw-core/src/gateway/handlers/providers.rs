@@ -54,7 +54,7 @@ pub(crate) fn notify_toolgate_reload(toolgate_url: Option<String>) {
         let client = reqwest::Client::new();
         const MAX_ATTEMPTS: u32 = 3;
         for attempt in 1..=MAX_ATTEMPTS {
-            match client.post(format!("{}/reload", url)).send().await {
+            match client.post(format!("{url}/reload")).send().await {
                 Ok(_) => {
                     tracing::debug!("toolgate config reloaded successfully");
                     return;
@@ -76,7 +76,7 @@ async fn resolve_key(secrets: &SecretsManager, provider: &ProviderRow) -> Option
     secrets.get_scoped(PROVIDER_CREDENTIALS, &provider.id.to_string()).await
 }
 
-/// Build the public JSON representation of a provider (masked api_key).
+/// Build the public JSON representation of a provider (masked `api_key`).
 async fn provider_json(secrets: &SecretsManager, p: &ProviderRow) -> Value {
     let key = resolve_key(secrets, p).await;
     let mut obj = serde_json::to_value(p).unwrap_or_default();
@@ -116,7 +116,7 @@ pub(crate) async fn api_list_providers(
     }
 }
 
-/// Inline body that extends CreateProvider with an optional api_key.
+/// Inline body that extends `CreateProvider` with an optional `api_key`.
 #[derive(Debug, Deserialize)]
 pub(crate) struct CreateProviderBody {
     pub name: String,
@@ -148,7 +148,7 @@ pub(crate) async fn api_create_provider(
         }))).into_response();
     }
     // For type=text, require default_model
-    if body.category == "text" && body.default_model.as_ref().is_none_or(|m| m.is_empty()) {
+    if body.category == "text" && body.default_model.as_ref().is_none_or(std::string::String::is_empty) {
         return (StatusCode::BAD_REQUEST, Json(json!({
             "error": "default_model is required for type=text"
         }))).into_response();
@@ -198,7 +198,7 @@ pub(crate) async fn api_get_provider(
     }
 }
 
-/// Inline body that extends UpdateProvider with an optional api_key.
+/// Inline body that extends `UpdateProvider` with an optional `api_key`.
 #[derive(Debug, Deserialize)]
 pub(crate) struct UpdateProviderBody {
     pub name: Option<String>,
@@ -332,7 +332,7 @@ pub(crate) async fn api_unified_provider_models(
                 let fallback: Vec<crate::agent::model_discovery::ModelInfo> = preset.default_models
                     .iter()
                     .map(|id| crate::agent::model_discovery::ModelInfo {
-                        id: id.to_string(),
+                        id: (*id).to_string(),
                         owned_by: Some(preset.models_provider.to_string()),
                     })
                     .collect();
@@ -411,7 +411,7 @@ pub(crate) async fn api_set_provider_active(
 
 // ── Toolgate config export (internal, unmasked keys) ────────────────────────
 
-/// Internal endpoint for toolgate — returns full config with real api_keys.
+/// Internal endpoint for toolgate — returns full config with real `api_keys`.
 /// Emits `"driver"` field (mapped from `provider_type`) which toolgate matches on.
 /// Build media config JSON — used by API handler and main.rs toolgate export.
 pub(crate) async fn build_media_config(state: &AppState) -> Value {
@@ -531,8 +531,8 @@ pub(crate) async fn api_list_provider_types() -> Json<Value> {
 // ── Vault migration ─────────────────────────────────────────────────────────
 
 /// One-time startup migration: copy provider API keys from legacy vault patterns
-/// (LLM_CREDENTIALS::{uuid} and MEDIA_CREDENTIALS::{name}) into the new
-/// PROVIDER_CREDENTIALS::{uuid} pattern.
+/// (`LLM_CREDENTIALS::{uuid`} and `MEDIA_CREDENTIALS::{name`}) into the new
+/// `PROVIDER_CREDENTIALS::{uuid`} pattern.
 /// Idempotent — providers already migrated are skipped.
 pub async fn migrate_provider_keys_to_vault(db: &PgPool, secrets: &SecretsManager) {
     let all_providers = match providers::list_providers(db).await {
@@ -770,7 +770,7 @@ async fn run_cli_health_check(
                 auth_ok: true,
                 response_ok: false,
                 response_time_ms: Some(elapsed),
-                error: Some(format!("CLI failed to start: {}", e)),
+                error: Some(format!("CLI failed to start: {e}")),
             };
         }
         Err(_) => {
@@ -815,7 +815,7 @@ async fn run_cli_health_check(
             auth_ok: true,
             response_ok: false,
             response_time_ms: Some(elapsed),
-            error: Some(format!("CLI exited with code {}", code)),
+            error: Some(format!("CLI exited with code {code}")),
         };
     }
 
@@ -875,7 +875,7 @@ pub(crate) struct PatchCliOptionsBody {
 
 /// `PATCH /api/providers/{id}`
 ///
-/// Updates CLI-specific options (command, args, prompt_arg, model_arg, env_key)
+/// Updates CLI-specific options (command, args, `prompt_arg`, `model_arg`, `env_key`)
 /// with validation: command override is checked via which/where.exe.
 /// After successful update, runs a health-check and returns the result.
 pub(crate) async fn api_patch_cli_options(

@@ -26,7 +26,7 @@ pub struct EmailSummary {
     pub snippet: String,
 }
 
-/// Subscribe Gmail inbox to Pub/Sub topic. Returns (historyId, expiration_unix_ms).
+/// Subscribe Gmail inbox to Pub/Sub topic. Returns (historyId, `expiration_unix_ms`).
 pub async fn gmail_watch(
     client: &reqwest::Client,
     token: &str,
@@ -107,8 +107,7 @@ pub async fn gmail_history(
     for id in message_ids.iter().take(10) {
         let msg = client
             .get(format!(
-                "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}",
-                id
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}"
             ))
             .bearer_auth(token)
             .query(&[("format", "metadata"), ("metadataHeaders", "From,Subject")])
@@ -167,7 +166,7 @@ pub(crate) async fn gmail_push_handler(
     // Verify push authentication token — the Pub/Sub subscription URL must include
     // ?token=HYDECLAW_AUTH_TOKEN so only our own Google Cloud project can trigger this handler.
     let expected_token = std::env::var("HYDECLAW_AUTH_TOKEN").unwrap_or_default();
-    let provided_token = params.get("token").map(|s| s.as_str()).unwrap_or("");
+    let provided_token = params.get("token").map_or("", std::string::String::as_str);
     use subtle::ConstantTimeEq;
     if !expected_token.is_empty()
         && !bool::from(provided_token.as_bytes().ct_eq(expected_token.as_bytes()))
@@ -222,23 +221,20 @@ pub(crate) async fn gmail_push_handler(
         }
     };
 
-    let since = match trigger.history_id.as_deref() {
-        Some(h) => h.to_string(),
-        None => {
-            // No baseline cursor yet — update cursor and skip processing this push
-            if let Err(e) = sqlx::query(
-                "UPDATE gmail_triggers SET history_id = $1 WHERE email_address = $2",
-            )
-            .bind(&history_id)
-            .bind(&email)
-            .execute(&state.db)
-            .await
-            {
-                tracing::warn!(error = %e, email = %email, "gmail: failed to initialize history_id cursor");
-            }
-            tracing::debug!(email = %email, "gmail: initializing cursor, skipping first push");
-            return axum::http::StatusCode::NO_CONTENT.into_response();
+    let since = if let Some(h) = trigger.history_id.as_deref() { h.to_string() } else {
+        // No baseline cursor yet — update cursor and skip processing this push
+        if let Err(e) = sqlx::query(
+            "UPDATE gmail_triggers SET history_id = $1 WHERE email_address = $2",
+        )
+        .bind(&history_id)
+        .bind(&email)
+        .execute(&state.db)
+        .await
+        {
+            tracing::warn!(error = %e, email = %email, "gmail: failed to initialize history_id cursor");
         }
+        tracing::debug!(email = %email, "gmail: initializing cursor, skipping first push");
+        return axum::http::StatusCode::NO_CONTENT.into_response();
     };
 
     let messages = match gmail_history(&state.oauth.client, &token, &since).await {
@@ -276,7 +272,7 @@ pub(crate) async fn gmail_push_handler(
         );
         tokio::spawn(async move {
             let incoming = hydeclaw_types::IncomingMessage {
-                user_id: format!("gmail:{}", email_clone),
+                user_id: format!("gmail:{email_clone}"),
                 context: json!({"source": "gmail", "email": email_clone}),
                 text: Some(prompt),
                 attachments: vec![],
@@ -326,7 +322,7 @@ pub(crate) async fn api_create_gmail_trigger(
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
-                format!("Google not connected: {}", e),
+                format!("Google not connected: {e}"),
             )
                 .into_response()
         }

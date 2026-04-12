@@ -5,7 +5,7 @@ use super::providers::LlmProvider;
 use super::tool_loop::LoopDetector;
 
 /// Estimate token count from text (rough: ~4 chars per token).
-/// Accounts for tool_calls JSON size when present.
+/// Accounts for `tool_calls` JSON size when present.
 pub fn estimate_tokens(messages: &[Message]) -> usize {
     messages
         .iter()
@@ -14,7 +14,7 @@ pub fn estimate_tokens(messages: &[Message]) -> usize {
             let tool_tokens = m
                 .tool_calls
                 .as_ref()
-                .map(|tc| {
+                .map_or(0, |tc| {
                     tc.iter()
                         .map(|t| {
                             let args_len = t.arguments.to_string().len();
@@ -22,8 +22,7 @@ pub fn estimate_tokens(messages: &[Message]) -> usize {
                             (args_len + name_len + 20) / 4
                         })
                         .sum::<usize>()
-                })
-                .unwrap_or(0);
+                });
             content_tokens + tool_tokens
         })
         .sum()
@@ -63,7 +62,7 @@ pub async fn compact_if_needed(
         None
     };
 
-    let start = if system_msg.is_some() { 1 } else { 0 };
+    let start = usize::from(system_msg.is_some());
     let mut end = if messages.len() > start + preserve_last_n {
         messages.len() - preserve_last_n
     } else {
@@ -112,9 +111,8 @@ pub async fn compact_if_needed(
                 - Routine greetings and confirmations\n\
                 - Tool calls that succeeded without noteworthy results\n\
                 - Repeated information already captured in other facts\n\n\
-                Each fact must be self-contained and useful without the original conversation.{}\n\
-                Return ONLY the JSON array, no other text.",
-                lang_hint
+                Each fact must be self-contained and useful without the original conversation.{lang_hint}\n\
+                Return ONLY the JSON array, no other text."
             ),
             tool_calls: None,
             tool_call_id: None,
@@ -145,13 +143,12 @@ pub async fn compact_if_needed(
         Message {
             role: MessageRole::System,
             content: format!(
-                "Summarize this conversation concisely {}. Structure:\n\
+                "Summarize this conversation concisely {summary_lang}. Structure:\n\
                 1. Active tasks and their progress\n\
                 2. Key decisions made\n\
                 3. Open questions or blockers\n\n\
                 Preserve exact identifiers: UUIDs, URLs, file paths, IPs, hostnames, port numbers.\n\
-                Be brief — 2-3 paragraphs max.",
-                summary_lang
+                Be brief — 2-3 paragraphs max."
             ),
             tool_calls: None,
             tool_call_id: None,
@@ -215,7 +212,7 @@ pub fn generate_progress_header(messages: &[Message], detector: &LoopDetector) -
     sorted.sort_by(|a, b| b.1.cmp(a.1));
     let top_tools: Vec<String> = sorted.iter()
         .take(5)
-        .map(|(name, count)| format!("{}({})", name, count))
+        .map(|(name, count)| format!("{name}({count})"))
         .collect();
 
     // Count tool role messages that contain "error"
@@ -230,12 +227,11 @@ pub fn generate_progress_header(messages: &[Message], detector: &LoopDetector) -
     };
 
     let mut header = format!(
-        "[Session Progress] Iterations: {}. Tools called: {}.",
-        iterations, tools_str
+        "[Session Progress] Iterations: {iterations}. Tools called: {tools_str}."
     );
 
     if error_count > 0 {
-        header.push_str(&format!(" Errors encountered: {} tool failures.", error_count));
+        header.push_str(&format!(" Errors encountered: {error_count} tool failures."));
     }
 
     header

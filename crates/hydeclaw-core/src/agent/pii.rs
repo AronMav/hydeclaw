@@ -29,7 +29,7 @@ static HEX_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b[0-9a-fA-F]{64,}\b").unwrap()
 });
 
-/// Redact PII from text. Returns (redacted_text, count_of_redactions).
+/// Redact PII from text. Returns (`redacted_text`, `count_of_redactions`).
 pub fn redact(text: &str) -> (String, usize) {
     let mut result = text.to_string();
     let mut count = 0;
