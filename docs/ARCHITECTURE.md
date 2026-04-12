@@ -293,39 +293,6 @@ The inter-result similarity is approximated as `min(candidate_sim, selected_sim)
 
 Both tiers are searched together. The `pinned` flag is surfaced in search results so the LLM can distinguish permanent knowledge from time-sensitive context.
 
-### Knowledge Graph
-
-Automatic entity and relationship extraction runs as a background task after each session with 5+ messages (`engine.rs`). Stored in pure PostgreSQL relational tables (no graph database required):
-
-```
-graph_entities   id, name, name_normalized, entity_type, updated_at
-graph_edges      source_id, target_id, relation_type, weight, fact, invalid_at
-graph_episodes   chunk_id, session_id, entity_id  (links chunks → entities)
-```
-
-**Entity resolution:** `upsert_entity_resolved()` tries three strategies in order:
-1. Exact match on `name_normalized` (lowercased, trimmed).
-2. Trigram fuzzy match: `similarity(name_normalized, $query) > 0.5` (requires `pg_trgm` extension).
-3. Insert as new entity.
-
-**Relation strengthening:** `ON CONFLICT ... DO UPDATE SET weight = weight + 1` — repeated observations increase edge weight without creating duplicates.
-
-**Multi-hop traversal:** `find_related()` uses a recursive CTE with configurable `max_hops`:
-```sql
-WITH RECURSIVE hops AS (
-  SELECT id, name, entity_type, 0 AS depth FROM graph_entities WHERE name_normalized = $1
-  UNION
-  SELECT e2.id, e2.name, e2.entity_type, h.depth + 1
-  FROM hops h
-  JOIN graph_edges ge ON (ge.source_id = h.id OR ge.target_id = h.id) AND ge.invalid_at IS NULL
-  JOIN graph_entities e2 ON e2.id = CASE WHEN ge.source_id = h.id THEN ge.target_id ELSE ge.source_id END
-  WHERE h.depth < $max_hops AND e2.id != h.id
-)
-SELECT DISTINCT name, entity_type FROM hops WHERE depth > 0
-```
-
-**Post-session extraction:** when a session ends with ≥ 5 messages, a background `tokio::spawn` calls the LLM with the last 20 user+assistant messages and prompts it to extract entities and relations as JSON. Extracted entities are upserted via the three-step resolution above, and linked to the session via `graph_episodes`.
-
 ### Memory Worker
 
 `hydeclaw-memory-worker` is a separate binary that handles asynchronous memory indexing tasks enqueued by the core. It uses a poll-based task queue in PostgreSQL:
