@@ -2,20 +2,17 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiPost, apiPatch, apiDelete } from "@/lib/api";
+import { apiGet, apiPatch, apiDelete } from "@/lib/api";
 import { useMemoryStats, qk } from "@/lib/queries";
 import { useTranslation } from "@/hooks/use-translation";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ErrorBanner } from "@/components/ui/error-banner";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { Brain, Plus, Search, Trash2, Pin, PinOff, ChevronLeft, ChevronRight, ChevronDown, X, Network, List } from "lucide-react";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Brain, Search, Trash2, Pin, PinOff, ChevronLeft, ChevronRight, ChevronDown, X } from "lucide-react";
 import type { MemoryDocument } from "@/types/api";
-import { MemoryPalace } from "@/components/chat/MemoryPalace";
 
 // ── Lazy-load full document content ──
 
@@ -53,17 +50,12 @@ export default function MemoryPage() {
   const { data: stats } = useMemoryStats();
 
   const [chunks, setChunks] = useState<MemoryDocument[]>([]);
-  const [viewMode, setViewMode] = useState<"list" | "graph">("list");
   const [query, setQuery] = useState("");
   const [offset, setOffset] = useState(0);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-
-  // Filters
-  const [category, setCategory] = useState<string>("all");
-  const [topic, setTopic] = useState<string>("all");
 
   const limit = 20;
 
@@ -76,8 +68,6 @@ export default function MemoryPage() {
         offset: offset.toString(),
       });
       if (query) params.append("q", query);
-      if (category !== "all") params.append("category", category);
-      if (topic !== "all") params.append("topic", topic);
 
       const res = await apiGet<{ documents: MemoryDocument[]; total: number }>(`/api/memory/documents?${params.toString()}`);
       setChunks(res.documents);
@@ -86,7 +76,7 @@ export default function MemoryPage() {
     } finally {
       setLoading(false);
     }
-  }, [offset, query, category, topic]);
+  }, [offset, query]);
 
   useEffect(() => {
     fetchChunks();
@@ -121,7 +111,7 @@ export default function MemoryPage() {
   // Reset pagination on filter change
   useEffect(() => {
     setOffset(0);
-  }, [query, category, topic]);
+  }, [query]);
 
   return (
     <div className="flex flex-col h-full p-4 md:p-8 max-w-6xl mx-auto w-full overflow-hidden">
@@ -139,26 +129,6 @@ export default function MemoryPage() {
         </div>
 
         <div className="flex flex-wrap items-stretch gap-3 md:gap-6">
-          <div className="flex bg-muted/30 p-1 rounded-lg border border-border">
-            <Button
-              variant={viewMode === "list" ? "secondary" : "ghost"}
-              size="sm"
-              className="h-8 px-3 gap-2 text-xs"
-              onClick={() => setViewMode("list")}
-            >
-              <List className="h-3.5 w-3.5" />
-              {t("memory.view_list")}
-            </Button>
-            <Button
-              variant={viewMode === "graph" ? "secondary" : "ghost"}
-              size="sm"
-              className="h-8 px-3 gap-2 text-xs"
-              onClick={() => setViewMode("graph")}
-            >
-              <Network className="h-3.5 w-3.5" />
-              {t("memory.view_graph")}
-            </Button>
-          </div>
           {stats && (
             <div className="flex items-center gap-4 px-4 py-2 bg-muted/30 rounded-xl border border-border/50">
               <div className="flex flex-col">
@@ -177,12 +147,7 @@ export default function MemoryPage() {
 
       {error && <ErrorBanner error={error} className="mb-4 shrink-0" />}
 
-      {viewMode === "graph" ? (
-        <div className="flex-1 min-h-0 border rounded-xl overflow-hidden bg-card/30">
-          <MemoryPalace />
-        </div>
-      ) : (
-        <div className="flex flex-col flex-1 min-h-0">
+      <div className="flex flex-col flex-1 min-h-0">
           {/* Search + Create */}
           <div className="mb-6 flex gap-2 shrink-0">
             <div className="relative flex-1 min-w-0">
@@ -290,7 +255,6 @@ export default function MemoryPage() {
             </div>
           )}
         </div>
-      )}
 
       <ConfirmDialog
         open={!!deleteTarget}
