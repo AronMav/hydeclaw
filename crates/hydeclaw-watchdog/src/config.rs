@@ -61,8 +61,6 @@ pub struct ResourceSettings {
     pub ram_critical_percent: u64,
     #[serde(default = "default_300")]
     pub check_interval_secs: u64,
-    #[serde(default = "default_600")]
-    pub graph_stuck_timeout_secs: u64,
 }
 
 impl Default for ResourceSettings {
@@ -70,7 +68,7 @@ impl Default for ResourceSettings {
         Self {
             disk_warning_gb: 5, disk_critical_gb: 1,
             ram_warning_percent: 85, ram_critical_percent: 95,
-            check_interval_secs: 300, graph_stuck_timeout_secs: 600,
+            check_interval_secs: 300,
         }
     }
 }
@@ -149,6 +147,5 @@ ram_warning_percent = 80
         assert_eq!(cfg.watchdog.flap_window_secs, 600);
         assert_eq!(cfg.watchdog.flap_threshold, 3);
         assert_eq!(cfg.resources.check_interval_secs, 300);
-        assert_eq!(cfg.resources.graph_stuck_timeout_secs, 600);
     }
 }

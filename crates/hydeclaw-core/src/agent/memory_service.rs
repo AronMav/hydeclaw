@@ -63,7 +63,7 @@ pub trait MemoryService: Send + Sync {
     /// Return the N most recently created chunks.
     async fn recent(&self, limit: i64) -> Result<Vec<crate::memory::MemoryResult>>;
 
-    /// Wipe all memory for an agent: graph episodes, orphaned edges/entities, then memory chunks.
+    /// Wipe all memory for an agent: deletes all memory chunks for the given agent.
     /// Returns the number of memory chunks deleted.
     async fn wipe_agent_memory(&self, agent_id: &str) -> Result<u64>;
 

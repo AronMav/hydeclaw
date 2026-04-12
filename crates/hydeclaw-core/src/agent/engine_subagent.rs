@@ -464,7 +464,7 @@ impl AgentEngine {
             "canvas", "rich_card", "web_fetch",
             // Agent interaction & system tools
             "message", "cron", "session", "agents_list", "browser_action",
-            "process", "secret_set", "skill_use", "graph_query", "tool_discover",
+            "process", "secret_set", "skill_use", "tool_discover",
         ];
 
         let mut always = Vec::new();

@@ -125,7 +125,7 @@ Also available (shared skills):
 - `cron(action=list/history/add/update/remove/run)`
 
 **Other:**
-- `secret_set`, `graph_query`, `canvas`, `rich_card`, `browser_action`
+- `secret_set`, `canvas`, `rich_card`, `browser_action`
 
 ### Denied tools
 
