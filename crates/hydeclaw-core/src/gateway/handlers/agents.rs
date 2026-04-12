@@ -999,11 +999,10 @@ pub(crate) async fn api_update_agent(
     if is_rename {
         // Update agent_id in all DB tables (within a transaction for consistency)
         // SAFETY: table names are hardcoded literals — never user input. Do NOT add dynamic values.
-        // SAFETY: Rename transaction covers 21 tables total:
+        // SAFETY: Rename transaction covers 20 tables total:
         //   - 18 via tables_agent_id loop (agent_id column)
         //   - 1 messages (agent_id, nullable)
         //   - 1 agent_channels (agent_name column)
-        //   - 1 graph_entities (group_id column)
         // All updates share a single sqlx::Transaction — failure at any point triggers
         // automatic rollback (via explicit rollback or Transaction::Drop).
         let tables_agent_id = [
@@ -1052,17 +1051,6 @@ pub(crate) async fn api_update_agent(
             tracing::warn!(error = %e, "failed to update agent_channels.agent_name on rename");
             tx.rollback().await.ok();
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("rename failed at table agent_channels: {}", e)}))).into_response();
-        }
-        // graph_entities uses group_id to associate entities with an agent
-        if let Err(e) = sqlx::query("UPDATE graph_entities SET group_id = $1 WHERE group_id = $2")
-            .bind(&new_name)
-            .bind(&name)
-            .execute(&mut *tx)
-            .await
-        {
-            tracing::warn!(error = %e, "failed to update graph_entities.group_id on rename");
-            tx.rollback().await.ok();
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("rename failed at table graph_entities: {}", e)}))).into_response();
         }
         if let Err(e) = tx.commit().await {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("transaction commit failed: {}", e)}))).into_response();
@@ -1551,7 +1539,7 @@ mod tests {
     /// This test documents the expected behavior by simulating the rename loop in-memory.
     #[test]
     fn test_rename_mid_failure_leaves_pre_rename_state() {
-        // Mirror the exact table list from the rename handler (21 tables total)
+        // Mirror the exact table list from the rename handler (20 tables total)
         let tables_agent_id: Vec<&str> = vec![
             "sessions", "tasks", "scheduled_jobs", "channel_allowed_users",
             "usage_log", "cron_runs", "audit_events", "pending_approvals",
@@ -1560,14 +1548,14 @@ mod tests {
             "agent_oauth_bindings", "approval_allowlist", "memory_chunks",
         ];
         // Additional tables updated outside the loop
-        let extra_tables: Vec<&str> = vec!["messages", "agent_channels", "graph_entities"];
+        let extra_tables: Vec<&str> = vec!["messages", "agent_channels"];
 
         let all_tables: Vec<&str> = tables_agent_id.iter()
             .chain(extra_tables.iter())
             .copied()
             .collect();
 
-        assert_eq!(all_tables.len(), 21, "rename should cover exactly 21 tables");
+        assert_eq!(all_tables.len(), 20, "rename should cover exactly 20 tables");
 
         let old_name = "OldAgent";
         let new_name = "NewAgent";

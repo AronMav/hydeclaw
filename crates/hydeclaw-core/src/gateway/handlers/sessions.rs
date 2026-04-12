@@ -22,7 +22,6 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/sessions/{id}/compact", post(api_compact_session))
         .route("/api/sessions/{id}/export", get(api_export_session))
         .route("/api/sessions/{id}/invite", post(api_invite_to_session))
-        .route("/api/sessions/{id}/documents", post(api_session_upload_document))
         .route("/api/sessions/{id}/messages", get(api_session_messages))
         .route("/api/messages/{id}", delete(api_delete_message).patch(api_patch_message))
         .route("/api/messages/{id}/feedback", post(api_message_feedback))
@@ -736,89 +735,6 @@ fn format_session_as_markdown(data: &serde_json::Value) -> String {
     md
 }
 
-// ── Session Document Upload (per-session RAG) ──────────────────────────────
-
-/// Upload a text document and chunk+embed it for session-scoped RAG.
-pub(crate) async fn api_session_upload_document(
-    State(state): State<AppState>,
-    Path(session_id): Path<uuid::Uuid>,
-    mut multipart: axum::extract::Multipart,
-) -> impl IntoResponse {
-    // Read file from multipart
-    let (filename, content) = match multipart.next_field().await {
-        Ok(Some(field)) => {
-            let name = field.file_name().unwrap_or("document.txt").to_string();
-            match field.text().await {
-                Ok(text) => (name, text),
-                Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("failed to read file: {}", e)}))).into_response(),
-            }
-        }
-        _ => return (StatusCode::BAD_REQUEST, Json(json!({"error": "no file uploaded"}))).into_response(),
-    };
-
-    if content.len() > 10 * 1024 * 1024 {
-        return (StatusCode::PAYLOAD_TOO_LARGE, Json(json!({"error": "document too large (max 10MB)"}))).into_response();
-    }
-
-    if content.len() < 50 {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "file too small (min 50 chars)"}))).into_response();
-    }
-
-    // Check memory store availability
-    let memory_store = &state.memory_store;
-    if !memory_store.is_available() {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "embeddings not configured"}))).into_response();
-    }
-
-    // Chunk the document (~500 chars per chunk, split on paragraphs)
-    let chunks = chunk_text(&content, 500);
-    let mut indexed = 0u32;
-
-    for (i, chunk) in chunks.iter().enumerate() {
-        let embedding = match memory_store.embed(chunk).await {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!(chunk = i, error = %e, "failed to embed document chunk");
-                continue;
-            }
-        };
-        let vec_str = format!("[{}]", embedding.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join(","));
-        if let Err(e) = crate::db::session_documents::insert_chunk(
-            &state.db, session_id, &filename, chunk, i as i32, &vec_str,
-        ).await {
-            tracing::warn!(chunk = i, error = %e, "failed to insert document chunk");
-            continue;
-        }
-        indexed += 1;
-    }
-
-    (StatusCode::OK, Json(json!({
-        "filename": filename,
-        "chunks": indexed,
-        "total_chars": content.len(),
-    }))).into_response()
-}
-
-/// Split text into chunks of approximately `target_size` characters, preferring paragraph breaks.
-fn chunk_text(text: &str, target_size: usize) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-
-    for paragraph in text.split("\n\n") {
-        if current.len() + paragraph.len() > target_size && !current.is_empty() {
-            chunks.push(current.trim().to_string());
-            current = String::new();
-        }
-        if !current.is_empty() {
-            current.push_str("\n\n");
-        }
-        current.push_str(paragraph);
-    }
-    if !current.trim().is_empty() {
-        chunks.push(current.trim().to_string());
-    }
-    chunks
-}
 
 // ── Branching endpoints ──────────────────────────────────────────────────────
 

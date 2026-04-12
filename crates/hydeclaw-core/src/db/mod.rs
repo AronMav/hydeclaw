@@ -9,7 +9,6 @@ pub mod notifications;
 pub mod providers;
 pub mod outbound;
 pub mod pending;
-pub mod session_documents;
 pub mod session_wal;
 pub mod sessions;
 pub mod skill_metrics;

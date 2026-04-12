@@ -233,7 +233,7 @@ Key tables: `sessions`, `messages`, `session_events` (WAL journal), `memory_chun
 
 **Session WAL (m013):** `session_events` logs lifecycle transitions (running, tool_start, tool_end, done, failed). Used by `session_wal::warm_up_detector()` to restore LoopDetector state on crash recovery instead of injecting synthetic messages.
 
-**Active providers:** `provider_active` maps capabilities (stt, tts, vision, imagegen, embedding, graph_extraction) to providers. Graph extraction worker reads its provider from `provider_active` at startup; UI configures it via Active Providers on the Providers page.
+**Active providers:** `provider_active` maps capabilities (stt, tts, vision, imagegen, embedding) to providers. UI configures active providers via the Active Providers page.
 
 ## Process Manager
 

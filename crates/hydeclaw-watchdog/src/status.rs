@@ -71,7 +71,7 @@ mod tests {
             resources: Some(crate::resources::ResourceStatus {
                 disk_free_gb: 50.0, disk_warning: false, disk_critical: false,
                 ram_used_percent: 30.0, ram_warning: false, ram_critical: false,
-                cpu_load_percent: 15.0, graph_worker_stuck: false,
+                cpu_load_percent: 15.0,
             }),
             containers: vec![],
         };

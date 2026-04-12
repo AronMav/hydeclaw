@@ -211,12 +211,6 @@ async fn main() -> anyhow::Result<()> {
                 was_resource_warning.remove("ram_critical");
             }
 
-            if res.graph_worker_stuck && !was_resource_warning.get("graph_stuck").copied().unwrap_or(false) {
-                alerter.send(&alert_config, "⚠️ Graph extraction worker stuck", "resource").await;
-                was_resource_warning.insert("graph_stuck".into(), true);
-            } else if !res.graph_worker_stuck {
-                was_resource_warning.remove("graph_stuck");
-            }
 
             resource_status = Some(res);
         }
