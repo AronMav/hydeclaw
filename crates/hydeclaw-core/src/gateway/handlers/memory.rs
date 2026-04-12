@@ -14,14 +14,10 @@ pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/memory", get(api_list_memory).post(api_create_memory))
         .route("/api/memory/stats", get(api_memory_stats))
-        .route("/api/memory/graph", get(api_memory_graph))
         .route("/api/memory/export", get(api_export_memory))
         .route("/api/memory/fts-language", get(api_get_fts_language).put(api_set_fts_language))
         .route("/api/memory/{id}", delete(api_delete_memory).patch(api_patch_memory))
         .route("/api/memory/tasks", get(api_memory_tasks))
-        .route("/api/memory/extraction-queue", get(api_extraction_queue))
-        .route("/api/memory/categories", get(api_memory_categories))
-        .route("/api/memory/topics", get(api_memory_topics))
         .route("/api/memory/documents", get(api_list_documents))
         .route("/api/memory/documents/{id}", get(api_get_document).patch(api_patch_document).delete(api_delete_memory))
 }
@@ -145,20 +141,6 @@ pub(crate) async fn api_memory_stats(State(state): State<AppState>) -> Json<Valu
         .inspect_err(|e| tracing::error!(error = %e, "stats: failed to get avg score"))
         .unwrap_or(0.0);
 
-    // Graph metrics (from relational graph tables)
-    let graph_entities: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM graph_entities")
-        .fetch_one(&state.db).await.unwrap_or(0);
-    let graph_edges: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM graph_edges WHERE invalid_at IS NULL")
-        .fetch_one(&state.db).await.unwrap_or(0);
-    let graph_top_types: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT entity_type, COUNT(*) FROM graph_entities GROUP BY entity_type ORDER BY count DESC LIMIT 6"
-    ).fetch_all(&state.db).await.unwrap_or_default();
-    let graph_per_agent: Vec<(String, i64)> = crate::memory_graph::get_entity_counts_by_agent(&state.db)
-        .await.unwrap_or_default();
-
-    let (q_pending, q_processing, q_done, q_failed) = crate::graph_worker::queue_status(&state.db)
-        .await.unwrap_or((0, 0, 0, 0));
-
     let (t_pending, t_processing, t_done, t_failed) = sqlx::query_as::<_, (i64, i64, i64, i64)>(
         "SELECT
             COUNT(*) FILTER (WHERE status = 'pending'),
@@ -178,18 +160,6 @@ pub(crate) async fn api_memory_stats(State(state): State<AppState>) -> Json<Valu
         "avg_score": avg_score,
         "embed_model": if embed_model.is_empty() { None } else { Some(&embed_model) },
         "embed_dim": if embed_dim > 0 { Some(embed_dim) } else { None },
-        "graph": {
-            "entities": graph_entities,
-            "edges": graph_edges,
-            "types": graph_top_types.into_iter().map(|(t, c)| json!({"type": t, "count": c})).collect::<Vec<_>>(),
-            "per_agent": graph_per_agent.into_iter().map(|(a, c)| json!({"agent": a, "entities": c})).collect::<Vec<_>>(),
-        },
-        "extraction_queue": {
-            "pending": q_pending,
-            "processing": q_processing,
-            "done": q_done,
-            "failed": q_failed,
-        },
         "tasks": {
             "pending": t_pending,
             "processing": t_processing,
@@ -200,17 +170,6 @@ pub(crate) async fn api_memory_stats(State(state): State<AppState>) -> Json<Valu
 }
 
 
-/// GET /api/memory/extraction-queue — queue status
-pub(crate) async fn api_extraction_queue(State(state): State<AppState>) -> Json<Value> {
-    let (pending, processing, done, failed) = crate::graph_worker::queue_status(&state.db)
-        .await.unwrap_or((0, 0, 0, 0));
-    Json(json!({
-        "pending": pending, "processing": processing,
-        "done": done, "failed": failed,
-        "total": pending + processing + done + failed,
-    }))
-}
-
 /// GET /api/memory/tasks — list memory worker tasks
 pub(crate) async fn api_memory_tasks(State(state): State<AppState>) -> Json<Value> {
     let rows = sqlx::query_as::<_, (uuid::Uuid, String, String, serde_json::Value, Option<String>, chrono::DateTime<chrono::Utc>)>(
@@ -220,101 +179,6 @@ pub(crate) async fn api_memory_tasks(State(state): State<AppState>) -> Json<Valu
         "id": id, "task_type": tt, "status": st, "params": p, "error": e, "created_at": ca.to_rfc3339()
     })).collect();
     Json(json!({"tasks": tasks}))
-}
-
-// ── Taxonomy API (categories and topics) ──
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct TaxonomyQuery {
-    agent_id: Option<String>,
-}
-
-/// GET /api/memory/categories — distinct categories with chunk counts
-pub(crate) async fn api_memory_categories(
-    State(state): State<AppState>,
-    Query(q): Query<TaxonomyQuery>,
-) -> impl IntoResponse {
-    let result: Result<Vec<(String, i64)>, _> = if let Some(agent_id) = q.agent_id.as_deref() {
-        sqlx::query_as(
-            "SELECT category, COUNT(*)::bigint AS count \
-             FROM memory_chunks \
-             WHERE category IS NOT NULL AND parent_id IS NULL AND agent_id = $1 \
-             GROUP BY category \
-             ORDER BY count DESC",
-        )
-        .bind(agent_id)
-        .fetch_all(&state.db)
-        .await
-    } else {
-        sqlx::query_as(
-            "SELECT category, COUNT(*)::bigint AS count \
-             FROM memory_chunks \
-             WHERE category IS NOT NULL AND parent_id IS NULL \
-             GROUP BY category \
-             ORDER BY count DESC",
-        )
-        .fetch_all(&state.db)
-        .await
-    };
-
-    match result {
-        Ok(rows) => {
-            let categories: Vec<Value> = rows
-                .iter()
-                .map(|(cat, count)| json!({"category": cat, "count": count}))
-                .collect();
-            Json(json!(categories)).into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
-}
-
-/// GET /api/memory/topics — distinct topics with chunk counts
-pub(crate) async fn api_memory_topics(
-    State(state): State<AppState>,
-    Query(q): Query<TaxonomyQuery>,
-) -> impl IntoResponse {
-    let result: Result<Vec<(String, i64)>, _> = if let Some(agent_id) = q.agent_id.as_deref() {
-        sqlx::query_as(
-            "SELECT topic, COUNT(*)::bigint AS count \
-             FROM memory_chunks \
-             WHERE topic IS NOT NULL AND parent_id IS NULL AND agent_id = $1 \
-             GROUP BY topic \
-             ORDER BY count DESC",
-        )
-        .bind(agent_id)
-        .fetch_all(&state.db)
-        .await
-    } else {
-        sqlx::query_as(
-            "SELECT topic, COUNT(*)::bigint AS count \
-             FROM memory_chunks \
-             WHERE topic IS NOT NULL AND parent_id IS NULL \
-             GROUP BY topic \
-             ORDER BY count DESC",
-        )
-        .fetch_all(&state.db)
-        .await
-    };
-
-    match result {
-        Ok(rows) => {
-            let topics: Vec<Value> = rows
-                .iter()
-                .map(|(top, count)| json!({"topic": top, "count": count}))
-                .collect();
-            Json(json!(topics)).into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
 }
 
 // ── Documents API (document-level view) ──
@@ -777,138 +641,3 @@ pub(crate) async fn api_export_memory(
     }
 }
 
-// ── Graph API ──
-
-#[derive(Debug, serde::Deserialize)]
-pub(crate) struct GraphQuery {
-    limit: Option<i64>,
-    #[allow(dead_code)]
-    agent: Option<String>,
-}
-
-#[derive(serde::Serialize)]
-struct GraphApiNode {
-    id: String,
-    kind: String, // "chunk" | "entity"
-    label: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pinned: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    score: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    entity_type: Option<String>,
-}
-
-#[derive(serde::Serialize)]
-struct GraphApiEdge {
-    from: String,
-    to: String,
-    kind: String,
-}
-
-pub(crate) async fn api_memory_graph(
-    State(state): State<AppState>,
-    Query(q): Query<GraphQuery>,
-) -> impl IntoResponse {
-    let limit = q.limit.unwrap_or(150).min(500);
-
-    // 1. Fetch documents (parent chunks only)
-    let doc_rows = sqlx::query_as::<_, MemoryChunkRow>(
-        "SELECT id, content, source, relevance_score, pinned, created_at, accessed_at, parent_id, chunk_index \
-         FROM memory_chunks WHERE parent_id IS NULL \
-         ORDER BY COALESCE(accessed_at, created_at) DESC LIMIT $1",
-    )
-    .bind(limit)
-    .fetch_all(&state.db)
-    .await;
-
-    let doc_rows = match doc_rows {
-        Ok(r) => r,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
-    };
-
-    let doc_ids: Vec<uuid::Uuid> = doc_rows.iter().map(|r| r.id).collect();
-
-    // 2. Build chunk→document map in one query (parents + children)
-    let chunk_doc_rows: Vec<(uuid::Uuid, Option<uuid::Uuid>)> = sqlx::query_as(
-        "SELECT id, parent_id FROM memory_chunks WHERE id = ANY($1) OR parent_id = ANY($1)"
-    )
-    .bind(&doc_ids)
-    .fetch_all(&state.db)
-    .await
-    .inspect_err(|e| tracing::error!(error = %e, "graph: failed to fetch chunk-document mapping"))
-    .unwrap_or_default();
-
-    let all_chunk_ids: Vec<uuid::Uuid> = chunk_doc_rows.iter().map(|(cid, _)| *cid).collect();
-    let chunk_to_doc: std::collections::HashMap<uuid::Uuid, uuid::Uuid> =
-        chunk_doc_rows.iter().map(|(cid, pid)| (*cid, pid.unwrap_or(*cid))).collect();
-
-    // 3. Get entity data for all chunks
-    let entity_rows = crate::memory_graph::get_chunk_entity_rows(&state.db, &all_chunk_ids)
-        .await
-        .inspect_err(|e| tracing::error!(error = %e, "graph: failed to fetch entity rows"))
-        .unwrap_or_default();
-    let has_entities = !entity_rows.is_empty();
-
-    let mut nodes: Vec<GraphApiNode> = Vec::new();
-    let mut edges: Vec<GraphApiEdge> = Vec::new();
-
-    // Document nodes
-    for row in &doc_rows {
-        let label = row.source.as_deref().unwrap_or("untitled").to_string();
-        nodes.push(GraphApiNode {
-            id: format!("doc:{}", row.id),
-            kind: "document".to_string(),
-            label,
-            content: None,
-            source: row.source.clone(),
-            pinned: Some(row.pinned),
-            score: Some(row.relevance_score),
-            entity_type: None,
-        });
-    }
-
-    if has_entities {
-        let mut seen_entities: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut doc_entity_edges: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
-
-        for (chunk_id, entity_name, etype) in &entity_rows {
-            if seen_entities.insert(entity_name.clone()) {
-                nodes.push(GraphApiNode {
-                    id: format!("entity:{entity_name}"),
-                    kind: "entity".to_string(),
-                    label: entity_name.clone(),
-                    content: None, source: None, pinned: None, score: None,
-                    entity_type: Some(etype.clone()),
-                });
-            }
-            if let Some(doc_id) = chunk_to_doc.get(chunk_id) {
-                let from = format!("doc:{doc_id}");
-                let to = format!("entity:{entity_name}");
-                if doc_entity_edges.insert((from.clone(), to.clone())) {
-                    edges.push(GraphApiEdge { from, to, kind: "mentions".to_string() });
-                }
-            }
-        }
-
-        let entity_names: Vec<String> = seen_entities.into_iter().collect();
-        match crate::memory_graph::get_entity_edges(&state.db, &entity_names).await {
-            Err(e) => tracing::warn!(error = %e, "graph: failed to fetch entity-entity edges"),
-            Ok(relations) => {
-                for rel in relations {
-                    edges.push(GraphApiEdge {
-                        from: format!("entity:{}", rel.source),
-                        to: format!("entity:{}", rel.target),
-                        kind: rel.relation_type,
-                    });
-                }
-            }
-        }
-    }
-
-    Json(json!({ "nodes": nodes, "edges": edges, "fallback": !has_entities })).into_response()
-}

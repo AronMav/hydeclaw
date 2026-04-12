@@ -73,30 +73,11 @@ impl AgentEngine {
             return "Error: 'query' is required".to_string();
         }
 
-        let mut parts: Vec<String> = Vec::new();
-
-        // Search session-scoped documents first (per-conversation RAG)
-        let session_id = args.get("_context")
-            .and_then(|c| c.get("session_id"))
-            .and_then(|s| s.as_str())
-            .and_then(|s| uuid::Uuid::parse_str(s).ok());
-
-        if let (Some(sid), Ok(embedding)) = (session_id, self.memory_store.embed(query).await) {
-            let vec_str = format!("[{}]", embedding.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
-            if let Ok(docs) = self.memory_store.search_session_documents(sid, &vec_str, 3).await
-                && !docs.is_empty() {
-                    let doc_body = docs.iter().enumerate()
-                        .map(|(i, (filename, content, score))| format!("{}. [{}] {} (score: {:.2})", i + 1, filename, content, score))
-                        .collect::<Vec<_>>().join("\n");
-                    parts.push(format!("[Session documents]\n{}", doc_body));
-                }
-        }
-
         // Search long-term memory (exclude L0 pinned chunks to avoid duplication)
         let exclude = self.tex().pinned_chunk_ids.lock().await.clone();
         match self.memory_store.search(query, limit, &exclude, category, topic).await {
-            Ok((results, _)) if results.is_empty() && parts.is_empty() => {
-                return "No relevant memories found.".to_string();
+            Ok((results, _)) if results.is_empty() => {
+                "No relevant memories found.".to_string()
             }
             Ok((results, mode)) => {
                 let header = if mode == "fts" { "[FTS fallback] " } else { "" };
@@ -109,15 +90,10 @@ impl AgentEngine {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                if !body.is_empty() {
-                    parts.push(format!("{}[Memory]\n{}", header, body));
-                }
+                format!("{}[Memory]\n{}", header, body)
             }
-            Err(e) if parts.is_empty() => return format!("Memory search error: {}", e),
-            Err(_) => {} // session docs available, ignore memory error
+            Err(e) => format!("Memory search error: {}", e),
         }
-
-        parts.join("\n\n")
     }
 
     /// Internal tool: index content into long-term memory.
@@ -148,26 +124,7 @@ impl AgentEngine {
         }
 
         match self.memory_store.index(content, source, pinned, category, topic).await {
-            Ok(id) => {
-                // Build (chunk_id, chunk_content) pairs for GraphRAG.
-                // One query: parent (id match) + children (parent_id match).
-                // For single-chunk docs, returns just the parent row.
-                let chunks_for_graph = self.memory_store.fetch_chunks_for_graph(&id)
-                    .await
-                    .unwrap_or_else(|_| vec![(id.clone(), content.to_string())]);
-
-                let chunk_count = chunks_for_graph.len();
-                let _ = self.memory_store.spawn_graph_extraction(
-                    chunks_for_graph,
-                    self.provider.clone(),
-                ).await;
-
-                if chunk_count > 1 {
-                    format!("Indexed as {} ({} chunks)", id, chunk_count)
-                } else {
-                    format!("Indexed as {}", id)
-                }
-            }
+            Ok(id) => format!("Indexed as {}", id),
             Err(e) => format!("Memory index error: {}", e),
         }
     }
@@ -238,38 +195,6 @@ impl AgentEngine {
             if include_sessions { " + session transcripts" } else { "" },
             task_id
         )
-    }
-
-    /// Internal tool: query the knowledge graph for entity relations.
-    pub(super) async fn handle_graph_query(&self, args: &serde_json::Value) -> String {
-        let entity = match args.get("entity").and_then(|v| v.as_str()) {
-            Some(e) if !e.is_empty() => e,
-            _ => return "Error: 'entity' is required".to_string(),
-        };
-        let max_hops = args
-            .get("max_hops")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(2)
-            .min(3) as u8;
-
-        match self.memory_store.find_graph_related(entity, max_hops).await {
-            Ok(related) if related.is_empty() => {
-                format!("No relations found for entity '{}'.", entity)
-            }
-            Ok(related) => {
-                let lines: Vec<String> = related
-                    .iter()
-                    .map(|e| format!("- {} ({})", e.name, e.entity_type))
-                    .collect();
-                format!(
-                    "Entities related to '{}' (within {} hops):\n{}",
-                    entity,
-                    max_hops,
-                    lines.join("\n")
-                )
-            }
-            Err(e) => format!("Graph query error: {}", e),
-        }
     }
 
     /// Internal tool: get memory chunks by ID or source.
@@ -388,59 +313,4 @@ impl AgentEngine {
         }
     }
 
-    /// Internal tool: on-demand compression of old memory chunks by topic.
-    /// Fetches compressible groups for this agent (optionally filtered by topic),
-    /// runs LLM summarization via compress_group, and returns compressed chunk count.
-    pub(super) async fn handle_memory_compress(&self, args: &serde_json::Value) -> String {
-        let topic_filter = args.get("topic").and_then(|v| v.as_str());
-        let agent_id = &self.agent.name;
-        let age_days = self.app_config.memory.compression_age_days;
-
-        if !self.memory_store.is_available() {
-            return "Memory compression is not available (embedding endpoint not configured).".to_string();
-        }
-
-        let groups = match self.memory_store.fetch_compressible_groups(age_days).await {
-            Ok(g) => g,
-            Err(e) => return format!("{{\"error\": \"Failed to fetch compressible groups: {}\"}}", e),
-        };
-
-        // Filter to this agent's groups, optionally by topic
-        let filtered: Vec<_> = groups
-            .into_iter()
-            .filter(|g| g.agent_id == *agent_id)
-            .filter(|g| topic_filter.map_or(true, |t| g.topic == t))
-            .collect();
-
-        if filtered.is_empty() {
-            return "{\"compressed\": 0, \"topics\": []}".to_string();
-        }
-
-        let mut total_compressed = 0u64;
-        let mut topics_done: Vec<String> = Vec::new();
-
-        for group in filtered {
-            let topic_name = group.topic.clone();
-            match self.memory_store.compress_memory_group(
-                self.provider.clone(),
-                group,
-            )
-            .await
-            {
-                Ok(count) => {
-                    total_compressed += count;
-                    topics_done.push(topic_name);
-                }
-                Err(e) => {
-                    tracing::warn!(topic = %topic_name, error = %e, "handle_memory_compress: compression failed for topic");
-                }
-            }
-        }
-
-        serde_json::json!({
-            "compressed": total_compressed,
-            "topics": topics_done
-        })
-        .to_string()
-    }
 }

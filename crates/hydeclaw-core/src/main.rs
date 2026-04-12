@@ -6,9 +6,6 @@ mod containers;
 mod db;
 mod gateway;
 mod memory;
-mod memory_graph;
-mod graph_worker;
-mod compression_worker;
 mod oauth;
 mod process_manager;
 mod scheduler;
@@ -21,7 +18,6 @@ mod tools;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 /// Load .env file from binary's directory or current working directory.
@@ -383,9 +379,6 @@ async fn main() -> Result<()> {
     // Start all agents from config
     start_configured_agents(&state, &agent_configs).await;
 
-    // Background workers (graph extraction, compression)
-    let (graph_handle, compression_handle, graph_cancel, compression_cancel) = spawn_workers(&state, &cfg).await;
-
     // Load dynamic cron jobs and schedule periodic system jobs
     schedule_periodic_jobs(&state, &agent_configs).await;
 
@@ -441,12 +434,6 @@ async fn main() -> Result<()> {
             handle.shutdown(&sched).await;
         }
     }
-
-    // Cancel workers
-    graph_cancel.cancel();
-    if let Some(h) = graph_handle { let _ = tokio::time::timeout(std::time::Duration::from_secs(5), h).await; }
-    compression_cancel.cancel();
-    if let Some(h) = compression_handle { let _ = tokio::time::timeout(std::time::Duration::from_secs(5), h).await; }
 
     if let Some(pm) = &process_manager { pm.stop_all().await; }
 
@@ -779,49 +766,6 @@ async fn start_configured_agents(state: &gateway::AppState, agent_configs: &[con
             Err(e) => tracing::error!(agent = %agent_cfg.agent.name, error = %e, "failed to start agent"),
         }
     }
-}
-
-/// Spawn background workers for graph extraction and memory compression.
-async fn spawn_workers(
-    state: &gateway::AppState,
-    cfg: &config::AppConfig,
-) -> (
-    Option<tokio::task::JoinHandle<()>>,
-    Option<tokio::task::JoinHandle<()>>,
-    CancellationToken,
-    CancellationToken,
-) {
-    let graph_cancel = CancellationToken::new();
-    let compression_cancel = CancellationToken::new();
-    
-    // Resolve provider for graph/compression (explicitly configured or first agent's)
-    let provider = match db::providers::get_provider_active(&state.db, "graph_extraction").await {
-        Ok(Some(name)) => {
-            if let Ok(Some(conn)) = db::providers::get_provider_by_name(&state.db, &name).await {
-                Some(agent::providers::create_provider_from_connection(
-                    &conn, None, 0.3, None, state.secrets.clone(), None, "__worker__", "", false,
-                ).await)
-            } else { None }
-        }
-        _ => None,
-    };
-    let provider = match provider {
-        Some(p) => Some(p),
-        None => state.first_engine().await.map(|e| e.provider.clone()),
-    };
-
-    let graph_handle = provider.as_ref().map(|p| {
-        graph_worker::spawn_worker(state.db.clone(), p.clone(), graph_cancel.clone())
-    });
-
-    let compression_handle = provider.as_ref().map(|p| {
-        compression_worker::spawn_worker(
-            state.db.clone(), p.clone(), state.memory_store.clone(),
-            cfg.memory.compression_age_days, compression_cancel.clone(),
-        )
-    });
-
-    (graph_handle, compression_handle, graph_cancel, compression_cancel)
 }
 
 /// Schedule periodic system maintenance jobs (decay, cleanup, backup).

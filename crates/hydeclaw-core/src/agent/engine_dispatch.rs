@@ -312,7 +312,6 @@ impl AgentEngine {
                     "reindex" => self.handle_memory_reindex(arguments).await,
                     "get" => self.handle_memory_get(arguments).await,
                     "delete" => self.handle_memory_delete(arguments).await,
-                    "compress" => self.handle_memory_compress(arguments).await,
                     "update" => {
                         // Remap sub_action -> action for handle_memory_update compatibility
                         let mut args = arguments.clone();
@@ -322,7 +321,7 @@ impl AgentEngine {
                             }
                         self.handle_memory_update(&args).await
                     }
-                    _ => format!("Error: unknown memory action '{}'. Use: search, index, reindex, get, delete, update, compress.", action),
+                    _ => format!("Error: unknown memory action '{}'. Use: search, index, reindex, get, delete, update.", action),
                 };
             }
             if name == "message" {
@@ -337,9 +336,6 @@ impl AgentEngine {
             }
             if name == "web_fetch" {
                 return self.handle_web_fetch(arguments).await;
-            }
-            if name == "graph_query" {
-                return self.handle_graph_query(arguments).await;
             }
             if name == "tool_create" {
                 return self.handle_tool_create(arguments).await;
@@ -710,7 +706,7 @@ impl AgentEngine {
                     "message" | "cron" | "code_exec" | "browser_action" |
                     "git" | "session" | "skill" | "skill_use" |
                     "canvas" | "rich_card" | "agents_list" | "secret_set" |
-                    "process" | "graph_query"
+                    "process"
                 ) {
                     return true;
                 }
