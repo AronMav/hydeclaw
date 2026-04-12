@@ -878,16 +878,27 @@ pub(crate) async fn api_retry_session(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     };
 
-    // 3. Delete empty assistant messages (cleanup from crashed attempt)
+    // 3. Cleanup: delete empty assistant messages and the last user message
+    //    (handle_sse will re-save it, so we remove to avoid duplicates)
     if let Ok(deleted) = sessions::delete_empty_assistant_messages(&state.db, id).await {
         if deleted > 0 {
             tracing::info!(session_id = %id, deleted, "cleaned up empty assistant messages before retry");
         }
     }
+    // Delete the last user message — handle_sse will re-insert it
+    let _ = sqlx::query(
+        "DELETE FROM messages WHERE id = (\
+         SELECT id FROM messages WHERE session_id = $1 AND role = 'user' \
+         ORDER BY created_at DESC LIMIT 1)"
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await;
 
-    // 4. Increment retry count
+    // 4. Increment retry count (atomic guard against concurrent double-retry)
     let retry_count = match sessions::increment_retry_count(&state.db, id).await {
-        Ok(c) => c,
+        Ok(Some(c)) => c,
+        Ok(None) => return (StatusCode::CONFLICT, Json(serde_json::json!({"error": "session not in running state (concurrent retry?)"}))).into_response(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     };
 
@@ -920,9 +931,8 @@ pub(crate) async fn api_retry_session(
     let db = state.db.clone();
     let session_id = id;
     tokio::spawn(async move {
-        // Use a dummy event channel — we don't need SSE events for retry
+        // Bounded drain channel — prevents unbounded memory growth during retry
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        // Drain events in background to prevent channel backpressure
         tokio::spawn(async move { while event_rx.recv().await.is_some() {} });
 
         match engine.handle_sse(&msg, event_tx, Some(session_id), false).await {
