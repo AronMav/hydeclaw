@@ -365,7 +365,7 @@ pub async fn find_stuck_sessions(
     let rows: Vec<(Uuid, String)> = sqlx::query_as(
         "SELECT s.id, s.agent_id FROM sessions s \
          WHERE s.run_status = 'running' \
-           AND s.last_message_at < NOW() - make_interval(secs => $1) \
+           AND COALESCE(s.activity_at, s.last_message_at) < NOW() - make_interval(secs => $1) \
            AND s.retry_count < $2 \
            AND (SELECT role FROM messages WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1) = 'user'"
     )
@@ -376,16 +376,18 @@ pub async fn find_stuck_sessions(
     Ok(rows)
 }
 
-/// Increment retry_count and reset run_status to 'running'.
-pub async fn increment_retry_count(db: &PgPool, session_id: Uuid) -> Result<i32> {
-    let new_count: i32 = sqlx::query_scalar(
-        "UPDATE sessions SET retry_count = retry_count + 1, run_status = 'running' \
-         WHERE id = $1 RETURNING retry_count"
+/// Increment retry_count atomically. Returns None if session is not in 'running' state
+/// (prevents concurrent double-retry).
+pub async fn increment_retry_count(db: &PgPool, session_id: Uuid) -> Result<Option<i32>> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        "UPDATE sessions SET retry_count = retry_count + 1 \
+         WHERE id = $1 AND run_status = 'running' \
+         RETURNING retry_count"
     )
     .bind(session_id)
-    .fetch_one(db)
+    .fetch_optional(db)
     .await?;
-    Ok(new_count)
+    Ok(row.map(|(c,)| c))
 }
 
 /// Mark a session as permanently failed after max retries exhausted.
@@ -413,7 +415,9 @@ pub async fn get_last_user_message(db: &PgPool, session_id: Uuid) -> Result<Opti
 /// Delete empty assistant messages from a session (cleanup before retry).
 pub async fn delete_empty_assistant_messages(db: &PgPool, session_id: Uuid) -> Result<u64> {
     let result = sqlx::query(
-        "DELETE FROM messages WHERE session_id = $1 AND role = 'assistant' AND (content IS NULL OR content = '')"
+        "DELETE FROM messages WHERE session_id = $1 AND role = 'assistant' \
+         AND (content IS NULL OR content = '') \
+         AND (tool_calls IS NULL OR tool_calls = '[]'::jsonb)"
     )
     .bind(session_id)
     .execute(db)
