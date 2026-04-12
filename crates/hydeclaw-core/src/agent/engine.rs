@@ -672,7 +672,7 @@ impl AgentEngine {
 
         // For inter-agent messages (user_id starts with "agent:"), save the sender agent_id
         let sender_agent_id = if msg.user_id.starts_with("agent:") { Some(msg.user_id.trim_start_matches("agent:")) } else { None };
-        sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None, None, None).await?;
+        sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None, None).await?;
 
         // Context compaction if needed (model-aware token budget)
         self.compact_messages(&mut messages, None).await;
@@ -920,16 +920,8 @@ impl AgentEngine {
             }
         }
 
-        let final_msg_id = sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), None, None, None)
+        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), None, None)
             .await?;
-
-        // Assemble and persist finalized text parts for unified chat view
-        if !final_response.is_empty() {
-            let parts_json = crate::agent::parts_builder::assemble_parts(&final_response);
-            if let Err(e) = crate::db::sessions::update_message_parts(&self.db, final_msg_id, &parts_json).await {
-                tracing::warn!(error = %e, "failed to persist message parts (isolated)");
-            }
-        }
 
         // Hook: AfterResponse
         self.hooks().fire(&super::hooks::HookEvent::AfterResponse);
