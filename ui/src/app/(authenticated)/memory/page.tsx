@@ -79,8 +79,8 @@ export default function MemoryPage() {
       if (category !== "all") params.append("category", category);
       if (topic !== "all") params.append("topic", topic);
 
-      const res = await apiGet<MemoryDocument[]>(`/api/memory/documents?${params.toString()}`);
-      setChunks(res);
+      const res = await apiGet<{ documents: MemoryDocument[]; total: number }>(`/api/memory/documents?${params.toString()}`);
+      setChunks(res.documents);
     } catch (err: any) {
       setError(err.message || "Failed to fetch memory");
     } finally {
