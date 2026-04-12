@@ -1,6 +1,7 @@
 pub mod content_security;
 pub mod embedding;
 pub mod mcp_workspace;
+pub mod semantic_cache;
 pub mod service_registry;
 pub mod ssrf;
 pub mod yaml_tools;

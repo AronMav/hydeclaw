@@ -57,7 +57,10 @@ async fn main() -> anyhow::Result<()> {
     let mut was_resource_warning: HashMap<String, bool> = HashMap::new();
     let mut was_container_unhealthy: HashMap<String, bool> = HashMap::new();
     let start_time = std::time::Instant::now();
-    let mut resource_timer = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(9999)).unwrap();
+    // Initialize to force immediate check on first iteration
+    let mut resource_timer = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(3600))
+        .unwrap_or(start_time);
 
     // Notify systemd we're ready
     #[cfg(target_os = "linux")]

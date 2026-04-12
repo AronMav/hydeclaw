@@ -178,6 +178,9 @@ async fn main() -> Result<()> {
 
     tracing::info!(listen = %cfg.gateway.listen, "HydeClaw Core starting...");
 
+    // Auto-install systemd units for watchdog and memory-worker
+    setup_systemd_units();
+
     // Config hot-reload watcher
     let shared_config = std::sync::Arc::new(tokio::sync::RwLock::new(cfg.clone()));
     config::spawn_config_watcher("config/hydeclaw.toml".to_string(), shared_config.clone());
@@ -192,128 +195,11 @@ async fn main() -> Result<()> {
         .await?;
     tracing::info!("migrations complete");
 
-    // Auto-install watchdog systemd unit if binary exists but unit doesn't
-    {
-        let watchdog_binary = std::path::Path::new("hydeclaw-watchdog");
-        if watchdog_binary.exists() {
-            let home = std::env::var("HOME")
-                .or_else(|_| std::env::var("USERPROFILE"))
-                .unwrap_or_else(|_| "/root".into());
-            let unit_path = std::path::PathBuf::from(&home)
-                .join(".config/systemd/user/hydeclaw-watchdog.service");
-            if !unit_path.exists() {
-                let cwd = std::env::current_dir().unwrap_or_default();
-                let binary_path = cwd.join("hydeclaw-watchdog");
-                let auth_token = std::env::var("HYDECLAW_AUTH_TOKEN").unwrap_or_default();
-                let unit_content = format!(
-                    "[Unit]\nDescription=HydeClaw Watchdog\nAfter=network.target\n\n\
-                     [Service]\nType=notify\nWorkingDirectory={cwd}\n\
-                     ExecStart={binary} config/watchdog.toml\n\
-                     Environment=HYDECLAW_AUTH_TOKEN={token}\n\
-                     Environment=RUST_LOG=hydeclaw_watchdog=info\n\
-                     WatchdogSec=120\nRestart=always\nRestartSec=5\n\n\
-                     [Install]\nWantedBy=default.target\n",
-                    cwd = cwd.display(),
-                    binary = binary_path.display(),
-                    token = auth_token,
-                );
-                if let Some(parent) = unit_path.parent() {
-                    std::fs::create_dir_all(parent).ok();
-                }
-                if std::fs::write(&unit_path, &unit_content).is_ok() {
-                    tracing::info!("watchdog systemd unit installed at {}", unit_path.display());
-                    let _ = std::process::Command::new("systemctl").args(["--user", "daemon-reload"]).status();
-                    let _ = std::process::Command::new("systemctl").args(["--user", "enable", "hydeclaw-watchdog"]).status();
-                    let _ = std::process::Command::new("systemctl").args(["--user", "start", "hydeclaw-watchdog"]).status();
-                    tracing::info!("watchdog service enabled and started");
-                }
-            }
-        }
-    }
-
-    // Auto-install memory-worker systemd unit if binary exists but unit doesn't
-    {
-        let worker_binary = std::path::Path::new("hydeclaw-memory-worker");
-        if worker_binary.exists() {
-            let home = std::env::var("HOME")
-                .or_else(|_| std::env::var("USERPROFILE"))
-                .unwrap_or_else(|_| "/root".into());
-            let unit_path = std::path::PathBuf::from(&home)
-                .join(".config/systemd/user/hydeclaw-memory-worker.service");
-            if !unit_path.exists() {
-                let cwd = std::env::current_dir().unwrap_or_default();
-                let binary_path = cwd.join("hydeclaw-memory-worker");
-                // Use EnvironmentFile so the worker inherits DATABASE_URL and other secrets from .env
-                let unit_content = format!(
-                    "[Unit]\nDescription=HydeClaw Memory Worker\nAfter=network.target\n\n\
-                     [Service]\nType=notify\nWorkingDirectory={cwd}\n\
-                     ExecStart={binary} config/hydeclaw.toml\n\
-                     EnvironmentFile={cwd}/.env\n\
-                     Environment=RUST_LOG=hydeclaw_memory_worker=info\n\
-                     WatchdogSec=300\nRestart=always\nRestartSec=5\n\n\
-                     [Install]\nWantedBy=default.target\n",
-                    cwd = cwd.display(),
-                    binary = binary_path.display(),
-                );
-                if let Some(parent) = unit_path.parent() {
-                    std::fs::create_dir_all(parent).ok();
-                }
-                if std::fs::write(&unit_path, &unit_content).is_ok() {
-                    tracing::info!("memory-worker systemd unit installed at {}", unit_path.display());
-                    let _ = std::process::Command::new("systemctl").args(["--user", "daemon-reload"]).status();
-                    let _ = std::process::Command::new("systemctl").args(["--user", "enable", "hydeclaw-memory-worker"]).status();
-                    let _ = std::process::Command::new("systemctl").args(["--user", "start", "hydeclaw-memory-worker"]).status();
-                    tracing::info!("memory-worker service enabled and started");
-                }
-            }
-        }
-    }
-
     // Startup cleanup: repair sessions interrupted by previous crash (batched)
-    loop {
-        match crate::db::sessions::cleanup_interrupted_sessions(&db_pool).await {
-            Ok(0) => {
-                tracing::info!("startup cleanup: no more interrupted sessions");
-                break;
-            }
-            Ok(cleaned) => {
-                tracing::info!(cleaned, "cleanup batch completed, checking for more");
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "startup cleanup failed (non-fatal)");
-                break;
-            }
-        }
-    }
+    cleanup_interrupted_sessions(&db_pool).await;
 
     // Secrets vault
-    let master_key_hex = std::env::var("HYDECLAW_MASTER_KEY").unwrap_or_else(|_| {
-        let mut key = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rand::rng(), &mut key);
-        let generated = hex::encode(key);
-        
-        // Try to append to .env automatically
-        let env_path = std::path::PathBuf::from(".env");
-        if let Ok(mut content) = std::fs::read_to_string(&env_path)
-            && !content.contains("HYDECLAW_MASTER_KEY") {
-                if !content.ends_with('\n') { content.push('\n'); }
-                content.push_str(&format!("HYDECLAW_MASTER_KEY={generated}\n"));
-                if std::fs::write(&env_path, content).is_ok() {
-                    eprintln!("[dotenv] HYDECLAW_MASTER_KEY auto-generated and saved to .env");
-                }
-            }
-
-        eprintln!();
-        eprintln!("!!! HYDECLAW_MASTER_KEY is not set !!!");
-        eprintln!("Secrets encrypted this session will be LOST on restart.");
-        eprintln!("Add this to your .env file and restart:");
-        eprintln!("  HYDECLAW_MASTER_KEY={generated}");
-        eprintln!();
-        tracing::error!(
-            "HYDECLAW_MASTER_KEY not set — ephemeral key in use, secrets will NOT survive restart"
-        );
-        generated
-    });
+    let master_key_hex = get_master_key();
     let secrets_manager = secrets::SecretsManager::new(&master_key_hex, db_pool.clone())?;
     let secrets_count = secrets_manager.load_all().await?;
 
@@ -350,90 +236,13 @@ async fn main() -> Result<()> {
     }
 
     // Tool registry — load service endpoints from workspace/tools/*.yaml
-    let service_map = tools::service_registry::load_service_map(config::WORKSPACE_DIR).await;
-    let tool_registry = tools::ToolRegistry::from_config(&service_map);
-    tracing::info!(tools = tool_registry.len().await, "tool registry loaded from workspace");
-
-    // Spawn periodic health check for external tools
-    {
-        let registry = tool_registry.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-            loop {
-                interval.tick().await;
-                registry.health_check().await;
-            }
-        });
-    }
-
-    // Periodic upload cleanup (every hour, delete files older than 7 days)
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
-        loop {
-            interval.tick().await;
-            agent::cleanup_stale_uploads(
-                config::WORKSPACE_DIR,
-                std::time::Duration::from_secs(7 * 86400),
-            ).await;
-        }
-    });
+    let tool_registry = init_tool_registry().await;
 
     // Container Manager (Docker lifecycle for on-demand MCP servers)
-    let docker_url = std::env::var("DOCKER_HOST")
-        .unwrap_or_else(|_| "tcp://127.0.0.1:2375".to_string());
-    let mcp_map = crate::tools::mcp_workspace::load_mcp_map(crate::config::MCP_DIR).await;
-    tracing::info!(count = mcp_map.len(), dir = crate::config::MCP_DIR, "loaded MCP configs from workspace");
-
-    let container_manager = match containers::ContainerManager::new(&docker_url, mcp_map.clone())
-    {
-        Ok(cm) => {
-            let cm = Arc::new(cm);
-            // Start persistent MCP servers
-            if let Err(e) = cm.start_persistent().await {
-                tracing::warn!(error = %e, "failed to start some persistent MCP MCP servers");
-            }
-            // Cleanup orphaned on-demand containers from previous crash
-            cm.cleanup_orphans().await;
-            // Spawn idle reaper
-            {
-                let cm_clone = cm.clone();
-                tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-                    loop {
-                        interval.tick().await;
-                        cm_clone.reap_idle().await;
-                    }
-                });
-            }
-            Some(cm)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Docker not available, MCP disabled");
-            None
-        }
-    };
+    let container_manager = init_container_manager().await;
 
     // MCP registry (MCP tool discovery from MCP containers)
-    let mcp_registry = container_manager.as_ref().map(|cm| {
-        let sr = mcp::McpRegistry::new(cm.clone());
-        Arc::new(sr)
-    });
-
-    // Discover tools from persistent MCP servers
-    if let Some(ref sr) = mcp_registry {
-        for (name, entry) in &mcp_map {
-            if entry.mode == "persistent" {
-                match sr.discover_tools(name).await {
-                    Ok(tools) => {
-                        tracing::info!(mcp = %name, tools = tools.len(), "discovered MCP tools");
-                    }
-                    Err(e) => {
-                        tracing::warn!(mcp = %name, error = %e, "failed to discover MCP tools");
-                    }
-                }
-            }
-        }
-    }
+    let mcp_registry = init_mcp_registry(container_manager.clone()).await;
 
     // Load agent configs — no default agent created; Setup Wizard handles first agent
     std::fs::create_dir_all("config/agents")?;
@@ -466,11 +275,15 @@ async fn main() -> Result<()> {
     let sched = Arc::new(scheduler::Scheduler::new(ui_event_tx.clone()).await?);
 
     // Extract shared URLs from service configs
+    let service_map = tools::service_registry::load_service_map(config::WORKSPACE_DIR).await;
     let toolgate_url = cfg.toolgate_url.clone()
         .or_else(|| service_map.get("toolgate").map(|t| t.url.clone()));
 
     // Code execution sandbox (optional — requires Docker + sandbox.enabled = true)
     let tool_embed_cache = Arc::new(tools::embedding::ToolEmbeddingCache::new());
+
+    let docker_url = std::env::var("DOCKER_HOST")
+        .unwrap_or_else(|_| "tcp://127.0.0.1:2375".to_string());
 
     let sandbox = if cfg.sandbox.enabled {
         match containers::sandbox::CodeSandbox::new(&docker_url, &cfg.sandbox) {
@@ -505,10 +318,8 @@ async fn main() -> Result<()> {
     }));
 
     // Build running agent handles + access guards
-    let agents: HashMap<String, agent::handle::AgentHandle> = HashMap::new();
-    let access_guards: HashMap<String, Arc<channels::access::AccessGuard>> = HashMap::new();
-    let agents_map: gateway::AgentMap = Arc::new(tokio::sync::RwLock::new(agents));
-    let guards_map: gateway::AccessGuardMap = Arc::new(tokio::sync::RwLock::new(access_guards));
+    let agents_map: gateway::AgentMap = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+    let guards_map: gateway::AccessGuardMap = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
 
     // Stream registry for SSE resume support
     let stream_registry = Arc::new(gateway::stream_registry::StreamRegistry::new(db_pool.clone()));
@@ -566,301 +377,17 @@ async fn main() -> Result<()> {
 
     // Managed processes started after TcpListener::bind below — toolgate needs Core API ready.
 
-    // Periodic session agent pool cleanup (every 5 minutes, remove finished/empty pools)
-    {
-        let pools = state.session_pools.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
-            loop {
-                interval.tick().await;
-                agent::session_agent_pool::cleanup_stale_pools(&pools).await;
-            }
-        });
-    }
-
-    // Stream cleanup: in-memory broadcast (2 min TTL) + DB jobs (1 hour TTL)
-    {
-        let registry = stream_registry;
-        let cleanup_db = db_pool.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
-            loop {
-                interval.tick().await;
-                // Clean in-memory broadcast channels (short TTL)
-                registry.cleanup(std::time::Duration::from_secs(120)).await;
-                // Clean DB jobs (long TTL)
-                gateway::stream_jobs::cleanup_old_jobs(&cleanup_db).await.ok();
-            }
-        });
-    }
-
-    // Watchdog: detect and kill sessions stuck in 'running' with no activity
-    {
-        let watchdog_db = db_pool.clone();
-        // Use state.stream_registry — local stream_registry binding is moved into the cleanup task above
-        let watchdog_registry = state.stream_registry.clone();
-        // Collect minimum inactivity_secs from all agent configs (default 600s = 10 min)
-        let inactivity_secs = agent_configs
-            .iter()
-            .filter_map(|c| c.agent.watchdog.as_ref())
-            .map(|w| w.inactivity_secs)
-            .min()
-            .unwrap_or(600);
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-            loop {
-                interval.tick().await;
-                match crate::db::sessions::find_stale_running_sessions(&watchdog_db, inactivity_secs).await {
-                    Ok(stale) if stale.is_empty() => {}
-                    Ok(stale) => {
-                        tracing::warn!(count = stale.len(), "watchdog: found {} stale running session(s)", stale.len());
-                        for (session_id, agent_id) in stale {
-                            tracing::warn!(%session_id, %agent_id, "watchdog: killing stale session");
-                            // Try to cancel SSE stream if active (no-op if not found)
-                            watchdog_registry.cancel(&session_id.to_string()).await;
-                            // Delete orphaned streaming placeholder
-                            if let Err(e) = sqlx::query("DELETE FROM messages WHERE session_id = $1 AND status = 'streaming'")
-                                .bind(session_id)
-                                .execute(&watchdog_db)
-                                .await
-                            {
-                                tracing::warn!(session = %session_id, error = %e, "failed to cleanup stale session: delete streaming message");
-                            }
-                            // Insert synthetic results for incomplete tool calls
-                            if let Err(e) = crate::db::sessions::insert_synthetic_tool_results(&watchdog_db, session_id).await {
-                                tracing::warn!(session = %session_id, error = %e, "failed to cleanup stale session: insert synthetic tool results");
-                            }
-                            // Mark as timeout
-                            if let Err(e) = crate::db::sessions::set_session_run_status(&watchdog_db, session_id, "timeout").await {
-                                tracing::warn!(session = %session_id, error = %e, "failed to cleanup stale session: set timeout status");
-                            }
-                        }
-                    }
-                    Err(e) => tracing::error!(error = %e, "watchdog query failed"),
-                }
-            }
-        });
-    }
-
-    // Channel health monitor: detect adapters that stopped receiving messages
-    {
-        let health_channels = state.connected_channels.clone();
-        let health_pm = process_manager.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
-            loop {
-                interval.tick().await;
-                let now = chrono::Utc::now();
-                let stale_threshold = chrono::Duration::minutes(5);
-                let channels = health_channels.read().await;
-                if channels.is_empty() {
-                    continue;
-                }
-                let mut needs_restart = false;
-                for ch in channels.iter() {
-                    let idle = now - ch.last_activity;
-                    if idle > stale_threshold {
-                        tracing::warn!(
-                            agent = %ch.agent_name,
-                            channel = %ch.channel_type,
-                            idle_secs = idle.num_seconds(),
-                            "stale channel adapter detected — no activity for over 5 minutes"
-                        );
-                        needs_restart = true;
-                    }
-                }
-                drop(channels);
-                if needs_restart
-                    && let Some(ref pm) = health_pm {
-                        tracing::warn!("restarting 'channels' managed process due to stale adapter");
-                        if let Err(e) = pm.restart("channels").await {
-                            tracing::error!(error = %e, "failed to restart channels process");
-                        }
-                    }
-            }
-        });
-    }
+    // Spawn periodic background tasks (cleanup, watchdog, etc.)
+    spawn_background_tasks(&state, process_manager.clone(), &agent_configs).await;
 
     // Start all agents from config
-    for agent_cfg in &agent_configs {
-        match gateway::start_agent_from_config(agent_cfg, &state).await {
-            Ok((handle, guard)) => {
-                let name = agent_cfg.agent.name.clone();
-                agents_map.write().await.insert(name.clone(), handle);
-                if let Some(guard) = guard {
-                    guards_map.write().await.insert(name.clone(), guard);
-                }
+    start_configured_agents(&state, &agent_configs).await;
 
-                // Ensure Docker sandbox container for non-base agents.
-                // Privileged agents execute on host directly (no sandbox).
-                if !agent_cfg.agent.base
-                    && let Some(ref sb) = state.sandbox {
-                        let deps = state.agent_deps.read().await;
-                        match std::fs::canonicalize(&deps.workspace_dir) {
-                            Ok(host_path) => {
-                                if let Err(e) = sb.ensure_container(&name, &host_path.to_string_lossy(), false, Some(&state.oauth)).await {
-                                    tracing::warn!(agent = %name, error = %e, "failed to ensure agent container");
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "failed to canonicalize workspace path for sandbox");
-                            }
-                        }
-                    }
-            }
-            Err(e) => {
-                tracing::error!(agent = %agent_cfg.agent.name, error = %e, "failed to start agent");
-            }
-        }
-    }
+    // Background workers (graph extraction, compression)
+    let (graph_handle, compression_handle, graph_cancel, compression_cancel) = spawn_workers(&state, &cfg).await;
 
-    // Graph extraction background worker — use provider_active or fall back to first agent's
-    let graph_cancel = CancellationToken::new();
-    let graph_handle: Option<tokio::task::JoinHandle<()>> = {
-        let graph_provider: Option<Arc<dyn agent::providers::LlmProvider>> =
-            match db::providers::get_provider_active(&db_pool, "graph_extraction").await {
-                Ok(Some(name)) => {
-                    if let Ok(Some(conn)) = db::providers::get_provider_by_name(&db_pool, &name).await {
-                        tracing::info!(provider = %name, model = ?conn.default_model, "graph worker using configured provider");
-                        Some(agent::providers::create_provider_from_connection(
-                            &conn, None, 0.3, None,
-                            state.secrets.clone(), None, "__graph_worker__", "", false,
-                        ).await)
-                    } else {
-                        tracing::warn!(provider = %name, "graph_extraction provider not found, falling back");
-                        None
-                    }
-                }
-                _ => None,
-            };
-        let provider = match graph_provider {
-            Some(p) => Some(p),
-            None => state.first_engine().await.map(|e| e.provider.clone()),
-        };
-        if let Some(p) = provider { Some(graph_worker::spawn_worker(db_pool.clone(), p, graph_cancel.clone())) } else {
-            tracing::warn!("no graph_extraction provider configured and no agents running, graph worker not started");
-            None
-        }
-    };
-
-    // Background memory compression worker — reuses graph provider or first agent's
-    let compression_cancel = CancellationToken::new();
-    let compression_handle: Option<tokio::task::JoinHandle<()>> = {
-        let comp_provider: Option<Arc<dyn agent::providers::LlmProvider>> =
-            match db::providers::get_provider_active(&db_pool, "graph_extraction").await {
-                Ok(Some(name)) => {
-                    if let Ok(Some(conn)) = db::providers::get_provider_by_name(&db_pool, &name).await {
-                        tracing::info!(provider = %name, "compression worker using configured provider");
-                        Some(agent::providers::create_provider_from_connection(
-                            &conn, None, 0.3, None,
-                            state.secrets.clone(), None, "__compression_worker__", "", false,
-                        ).await)
-                    } else {
-                        tracing::warn!(provider = %name, "graph_extraction provider not found, falling back for compression");
-                        None
-                    }
-                }
-                _ => None,
-            };
-        let provider = match comp_provider {
-            Some(p) => Some(p),
-            None => state.first_engine().await.map(|e| e.provider.clone()),
-        };
-        let age_days = cfg.memory.compression_age_days;
-        if let Some(p) = provider { Some(compression_worker::spawn_worker(
-            db_pool.clone(),
-            p,
-            state.memory_store.clone(),
-            age_days,
-            compression_cancel.clone(),
-        )) } else {
-            tracing::warn!("no provider available, compression worker not started");
-            None
-        }
-    };
-
-    // Load dynamic cron jobs from database
-    {
-        let agents_lock = agents_map.read().await;
-        let engines_map: HashMap<String, Arc<agent::engine::AgentEngine>> = agents_lock
-            .iter()
-            .map(|(k, v)| (k.clone(), v.engine.clone()))
-            .collect();
-        match sched.load_dynamic_jobs(&db_pool, &engines_map).await {
-            Ok(count) if count > 0 => tracing::info!(count, "loaded dynamic cron jobs"),
-            Ok(_) => {}
-            Err(e) => tracing::warn!(error = %e, "failed to load dynamic cron jobs"),
-        }
-    }
-
-    // Memory temporal decay (daily)
-    if let Err(e) = sched.add_memory_decay(db_pool.clone()).await {
-        tracing::warn!(error = %e, "failed to schedule memory decay");
-    }
-
-    // Task cleanup (daily — delete old completed/failed tasks)
-    if let Err(e) = sched.add_task_cleanup(db_pool.clone()).await {
-        tracing::warn!(error = %e, "failed to schedule task cleanup");
-    }
-
-    // Session cleanup (daily — delete sessions older than TTL)
-    {
-        let ttl_days = agent_configs
-            .iter()
-            .filter_map(|c| c.agent.session.as_ref())
-            .map(|s| s.ttl_days)
-            .max()
-            .unwrap_or(30);
-        if let Err(e) = sched.add_session_cleanup(db_pool.clone(), ttl_days).await {
-            tracing::warn!(error = %e, "failed to schedule session cleanup");
-        }
-    }
-
-    // Audit cleanup
-    if let Err(e) = sched.add_audit_cleanup(db_pool.clone(), 30).await {
-        tracing::warn!(error = %e, "failed to schedule audit cleanup");
-    }
-
-    // Tool audit log cleanup (90 days retention)
-    if let Err(e) = sched.add_tool_audit_cleanup(db_pool.clone(), 90).await {
-        tracing::warn!(error = %e, "failed to schedule tool audit cleanup");
-    }
-
-    // Pending messages cleanup
-    if let Err(e) = sched.add_pending_messages_cleanup(db_pool.clone()).await {
-        tracing::warn!(error = %e, "failed to schedule pending_messages cleanup");
-    }
-
-    // Outbound queue cleanup (acked items older than 7 days)
-    if let Err(e) = sched.add_outbound_queue_cleanup(db_pool.clone()).await {
-        tracing::warn!(error = %e, "failed to schedule outbound_queue cleanup");
-    }
-
-    // Usage log cleanup (90-day retention)
-    if let Err(e) = sched.add_usage_log_cleanup(db_pool.clone()).await {
-        tracing::warn!(error = %e, "failed to schedule usage_log cleanup");
-    }
-
-    // Memory chunks decay cleanup (180-day, low-score, non-pinned)
-    if let Err(e) = sched.add_memory_decay_cleanup(db_pool.clone()).await {
-        tracing::warn!(error = %e, "failed to schedule memory decay cleanup");
-    }
-
-    // Automatic backup (if enabled in config)
-    if cfg.backup.enabled
-        && let Err(e) = sched.add_backup(
-            &cfg.backup.cron,
-            cfg.backup.retention_days,
-            db_pool.clone(),
-            state.secrets.clone(),
-            state.agent_deps.clone(),
-        ).await
-    {
-        tracing::warn!(error = %e, "failed to schedule automatic backup");
-    }
-
-    // Start scheduler
-    sched.start().await?;
+    // Load dynamic cron jobs and schedule periodic system jobs
+    schedule_periodic_jobs(&state, &agent_configs).await;
 
     // Background task: renew expiring Gmail watches every 6 hours
     {
@@ -870,11 +397,7 @@ async fn main() -> Result<()> {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
             loop {
                 interval.tick().await;
-                crate::gateway::renew_expiring_gmail_watches(
-                    &renewal_db,
-                    &renewal_oauth,
-                )
-                .await;
+                crate::gateway::renew_expiring_gmail_watches(&renewal_db, &renewal_oauth).await;
             }
         });
     }
@@ -883,153 +406,24 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&cfg.gateway.listen).await?;
     tracing::info!(addr = %cfg.gateway.listen, "gateway listening");
 
-    // ── mDNS: advertise _hydeclaw._tcp.local. on the local network ────────────
-    let _mdns_daemon = {
-        use mdns_sd::{ServiceDaemon, ServiceInfo};
+    // ── mDNS: advertise _hydeclaw._tcp.local. ──
+    let _mdns_daemon = setup_mdns(&cfg);
 
-        let port: u16 = cfg.gateway.listen
-            .split(':')
-            .next_back()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(18789);
-
-        let hostname = "hydeclaw";
-        let host_fqdn = "hydeclaw.local.";
-
-        match ServiceDaemon::new() {
-            Ok(daemon) => {
-                let service_type = "_hydeclaw._tcp.local.";
-                let props = {
-                    let mut m = std::collections::HashMap::new();
-                    m.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
-                    m
-                };
-
-                // Use () for addresses — mdns-sd auto-detects host IPs when () is passed
-                match ServiceInfo::new(
-                    service_type,
-                    hostname,
-                    host_fqdn,
-                    (),
-                    port,
-                    Some(props),
-                ) {
-                    Ok(info) => match daemon.register(info) {
-                        Ok(()) => tracing::info!(
-                            port,
-                            hostname = %hostname,
-                            "mDNS registered: {}._hydeclaw._tcp.local.",
-                            hostname
-                        ),
-                        Err(e) => tracing::warn!(error = %e, "mDNS register failed"),
-                    },
-                    Err(e) => tracing::warn!(error = %e, "mDNS ServiceInfo creation failed"),
-                }
-                Some(daemon)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "mDNS daemon startup failed — if avahi-daemon is running, it may hold port 5353 (run: ss -ulnp | grep 5353)"
-                );
-                None
-            }
-        }
-    };
-
-    // Tailscale Funnel: expose gateway via `tailscale serve` or `tailscale funnel`
-    if cfg.tailscale.enabled {
-        let port = cfg.gateway.listen.split(':').next_back().unwrap_or("18789");
-        let target = format!("https+insecure://localhost:{port}");
-        let cmd = if cfg.tailscale.funnel { "funnel" } else { "serve" };
-        tracing::info!(command = cmd, target = %target, "setting up Tailscale");
-        match tokio::process::Command::new("tailscale")
-            .args([cmd, "--bg", &target])
-            .output()
-            .await
-        {
-            Ok(output) if output.status.success() => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                tracing::info!(command = cmd, "Tailscale {} configured: {}", cmd, stdout.trim());
-            }
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                tracing::warn!(command = cmd, "Tailscale {} failed: {}", cmd, stderr.trim());
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "tailscale binary not found or not executable");
-            }
-        }
-    }
+    // Tailscale Funnel setup
+    setup_tailscale(&cfg).await;
 
     // Notify systemd: service is ready (no-op on non-Linux)
     #[cfg(target_os = "linux")]
-    {
-        let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]);
-        tracing::info!("systemd: READY");
+    setup_linux_service_notify();
 
-        // Watchdog ticker: WatchdogSec=120 → ping every 60s
-        tokio::spawn(async {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-            loop {
-                interval.tick().await;
-                let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
-            }
-        });
-    }
-
-    // SIGHUP: hot-restart agents with updated TOML configs (Unix only).
+    // SIGHUP: hot-restart agents (Unix only)
     #[cfg(unix)]
-    {
-        let state_reload = state.clone();
-        tokio::spawn(async move {
-            use tokio::signal::unix::{signal, SignalKind};
-            let mut sighup = signal(SignalKind::hangup()).expect("failed to register SIGHUP");
-            loop {
-                sighup.recv().await;
-                tracing::info!("SIGHUP received — reloading agent configs from disk");
-                let configs = match crate::config::load_agent_configs("config/agents") {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::error!(error = %e, "SIGHUP: failed to read agent configs");
-                        continue;
-                    }
-                };
-                let mut restarted = 0u32;
-                let mut failed = 0u32;
-                for cfg in configs {
-                    let name = cfg.agent.name.clone();
-                    // Try starting new agent FIRST — only stop old one if new starts successfully
-                    match crate::gateway::start_agent_from_config(&cfg, &state_reload).await {
-                        Ok((handle, guard)) => {
-                            // New agent started — now safe to stop old one
-                            let old = state_reload.agents.write().await.remove(&name);
-                            if let Some(old_handle) = old {
-                                old_handle.shutdown(&state_reload.scheduler).await;
-                            }
-                            state_reload.agents.write().await.insert(name.clone(), handle);
-                            if let Some(g) = guard {
-                                state_reload.access_guards.write().await.insert(name.clone(), g);
-                            }
-                            restarted += 1;
-                        }
-                        Err(e) => {
-                            tracing::error!(agent = %name, error = %e, "SIGHUP: failed to start agent, keeping old instance");
-                            failed += 1;
-                        }
-                    }
-                }
-                tracing::info!(restarted, failed, "SIGHUP: agent reload complete");
-            }
-        });
-    }
+    setup_sighup_handler(state.clone());
 
-    // Start managed child processes just before serve — Core API must be accepting requests
-    // for toolgate to load config from /api/media-config
+    // Start managed child processes just before serve
     if let Some(ref pm) = process_manager {
         let pm_clone = pm.clone();
         tokio::spawn(async move {
-            // Small delay to ensure axum::serve has started accepting
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             pm_clone.start_all().await;
         });
@@ -1039,7 +433,7 @@ async fn main() -> Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
-    // Stop all agents gracefully (drain scheduler jobs, etc.)
+    // Stop all agents gracefully
     {
         let mut agents = agents_map.write().await;
         for (name, handle) in agents.drain() {
@@ -1048,41 +442,483 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Cancel graph worker and wait for it to stop
+    // Cancel workers
     graph_cancel.cancel();
-    if let Some(handle) = graph_handle {
-        match tokio::time::timeout(std::time::Duration::from_secs(5), handle).await {
-            Ok(Ok(())) => tracing::info!("graph worker stopped"),
-            Ok(Err(e)) => tracing::warn!(error = %e, "graph worker panicked during shutdown"),
-            Err(_) => tracing::warn!("graph worker did not stop within 5s"),
-        }
-    }
-
-    // Cancel compression worker and wait for it to stop
+    if let Some(h) = graph_handle { let _ = tokio::time::timeout(std::time::Duration::from_secs(5), h).await; }
     compression_cancel.cancel();
-    if let Some(handle) = compression_handle {
-        match tokio::time::timeout(std::time::Duration::from_secs(5), handle).await {
-            Ok(Ok(())) => tracing::info!("compression worker stopped"),
-            Ok(Err(e)) => tracing::warn!(error = %e, "compression worker panicked during shutdown"),
-            Err(_) => tracing::warn!("compression worker did not stop within 5s"),
-        }
-    }
+    if let Some(h) = compression_handle { let _ = tokio::time::timeout(std::time::Duration::from_secs(5), h).await; }
 
-    // Graceful cleanup of managed processes
-    if let Some(pm) = &process_manager {
-        pm.stop_all().await;
-    }
+    if let Some(pm) = &process_manager { pm.stop_all().await; }
 
     #[cfg(target_os = "linux")]
     let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
 
     #[cfg(feature = "otel")]
-    if cfg.otel.enabled {
-        opentelemetry::global::shutdown_tracer_provider();
-    }
+    if cfg.otel.enabled { opentelemetry::global::shutdown_tracer_provider(); }
 
     tracing::info!("HydeClaw Core shutting down");
     Ok(())
+}
+
+/// Auto-install systemd user units for watchdog and memory-worker if binaries exist.
+fn setup_systemd_units() {
+    let watchdog_binary = std::path::Path::new("hydeclaw-watchdog");
+    if watchdog_binary.exists() {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| "/root".into());
+        let unit_path = std::path::PathBuf::from(&home)
+            .join(".config/systemd/user/hydeclaw-watchdog.service");
+        if !unit_path.exists() {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let binary_path = cwd.join("hydeclaw-watchdog");
+            let auth_token = std::env::var("HYDECLAW_AUTH_TOKEN").unwrap_or_default();
+            let unit_content = format!(
+                "[Unit]\nDescription=HydeClaw Watchdog\nAfter=network.target\n\n\
+                 [Service]\nType=notify\nWorkingDirectory={cwd}\n\
+                 ExecStart={binary} config/watchdog.toml\n\
+                 Environment=HYDECLAW_AUTH_TOKEN={token}\n\
+                 Environment=RUST_LOG=hydeclaw_watchdog=info\n\
+                 WatchdogSec=120\nRestart=always\nRestartSec=5\n\n\
+                 [Install]\nWantedBy=default.target\n",
+                cwd = cwd.display(),
+                binary = binary_path.display(),
+                token = auth_token,
+            );
+            if let Some(parent) = unit_path.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            if std::fs::write(&unit_path, &unit_content).is_ok() {
+                tracing::info!("watchdog systemd unit installed at {}", unit_path.display());
+                let _ = std::process::Command::new("systemctl").args(["--user", "daemon-reload"]).status();
+                let _ = std::process::Command::new("systemctl").args(["--user", "enable", "hydeclaw-watchdog"]).status();
+                let _ = std::process::Command::new("systemctl").args(["--user", "start", "hydeclaw-watchdog"]).status();
+                tracing::info!("watchdog service enabled and started");
+            }
+        }
+    }
+
+    let worker_binary = std::path::Path::new("hydeclaw-memory-worker");
+    if worker_binary.exists() {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| "/root".into());
+        let unit_path = std::path::PathBuf::from(&home)
+            .join(".config/systemd/user/hydeclaw-memory-worker.service");
+        if !unit_path.exists() {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let binary_path = cwd.join("hydeclaw-memory-worker");
+            let unit_content = format!(
+                "[Unit]\nDescription=HydeClaw Memory Worker\nAfter=network.target\n\n\
+                 [Service]\nType=notify\nWorkingDirectory={cwd}\n\
+                 ExecStart={binary} config/hydeclaw.toml\n\
+                 EnvironmentFile={cwd}/.env\n\
+                 Environment=RUST_LOG=hydeclaw_memory_worker=info\n\
+                 WatchdogSec=300\nRestart=always\nRestartSec=5\n\n\
+                 [Install]\nWantedBy=default.target\n",
+                cwd = cwd.display(),
+                binary = binary_path.display(),
+            );
+            if let Some(parent) = unit_path.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            if std::fs::write(&unit_path, &unit_content).is_ok() {
+                tracing::info!("memory-worker systemd unit installed at {}", unit_path.display());
+                let _ = std::process::Command::new("systemctl").args(["--user", "daemon-reload"]).status();
+                let _ = std::process::Command::new("systemctl").args(["--user", "enable", "hydeclaw-memory-worker"]).status();
+                let _ = std::process::Command::new("systemctl").args(["--user", "start", "hydeclaw-memory-worker"]).status();
+                tracing::info!("memory-worker service enabled and started");
+            }
+        }
+    }
+}
+
+/// Repair sessions interrupted by previous crash (batched loop).
+async fn cleanup_interrupted_sessions(db_pool: &sqlx::PgPool) {
+    loop {
+        match crate::db::sessions::cleanup_interrupted_sessions(db_pool).await {
+            Ok(0) => {
+                tracing::info!("startup cleanup: no more interrupted sessions");
+                break;
+            }
+            Ok(cleaned) => {
+                tracing::info!(cleaned, "cleanup batch completed, checking for more");
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "startup cleanup failed (non-fatal)");
+                break;
+            }
+        }
+    }
+}
+
+/// Load HYDECLAW_MASTER_KEY from environment or auto-generate and save to .env.
+fn get_master_key() -> String {
+    std::env::var("HYDECLAW_MASTER_KEY").unwrap_or_else(|_| {
+        let mut key = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::rng(), &mut key);
+        let generated = hex::encode(key);
+        
+        // Try to append to .env automatically
+        let env_path = std::path::PathBuf::from(".env");
+        if let Ok(mut content) = std::fs::read_to_string(&env_path)
+            && !content.contains("HYDECLAW_MASTER_KEY") {
+                if !content.ends_with('\n') { content.push('\n'); }
+                content.push_str(&format!("HYDECLAW_MASTER_KEY={generated}\n"));
+                if std::fs::write(&env_path, content).is_ok() {
+                    eprintln!("[dotenv] HYDECLAW_MASTER_KEY auto-generated and saved to .env");
+                }
+            }
+
+        eprintln!();
+        eprintln!("!!! HYDECLAW_MASTER_KEY is not set !!!");
+        eprintln!("Secrets encrypted this session will be LOST on restart.");
+        eprintln!("Add this to your .env file and restart:");
+        eprintln!("  HYDECLAW_MASTER_KEY={generated}");
+        eprintln!();
+        tracing::error!(
+            "HYDECLAW_MASTER_KEY not set — ephemeral key in use, secrets will NOT survive restart"
+        );
+        generated
+    })
+}
+
+/// Initialize the tool registry by loading service endpoints from the workspace.
+async fn init_tool_registry() -> tools::ToolRegistry {
+    let service_map = tools::service_registry::load_service_map(config::WORKSPACE_DIR).await;
+    let tool_registry = tools::ToolRegistry::from_config(&service_map);
+    tracing::info!(tools = tool_registry.len().await, "tool registry loaded from workspace");
+
+    // Spawn periodic health check for external tools
+    let registry = tool_registry.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            registry.health_check().await;
+        }
+    });
+
+    // Periodic upload cleanup (every hour, delete files older than 7 days)
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        loop {
+            interval.tick().await;
+            agent::cleanup_stale_uploads(
+                config::WORKSPACE_DIR,
+                std::time::Duration::from_secs(7 * 86400),
+            ).await;
+        }
+    });
+
+    tool_registry
+}
+
+/// Initialize the Container Manager for Docker-based MCP servers.
+async fn init_container_manager() -> Option<Arc<containers::ContainerManager>> {
+    let docker_url = std::env::var("DOCKER_HOST")
+        .unwrap_or_else(|_| "tcp://127.0.0.1:2375".to_string());
+    let mcp_map = crate::tools::mcp_workspace::load_mcp_map(crate::config::MCP_DIR).await;
+    tracing::info!(count = mcp_map.len(), dir = crate::config::MCP_DIR, "loaded MCP configs from workspace");
+
+    match containers::ContainerManager::new(&docker_url, mcp_map.clone()) {
+        Ok(cm) => {
+            let cm = Arc::new(cm);
+            // Start persistent MCP servers
+            if let Err(e) = cm.start_persistent().await {
+                tracing::warn!(error = %e, "failed to start some persistent MCP MCP servers");
+            }
+            // Cleanup orphaned on-demand containers from previous crash
+            cm.cleanup_orphans().await;
+            // Spawn idle reaper
+            let cm_clone = cm.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                loop {
+                    interval.tick().await;
+                    cm_clone.reap_idle().await;
+                }
+            });
+            Some(cm)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Docker not available, MCP disabled");
+            None
+        }
+    }
+}
+
+/// Initialize the MCP registry and discover tools from persistent servers.
+async fn init_mcp_registry(container_manager: Option<Arc<containers::ContainerManager>>) -> Option<Arc<mcp::McpRegistry>> {
+    let mcp_map = crate::tools::mcp_workspace::load_mcp_map(crate::config::MCP_DIR).await;
+    let mcp_registry = container_manager.map(|cm| {
+        let sr = mcp::McpRegistry::new(cm);
+        Arc::new(sr)
+    });
+
+    // Discover tools from persistent MCP servers
+    if let Some(ref sr) = mcp_registry {
+        for (name, entry) in &mcp_map {
+            if entry.mode == "persistent" {
+                match sr.discover_tools(name).await {
+                    Ok(tools) => {
+                        tracing::info!(mcp = %name, tools = tools.len(), "discovered MCP tools");
+                    }
+                    Err(e) => {
+                        tracing::warn!(mcp = %name, error = %e, "failed to discover MCP tools");
+                    }
+                }
+            }
+        }
+    }
+    mcp_registry
+}
+
+/// Spawn various background tasks for session cleanup, watchdog, and health monitoring.
+async fn spawn_background_tasks(
+    state: &gateway::AppState,
+    process_manager: Option<Arc<process_manager::ProcessManager>>,
+    agent_configs: &[config::AgentConfig],
+) {
+    // Periodic session agent pool cleanup (every 5 minutes)
+    let pools = state.session_pools.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+        loop {
+            interval.tick().await;
+            agent::session_agent_pool::cleanup_stale_pools(&pools).await;
+        }
+    });
+
+    // Stream cleanup: in-memory broadcast (2 min TTL) + DB jobs (1 hour TTL)
+    let registry = state.stream_registry.clone();
+    let cleanup_db = state.db.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+        loop {
+            interval.tick().await;
+            registry.cleanup(std::time::Duration::from_secs(120)).await;
+            gateway::stream_jobs::cleanup_old_jobs(&cleanup_db).await.ok();
+        }
+    });
+
+    // Watchdog: detect and kill sessions stuck in 'running'
+    let watchdog_db = state.db.clone();
+    let watchdog_registry = state.stream_registry.clone();
+    let inactivity_secs = agent_configs
+        .iter()
+        .filter_map(|c| c.agent.watchdog.as_ref())
+        .map(|w| w.inactivity_secs)
+        .min()
+        .unwrap_or(600);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            match crate::db::sessions::find_stale_running_sessions(&watchdog_db, inactivity_secs).await {
+                Ok(stale) if stale.is_empty() => {}
+                Ok(stale) => {
+                    tracing::warn!(count = stale.len(), "watchdog: found {} stale running session(s)", stale.len());
+                    for (session_id, agent_id) in stale {
+                        tracing::warn!(%session_id, %agent_id, "watchdog: killing stale session");
+                        watchdog_registry.cancel(&session_id.to_string()).await;
+                        sqlx::query("DELETE FROM messages WHERE session_id = $1 AND status = 'streaming'")
+                            .bind(session_id).execute(&watchdog_db).await.ok();
+                        crate::db::sessions::insert_synthetic_tool_results(&watchdog_db, session_id).await.ok();
+                        crate::db::sessions::set_session_run_status(&watchdog_db, session_id, "timeout").await.ok();
+                    }
+                }
+                Err(e) => tracing::error!(error = %e, "watchdog query failed"),
+            }
+        }
+    });
+
+    // Channel health monitor
+    let health_channels = state.connected_channels.clone();
+    let health_pm = process_manager;
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
+        loop {
+            interval.tick().await;
+            let now = chrono::Utc::now();
+            let stale_threshold = chrono::Duration::minutes(5);
+            let channels = health_channels.read().await;
+            let mut needs_restart = false;
+            for ch in channels.iter() {
+                if now - ch.last_activity > stale_threshold {
+                    tracing::warn!(agent = %ch.agent_name, channel = %ch.channel_type, "stale channel adapter detected");
+                    needs_restart = true;
+                }
+            }
+            drop(channels);
+            if needs_restart && let Some(ref pm) = health_pm {
+                pm.restart("channels").await.ok();
+            }
+        }
+    });
+}
+
+/// Start all agents defined in the configuration.
+async fn start_configured_agents(state: &gateway::AppState, agent_configs: &[config::AgentConfig]) {
+    for agent_cfg in agent_configs {
+        match gateway::start_agent_from_config(agent_cfg, state).await {
+            Ok((handle, guard)) => {
+                let name = agent_cfg.agent.name.clone();
+                state.agents.write().await.insert(name.clone(), handle);
+                if let Some(guard) = guard {
+                    state.access_guards.write().await.insert(name.clone(), guard);
+                }
+                // Ensure sandbox
+                if !agent_cfg.agent.base && let Some(ref sb) = state.sandbox {
+                    let deps = state.agent_deps.read().await;
+                    if let Ok(host_path) = std::fs::canonicalize(&deps.workspace_dir) {
+                        sb.ensure_container(&name, &host_path.to_string_lossy(), false, Some(&state.oauth)).await.ok();
+                    }
+                }
+            }
+            Err(e) => tracing::error!(agent = %agent_cfg.agent.name, error = %e, "failed to start agent"),
+        }
+    }
+}
+
+/// Spawn background workers for graph extraction and memory compression.
+async fn spawn_workers(
+    state: &gateway::AppState,
+    cfg: &config::AppConfig,
+) -> (
+    Option<tokio::task::JoinHandle<()>>,
+    Option<tokio::task::JoinHandle<()>>,
+    CancellationToken,
+    CancellationToken,
+) {
+    let graph_cancel = CancellationToken::new();
+    let compression_cancel = CancellationToken::new();
+    
+    // Resolve provider for graph/compression (explicitly configured or first agent's)
+    let provider = match db::providers::get_provider_active(&state.db, "graph_extraction").await {
+        Ok(Some(name)) => {
+            if let Ok(Some(conn)) = db::providers::get_provider_by_name(&state.db, &name).await {
+                Some(agent::providers::create_provider_from_connection(
+                    &conn, None, 0.3, None, state.secrets.clone(), None, "__worker__", "", false,
+                ).await)
+            } else { None }
+        }
+        _ => None,
+    };
+    let provider = match provider {
+        Some(p) => Some(p),
+        None => state.first_engine().await.map(|e| e.provider.clone()),
+    };
+
+    let graph_handle = provider.as_ref().map(|p| {
+        graph_worker::spawn_worker(state.db.clone(), p.clone(), graph_cancel.clone())
+    });
+
+    let compression_handle = provider.as_ref().map(|p| {
+        compression_worker::spawn_worker(
+            state.db.clone(), p.clone(), state.memory_store.clone(),
+            cfg.memory.compression_age_days, compression_cancel.clone(),
+        )
+    });
+
+    (graph_handle, compression_handle, graph_cancel, compression_cancel)
+}
+
+/// Schedule periodic system maintenance jobs (decay, cleanup, backup).
+async fn schedule_periodic_jobs(state: &gateway::AppState, agent_configs: &[config::AgentConfig]) {
+    let sched = &state.scheduler;
+    let db = &state.db;
+
+    // Load dynamic cron jobs
+    let engines = state.get_engines_map().await;
+    sched.load_dynamic_jobs(db, &engines).await.ok();
+
+    // Daily maintenance jobs
+    sched.add_memory_decay(db.clone()).await.ok();
+    sched.add_task_cleanup(db.clone()).await.ok();
+    sched.add_audit_cleanup(db.clone(), 30).await.ok();
+    sched.add_tool_audit_cleanup(db.clone(), 90).await.ok();
+    sched.add_pending_messages_cleanup(db.clone()).await.ok();
+    sched.add_outbound_queue_cleanup(db.clone()).await.ok();
+    sched.add_usage_log_cleanup(db.clone()).await.ok();
+    sched.add_memory_decay_cleanup(db.clone()).await.ok();
+
+    // Session cleanup (based on max TTL in agent configs)
+    let ttl_days = agent_configs.iter().filter_map(|c| c.agent.session.as_ref()).map(|s| s.ttl_days).max().unwrap_or(30);
+    sched.add_session_cleanup(db.clone(), ttl_days).await.ok();
+
+    // Automatic backup
+    if state.config.backup.enabled {
+        sched.add_backup(
+            &state.config.backup.cron, state.config.backup.retention_days,
+            db.clone(), state.secrets.clone(), state.agent_deps.clone(),
+        ).await.ok();
+    }
+
+    sched.start().await.ok();
+}
+
+/// Advertise the service via mDNS.
+fn setup_mdns(cfg: &config::AppConfig) -> Option<mdns_sd::ServiceDaemon> {
+    use mdns_sd::{ServiceDaemon, ServiceInfo};
+    let port = cfg.gateway.listen.split(':').next_back().and_then(|p| p.parse().ok()).unwrap_or(18789);
+    
+    ServiceDaemon::new().ok().and_then(|daemon| {
+        let props = [("version", env!("CARGO_PKG_VERSION"))].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        ServiceInfo::new("_hydeclaw._tcp.local.", "hydeclaw", "hydeclaw.local.", (), port, Some(props)).ok().and_then(|info| {
+            daemon.register(info).ok()?;
+            tracing::info!(port, "mDNS registered: hydeclaw._hydeclaw._tcp.local.");
+            Some(daemon)
+        })
+    })
+}
+
+/// Setup Tailscale Funnel or Serve.
+async fn setup_tailscale(cfg: &config::AppConfig) {
+    if cfg.tailscale.enabled {
+        let port = cfg.gateway.listen.split(':').next_back().unwrap_or("18789");
+        let target = format!("https+insecure://localhost:{port}");
+        let cmd = if cfg.tailscale.funnel { "funnel" } else { "serve" };
+        tokio::process::Command::new("tailscale").args([cmd, "--bg", &target]).output().await.ok();
+    }
+}
+
+/// Notify systemd that the service is ready and start watchdog ticker.
+#[cfg(target_os = "linux")]
+fn setup_linux_service_notify() {
+    let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]);
+    tokio::spawn(async {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
+        }
+    });
+}
+
+/// Setup SIGHUP handler for hot-reloading agent configs (Unix only).
+#[cfg(unix)]
+fn setup_sighup_handler(state: gateway::AppState) {
+    tokio::spawn(async move {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sighup = signal(SignalKind::hangup()).expect("failed to register SIGHUP");
+        loop {
+            sighup.recv().await;
+            tracing::info!("SIGHUP received — reloading agent configs");
+            if let Ok(configs) = crate::config::load_agent_configs("config/agents") {
+                for cfg in configs {
+                    let name = cfg.agent.name.clone();
+                    if let Ok((handle, guard)) = crate::gateway::start_agent_from_config(&cfg, &state).await {
+                        if let Some(old) = state.agents.write().await.remove(&name) {
+                            old.shutdown(&state.scheduler).await;
+                        }
+                        state.agents.write().await.insert(name.clone(), handle);
+                        if let Some(g) = guard { state.access_guards.write().await.insert(name.clone(), g); }
+                    }
+                }
+            }
+        }
+    });
 }
 
 async fn shutdown_signal() {

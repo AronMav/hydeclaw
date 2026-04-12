@@ -168,6 +168,13 @@ impl AppState {
         self.agents.read().await.get(name).map(|h| h.engine.clone())
     }
 
+    /// Get a snapshot map of all running agent engines.
+    pub async fn get_engines_map(&self) -> std::collections::HashMap<String, Arc<AgentEngine>> {
+        self.agents.read().await.iter()
+            .map(|(k, v)| (k.clone(), v.engine.clone()))
+            .collect()
+    }
+
     /// Get the first available engine.
     pub async fn first_engine(&self) -> Option<Arc<AgentEngine>> {
         self.agents.read().await.values().next().map(|h| h.engine.clone())

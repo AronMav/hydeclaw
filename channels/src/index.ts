@@ -13,6 +13,7 @@ import { createMatrixDriver } from "./drivers/matrix";
 import { createIrcDriver } from "./drivers/irc";
 import { createSlackDriver } from "./drivers/slack";
 import { createWhatsAppDriver } from "./drivers/whatsapp";
+import { createEmailDriver } from "./drivers/email";
 import { getFormattingPrompt } from "./formatting";
 
 const HEALTH_PORT = Number(process.env.HEALTH_PORT ?? "3000");
@@ -36,6 +37,7 @@ function getDriverFactory(channelType: string) {
     case "irc": return createIrcDriver;
     case "slack": return createSlackDriver;
     case "whatsapp": return createWhatsAppDriver;
+    case "email": return createEmailDriver;
     default:
       throw new Error(`Unknown channel type: ${channelType}`);
   }

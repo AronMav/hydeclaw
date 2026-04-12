@@ -221,7 +221,7 @@ export function createStreamingRenderer(store: StoreAccess) {
             type: "file",
             url: content.data,
             mediaType: content.mimeType,
-          } as any);
+          });
           
           apiAttachments.push({
             url: content.data,
@@ -669,8 +669,12 @@ export function createStreamingRenderer(store: StoreAccess) {
                   const existingMsg = liveMessages[existingIdx];
                   // Merge content: keep local text if it's ahead of sync (prevents flicker)
                   // but accept sync if it's significantly different (recon from scratch)
-                  const localTextLen = existingMsg.parts.filter((p: MessagePart) => p.type === "text").reduce((acc: number, p: MessagePart) => acc + ((p as any).text?.length ?? 0), 0);
-                  const syncTextLen = syncParts.filter((p: MessagePart) => p.type === "text").reduce((acc: number, p: MessagePart) => acc + ((p as any).text?.length ?? 0), 0);
+                  const localTextLen = existingMsg.parts
+                    .filter((p: MessagePart): p is TextPart => p.type === "text")
+                    .reduce((acc: number, p: TextPart) => acc + (p.text?.length ?? 0), 0);
+                  const syncTextLen = syncParts
+                    .filter((p: MessagePart): p is TextPart => p.type === "text")
+                    .reduce((acc: number, p: TextPart) => acc + (p.text?.length ?? 0), 0);
 
                   if (syncTextLen > localTextLen || Math.abs(syncTextLen - localTextLen) > 50) {
                      existingMsg.parts = syncParts;

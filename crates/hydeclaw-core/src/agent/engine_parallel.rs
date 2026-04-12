@@ -1,5 +1,6 @@
 use crate::agent::tool_loop::{LoopDetector, LoopStatus};
 use crate::tools::yaml_tools;
+use crate::tools::semantic_cache::SemanticCache;
 use hydeclaw_types::ToolCall;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -21,6 +22,13 @@ fn is_system_tool_parallel_safe(name: &str) -> bool {
     )
 }
 
+fn is_tool_cacheable(name: &str) -> bool {
+    matches!(
+        name,
+        "searxng_search" | "brave_search" | "browser_render" | "web_search"
+    )
+}
+
 pub struct LoopBreak(pub Option<String>);
 
 impl super::AgentEngine {
@@ -36,6 +44,7 @@ impl super::AgentEngine {
         detect_loops: bool,
     ) -> Result<Vec<(String, String)>, LoopBreak> {
         let n = tool_calls.len();
+        let mut results: Vec<Option<String>> = vec![None; n];
 
         // 1. Loop detection PHASE 1 (Check limits BEFORE execution)
         if detect_loops {
@@ -53,7 +62,23 @@ impl super::AgentEngine {
             .map(|tc| Self::enrich_tool_args(&tc.arguments, context, session_id, channel))
             .collect();
 
-        // 3. Load YAML tools
+        // 3. Semantic Cache Check
+        for (i, tc) in tool_calls.iter().enumerate() {
+            if is_tool_cacheable(&tc.name) && self.memory_store.is_available() {
+                let query_text = tc.arguments.get("query").or_else(|| tc.arguments.get("url")).and_then(|v| v.as_str()).unwrap_or("");
+                if !query_text.is_empty() {
+                    match SemanticCache::check(&self.db, &self.memory_store, &tc.name, query_text, 0.95).await {
+                        Ok(Some(cached_res)) => {
+                            tracing::info!(tool = %tc.name, query = %query_text, "semantic cache hit");
+                            results[i] = Some(cached_res);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // 4. Load YAML tools
         let yaml_tools = {
             let cache = self.tex().yaml_tools_cache.read().await;
             if cache.0.elapsed() < std::time::Duration::from_secs(30) && !cache.1.is_empty() {
@@ -71,10 +96,12 @@ impl super::AgentEngine {
             }
         };
 
-        // 4. Partition
+        // 4. Partition (only those NOT found in cache)
         let mut parallel_indices = Vec::new();
         let mut sequential_indices = Vec::new();
         for (i, tc) in tool_calls.iter().enumerate() {
+            if results[i].is_some() { continue; }
+            
             let is_parallel = if is_system_tool_parallel_safe(&tc.name) {
                 true
             } else if self.needs_approval(&tc.name) {
@@ -88,7 +115,6 @@ impl super::AgentEngine {
         }
 
         // 5. Execute
-        let mut results: Vec<Option<String>> = vec![None; n];
         let subagent_timeout = super::subagent_impl::parse_subagent_timeout(&self.app_config.subagents.in_process_timeout) + std::time::Duration::from_secs(10);
         let default_timeout = std::time::Duration::from_secs(120);
         // Helpers for WAL logging
@@ -109,7 +135,7 @@ impl super::AgentEngine {
         };
 
         // 5a. Parallel batch
-        if parallel_indices.len() > 0 {
+        if !parallel_indices.is_empty() {
             for &i in &parallel_indices {
                 let _ = crate::db::session_wal::log_event(&self.db, session_id, "tool_start", Some(&start_payload(&tool_calls[i]))).await;
             }
@@ -131,6 +157,15 @@ impl super::AgentEngine {
                     let success = !result.starts_with("Error:") && !result.starts_with("tool error:") && !result.contains("timed out");
                     detector.record_execution(&tool_calls[i].name, &tool_calls[i].arguments, success);
                 }
+                
+                // Store in semantic cache if successful
+                if is_tool_cacheable(&tool_calls[i].name) && !result.starts_with("Error:") && !result.starts_with("tool error:") {
+                    let query_text = tool_calls[i].arguments.get("query").or_else(|| tool_calls[i].arguments.get("url")).and_then(|v| v.as_str()).unwrap_or("");
+                    if !query_text.is_empty() {
+                        let _ = SemanticCache::store(&self.db, &self.memory_store, &tool_calls[i].name, query_text, &result, 3600).await;
+                    }
+                }
+
                 results[i] = Some(result.clone());
                 let _ = crate::db::session_wal::log_event(&self.db, session_id, "tool_end", Some(&end_payload(&tool_calls[i], &result))).await;
             }
@@ -147,6 +182,15 @@ impl super::AgentEngine {
                 let success = !res.starts_with("Error:") && !res.starts_with("tool error:") && !res.contains("timed out");
                 detector.record_execution(&tool_calls[i].name, &tool_calls[i].arguments, success);
             }
+
+            // Store in semantic cache if successful
+            if is_tool_cacheable(&tool_calls[i].name) && !res.starts_with("Error:") && !res.starts_with("tool error:") {
+                let query_text = tool_calls[i].arguments.get("query").or_else(|| tool_calls[i].arguments.get("url")).and_then(|v| v.as_str()).unwrap_or("");
+                if !query_text.is_empty() {
+                    let _ = SemanticCache::store(&self.db, &self.memory_store, &tool_calls[i].name, query_text, &res, 3600).await;
+                }
+            }
+
             results[i] = Some(res.clone());
             let _ = crate::db::session_wal::log_event(&self.db, session_id, "tool_end", Some(&end_payload(&tool_calls[i], &res))).await;
         }
