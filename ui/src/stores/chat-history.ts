@@ -102,7 +102,7 @@ export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean, s
       if (!lastAssistantMsg) continue; // Skip: preceding assistant used pre-built parts
       const tc = toolCallMap.get(m.tool_call_id);
 
-      // Extract inline files (__file__: markers)
+      // Extract inline markers (__file__:, __rich_card__:)
       const lines = (m.content || "").split("\n");
       const cleanLines: string[] = [];
       for (const line of lines) {
@@ -113,9 +113,19 @@ export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean, s
               lastAssistantMsg.parts.push({
                 type: "file",
                 url: meta.url,
-                mediaType: meta.mediaType || "image/png",
+                mediaType: meta.mediaType || "application/octet-stream",
               });
             }
+          } catch { /* ignore */ }
+        } else if (line.startsWith("__rich_card__:")) {
+          try {
+            const data = JSON.parse(line.slice("__rich_card__:".length));
+            const cardType = data.card_type || data.cardType || "unknown";
+            lastAssistantMsg.parts.push({
+              type: "rich-card",
+              cardType,
+              data,
+            });
           } catch { /* ignore */ }
         } else {
           cleanLines.push(line);
