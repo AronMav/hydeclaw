@@ -378,7 +378,9 @@ export function createStreamingRenderer(store: StoreAccess) {
         // Double-check generation inside draft to close race window
         if (st.streamGeneration !== generation) return;
         if (st.messageSource.mode !== "live") {
-          st.messageSource = { mode: "live", messages: [] };
+          // Seed with history so user messages are preserved (Bug 3 fix)
+          const cached = getCachedHistoryMessages(st.activeSessionId ?? "");
+          st.messageSource = { mode: "live", messages: cached.length > 0 ? [...cached] : [] };
         }
         const liveMessages = st.messageSource.messages;
         const existing = liveMessages.findIndex((m: ChatMessage) => m.id === assistantId);

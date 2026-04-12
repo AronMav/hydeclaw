@@ -891,6 +891,8 @@ export function ChatThread({
   // Keep the original user message (no agentId or agentId matching current agent).
   const allMessages = useMemo(() => {
     const filtered = sourceMessages.filter(m => {
+      // Skip empty assistant messages (pre-content SSE placeholders) — ThinkingMessage handles this
+      if (m.role === "assistant" && m.parts.length === 0) return false;
       if (m.role !== "user" || !m.agentId) return true;
       // Keep if it's from the session's primary agent (real user proxy)
       const content = m.parts[0]?.type === "text" ? (m.parts[0] as { text: string }).text : "";
