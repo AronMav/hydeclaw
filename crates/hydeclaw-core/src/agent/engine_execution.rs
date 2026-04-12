@@ -106,7 +106,7 @@ impl AgentEngine {
         // Save user message (original, not enriched)
         // For inter-agent messages (user_id starts with "agent:"), save the sender agent_id
         let sender_agent_id = if msg.user_id.starts_with("agent:") { Some(msg.user_id.trim_start_matches("agent:")) } else { None };
-        let user_msg_id = sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None, msg.leaf_message_id, None).await?;
+        let user_msg_id = sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None, msg.leaf_message_id).await?;
         let mut last_msg_id = user_msg_id;
 
         // Context compaction if needed (model-aware token budget)
@@ -293,7 +293,6 @@ impl AgentEngine {
                 Some(&self.agent.name),
                 None,
                 Some(last_msg_id),
-                None,
             )
             .await {
                 Ok(id) => { last_msg_id = id; }
@@ -324,7 +323,7 @@ impl AgentEngine {
                         });
                         context_chars += tool_result.chars().count();
                         match sm.save_message_ex(
-                            session_id, "tool", tool_result, None, Some(tc_id), None, None, Some(last_msg_id), None,
+                            session_id, "tool", tool_result, None, Some(tc_id), None, None, Some(last_msg_id),
                         ).await {
                             Ok(id) => { last_msg_id = id; }
                             Err(e) => { tracing::warn!(error = %e, session_id = %session_id, "failed to save tool result to DB"); }
@@ -457,16 +456,8 @@ impl AgentEngine {
         } else {
             serde_json::to_value(&final_thinking_blocks).ok()
         };
-        let final_msg_id = sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), thinking_json.as_ref(), Some(last_msg_id), None)
+        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), thinking_json.as_ref(), Some(last_msg_id))
             .await?;
-
-        // Assemble and persist finalized text parts for unified chat view
-        if !final_response.is_empty() {
-            let parts_json = crate::agent::parts_builder::assemble_parts(&final_response);
-            if let Err(e) = crate::db::sessions::update_message_parts(&self.db, final_msg_id, &parts_json).await {
-                tracing::warn!(error = %e, "failed to persist message parts");
-            }
-        }
 
         self.maybe_trim_session(session_id).await;
 
@@ -526,7 +517,7 @@ impl AgentEngine {
 
         // For inter-agent messages (user_id starts with "agent:"), save the sender agent_id
         let sender_agent_id = if msg.user_id.starts_with("agent:") { Some(msg.user_id.trim_start_matches("agent:")) } else { None };
-        sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None, None, None).await?;
+        sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None, None).await?;
 
         // Stream LLM response (no tools for streaming — simple text response)
         let (final_response, stream_thinking_json) = match self.provider.chat_stream(&messages, &[], chunk_tx).await {
@@ -562,7 +553,7 @@ impl AgentEngine {
             }
         };
 
-        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), stream_thinking_json.as_ref(), None, None)
+        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), stream_thinking_json.as_ref(), None)
             .await?;
         self.maybe_trim_session(session_id).await;
 

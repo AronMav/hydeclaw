@@ -60,22 +60,6 @@ export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean, s
       const assistantAgentId = m.agent_id ?? lastAgentId;
       if (m.agent_id) lastAgentId = m.agent_id;
 
-      // Fast path: backend provided finalized parts — use directly
-      if (m.parts && Array.isArray(m.parts) && m.parts.length > 0) {
-        if (lastAssistantMsg) messages.push(lastAssistantMsg);
-        messages.push({
-          id: m.id,
-          role: "assistant",
-          parts: m.parts as MessagePart[],
-          createdAt: m.created_at,
-          agentId: assistantAgentId,
-          parentMessageId: m.parent_message_id ?? undefined,
-          branchFromMessageId: m.branch_from_message_id ?? undefined,
-        });
-        lastAssistantMsg = null; // Don't attach subsequent tool rows — they're already in parts
-        continue;
-      }
-
       const newParts = parseContentParts(m.content || "");
       const hasToolCalls = Array.isArray(m.tool_calls) && (m.tool_calls as unknown[]).length > 0;
 

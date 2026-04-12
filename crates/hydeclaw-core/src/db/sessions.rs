@@ -189,7 +189,7 @@ pub async fn save_message(
     tool_calls: Option<&serde_json::Value>,
     tool_call_id: Option<&str>,
 ) -> Result<Uuid> {
-    save_message_ex(db, session_id, role, content, tool_calls, tool_call_id, None, None, None, None).await
+    save_message_ex(db, session_id, role, content, tool_calls, tool_call_id, None, None, None).await
 }
 
 /// Save a message with optional per-message agent_id (for multi-agent discuss sessions).
@@ -204,11 +204,10 @@ pub async fn save_message_ex(
     agent_id: Option<&str>,
     thinking_blocks: Option<&serde_json::Value>,
     parent_id: Option<Uuid>,
-    parts: Option<&serde_json::Value>,
 ) -> Result<Uuid> {
     let id = sqlx::query_scalar(
-        "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, agent_id, thinking_blocks, parent_message_id, parts) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
+        "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, agent_id, thinking_blocks, parent_message_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
     )
     .bind(session_id)
     .bind(role)
@@ -218,27 +217,13 @@ pub async fn save_message_ex(
     .bind(agent_id)
     .bind(thinking_blocks)
     .bind(parent_id)
-    .bind(parts)
     .fetch_one(db)
     .await?;
 
     Ok(id)
 }
 
-/// Update the finalized parts array on an assistant message.
-/// Sets `status = 'complete'` unless the message already has `status = 'failed'`.
-pub async fn update_message_parts(
-    db: &PgPool,
-    message_id: Uuid,
-    parts: &serde_json::Value,
-) -> Result<()> {
-    sqlx::query("UPDATE messages SET parts = $2, status = CASE WHEN status = 'failed' THEN status ELSE 'complete' END WHERE id = $1")
-        .bind(message_id)
-        .bind(parts)
-        .execute(db)
-        .await?;
-    Ok(())
-}
+
 
 /// Load messages for a session. If `limit` is `Some`, returns at most that many rows.
 pub async fn load_messages(
@@ -250,7 +235,7 @@ pub async fn load_messages(
         Some(lim) => {
             sqlx::query_as::<_, MessageRow>(
                 "SELECT * FROM (\
-                   SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks, parent_message_id, branch_from_message_id, parts \
+                   SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks, parent_message_id, branch_from_message_id \
                    FROM messages WHERE session_id = $1 \
                    ORDER BY created_at DESC LIMIT $2\
                  ) sub ORDER BY created_at ASC",
@@ -262,7 +247,7 @@ pub async fn load_messages(
         }
         None => {
             sqlx::query_as::<_, MessageRow>(
-                "SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks, parent_message_id, branch_from_message_id, parts \
+                "SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks, parent_message_id, branch_from_message_id \
                  FROM messages WHERE session_id = $1 \
                  ORDER BY created_at ASC",
             )
@@ -294,8 +279,6 @@ pub struct MessageRow {
     pub parent_message_id: Option<Uuid>,
     #[sqlx(default)]
     pub branch_from_message_id: Option<Uuid>,
-    #[sqlx(default)]
-    pub parts: Option<serde_json::Value>,
 }
 
 /// Insert or update a streaming assistant message (called every ~2s during LLM response).
@@ -816,7 +799,7 @@ pub async fn load_branch_messages(
     // Use a recursive CTE to walk the parent chain from leaf to root
     let rows = sqlx::query_as::<_, MessageRow>(
         "WITH RECURSIVE chain AS (\
-           SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks, parent_message_id, branch_from_message_id, parts \
+           SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks, parent_message_id, branch_from_message_id \
            FROM messages WHERE id = $1 AND session_id = $2 \
            UNION ALL \
            SELECT m.id, m.role, m.content, m.tool_calls, m.tool_call_id, m.created_at, m.agent_id, m.feedback, m.edited_at, m.status, m.thinking_blocks, m.parent_message_id, m.branch_from_message_id, m.parts \
