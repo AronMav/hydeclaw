@@ -472,7 +472,7 @@ HydeClaw uses Docker Compose for infrastructure services. The `docker/docker-com
 
 | Service | Image | Port | Description |
 |---|---|---|---|
-| `postgres` | `hydeclaw-pg:17-age-pgvector` | `127.0.0.1:5432` | PostgreSQL 17 with pgvector extension. Apache AGE is installed in the Docker image but not actively used — the knowledge graph uses pure PostgreSQL relational tables (`graph_entities`, `graph_edges`, `graph_episodes`). Data stored in the `pgdata` named volume. |
+| `postgres` | `hydeclaw-pg:17-age-pgvector` | `127.0.0.1:5432` | PostgreSQL 17 with pgvector extension. Stores sessions, messages, memory chunks, secrets, providers. Data in the `pgdata` named volume. |
 | `searxng` | `searxng/searxng:latest` | `127.0.0.1:8080` | Private meta search engine. Used by the `search_web` YAML tool. Config in `docker/config/searxng/`. |
 | `browser-renderer` | `browser-renderer:latest` (local build) | `127.0.0.1:9020` | Headless Chrome service for URL screenshot rendering. Used by the `screenshot_web` tool. |
 
@@ -705,10 +705,7 @@ HydeClaw uses sequential numbered SQL migrations in the `migrations/` directory.
 | Table | Description |
 |---|---|
 | `memory_chunks` | Long-term memory entries with pgvector embeddings and FTS indexes. Two-tier: raw (time-decayed) and pinned (permanent). |
-| `graph_entities` | Knowledge graph vertices (Person, Organization, Concept, Place, Event, Technology). |
-| `graph_edges` | Knowledge graph edges (KNOWS, WORKS_AT, RELATED_TO, etc.) with fact descriptions. |
-| `graph_episodes` | Links sessions and memory chunks to extracted graph entities. |
-| `extraction_queue` / `memory_tasks` | Background job queues for the memory worker. |
+| `memory_tasks` | Background job queue for the memory worker (reindex tasks). |
 
 **Agents and Scheduling:**
 
@@ -743,7 +740,6 @@ HydeClaw uses sequential numbered SQL migrations in the `migrations/` directory.
 | `webhooks` | Registered inbound webhooks with per-webhook secret and agent routing. |
 | `github_repos` | GitHub repository subscriptions for event-driven triggers. |
 | `stream_jobs` | Long-running streaming task state. |
-| `session_documents` | Files/documents attached to sessions. |
 
 ---
 
