@@ -515,55 +515,6 @@ export function AgentEditDialog({
               </Field>
             </SwitchSection>
 
-            {/* Compaction */}
-            <SwitchSection
-              title={t("agents.section_compaction")}
-              enabled={form.compEnabled}
-              onToggle={(v) => upd({ compEnabled: v })}
-            >
-              <div className="space-y-2">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <Field label={t("agents.field_threshold")}>
-                    <Input
-                      type="number"
-                      step="0.05"
-                      min="0"
-                      max="1"
-                      className="bg-background border-border font-mono text-sm h-8"
-                      value={form.compThreshold}
-                      onChange={(e) => upd({ compThreshold: e.target.value })}
-                    />
-                  </Field>
-                  <Field label={t("agents.field_preserve_last_n")}>
-                    <Input
-                      type="number"
-                      step="1"
-                      min="0"
-                      className="bg-background border-border font-mono text-sm h-8"
-                      value={form.compPreserveLastN}
-                      onChange={(e) => upd({ compPreserveLastN: e.target.value })}
-                    />
-                  </Field>
-                  <Field label={t("agents.field_max_context_tokens")}>
-                    <Input
-                      type="number" step="1000" min="0"
-                      value={form.compMaxContextTokens} placeholder="Auto"
-                      className="bg-background border-border font-mono text-sm h-8"
-                      onChange={(e) => upd({ compMaxContextTokens: e.target.value })}
-                    />
-                  </Field>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium text-muted-foreground">{t("agents.preserve_tool_calls")}</span>
-                  <Switch
-                    checked={form.compPreserveToolCalls}
-                    onCheckedChange={(v) => upd({ compPreserveToolCalls: v })}
-                    className="data-[state=checked]:bg-primary"
-                  />
-                </div>
-              </div>
-            </SwitchSection>
-
             {/* Tool Loop */}
             <SwitchSection
               title={t("agents.section_tool_loop")}

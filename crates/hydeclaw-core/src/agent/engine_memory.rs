@@ -28,7 +28,7 @@ impl AgentEngine {
         }
     }
 
-    /// Index extracted facts into memory (called after compaction).
+    /// Index extracted facts into memory (called after session compaction via /compact).
     /// Uses batch embedding for efficiency when multiple facts are available.
     pub(super) async fn index_facts_to_memory(&self, facts: &[String]) {
         if !self.memory_store.is_available() {
@@ -37,7 +37,7 @@ impl AgentEngine {
         let items: Vec<(String, String, bool)> = facts
             .iter()
             .filter(|f| !f.trim().is_empty())
-            .map(|f| (f.clone(), "compaction".to_string(), false))
+            .map(|f| (f.clone(), "extracted".to_string(), false))
             .collect();
         if items.is_empty() {
             return;

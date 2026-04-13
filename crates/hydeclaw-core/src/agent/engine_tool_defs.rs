@@ -230,7 +230,7 @@ impl AgentEngine {
                         },
                         "source": {
                             "type": "string",
-                            "description": "Source category: manual, conversation, compaction (for index/get)",
+                            "description": "Source label for the memory entry (for index/get)",
                             "default": "manual"
                         },
                         "pinned": {

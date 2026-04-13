@@ -393,7 +393,6 @@ const EVENT_TYPES: { value: string; labelKey: TranslationKey }[] = [
   { value: "approval_requested", labelKey: "audit.event_approval_requested" },
   { value: "approval_resolved", labelKey: "audit.event_approval_resolved" },
   { value: "prompt_injection_detected", labelKey: "audit.event_prompt_injection" },
-  { value: "compaction", labelKey: "audit.event_compaction" },
 ];
 
 const EVENT_COLORS: Record<string, string> = {
@@ -402,7 +401,6 @@ const EVENT_COLORS: Record<string, string> = {
   approval_requested: "bg-warning/10 text-warning",
   approval_resolved: "bg-success/10 text-success",
   prompt_injection_detected: "bg-destructive/10 text-destructive font-bold",
-  compaction: "bg-muted text-muted-foreground",
 };
 
 const AUDIT_PAGE_SIZE = 50;

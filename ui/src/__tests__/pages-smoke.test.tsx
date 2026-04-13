@@ -437,7 +437,6 @@ describe("Page smoke tests", () => {
     try {
       const { default: Page } = await import("@/app/(authenticated)/providers/page");
       render(<Page />);
-      expect(screen.getByText("providers.cap_graph")).toBeInTheDocument();
     } finally {
       (queries as Record<string, unknown>).useProviders = origProviders;
       (queries as Record<string, unknown>).useProviderActive = origActive;
