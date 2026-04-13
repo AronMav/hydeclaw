@@ -149,22 +149,22 @@ async fn extract_and_save_inner(
     let source_prefix = format!("auto:session:{}", session_id);
 
     for fact in &extracted.user_facts {
-        if save_if_new(memory_store, fact, &format!("{}:user", source_prefix), agent_name, "shared").await {
+        if save_if_new_with_provider(memory_store, fact, &format!("{}:user", source_prefix), agent_name, "shared", Some(provider)).await {
             saved += 1;
         }
     }
     for outcome in &extracted.outcomes {
-        if save_if_new(memory_store, outcome, &format!("{}:outcome", source_prefix), agent_name, "shared").await {
+        if save_if_new_with_provider(memory_store, outcome, &format!("{}:outcome", source_prefix), agent_name, "shared", Some(provider)).await {
             saved += 1;
         }
     }
     for insight in &extracted.tool_insights {
-        if save_if_new(memory_store, insight, &format!("{}:tool", source_prefix), agent_name, "private").await {
+        if save_if_new_with_provider(memory_store, insight, &format!("{}:tool", source_prefix), agent_name, "private", Some(provider)).await {
             saved += 1;
         }
     }
     for fb in &extracted.feedback {
-        if save_if_new(memory_store, fb, &format!("{}:feedback", source_prefix), agent_name, "shared").await {
+        if save_if_new_with_provider(memory_store, fb, &format!("{}:feedback", source_prefix), agent_name, "shared", Some(provider)).await {
             saved += 1;
         }
     }
@@ -315,7 +315,13 @@ fn parse_extraction(content: &str) -> Result<ExtractedKnowledge> {
     anyhow::bail!("no JSON object found in extraction response")
 }
 
-/// Save a fact to memory if it's not already known (similarity < threshold).
+/// Similarity thresholds for conflict resolution.
+const CONFLICT_THRESHOLD: f64 = 0.5;
+
+/// Save a fact to memory using Mem0-style conflict resolution.
+/// - similarity >= 0.9 → SKIP (exact duplicate)
+/// - similarity 0.5-0.9 → LLM decides ADD/UPDATE/DELETE/NOOP
+/// - similarity < 0.5 → ADD (new fact)
 async fn save_if_new(
     memory_store: &Arc<dyn MemoryService>,
     text: &str,
@@ -323,32 +329,171 @@ async fn save_if_new(
     agent_name: &str,
     scope: &str,
 ) -> bool {
+    save_if_new_with_provider(memory_store, text, source, agent_name, scope, None).await
+}
+
+async fn save_if_new_with_provider(
+    memory_store: &Arc<dyn MemoryService>,
+    text: &str,
+    source: &str,
+    agent_name: &str,
+    scope: &str,
+    provider: Option<&Arc<dyn LlmProvider>>,
+) -> bool {
     let text = text.trim();
     if text.is_empty() || text.len() < 10 {
         return false;
     }
 
-    // Check for duplicates via search
-    match memory_store.search(text, 1, &[], None, None, agent_name).await {
-        Ok((results, _)) => {
-            if let Some(top) = results.first() {
-                if top.similarity >= DEDUP_THRESHOLD {
-                    return false; // Already known
-                }
-            }
-        }
+    // Search for similar existing chunks
+    let (results, _) = match memory_store.search(text, 3, &[], None, None, agent_name).await {
+        Ok(r) => r,
         Err(e) => {
             tracing::debug!(error = %e, "dedup search failed, saving anyway");
+            return match memory_store.index(text, source, false, None, None, scope, agent_name).await {
+                Ok(_) => true,
+                Err(e) => { tracing::warn!(error = %e, "failed to save extracted knowledge"); false }
+            };
+        }
+    };
+
+    if let Some(top) = results.first() {
+        if top.similarity >= DEDUP_THRESHOLD {
+            return false; // Exact duplicate — skip
+        }
+
+        if top.similarity >= CONFLICT_THRESHOLD {
+            // Potential conflict — ask LLM to resolve if provider available
+            if let Some(provider) = provider {
+                return resolve_conflict(memory_store, provider, text, source, scope, agent_name, &results).await;
+            }
+            // No provider — fall through to ADD (safe default)
         }
     }
 
-    // Save as new memory chunk
+    // New fact or low similarity — ADD
     match memory_store.index(text, source, false, None, None, scope, agent_name).await {
         Ok(_) => true,
         Err(e) => {
             tracing::warn!(error = %e, "failed to save extracted knowledge");
             false
         }
+    }
+}
+
+/// Mem0-style conflict resolution: LLM decides ADD/UPDATE/DELETE/NOOP.
+async fn resolve_conflict(
+    memory_store: &Arc<dyn MemoryService>,
+    provider: &Arc<dyn LlmProvider>,
+    new_fact: &str,
+    source: &str,
+    scope: &str,
+    agent_name: &str,
+    existing: &[crate::memory::MemoryResult],
+) -> bool {
+    // Format existing memories for LLM
+    let existing_text = existing.iter().enumerate()
+        .map(|(i, r)| format!("[{}] {}", i, r.content))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = format!(
+        "You manage a memory store. A new fact needs to be stored, but similar memories already exist.\n\n\
+         Existing memories:\n{}\n\n\
+         New fact: {}\n\n\
+         Decide the action. Return ONLY a JSON object:\n\
+         {{\"action\": \"ADD|UPDATE|DELETE|NOOP\", \"target\": 0, \"reason\": \"...\"}}\n\n\
+         - ADD: new fact is different/complementary, keep both\n\
+         - UPDATE: new fact supersedes existing[target], replace it\n\
+         - DELETE: existing[target] is outdated, delete it and add new\n\
+         - NOOP: new fact adds nothing, skip it",
+        existing_text, new_fact
+    );
+
+    let messages = vec![Message {
+        role: MessageRole::User,
+        content: prompt,
+        tool_calls: None,
+        tool_call_id: None,
+        thinking_blocks: vec![],
+    }];
+
+    let response = match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        provider.chat(&messages, &[]),
+    ).await {
+        Ok(Ok(r)) => r,
+        _ => {
+            // LLM failed — safe fallback: ADD
+            return match memory_store.index(new_fact, source, false, None, None, scope, agent_name).await {
+                Ok(_) => true,
+                Err(_) => false,
+            };
+        }
+    };
+
+    // Parse decision
+    let decision = parse_conflict_decision(&response.content);
+
+    match decision.action.as_str() {
+        "UPDATE" | "DELETE" => {
+            // Delete the target existing chunk, then add new
+            let target_idx = decision.target.min(existing.len().saturating_sub(1));
+            if let Some(target) = existing.get(target_idx) {
+                let _ = memory_store.delete(&target.id).await;
+                tracing::debug!(
+                    action = decision.action.as_str(),
+                    old = target.content.chars().take(50).collect::<String>(),
+                    new = new_fact.chars().take(50).collect::<String>(),
+                    reason = decision.reason.as_str(),
+                    "memory conflict resolved"
+                );
+            }
+            match memory_store.index(new_fact, source, false, None, None, scope, agent_name).await {
+                Ok(_) => true,
+                Err(_) => false,
+            }
+        }
+        "ADD" => {
+            match memory_store.index(new_fact, source, false, None, None, scope, agent_name).await {
+                Ok(_) => true,
+                Err(_) => false,
+            }
+        }
+        _ => false, // NOOP or unknown
+    }
+}
+
+#[derive(Debug)]
+struct ConflictDecision {
+    action: String,
+    target: usize,
+    reason: String,
+}
+
+fn parse_conflict_decision(content: &str) -> ConflictDecision {
+    let default = ConflictDecision { action: "ADD".into(), target: 0, reason: "parse failed".into() };
+
+    // Strip think blocks
+    let mut cleaned = content.to_string();
+    while let Some(start) = cleaned.find("<think>") {
+        if let Some(end) = cleaned.find("</think>") {
+            cleaned = format!("{}{}", &cleaned[..start], &cleaned[end + 8..]);
+        } else { break; }
+    }
+    let cleaned = cleaned.replace("```json", "").replace("```", "");
+
+    let start = match cleaned.find('{') { Some(s) => s, None => return default };
+    let end = match cleaned.rfind('}') { Some(e) => e, None => return default };
+
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&cleaned[start..=end]) {
+        ConflictDecision {
+            action: v.get("action").and_then(|a| a.as_str()).unwrap_or("ADD").to_uppercase(),
+            target: v.get("target").and_then(|t| t.as_u64()).unwrap_or(0) as usize,
+            reason: v.get("reason").and_then(|r| r.as_str()).unwrap_or("").to_string(),
+        }
+    } else {
+        default
     }
 }
 
@@ -509,6 +654,53 @@ mod tests {
         assert!(facts.iter().any(|f| f.contains("IT")));
         assert!(facts.iter().any(|f| f.contains("GraphQL")));
         assert!(facts.iter().any(|f| f.contains("approved")));
+    }
+
+    // ── conflict resolution tests ─────────────────────────────────
+
+    #[test]
+    fn parse_conflict_update() {
+        let input = r#"{"action": "UPDATE", "target": 1, "reason": "new data supersedes old"}"#;
+        let d = parse_conflict_decision(input);
+        assert_eq!(d.action, "UPDATE");
+        assert_eq!(d.target, 1);
+        assert!(d.reason.contains("supersedes"));
+    }
+
+    #[test]
+    fn parse_conflict_add() {
+        let input = r#"{"action": "ADD", "target": 0, "reason": "complementary info"}"#;
+        let d = parse_conflict_decision(input);
+        assert_eq!(d.action, "ADD");
+    }
+
+    #[test]
+    fn parse_conflict_noop() {
+        let input = r#"{"action": "NOOP", "target": 0, "reason": "nothing new"}"#;
+        let d = parse_conflict_decision(input);
+        assert_eq!(d.action, "NOOP");
+    }
+
+    #[test]
+    fn parse_conflict_delete() {
+        let input = r#"{"action": "delete", "target": 2, "reason": "outdated"}"#;
+        let d = parse_conflict_decision(input);
+        assert_eq!(d.action, "DELETE"); // lowercased input → uppercased
+        assert_eq!(d.target, 2);
+    }
+
+    #[test]
+    fn parse_conflict_with_think_blocks() {
+        let input = r#"<think>analyzing...</think>{"action": "UPDATE", "target": 0, "reason": "newer"}"#;
+        let d = parse_conflict_decision(input);
+        assert_eq!(d.action, "UPDATE");
+    }
+
+    #[test]
+    fn parse_conflict_malformed_defaults_to_add() {
+        let input = "I'm not sure what to do here.";
+        let d = parse_conflict_decision(input);
+        assert_eq!(d.action, "ADD"); // Safe default
     }
 
     #[test]
