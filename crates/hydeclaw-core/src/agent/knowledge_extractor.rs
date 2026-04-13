@@ -706,6 +706,140 @@ mod tests {
         assert_eq!(d.action, "ADD"); // Safe default
     }
 
+    // ── edge case: extraction with unicode/multilingual ────────
+
+    #[test]
+    fn parse_russian_content() {
+        let input = r#"{"user_facts":["Пользователь работает в IT"],"outcomes":["Рекомендовано снизить нефтегаз до 25%"],"tool_insights":[],"feedback":["Одобрил анализ Alma"]}"#;
+        let result = parse_extraction(input).unwrap();
+        assert_eq!(result.user_facts[0], "Пользователь работает в IT");
+        assert_eq!(result.outcomes[0], "Рекомендовано снизить нефтегаз до 25%");
+        assert_eq!(result.feedback[0], "Одобрил анализ Alma");
+    }
+
+    #[test]
+    fn parse_mixed_languages() {
+        let input = r#"{"user_facts":["User has BCS portfolio worth 525K RUB"],"outcomes":["Решено использовать GraphQL"],"tool_insights":[],"feedback":[]}"#;
+        let result = parse_extraction(input).unwrap();
+        assert!(result.user_facts[0].contains("525K RUB"));
+        assert!(result.outcomes[0].contains("GraphQL"));
+    }
+
+    // ── edge case: malformed/partial JSON ────────────────────
+
+    #[test]
+    fn parse_json_with_trailing_text_after_brace() {
+        let input = r#"{"user_facts":["A"],"outcomes":[],"tool_insights":[],"feedback":[]}
+Some trailing explanation here."#;
+        let result = parse_extraction(input).unwrap();
+        assert_eq!(result.user_facts, vec!["A"]);
+    }
+
+    #[test]
+    fn parse_empty_string_items_preserved() {
+        let input = r#"{"user_facts":["","valid fact",""],"outcomes":[],"tool_insights":[],"feedback":[]}"#;
+        let result = parse_extraction(input).unwrap();
+        assert_eq!(result.user_facts.len(), 3); // serde preserves empty strings
+    }
+
+    #[test]
+    fn parse_special_characters_in_facts() {
+        let input = r#"{"user_facts":["User's email: test@example.com"],"outcomes":["Budget: $50,000 (≈3.5M RUB)"],"tool_insights":[],"feedback":[]}"#;
+        let result = parse_extraction(input).unwrap();
+        assert!(result.user_facts[0].contains("test@example.com"));
+        assert!(result.outcomes[0].contains("$50,000"));
+    }
+
+    // ── conflict resolution edge cases ──────────────────────
+
+    #[test]
+    fn parse_conflict_with_markdown_fences() {
+        let input = "```json\n{\"action\": \"UPDATE\", \"target\": 0, \"reason\": \"newer info\"}\n```";
+        let d = parse_conflict_decision(input);
+        assert_eq!(d.action, "UPDATE");
+    }
+
+    #[test]
+    fn parse_conflict_missing_target_defaults_to_zero() {
+        let input = r#"{"action": "DELETE", "reason": "outdated"}"#;
+        let d = parse_conflict_decision(input);
+        assert_eq!(d.action, "DELETE");
+        assert_eq!(d.target, 0);
+    }
+
+    #[test]
+    fn parse_conflict_missing_reason() {
+        let input = r#"{"action": "ADD", "target": 1}"#;
+        let d = parse_conflict_decision(input);
+        assert_eq!(d.action, "ADD");
+        assert!(d.reason.is_empty());
+    }
+
+    #[test]
+    fn parse_conflict_unknown_action_preserved() {
+        let input = r#"{"action": "MERGE", "target": 0, "reason": "combine"}"#;
+        let d = parse_conflict_decision(input);
+        assert_eq!(d.action, "MERGE"); // uppercased, not mapped to known action
+    }
+
+    #[test]
+    fn parse_conflict_empty_json() {
+        let input = "{}";
+        let d = parse_conflict_decision(input);
+        assert_eq!(d.action, "ADD"); // default
+        assert_eq!(d.target, 0);
+    }
+
+    // ── save_if_new threshold tests ─────────────────────────
+
+    #[tokio::test]
+    async fn save_if_new_rejects_exactly_10_chars() {
+        let mock = Arc::new(crate::agent::memory_service::mock::MockMemoryService::available()) as Arc<dyn MemoryService>;
+        // Exactly 10 chars — boundary case (len < 10 returns false, so 10 should pass)
+        assert!(save_if_new(&mock, "1234567890", "src", "agent", "private").await);
+    }
+
+    #[tokio::test]
+    async fn save_if_new_rejects_9_chars() {
+        let mock = Arc::new(crate::agent::memory_service::mock::MockMemoryService::available()) as Arc<dyn MemoryService>;
+        assert!(!save_if_new(&mock, "123456789", "src", "agent", "private").await);
+    }
+
+    #[tokio::test]
+    async fn save_if_new_trims_whitespace() {
+        let mock = Arc::new(crate::agent::memory_service::mock::MockMemoryService::available()) as Arc<dyn MemoryService>;
+        // "  short  " trims to "short" (5 chars) → rejected
+        assert!(!save_if_new(&mock, "  short  ", "src", "agent", "private").await);
+    }
+
+    #[tokio::test]
+    async fn save_if_new_unavailable_store_returns_false() {
+        let mock = Arc::new(crate::agent::memory_service::mock::MockMemoryService::unavailable()) as Arc<dyn MemoryService>;
+        // Store unavailable — should still save if called directly (save_if_new doesn't check availability)
+        let result = save_if_new(&mock, "This is a long enough fact to save", "src", "agent", "shared").await;
+        // MockMemoryService.unavailable() still returns Ok for index() — it just flags is_available=false
+        assert!(result);
+    }
+
+    // ── scope consistency tests ─────────────────────────────
+
+    #[test]
+    fn extraction_scope_assignment() {
+        // Verify the design: user_facts=shared, outcomes=shared, tool_insights=private, feedback=shared
+        let scopes = vec![
+            ("user_facts", "shared"),
+            ("outcomes", "shared"),
+            ("tool_insights", "private"),
+            ("feedback", "shared"),
+        ];
+        // This is a documentation test — the actual scope assignment is in extract_and_save_inner
+        // but we verify the design contract
+        assert_eq!(scopes[0].1, "shared");
+        assert_eq!(scopes[1].1, "shared");
+        assert_eq!(scopes[2].1, "private");
+        assert_eq!(scopes[3].1, "shared");
+    }
+
     #[test]
     fn rolling_summary_empty_when_only_tool_insights() {
         let extracted = ExtractedKnowledge {

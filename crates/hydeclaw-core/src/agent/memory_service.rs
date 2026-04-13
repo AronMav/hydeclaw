@@ -350,4 +350,71 @@ mod tests {
         let (results, _) = mock.search("query", 5, &[], None, None, "").await.unwrap();
         assert!(results.is_empty());
     }
+
+    // ── Memory lifecycle tests ──────────────────────────────
+
+    #[tokio::test]
+    async fn index_then_get_by_source() {
+        let mock = MockMemoryService::available();
+        let id = mock.index("test content", "test-source", false, None, None, "private", "Agent1").await.unwrap();
+        assert!(!id.is_empty());
+        // Mock get returns empty but verifies signature
+        let chunks = mock.get(None, Some("test-source"), 10).await.unwrap();
+        assert!(chunks.is_empty()); // Mock doesn't persist
+    }
+
+    #[tokio::test]
+    async fn index_then_delete() {
+        let mock = MockMemoryService::available();
+        let id = mock.index("to delete", "src", false, None, None, "private", "Agent1").await.unwrap();
+        let deleted = mock.delete(&id).await.unwrap();
+        assert!(!deleted); // Mock always returns false for delete
+    }
+
+    #[tokio::test]
+    async fn pinned_loading() {
+        let mock = MockMemoryService::available();
+        let (text, ids) = mock.load_pinned("Agent1", 2000).await.unwrap();
+        assert!(text.is_empty()); // Mock returns empty
+        assert!(ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn embed_returns_vector() {
+        let mock = MockMemoryService::available();
+        let vec = mock.embed("test text for embedding").await.unwrap();
+        assert_eq!(vec.len(), 4); // Mock returns 4-dim
+        assert!((vec[0] - 0.1).abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn wipe_agent_memory() {
+        let mock = MockMemoryService::available();
+        let count = mock.wipe_agent_memory("Agent1").await.unwrap();
+        assert_eq!(count, 0); // Mock returns 0
+    }
+
+    #[tokio::test]
+    async fn index_batch_empty() {
+        let mock = MockMemoryService::available();
+        let items: Vec<(String, String, bool, String)> = vec![];
+        let ids = mock.index_batch(&items, "Agent1").await.unwrap();
+        assert!(ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_with_exclude_ids() {
+        let mock = MockMemoryService::available();
+        let exclude = vec!["id1".to_string(), "id2".to_string()];
+        let (results, mode) = mock.search("query", 5, &exclude, None, None, "Agent1").await.unwrap();
+        assert!(results.is_empty());
+        assert_eq!(mode, "mock");
+    }
+
+    #[tokio::test]
+    async fn search_with_category_topic_filter() {
+        let mock = MockMemoryService::available();
+        let (results, _) = mock.search("query", 5, &[], Some("decision"), Some("investments"), "Agent1").await.unwrap();
+        assert!(results.is_empty());
+    }
 }
