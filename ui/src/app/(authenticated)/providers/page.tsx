@@ -126,8 +126,7 @@ export default function ProvidersPage() {
     const key: Record<string, string> = {
       text: "providers.cap_text", stt: "providers.cap_stt", tts: "providers.cap_tts",
       vision: "providers.cap_vision", imagegen: "providers.cap_imagegen",
-      embedding: "providers.cap_embedding", graph_extraction: "providers.cap_graph",
-      compaction: "providers.cap_compaction",
+      embedding: "providers.cap_embedding",
     };
     return key[cap] ? t(key[cap] as Parameters<typeof t>[0]) : cap;
   };

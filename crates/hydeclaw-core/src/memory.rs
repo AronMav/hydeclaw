@@ -23,10 +23,6 @@ pub struct MemoryConfig {
     /// `PostgreSQL` FTS dictionary name (e.g. "russian", "english", "simple").
     /// Auto-detected from first agent's language if not set.
     pub fts_language: Option<String>,
-    /// Whether `GraphRAG` graph-enhanced search is enabled. Defaults to true.
-    #[serde(default = "default_true")]
-    #[allow(dead_code)]
-    pub graph_enabled: bool,
     /// Maximum tokens for pinned chunks in L0 context. Default: 2000.
     /// Approximation: `content.len()` / 4.
     #[serde(default = "default_pinned_budget")]
@@ -471,7 +467,6 @@ impl MemoryStore {
     }
 
     /// Search memory: hybrid (semantic + FTS via RRF) when embedding available, pure FTS fallback.
-    /// When `graph_enabled`, appends graph-expanded results from the knowledge graph.
     /// Returns (results, `search_mode`) where `search_mode` is "hybrid", "semantic", or "fts".
     /// `exclude_ids`: chunk IDs already loaded via L0 pinned loading — excluded from results (CTX-04).
     /// `category` / `topic`: optional post-query filters; only chunks with matching values are returned.
@@ -1124,7 +1119,6 @@ mod tests {
             enabled,
             embed_dim: None,
             fts_language: None,
-            graph_enabled: true,
             pinned_budget_tokens: 2000,
             compression_age_days: 30,
         }
@@ -1222,29 +1216,15 @@ mod tests {
     // ── MemoryConfig serde ───────────────────────────────────────────────────
 
     #[test]
-    fn config_graph_enabled_default_true() {
-        let cfg: MemoryConfig = serde_json::from_str("{}").unwrap();
-        assert!(cfg.graph_enabled);
-    }
-
-    #[test]
-    fn config_graph_can_be_disabled() {
-        let cfg: MemoryConfig = serde_json::from_str(r#"{"graph_enabled": false}"#).unwrap();
-        assert!(!cfg.graph_enabled);
-    }
-
-    #[test]
     fn config_all_fields() {
         let cfg: MemoryConfig = serde_json::from_str(r#"{
             "enabled": false,
             "embed_dim": 768,
-            "fts_language": "english",
-            "graph_enabled": false
+            "fts_language": "english"
         }"#).unwrap();
         assert!(!cfg.enabled);
         assert_eq!(cfg.embed_dim.unwrap(), 768);
         assert_eq!(cfg.fts_language.unwrap(), "english");
-        assert!(!cfg.graph_enabled);
     }
 }
 
