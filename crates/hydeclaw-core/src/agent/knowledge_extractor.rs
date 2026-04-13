@@ -240,3 +240,107 @@ async fn save_if_new(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_extraction tests ──────────────────────────────────────
+
+    #[test]
+    fn parse_clean_json() {
+        let input = r#"{"user_facts":["User works in IT"],"outcomes":["Decided to use GraphQL"],"tool_insights":["API responded in 2s"]}"#;
+        let result = parse_extraction(input).unwrap();
+        assert_eq!(result.user_facts, vec!["User works in IT"]);
+        assert_eq!(result.outcomes, vec!["Decided to use GraphQL"]);
+        assert_eq!(result.tool_insights, vec!["API responded in 2s"]);
+    }
+
+    #[test]
+    fn parse_with_markdown_fences() {
+        let input = "Here is the result:\n```json\n{\"user_facts\":[\"Fact one\"],\"outcomes\":[],\"tool_insights\":[]}\n```";
+        let result = parse_extraction(input).unwrap();
+        assert_eq!(result.user_facts, vec!["Fact one"]);
+    }
+
+    #[test]
+    fn parse_with_think_blocks() {
+        let input = "<think>Let me analyze this...</think>\n{\"user_facts\":[\"Important fact\"],\"outcomes\":[],\"tool_insights\":[]}";
+        let result = parse_extraction(input).unwrap();
+        assert_eq!(result.user_facts, vec!["Important fact"]);
+    }
+
+    #[test]
+    fn parse_with_surrounding_text() {
+        let input = "Based on my analysis, here are the extracted facts:\n\n{\"user_facts\":[\"A\"],\"outcomes\":[\"B\"],\"tool_insights\":[\"C\"]}\n\nI hope this helps!";
+        let result = parse_extraction(input).unwrap();
+        assert_eq!(result.user_facts, vec!["A"]);
+        assert_eq!(result.outcomes, vec!["B"]);
+        assert_eq!(result.tool_insights, vec!["C"]);
+    }
+
+    #[test]
+    fn parse_empty_arrays() {
+        let input = r#"{"user_facts":[],"outcomes":[],"tool_insights":[]}"#;
+        let result = parse_extraction(input).unwrap();
+        assert!(result.user_facts.is_empty());
+        assert!(result.outcomes.is_empty());
+        assert!(result.tool_insights.is_empty());
+    }
+
+    #[test]
+    fn parse_missing_fields_default_empty() {
+        let input = r#"{"user_facts":["Only this"]}"#;
+        let result = parse_extraction(input).unwrap();
+        assert_eq!(result.user_facts, vec!["Only this"]);
+        assert!(result.outcomes.is_empty());
+        assert!(result.tool_insights.is_empty());
+    }
+
+    #[test]
+    fn parse_no_json_fails() {
+        let input = "I could not extract anything from this conversation.";
+        assert!(parse_extraction(input).is_err());
+    }
+
+    #[test]
+    fn parse_nested_think_blocks() {
+        let input = "<think>first</think>Some text<think>second</think>{\"user_facts\":[\"X\"],\"outcomes\":[],\"tool_insights\":[]}";
+        let result = parse_extraction(input).unwrap();
+        assert_eq!(result.user_facts, vec!["X"]);
+    }
+
+    #[test]
+    fn parse_unclosed_think_block() {
+        let input = "<think>thinking forever... {\"user_facts\":[\"should not parse\"]}";
+        // Unclosed think — everything after <think> is stripped
+        assert!(parse_extraction(input).is_err());
+    }
+
+    #[test]
+    fn parse_multiple_items_per_category() {
+        let input = r#"{"user_facts":["F1","F2","F3"],"outcomes":["O1","O2"],"tool_insights":["T1"]}"#;
+        let result = parse_extraction(input).unwrap();
+        assert_eq!(result.user_facts.len(), 3);
+        assert_eq!(result.outcomes.len(), 2);
+        assert_eq!(result.tool_insights.len(), 1);
+    }
+
+    // ── save_if_new tests ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn save_if_new_skips_short_text() {
+        let mock = Arc::new(crate::agent::memory_service::mock::MockMemoryService::available()) as Arc<dyn MemoryService>;
+        assert!(!save_if_new(&mock, "", "src", "agent").await);
+        assert!(!save_if_new(&mock, "short", "src", "agent").await);
+        assert!(!save_if_new(&mock, "  ", "src", "agent").await);
+    }
+
+    #[tokio::test]
+    async fn save_if_new_saves_valid_text() {
+        let mock = Arc::new(crate::agent::memory_service::mock::MockMemoryService::available()) as Arc<dyn MemoryService>;
+        // Mock search returns empty results → no duplicate → should save
+        let result = save_if_new(&mock, "This is a long enough fact to save", "auto:test", "agent").await;
+        assert!(result);
+    }
+}
