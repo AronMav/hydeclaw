@@ -344,4 +344,20 @@ mod tests {
         let result = save_if_new(&mock, "This is a long enough fact to save", "auto:test", "agent", "shared").await;
         assert!(result);
     }
+
+    // ── scope assignment tests ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn save_if_new_accepts_private_scope() {
+        let mock = Arc::new(crate::agent::memory_service::mock::MockMemoryService::available()) as Arc<dyn MemoryService>;
+        let result = save_if_new(&mock, "Tool insight only for this agent", "auto:test:tool", "Arty", "private").await;
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn save_if_new_accepts_shared_scope() {
+        let mock = Arc::new(crate::agent::memory_service::mock::MockMemoryService::available()) as Arc<dyn MemoryService>;
+        let result = save_if_new(&mock, "User works in IT sector", "auto:test:user", "Arty", "shared").await;
+        assert!(result);
+    }
 }
