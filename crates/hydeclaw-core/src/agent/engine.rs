@@ -921,6 +921,19 @@ impl AgentEngine {
         sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), None, None)
             .await?;
 
+        // Post-session knowledge extraction (background, non-blocking)
+        if messages.len() >= 5 {
+            let db = self.db.clone();
+            let provider = self.provider.clone();
+            let memory = self.memory_store.clone();
+            let agent_name = self.agent.name.clone();
+            tokio::spawn(async move {
+                crate::agent::knowledge_extractor::extract_and_save(
+                    db, session_id, agent_name, provider, memory,
+                ).await;
+            });
+        }
+
         // Hook: AfterResponse
         self.hooks().fire(&super::hooks::HookEvent::AfterResponse);
 
