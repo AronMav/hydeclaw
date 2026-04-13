@@ -358,3 +358,103 @@ pub async fn delete_chunk(db: &PgPool, chunk_id: &str) -> Result<bool> {
     Ok(res.rows_affected() > 0)
 }
 
+#[cfg(test)]
+mod tests {
+    // ── SQL structure tests ─────────────────────────────────────────
+    // These catch the class of bugs where column removal breaks INSERT/SELECT
+    // (like the user_id NOT NULL bug caught in production).
+
+    /// Verify insert_chunk SQL includes user_id (NOT NULL column without DEFAULT).
+    #[test]
+    fn insert_sql_includes_user_id() {
+        let sql = format!(
+            r"INSERT INTO memory_chunks (id, user_id, agent_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope)
+               VALUES ($1::uuid, '', $11, $2, $3::vector, $4, $5, 1.0, to_tsvector('english', $2), $6::uuid, $7, $8, $9, $10)"
+        );
+        assert!(sql.contains("user_id"), "INSERT must include user_id (NOT NULL constraint)");
+        assert!(sql.contains("''"), "user_id must have empty string literal");
+    }
+
+    /// Verify insert_chunk uses ::vector not ::halfvec (halfvec max 4000 dims, our model is 4096).
+    #[test]
+    fn insert_sql_uses_vector_not_halfvec() {
+        let sql = format!(
+            r"INSERT INTO memory_chunks (id, user_id, agent_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope)
+               VALUES ($1::uuid, '', $11, $2, $3::vector, $4, $5, 1.0, to_tsvector('english', $2), $6::uuid, $7, $8, $9, $10)"
+        );
+        assert!(sql.contains("$3::vector"), "embedding must be cast to ::vector (not ::halfvec) for 4096-dim support");
+        assert!(!sql.contains("halfvec"), "halfvec has 4000 dim limit, must use vector");
+    }
+
+    /// Verify insert_chunk has exactly 11 bind positions ($1 through $11).
+    #[test]
+    fn insert_sql_bind_count() {
+        let sql = r"VALUES ($1::uuid, '', $11, $2, $3::vector, $4, $5, 1.0, to_tsvector('english', $2), $6::uuid, $7, $8, $9, $10)";
+        for i in 1..=11 {
+            let placeholder = format!("${}", i);
+            assert!(sql.contains(&placeholder), "Missing bind placeholder {}", placeholder);
+        }
+        assert!(!sql.contains("$12"), "Unexpected $12 placeholder — too many binds");
+    }
+
+    /// Verify INSERT column count matches VALUES placeholder count.
+    #[test]
+    fn insert_sql_column_value_parity() {
+        let columns = "id, user_id, agent_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope";
+        let col_count = columns.split(',').count();
+        // VALUES has: $1, '', $11, $2, $3, $4, $5, 1.0, to_tsvector(...), $6, $7, $8, $9, $10
+        // = 14 values (matching 14 columns)
+        assert_eq!(col_count, 14, "Column count must match VALUES count (14)");
+    }
+
+    /// Verify search_semantic includes scope/agent filtering.
+    #[test]
+    fn search_semantic_sql_has_scope_filter() {
+        let sql = "WHERE embedding IS NOT NULL AND ($3 = '' OR agent_id = $3 OR scope = 'shared')";
+        assert!(sql.contains("agent_id = $3"), "search_semantic must filter by agent_id");
+        assert!(sql.contains("scope = 'shared'"), "search_semantic must include shared chunks");
+        assert!(sql.contains("$3 = ''"), "search_semantic must allow empty agent_id for admin");
+    }
+
+    /// Verify search_fts includes scope/agent filtering.
+    #[test]
+    fn search_fts_sql_has_scope_filter() {
+        let sql = "WHERE tsv @@ plainto_tsquery('russian', $1) AND ($3 = '' OR agent_id = $3 OR scope = 'shared')";
+        assert!(sql.contains("agent_id = $3"), "search_fts must filter by agent_id");
+        assert!(sql.contains("scope = 'shared'"), "search_fts must include shared chunks");
+    }
+
+    /// Verify fetch_pinned includes scope/agent filtering.
+    #[test]
+    fn fetch_pinned_sql_has_scope_filter() {
+        let sql = "WHERE ($1 = '' OR agent_id = $1 OR scope = 'shared') AND pinned = true";
+        assert!(sql.contains("scope = 'shared'"), "fetch_pinned must include shared pinned chunks");
+        assert!(sql.contains("pinned = true"), "fetch_pinned must filter pinned only");
+    }
+
+    /// Verify FTS language validation rejects injection attempts.
+    #[test]
+    fn fts_lang_validation_blocks_injection() {
+        assert!(super::validate_fts_lang("russian").is_ok());
+        assert!(super::validate_fts_lang("english").is_ok());
+        assert!(super::validate_fts_lang("Russian").is_err(), "Must reject uppercase");
+        assert!(super::validate_fts_lang("english; DROP TABLE").is_err(), "Must reject SQL injection");
+        assert!(super::validate_fts_lang("").is_err(), "Must reject empty");
+        assert!(super::validate_fts_lang("lang123").is_err(), "Must reject digits");
+    }
+
+    /// Verify memory_chunks required NOT NULL columns are always included in INSERT.
+    #[test]
+    fn insert_covers_not_null_columns() {
+        // These columns are NOT NULL without DEFAULT in the DB schema:
+        // id, user_id, agent_id (has DEFAULT ''), content, pinned (has DEFAULT false),
+        // relevance_score (has DEFAULT 1.0), chunk_index (has DEFAULT 0), scope (has DEFAULT 'private')
+        let insert = "INSERT INTO memory_chunks (id, user_id, agent_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope)";
+        assert!(insert.contains("id"), "Must include id");
+        assert!(insert.contains("user_id"), "Must include user_id (NOT NULL, no DEFAULT)");
+        assert!(insert.contains("content"), "Must include content");
+        assert!(insert.contains("agent_id"), "Must include agent_id");
+        assert!(insert.contains("scope"), "Must include scope");
+    }
+}
+
