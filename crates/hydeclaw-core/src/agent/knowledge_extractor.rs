@@ -182,7 +182,105 @@ async fn extract_and_save_inner(
         );
     }
 
+    // 7. Update rolling agent summary
+    update_rolling_summary(agent_name, provider, memory_store, &extracted).await;
+
     Ok(())
+}
+
+/// Update the rolling agent summary — a single pinned chunk that captures
+/// the agent's accumulated knowledge about the user and context.
+async fn update_rolling_summary(
+    agent_name: &str,
+    provider: &Arc<dyn LlmProvider>,
+    memory_store: &Arc<dyn MemoryService>,
+    extracted: &ExtractedKnowledge,
+) {
+    // Collect all new facts into one list
+    let mut new_facts: Vec<&str> = Vec::new();
+    for f in &extracted.user_facts { new_facts.push(f); }
+    for f in &extracted.outcomes { new_facts.push(f); }
+    for f in &extracted.feedback { new_facts.push(f); }
+
+    if new_facts.is_empty() {
+        return; // Nothing new to summarize
+    }
+
+    let summary_source = format!("rolling_summary:{}", agent_name);
+
+    // Load current summary
+    let current_summary = match memory_store.get(None, Some(&summary_source), 1).await {
+        Ok(chunks) => chunks.first().map(|c| c.content.clone()).unwrap_or_default(),
+        Err(_) => String::new(),
+    };
+
+    // Build update prompt
+    let new_facts_text = new_facts.iter()
+        .map(|f| format!("- {}", f))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = if current_summary.is_empty() {
+        format!(
+            "Create a concise agent summary (200 words max) from these facts about the user and recent interactions:\n\n{}\n\n\
+             Write in the same language as the facts. Be concise — this summary is injected into every conversation.",
+            new_facts_text
+        )
+    } else {
+        format!(
+            "Update this agent summary with new information. Keep it under 200 words. \
+             Merge new facts into existing summary — don't duplicate, update contradictions, keep most important.\n\n\
+             Current summary:\n{}\n\nNew facts:\n{}\n\n\
+             Return ONLY the updated summary text, nothing else.",
+            current_summary, new_facts_text
+        )
+    };
+
+    let messages = vec![Message {
+        role: MessageRole::User,
+        content: prompt,
+        tool_calls: None,
+        tool_call_id: None,
+        thinking_blocks: vec![],
+    }];
+
+    let response = match tokio::time::timeout(EXTRACTION_TIMEOUT, provider.chat(&messages, &[])).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => { tracing::debug!(error = %e, "rolling summary LLM call failed"); return; }
+        Err(_) => { tracing::debug!("rolling summary LLM call timed out"); return; }
+    };
+
+    let new_summary = response.content.trim().to_string();
+    if new_summary.is_empty() || new_summary.len() < 20 {
+        return;
+    }
+
+    // Strip think blocks from summary
+    let new_summary = {
+        let mut s = new_summary;
+        while let Some(start) = s.find("<think>") {
+            if let Some(end) = s.find("</think>") {
+                s = format!("{}{}", &s[..start], &s[end + 8..]);
+            } else {
+                s = s[..start].to_string();
+                break;
+            }
+        }
+        s.trim().to_string()
+    };
+
+    // Delete old summary chunk if exists
+    if let Ok(chunks) = memory_store.get(None, Some(&summary_source), 1).await {
+        for chunk in &chunks {
+            let _ = memory_store.delete(&chunk.id).await;
+        }
+    }
+
+    // Save new summary as pinned chunk
+    match memory_store.index(&new_summary, &summary_source, true, None, None, "private", agent_name).await {
+        Ok(_) => tracing::info!(agent = agent_name, len = new_summary.len(), "rolling summary updated"),
+        Err(e) => tracing::warn!(agent = agent_name, error = %e, "failed to save rolling summary"),
+    }
 }
 
 /// Parse the LLM response into ExtractedKnowledge.
@@ -388,5 +486,43 @@ mod tests {
         let input = r#"{"user_facts":["F1"],"outcomes":[],"tool_insights":[]}"#;
         let result = parse_extraction(input).unwrap();
         assert!(result.feedback.is_empty());
+    }
+
+    // ── rolling summary tests ───────────────────────────────────────
+
+    #[test]
+    fn rolling_summary_collects_only_user_facts_outcomes_feedback() {
+        // Verify that tool_insights are excluded from summary input
+        let extracted = ExtractedKnowledge {
+            user_facts: vec!["User works in IT".into()],
+            outcomes: vec!["Decided to use GraphQL".into()],
+            tool_insights: vec!["API took 2s".into()],
+            feedback: vec!["User approved analysis".into()],
+        };
+        let mut facts: Vec<&str> = Vec::new();
+        for f in &extracted.user_facts { facts.push(f); }
+        for f in &extracted.outcomes { facts.push(f); }
+        for f in &extracted.feedback { facts.push(f); }
+        // tool_insights NOT included
+        assert_eq!(facts.len(), 3);
+        assert!(!facts.iter().any(|f| f.contains("API took")));
+        assert!(facts.iter().any(|f| f.contains("IT")));
+        assert!(facts.iter().any(|f| f.contains("GraphQL")));
+        assert!(facts.iter().any(|f| f.contains("approved")));
+    }
+
+    #[test]
+    fn rolling_summary_empty_when_only_tool_insights() {
+        let extracted = ExtractedKnowledge {
+            user_facts: vec![],
+            outcomes: vec![],
+            tool_insights: vec!["some insight".into()],
+            feedback: vec![],
+        };
+        let mut facts: Vec<&str> = Vec::new();
+        for f in &extracted.user_facts { facts.push(f); }
+        for f in &extracted.outcomes { facts.push(f); }
+        for f in &extracted.feedback { facts.push(f); }
+        assert!(facts.is_empty()); // No summary needed
     }
 }
