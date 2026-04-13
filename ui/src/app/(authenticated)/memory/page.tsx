@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { ErrorBanner } from "@/components/ui/error-banner";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Markdown } from "@/components/ui/markdown";
 import { Brain, Search, Trash2, Pin, PinOff, ChevronLeft, ChevronRight, ChevronDown, X } from "lucide-react";
 import type { MemoryDocument } from "@/types/api";
 
@@ -30,8 +31,10 @@ function DocumentContent({ id, onCollapse }: { id: string; onCollapse: () => voi
   if (loading) return <Skeleton className="h-24 w-full mt-2" />;
 
   return (
-    <div className="mt-2 text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap border-t pt-2 relative group">
-      {content}
+    <div className="mt-2 text-sm leading-relaxed text-muted-foreground border-t pt-2 relative group">
+      <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-li:my-0.5">
+        <Markdown>{content || ""}</Markdown>
+      </div>
       <Button
         variant="ghost"
         size="sm"
