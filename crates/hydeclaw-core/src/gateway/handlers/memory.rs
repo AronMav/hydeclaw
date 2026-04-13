@@ -41,7 +41,7 @@ pub(crate) async fn api_list_memory(
     // Search with query: semantic → FTS fallback (handled inside MemoryStore::search)
     if let Some(ref search) = q.query
         && !search.trim().is_empty() {
-            match state.memory_store.search(search, limit, &[], None, None).await {
+            match state.memory_store.search(search, limit, &[], None, None, "").await {
                 Ok((results, mode)) => {
                     let chunks: Vec<Value> = results
                         .iter()
@@ -217,7 +217,7 @@ pub(crate) async fn api_list_documents(
     // Search mode: search at chunk level, group by document
     if let Some(ref search) = q.query
         && !search.trim().is_empty() {
-            return match state.memory_store.search(search, (limit * 5) as usize, &[], None, None).await {
+            return match state.memory_store.search(search, (limit * 5) as usize, &[], None, None, "").await {
                 Ok((results, mode)) => {
                     // Group by document: COALESCE(parent_id, id), keep best similarity
                     let mut seen = std::collections::HashMap::<String, (f64, &crate::memory::MemoryResult)>::new();
@@ -429,7 +429,7 @@ pub(crate) async fn api_create_memory(
     }
     let source = req.source.as_deref().unwrap_or("ui");
     let pinned = req.pinned.unwrap_or(false);
-    match state.memory_store.index(&req.content, source, pinned, None, None, "private").await {
+    match state.memory_store.index(&req.content, source, pinned, None, None, "private", "").await {
         Ok(id) => Json(json!({"id": id, "ok": true})).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

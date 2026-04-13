@@ -301,7 +301,7 @@ impl AgentEngine {
                         Err(e) => return Some(Err(e)),
                     }
                 } else {
-                    match self.memory_store.search(query, 8, &[], None, None).await {
+                    match self.memory_store.search(query, 8, &[], None, None, &self.agent.name).await {
                         Ok((r, m)) => (r, m),
                         Err(e) => return Some(Err(e)),
                     }

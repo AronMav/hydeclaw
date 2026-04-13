@@ -42,14 +42,14 @@ impl AgentEngine {
         if items.is_empty() {
             return;
         }
-        match self.memory_store.index_batch(&items).await {
+        match self.memory_store.index_batch(&items, &self.agent.name).await {
             Ok(ids) => tracing::info!(count = ids.len(), "batch indexed facts to memory"),
             Err(e) => {
                 tracing::warn!(error = %e, "batch index failed, falling back to individual inserts");
                 let mut ok = 0usize;
                 let mut fail = 0usize;
                 for (content, source, pinned, scope) in &items {
-                    match self.memory_store.index(content, source, *pinned, None, None, scope).await {
+                    match self.memory_store.index(content, source, *pinned, None, None, scope, &self.agent.name).await {
                         Ok(_) => ok += 1,
                         Err(ie) => {
                             fail += 1;
@@ -75,7 +75,7 @@ impl AgentEngine {
 
         // Search long-term memory (exclude L0 pinned chunks to avoid duplication)
         let exclude = self.tex().pinned_chunk_ids.lock().await.clone();
-        match self.memory_store.search(query, limit, &exclude, category, topic).await {
+        match self.memory_store.search(query, limit, &exclude, category, topic, &self.agent.name).await {
             Ok((results, _)) if results.is_empty() => {
                 "No relevant memories found.".to_string()
             }
@@ -123,7 +123,7 @@ impl AgentEngine {
             }
         }
 
-        match self.memory_store.index(content, source, pinned, category, topic, "private").await {
+        match self.memory_store.index(content, source, pinned, category, topic, "private", &self.agent.name).await {
             Ok(id) => format!("Indexed as {}", id),
             Err(e) => format!("Memory index error: {}", e),
         }
@@ -134,7 +134,6 @@ impl AgentEngine {
     pub(super) async fn handle_memory_reindex(&self, args: &serde_json::Value) -> String {
         let clear_existing = args.get("clear_existing").and_then(|v| v.as_bool()).unwrap_or(false);
         let include_sessions = args.get("include_sessions").and_then(|v| v.as_bool()).unwrap_or(true);
-        let _extract_graph = args.get("graph").and_then(|v| v.as_bool()).unwrap_or(true);
 
         if !self.memory_store.is_available() {
             return "Memory indexing is not available (embedding endpoint not configured).".to_string();

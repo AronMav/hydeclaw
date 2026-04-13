@@ -402,7 +402,8 @@ impl MemoryStore {
     /// Short texts are batch-embedded in a single request for efficiency.
     /// Category and topic are not supported in batch index (pass None/None per item).
     /// Tuple: (content, source, pinned, scope).
-    pub async fn index_batch(&self, items: &[(String, String, bool, String)]) -> Result<Vec<String>> {
+    /// `agent_id`: the agent that owns these chunks (used for visibility filtering).
+    pub async fn index_batch(&self, items: &[(String, String, bool, String)], agent_id: &str) -> Result<Vec<String>> {
         self.ensure_initialized().await;
         if items.is_empty() {
             return Ok(vec![]);
@@ -415,7 +416,7 @@ impl MemoryStore {
         let mut short_items: Vec<(usize, &str, &str, bool, &str)> = Vec::new();
         for (idx, (content, source, pinned, scope)) in items.iter().enumerate() {
             if content.len() > crate::chunker::DEFAULT_CHUNK_SIZE {
-                let id = self.index(content, source, *pinned, None, None, scope).await
+                let id = self.index(content, source, *pinned, None, None, scope, agent_id).await
                     .context("failed to index long item in batch")?;
                 ids.push((idx, id));
             } else {
@@ -432,7 +433,7 @@ impl MemoryStore {
                 let id = uuid::Uuid::new_v4().to_string();
                 crate::db::memory_queries::insert_chunk(
                     &self.db, &id, content, &vec_str, source, pinned, &lang, None, 0,
-                    None, None, scope,
+                    None, None, scope, agent_id,
                 ).await
                 .context("failed to insert memory chunk in batch")?;
                 ids.push((idx, id));
@@ -471,6 +472,7 @@ impl MemoryStore {
     /// Returns (results, `search_mode`) where `search_mode` is "hybrid", "semantic", or "fts".
     /// `exclude_ids`: chunk IDs already loaded via L0 pinned loading — excluded from results (CTX-04).
     /// `category` / `topic`: optional post-query filters; only chunks with matching values are returned.
+    /// `agent_id`: filter results to this agent's chunks plus shared chunks. Pass `""` to search all.
     pub async fn search(
         &self,
         query: &str,
@@ -478,6 +480,7 @@ impl MemoryStore {
         exclude_ids: &[String],
         category: Option<&str>,
         topic: Option<&str>,
+        agent_id: &str,
     ) -> Result<(Vec<MemoryResult>, &'static str)> {
         self.ensure_initialized().await;
         if query.trim().is_empty() {
@@ -486,20 +489,20 @@ impl MemoryStore {
 
         let (results, mode) = if self.is_available() {
             // Run semantic + FTS in parallel and merge via RRF
-            match self.search_hybrid(query, limit).await {
+            match self.search_hybrid(query, limit, agent_id).await {
                 Ok(results) if !results.is_empty() => (results, "hybrid"),
                 Ok(_) => {
-                    let fts = self.search_fts(query, limit).await?;
+                    let fts = self.search_fts(query, limit, agent_id).await?;
                     (fts, "fts")
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "hybrid search failed, falling back to FTS");
-                    let fts = self.search_fts(query, limit).await?;
+                    let fts = self.search_fts(query, limit, agent_id).await?;
                     (fts, "fts")
                 }
             }
         } else {
-            let fts = self.search_fts(query, limit).await?;
+            let fts = self.search_fts(query, limit, agent_id).await?;
             (fts, "fts")
         };
 
@@ -523,12 +526,12 @@ impl MemoryStore {
     }
 
     /// Hybrid search: semantic + FTS merged via Reciprocal Rank Fusion (RRF).
-    async fn search_hybrid(&self, query: &str, limit: usize) -> Result<Vec<MemoryResult>> {
+    async fn search_hybrid(&self, query: &str, limit: usize, agent_id: &str) -> Result<Vec<MemoryResult>> {
         use std::collections::HashMap;
 
         let (sem_result, fts_result) = tokio::join!(
-            self.search_semantic(query, limit * 2),
-            self.search_fts(query, limit * 2),
+            self.search_semantic(query, limit * 2, agent_id),
+            self.search_fts(query, limit * 2, agent_id),
         );
 
         let sem = match sem_result {
@@ -570,13 +573,13 @@ impl MemoryStore {
     }
 
     /// Semantic similarity search with MMR reranking (lambda=0.75).
-    async fn search_semantic(&self, query: &str, limit: usize) -> Result<Vec<MemoryResult>> {
+    async fn search_semantic(&self, query: &str, limit: usize, agent_id: &str) -> Result<Vec<MemoryResult>> {
         let embedding = self.embed(query).await?;
         let vec_str = Self::fmt_vec(&embedding);
         let candidate_limit = (limit * 6) as i64;
 
         let mut candidates = crate::db::memory_queries::search_semantic(
-            &self.db, &vec_str, candidate_limit,
+            &self.db, &vec_str, candidate_limit, agent_id,
         )
         .await?;
 
@@ -616,7 +619,8 @@ impl MemoryStore {
 
     /// Full-text search using `PostgreSQL` tsvector/tsquery with morphological stemming.
     /// Used as fallback when embedding endpoint is unavailable.
-    pub async fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<MemoryResult>> {
+    /// `agent_id`: filter results to this agent's chunks plus shared chunks. Pass `""` to search all.
+    pub async fn search_fts(&self, query: &str, limit: usize, agent_id: &str) -> Result<Vec<MemoryResult>> {
         if query.trim().is_empty() {
             return Ok(vec![]);
         }
@@ -624,7 +628,7 @@ impl MemoryStore {
         let lang = self.validated_fts_language()?;
 
         let results = crate::db::memory_queries::search_fts(
-            &self.db, query, limit as i64, &lang,
+            &self.db, query, limit as i64, &lang, agent_id,
         )
         .await?;
 
@@ -706,6 +710,7 @@ impl MemoryStore {
     /// If content exceeds `DEFAULT_CHUNK_SIZE`, splits into overlapping chunks
     /// linked by `parent_id`. Returns the parent chunk's UUID.
     /// `scope`: "private" (agent-only) or "shared" (visible to all agents).
+    /// `agent_id`: the agent that owns this chunk (used for visibility filtering).
     pub async fn index(
         &self,
         content: &str,
@@ -714,6 +719,7 @@ impl MemoryStore {
         category: Option<&str>,
         topic: Option<&str>,
         scope: &str,
+        agent_id: &str,
     ) -> Result<String> {
         self.ensure_initialized().await;
         let lang = self.validated_fts_language()?;
@@ -731,7 +737,7 @@ impl MemoryStore {
             let id = uuid::Uuid::new_v4().to_string();
             crate::db::memory_queries::insert_chunk(
                 &self.db, &id, &chunks[0], &vec_str, source, pinned, &lang, None, 0,
-                category, topic, scope,
+                category, topic, scope, agent_id,
             ).await?;
             return Ok(id);
         }
@@ -751,7 +757,7 @@ impl MemoryStore {
             let parent = if i == 0 { None } else { Some(parent_id.as_str()) };
             crate::db::memory_queries::insert_chunk(
                 &self.db, &id, chunk, &vec_str, source, pinned, &lang, parent, i as i32,
-                category, topic, scope,
+                category, topic, scope, agent_id,
             ).await?;
         }
 
@@ -919,7 +925,7 @@ pub fn spawn_workspace_watcher(
                                 if let Err(e) = mem.delete_by_source(&source).await {
                                     tracing::debug!(source = %source, error = %e, "no existing chunks to delete");
                                 }
-                                match mem.index(&content, &source, false, None, None, "private").await {
+                                match mem.index(&content, &source, false, None, None, "shared", "").await {
                                     Ok(_) => indexed += 1,
                                     Err(e) => {
                                         tracing::debug!(error = %e, "embedding unavailable — skipping workspace indexing");

@@ -46,7 +46,6 @@ import {
   Eye,
   Image as ImageIcon,
   Brain,
-  Network,
 } from "lucide-react";
 import type { Provider, CreateProviderInput } from "@/types/api";
 import { apiGet, apiPost } from "@/lib/api";
@@ -66,7 +65,7 @@ import {
 const ALL_CATEGORIES = ["text", "stt", "tts", "vision", "imagegen", "embedding"] as const;
 type ProviderCategory = typeof ALL_CATEGORIES[number];
 
-const ALL_CAPABILITIES = ["graph_extraction", "compaction", "stt", "tts", "vision", "imagegen", "embedding"] as const;
+const ALL_CAPABILITIES = ["stt", "tts", "vision", "imagegen", "embedding"] as const;
 
 /** Capabilities that require toolgate restart when active provider changes */
 
@@ -83,8 +82,6 @@ const CATEGORY_BADGE_CLASS: Record<ProviderCategory, string> = {
 };
 
 const CAPABILITY_BADGE_CLASS: Record<string, string> = {
-  graph_extraction: "bg-violet-500/10 text-violet-500 border-violet-500/20",
-  compaction: "bg-rose-500/10 text-rose-500 border-rose-500/20",
   ...CATEGORY_BADGE_CLASS,
 };
 
@@ -98,8 +95,6 @@ const CATEGORY_ICONS: Record<ProviderCategory, React.ReactNode> = {
 };
 
 const CAPABILITY_ICONS: Record<string, React.ReactNode> = {
-  graph_extraction: <Network className="h-3.5 w-3.5" />,
-  compaction: <Zap className="h-3.5 w-3.5" />,
   ...CATEGORY_ICONS,
 };
 
@@ -169,8 +164,7 @@ export default function ProvidersPage() {
     active.find((a) => a.capability === capability)?.provider_name ?? null;
 
   const providersForCapability = (cap: string) => {
-    const type = (cap === "graph_extraction" || cap === "compaction") ? "text" : cap;
-    return providers.filter((p) => p.type === type);
+    return providers.filter((p) => p.type === cap);
   };
 
   // ── LLM helpers ────────────────────────────────────────────────────────────
@@ -424,9 +418,7 @@ export default function ProvidersPage() {
             const typeLabel = provider.type === "text"
               ? (providerTypes.find((pt) => pt.id === provider.provider_type)?.name ?? provider.provider_type)
               : provider.provider_type;
-            const isActive = provider.type === "text"
-              ? (getActiveName("graph_extraction") === provider.name || getActiveName("compaction") === provider.name)
-              : getActiveName(provider.type) === provider.name;
+            const isActive = getActiveName(provider.type) === provider.name;
 
             return (
               <div
