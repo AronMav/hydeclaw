@@ -1367,8 +1367,6 @@ Updatable keys:
 |-----|------|-------------|
 | `alert_channel_ids` | array | Channel UUIDs to send alerts to |
 | `alert_events` | array | Event types that trigger alerts |
-| `graph_extraction_provider_id` | string | LLM provider for graph extraction |
-| `graph_extraction_model` | string | Model for graph extraction |
 
 ---
 
