@@ -19,6 +19,7 @@ pub trait MemoryService: Send + Sync {
     async fn embed(&self, text: &str) -> Result<Vec<f32>>;
 
     /// Hybrid search (semantic + FTS). Returns results and search mode string.
+    /// `agent_id`: filter to this agent's chunks plus shared chunks. Pass `""` to search all.
     async fn search(
         &self,
         query: &str,
@@ -26,10 +27,12 @@ pub trait MemoryService: Send + Sync {
         exclude_ids: &[String],
         category: Option<&str>,
         topic: Option<&str>,
+        agent_id: &str,
     ) -> Result<(Vec<crate::memory::MemoryResult>, String)>;
 
     /// Index a new memory chunk. Returns the new chunk UUID.
     /// `scope`: "private" (agent-only) or "shared" (visible to all agents).
+    /// `agent_id`: the agent that owns this chunk.
     async fn index(
         &self,
         content: &str,
@@ -38,11 +41,13 @@ pub trait MemoryService: Send + Sync {
         category: Option<&str>,
         topic: Option<&str>,
         scope: &str,
+        agent_id: &str,
     ) -> Result<String>;
 
     /// Batch-index memory chunks. Returns a vec of new chunk UUIDs.
     /// Tuple: (content, source, pinned, scope).
-    async fn index_batch(&self, items: &[(String, String, bool, String)]) -> Result<Vec<String>>;
+    /// `agent_id`: the agent that owns these chunks.
+    async fn index_batch(&self, items: &[(String, String, bool, String)], agent_id: &str) -> Result<Vec<String>>;
 
     /// Load pinned memory chunks formatted for context injection.
     /// Returns (formatted text, list of chunk IDs).
@@ -94,8 +99,9 @@ impl MemoryService for crate::memory::MemoryStore {
         exclude_ids: &[String],
         category: Option<&str>,
         topic: Option<&str>,
+        agent_id: &str,
     ) -> Result<(Vec<crate::memory::MemoryResult>, String)> {
-        let (results, mode) = self.search(query, limit, exclude_ids, category, topic).await?;
+        let (results, mode) = self.search(query, limit, exclude_ids, category, topic, agent_id).await?;
         Ok((results, mode.to_string()))
     }
 
@@ -107,12 +113,13 @@ impl MemoryService for crate::memory::MemoryStore {
         category: Option<&str>,
         topic: Option<&str>,
         scope: &str,
+        agent_id: &str,
     ) -> Result<String> {
-        self.index(content, source, pinned, category, topic, scope).await
+        self.index(content, source, pinned, category, topic, scope, agent_id).await
     }
 
-    async fn index_batch(&self, items: &[(String, String, bool, String)]) -> Result<Vec<String>> {
-        self.index_batch(items).await
+    async fn index_batch(&self, items: &[(String, String, bool, String)], agent_id: &str) -> Result<Vec<String>> {
+        self.index_batch(items, agent_id).await
     }
 
     async fn load_pinned(
@@ -188,6 +195,7 @@ pub mod mock {
             _exclude_ids: &[String],
             _category: Option<&str>,
             _topic: Option<&str>,
+            _agent_id: &str,
         ) -> Result<(Vec<crate::memory::MemoryResult>, String)> {
             Ok((vec![], "mock".to_string()))
         }
@@ -200,6 +208,7 @@ pub mod mock {
             _category: Option<&str>,
             _topic: Option<&str>,
             _scope: &str,
+            _agent_id: &str,
         ) -> Result<String> {
             Ok("mock-chunk-id".to_string())
         }
@@ -207,6 +216,7 @@ pub mod mock {
         async fn index_batch(
             &self,
             items: &[(String, String, bool, String)],
+            _agent_id: &str,
         ) -> Result<Vec<String>> {
             Ok(items.iter().map(|_| "mock-chunk-id".to_string()).collect())
         }
@@ -269,7 +279,7 @@ mod tests {
     #[tokio::test]
     async fn mock_search_returns_empty_without_db() {
         let mock = MockMemoryService::available();
-        let (results, mode) = mock.search("test query", 5, &[], None, None).await.unwrap();
+        let (results, mode) = mock.search("test query", 5, &[], None, None, "agent1").await.unwrap();
         assert!(results.is_empty());
         assert_eq!(mode, "mock");
     }

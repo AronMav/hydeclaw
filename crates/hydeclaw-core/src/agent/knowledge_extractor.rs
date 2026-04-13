@@ -210,7 +210,7 @@ async fn save_if_new(
     memory_store: &Arc<dyn MemoryService>,
     text: &str,
     source: &str,
-    _agent_name: &str,
+    agent_name: &str,
     scope: &str,
 ) -> bool {
     let text = text.trim();
@@ -219,7 +219,7 @@ async fn save_if_new(
     }
 
     // Check for duplicates via search
-    match memory_store.search(text, 1, &[], None, None).await {
+    match memory_store.search(text, 1, &[], None, None, agent_name).await {
         Ok((results, _)) => {
             if let Some(top) = results.first() {
                 if top.similarity >= DEDUP_THRESHOLD {
@@ -233,7 +233,7 @@ async fn save_if_new(
     }
 
     // Save as new memory chunk
-    match memory_store.index(text, source, false, None, None, scope).await {
+    match memory_store.index(text, source, false, None, None, scope, agent_name).await {
         Ok(_) => true,
         Err(e) => {
             tracing::warn!(error = %e, "failed to save extracted knowledge");

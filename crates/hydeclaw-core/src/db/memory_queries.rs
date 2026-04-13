@@ -116,10 +116,12 @@ pub async fn fetch_pinned(db: &PgPool, agent_id: &str) -> Result<Vec<MemoryChunk
 }
 
 /// Semantic similarity search: find nearest chunks by embedding cosine distance.
+/// Filters by agent_id so that only the agent's own chunks (or shared chunks) are returned.
 pub async fn search_semantic(
     db: &PgPool,
     vec_str: &str,
     candidate_limit: i64,
+    agent_id: &str,
 ) -> Result<Vec<MemoryResult>> {
     let rows = sqlx::query(
         r"SELECT id::text,
@@ -135,11 +137,14 @@ pub async fn search_semantic(
                   archived
            FROM memory_chunks
            WHERE embedding IS NOT NULL
+             AND ($3 = '' OR agent_id = $3 OR scope = 'shared')
+             AND archived = false
            ORDER BY embedding <=> $1::halfvec
            LIMIT $2",
     )
     .bind(vec_str)
     .bind(candidate_limit)
+    .bind(agent_id)
     .fetch_all(db)
     .await
     .context("memory search query failed")?;
@@ -148,11 +153,13 @@ pub async fn search_semantic(
 }
 
 /// Full-text search using `PostgreSQL` tsvector/tsquery.
+/// Filters by agent_id so that only the agent's own chunks (or shared chunks) are returned.
 pub async fn search_fts(
     db: &PgPool,
     query: &str,
     limit: i64,
     lang: &str,
+    agent_id: &str,
 ) -> Result<Vec<MemoryResult>> {
     validate_fts_lang(lang)?;
     // SAFETY: `lang` is validated by validate_fts_lang() which only allows lowercase ASCII
@@ -171,6 +178,8 @@ pub async fn search_fts(
                   archived
            FROM memory_chunks
            WHERE tsv @@ plainto_tsquery('{lang}', $1)
+             AND ($3 = '' OR agent_id = $3 OR scope = 'shared')
+             AND archived = false
            ORDER BY ts_rank_cd(tsv, plainto_tsquery('{lang}', $1)) DESC,
                     relevance_score DESC
            LIMIT $2",
@@ -179,6 +188,7 @@ pub async fn search_fts(
     let rows = sqlx::query(&sql)
         .bind(query)
         .bind(limit)
+        .bind(agent_id)
         .fetch_all(db)
         .await
         .context("FTS search query failed")?;
@@ -242,13 +252,14 @@ pub async fn insert_chunk(
     category: Option<&str>,
     topic: Option<&str>,
     scope: &str,
+    agent_id: &str,
 ) -> Result<()> {
     validate_fts_lang(lang)?;
     // SAFETY: `lang` is validated by validate_fts_lang() which only allows lowercase ASCII
     // letters. Not user input -- comes from server config.
     let sql = format!(
-        r"INSERT INTO memory_chunks (id, user_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope)
-           VALUES ($1::uuid, '', $2, $3::halfvec, $4, $5, 1.0, to_tsvector('{lang}', $2), $6::uuid, $7, $8, $9, $10)",
+        r"INSERT INTO memory_chunks (id, user_id, agent_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope)
+           VALUES ($1::uuid, '', $11, $2, $3::halfvec, $4, $5, 1.0, to_tsvector('{lang}', $2), $6::uuid, $7, $8, $9, $10)",
     );
 
     sqlx::query(&sql)
@@ -262,6 +273,7 @@ pub async fn insert_chunk(
         .bind(category)
         .bind(topic)
         .bind(scope)
+        .bind(agent_id)
         .execute(db)
         .await
         .context("failed to insert memory chunk")?;

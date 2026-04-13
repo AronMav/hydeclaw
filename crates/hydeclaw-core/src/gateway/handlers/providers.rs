@@ -35,7 +35,7 @@ pub(crate) fn routes() -> Router<AppState> {
 
 // ── Constants ───────────────────────────────────────────────────────────────
 const VALID_TYPES: &[&str] = &["text", "stt", "tts", "vision", "imagegen", "embedding"];
-const VALID_CAPABILITIES: &[&str] = &["graph_extraction", "stt", "tts", "vision", "imagegen", "embedding", "compaction"];
+const VALID_CAPABILITIES: &[&str] = &["stt", "tts", "vision", "imagegen", "embedding"];
 
 static NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[a-zA-Z0-9_-]+$").expect("valid regex pattern")
@@ -982,8 +982,10 @@ mod tests {
 
     #[test]
     fn valid_capabilities_complete() {
-        assert!(VALID_CAPABILITIES.contains(&"graph_extraction"));
         assert!(VALID_CAPABILITIES.contains(&"stt"));
+        assert!(VALID_CAPABILITIES.contains(&"embedding"));
+        assert!(!VALID_CAPABILITIES.contains(&"graph_extraction"));
+        assert!(!VALID_CAPABILITIES.contains(&"compaction"));
         assert!(!VALID_CAPABILITIES.contains(&"text"));
     }
 
@@ -1083,8 +1085,10 @@ mod tests {
 
     #[test]
     fn capability_validation() {
-        assert!(is_valid_capability("graph_extraction"));
         assert!(is_valid_capability("stt"));
+        assert!(is_valid_capability("embedding"));
+        assert!(!is_valid_capability("graph_extraction"));
+        assert!(!is_valid_capability("compaction"));
         assert!(!is_valid_capability("text"));
         assert!(!is_valid_capability(""));
     }
