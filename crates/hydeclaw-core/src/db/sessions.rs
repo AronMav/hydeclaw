@@ -24,6 +24,28 @@ pub struct Session {
     pub retry_count: i32,
 }
 
+/// Get human-readable title for a session. Falls back to started_at timestamp if no title.
+pub async fn get_session_title(db: &PgPool, session_id: Uuid) -> Result<String> {
+    let row = sqlx::query(
+        "SELECT title, started_at FROM sessions WHERE id = $1"
+    )
+    .bind(session_id)
+    .fetch_optional(db)
+    .await?;
+
+    if let Some(r) = row {
+        if let Some(title) = r.get::<Option<String>, _>("title") {
+            if !title.trim().is_empty() {
+                return Ok(title);
+            }
+        }
+        let started_at = r.get::<DateTime<Utc>, _>("started_at");
+        Ok(format!("Session from {}", started_at.format("%Y-%m-%d %H:%M")))
+    } else {
+        Ok("Unknown Session".to_string())
+    }
+}
+
 /// Find or create a session for the user+agent pair.
 /// Creates a new session if the last message was more than 4 hours ago.
 ///
