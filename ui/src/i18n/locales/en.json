@@ -2,6 +2,7 @@
   "common.loading": "Loading...",
   "common.running": "Running...",
   "common.done": "Done",
+  "common.copied": "Copied",
   "common.error": "Error",
   "common.pending": "Pending",
   "tasks.plan_title": "Task Plans",
