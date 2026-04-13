@@ -27,7 +27,6 @@ fn row_to_memory_result(r: &sqlx::postgres::PgRow) -> MemoryResult {
         chunk_index: r.try_get::<i32, _>("chunk_index").unwrap_or(0),
         category: r.try_get::<Option<String>, _>("category").ok().flatten(),
         topic: r.try_get::<Option<String>, _>("topic").ok().flatten(),
-        archived: r.try_get::<Option<bool>, _>("archived").ok().flatten(),
     }
 }
 
@@ -44,7 +43,6 @@ fn row_to_memory_chunk(r: &sqlx::postgres::PgRow) -> MemoryChunk {
         accessed_at: r.get("accessed_at"),
         category: r.try_get::<Option<String>, _>("category").ok().flatten(),
         topic: r.try_get::<Option<String>, _>("topic").ok().flatten(),
-        archived: r.try_get::<Option<bool>, _>("archived").ok().flatten(),
     }
 }
 
@@ -94,7 +92,7 @@ pub async fn ensure_hnsw_index(db: &PgPool, dim: u32) -> Result<()> {
 
 // ── Search ───────────────────────────────────────────────────────────────────
 
-/// Fetch all pinned, non-archived chunks for a given agent, ordered oldest first.
+/// Fetch all pinned chunks for a given agent, ordered oldest first.
 /// Includes shared chunks (scope = 'shared') visible to all agents.
 /// Used by L0 context loading — no embedding or search query needed.
 pub async fn fetch_pinned(db: &PgPool, agent_id: &str) -> Result<Vec<MemoryChunk>> {
@@ -102,9 +100,9 @@ pub async fn fetch_pinned(db: &PgPool, agent_id: &str) -> Result<Vec<MemoryChunk
         r"SELECT id::text, content, COALESCE(source,'') AS source, pinned,
                   COALESCE(relevance_score, 1.0)::float8 AS relevance_score,
                   created_at, accessed_at,
-                  category, topic, archived
+                  category, topic
            FROM memory_chunks
-           WHERE ($1 = '' OR agent_id = $1 OR scope = 'shared') AND pinned = true AND archived = false
+           WHERE ($1 = '' OR agent_id = $1 OR scope = 'shared') AND pinned = true
            ORDER BY created_at ASC",
     )
     .bind(agent_id)
@@ -133,12 +131,10 @@ pub async fn search_semantic(
                   parent_id::text,
                   chunk_index,
                   category,
-                  topic,
-                  archived
+                  topic
            FROM memory_chunks
            WHERE embedding IS NOT NULL
              AND ($3 = '' OR agent_id = $3 OR scope = 'shared')
-             AND archived = false
            ORDER BY embedding <=> $1::halfvec
            LIMIT $2",
     )
@@ -174,12 +170,10 @@ pub async fn search_fts(
                   parent_id::text,
                   chunk_index,
                   category,
-                  topic,
-                  archived
+                  topic
            FROM memory_chunks
            WHERE tsv @@ plainto_tsquery('{lang}', $1)
              AND ($3 = '' OR agent_id = $3 OR scope = 'shared')
-             AND archived = false
            ORDER BY ts_rank_cd(tsv, plainto_tsquery('{lang}', $1)) DESC,
                     relevance_score DESC
            LIMIT $2",
@@ -221,8 +215,7 @@ pub async fn fetch_recent(db: &PgPool, limit: i64) -> Result<Vec<MemoryResult>> 
                   parent_id::text,
                   chunk_index,
                   category,
-                  topic,
-                  archived
+                  topic
            FROM memory_chunks
            ORDER BY pinned DESC, COALESCE(accessed_at, created_at) DESC
            LIMIT $1",
@@ -258,8 +251,8 @@ pub async fn insert_chunk(
     // SAFETY: `lang` is validated by validate_fts_lang() which only allows lowercase ASCII
     // letters. Not user input -- comes from server config.
     let sql = format!(
-        r"INSERT INTO memory_chunks (id, user_id, agent_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope)
-           VALUES ($1::uuid, '', $11, $2, $3::halfvec, $4, $5, 1.0, to_tsvector('{lang}', $2), $6::uuid, $7, $8, $9, $10)",
+        r"INSERT INTO memory_chunks (id, agent_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope)
+           VALUES ($1::uuid, $11, $2, $3::halfvec, $4, $5, 1.0, to_tsvector('{lang}', $2), $6::uuid, $7, $8, $9, $10)",
     );
 
     sqlx::query(&sql)
@@ -289,7 +282,7 @@ pub async fn get_chunk_by_id(db: &PgPool, id: &str) -> Result<Vec<MemoryChunk>> 
         r"SELECT id::text, content, COALESCE(source,'') AS source, pinned,
                   COALESCE(relevance_score,1.0)::float8 AS relevance_score,
                   created_at, accessed_at,
-                  category, topic, archived
+                  category, topic
            FROM memory_chunks WHERE id = $1::uuid",
     )
     .bind(id)
@@ -309,7 +302,7 @@ pub async fn get_chunks_by_source(
         r"SELECT id::text, content, COALESCE(source,'') AS source, pinned,
                   COALESCE(relevance_score,1.0)::float8 AS relevance_score,
                   created_at, accessed_at,
-                  category, topic, archived
+                  category, topic
            FROM memory_chunks WHERE source = $1
            ORDER BY created_at DESC LIMIT $2",
     )
@@ -327,7 +320,7 @@ pub async fn get_chunks_recent(db: &PgPool, limit: i64) -> Result<Vec<MemoryChun
         r"SELECT id::text, content, COALESCE(source,'') AS source, pinned,
                   COALESCE(relevance_score,1.0)::float8 AS relevance_score,
                   created_at, accessed_at,
-                  category, topic, archived
+                  category, topic
            FROM memory_chunks
            ORDER BY accessed_at DESC LIMIT $1",
     )

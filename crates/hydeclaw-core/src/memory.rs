@@ -56,7 +56,6 @@ pub struct MemoryResult {
     pub chunk_index: i32,
     pub category: Option<String>,
     pub topic: Option<String>,
-    pub archived: Option<bool>,
 }
 
 #[allow(dead_code)]
@@ -70,7 +69,6 @@ pub struct MemoryChunk {
     pub accessed_at: DateTime<Utc>,
     pub category: Option<String>,
     pub topic: Option<String>,
-    pub archived: Option<bool>,
 }
 
 // ── Store ─────────────────────────────────────────────────────────────────────
@@ -1091,19 +1089,19 @@ mod tests {
                 id: "id1".into(), content: "a".into(), source: "s".into(),
                 pinned: false, relevance_score: 1.0, similarity: 0.9,
                 parent_id: Some("parent1".into()), chunk_index: 0,
-                category: None, topic: None, archived: None,
+                category: None, topic: None,
             },
             MemoryResult {
                 id: "id2".into(), content: "b".into(), source: "s".into(),
                 pinned: false, relevance_score: 1.0, similarity: 0.8,
                 parent_id: Some("parent1".into()), chunk_index: 1,
-                category: None, topic: None, archived: None,
+                category: None, topic: None,
             },
             MemoryResult {
                 id: "id3".into(), content: "c".into(), source: "s2".into(),
                 pinned: false, relevance_score: 1.0, similarity: 0.7,
                 parent_id: None, chunk_index: 0,
-                category: None, topic: None, archived: None,
+                category: None, topic: None,
             },
         ];
         let deduped = MemoryStore::dedup_by_parent(results);
@@ -1160,7 +1158,6 @@ mod tests {
             chunk_index: 0,
             category: None,
             topic: None,
-            archived: None,
         }
     }
 
