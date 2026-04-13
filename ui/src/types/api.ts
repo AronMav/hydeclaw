@@ -172,6 +172,7 @@ export interface MemoryDocument {
   total_chars: number | null;
   category: string | null;
   topic: string | null;
+  scope?: string | null;
 }
 
 export interface MemoryStats {
