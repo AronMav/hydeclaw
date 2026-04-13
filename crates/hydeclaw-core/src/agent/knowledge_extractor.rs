@@ -30,6 +30,8 @@ struct ExtractedKnowledge {
     outcomes: Vec<String>,
     #[serde(default)]
     tool_insights: Vec<String>,
+    #[serde(default)]
+    feedback: Vec<String>,
 }
 
 /// Extract knowledge from a completed session and save to memory.
@@ -101,12 +103,18 @@ async fn extract_and_save_inner(
     // 4. Call LLM for extraction
     let prompt = format!(
         "You are a knowledge extraction assistant. Analyze the conversation below and extract information worth remembering long-term.\n\n\
-         Return a JSON object with three arrays:\n\
+         Return a JSON object with four arrays:\n\
          {{\n\
            \"user_facts\": [\"...\"],\n\
            \"outcomes\": [\"...\"],\n\
-           \"tool_insights\": [\"...\"]\n\
+           \"tool_insights\": [\"...\"],\n\
+           \"feedback\": [\"...\"]\n\
          }}\n\n\
+         Categories:\n\
+         - user_facts: Facts about the user (preferences, context, identity, goals)\n\
+         - outcomes: Decisions made, conclusions reached, recommendations given\n\
+         - tool_insights: What tools were used, what worked/failed, performance notes\n\
+         - feedback: User preferences and reactions — what they approved, rejected, asked to redo, liked or disliked\n\n\
          Rules:\n\
          - Only extract non-trivial information. Skip greetings, small talk, obvious context.\n\
          - Each item should be a self-contained sentence that makes sense without the conversation.\n\
@@ -155,6 +163,11 @@ async fn extract_and_save_inner(
             saved += 1;
         }
     }
+    for fb in &extracted.feedback {
+        if save_if_new(memory_store, fb, &format!("{}:feedback", source_prefix), agent_name, "shared").await {
+            saved += 1;
+        }
+    }
 
     if saved > 0 {
         tracing::info!(
@@ -164,6 +177,7 @@ async fn extract_and_save_inner(
             user_facts = extracted.user_facts.len(),
             outcomes = extracted.outcomes.len(),
             tool_insights = extracted.tool_insights.len(),
+            feedback = extracted.feedback.len(),
             "knowledge extracted from session"
         );
     }
@@ -357,5 +371,22 @@ mod tests {
         let mock = Arc::new(crate::agent::memory_service::mock::MockMemoryService::available()) as Arc<dyn MemoryService>;
         let result = save_if_new(&mock, "User works in IT sector", "auto:test:user", "Arty", "shared").await;
         assert!(result);
+    }
+
+    // ── feedback parsing tests ──────────────────────────────────────
+
+    #[test]
+    fn parse_with_feedback_field() {
+        let input = r#"{"user_facts":["F1"],"outcomes":["O1"],"tool_insights":["T1"],"feedback":["User approved the analysis","User rejected the recommendation"]}"#;
+        let result = parse_extraction(input).unwrap();
+        assert_eq!(result.feedback.len(), 2);
+        assert_eq!(result.feedback[0], "User approved the analysis");
+    }
+
+    #[test]
+    fn parse_without_feedback_defaults_empty() {
+        let input = r#"{"user_facts":["F1"],"outcomes":[],"tool_insights":[]}"#;
+        let result = parse_extraction(input).unwrap();
+        assert!(result.feedback.is_empty());
     }
 }
