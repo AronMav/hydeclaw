@@ -12,7 +12,7 @@ import { ErrorBanner } from "@/components/ui/error-banner";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Markdown } from "@/components/ui/markdown";
-import { Brain, Search, Trash2, Pin, PinOff, ChevronLeft, ChevronRight, ExternalLink, ArrowLeft, Copy, Check, X } from "lucide-react";
+import { Brain, Search, Trash2, Pin, PinOff, ChevronLeft, ChevronRight, ExternalLink, ArrowLeft, Copy, Check, X, MessageSquare, FileText } from "lucide-react";
 import { useSearchParams, useRouter } from "next/navigation";
 import type { MemoryDocument } from "@/types/api";
 
@@ -224,11 +224,18 @@ export default function MemoryPage() {
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
-                          <h3 className="font-semibold text-sm truncate text-foreground group-hover:text-primary transition-colors">
-                            {doc.source || t("memory.untitled")}
-                          </h3>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            {doc.source?.startsWith("auto:session") || doc.source?.startsWith("Session:") ? (
+                              <MessageSquare className="h-3.5 w-3.5 text-primary/60 shrink-0" />
+                            ) : (
+                              <FileText className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
+                            )}
+                            <h3 className="font-semibold text-sm truncate text-foreground group-hover:text-primary transition-colors">
+                              {doc.source?.replace("auto:session:", "Session: ") || t("memory.untitled")}
+                            </h3>
+                          </div>
                           {doc.pinned && (
-                            <Badge variant="secondary" className="h-5 px-1.5 bg-primary/10 text-primary border-none">
+                            <Badge variant="secondary" className="h-5 px-1.5 bg-primary/10 text-primary border-none shrink-0">
                               <Pin className="h-3 w-3" />
                             </Badge>
                           )}
