@@ -322,6 +322,7 @@ const CONFLICT_THRESHOLD: f64 = 0.5;
 /// - similarity >= 0.9 → SKIP (exact duplicate)
 /// - similarity 0.5-0.9 → LLM decides ADD/UPDATE/DELETE/NOOP
 /// - similarity < 0.5 → ADD (new fact)
+#[cfg_attr(not(test), allow(dead_code))]
 async fn save_if_new(
     memory_store: &Arc<dyn MemoryService>,
     text: &str,
