@@ -69,6 +69,7 @@ pub(crate) async fn api_list_memory(
             }
         }
 
+    // Admin endpoint: shows all chunks (no agent_id filter). Protected by auth middleware.
     // No query: list all chunks by relevance
     let result = sqlx::query_as::<_, MemoryChunkRow>(
         "SELECT id, content, source, relevance_score, pinned, created_at, accessed_at, parent_id, chunk_index \

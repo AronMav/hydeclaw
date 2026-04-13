@@ -460,7 +460,10 @@ async fn resolve_conflict(
                 Err(_) => false,
             }
         }
-        _ => false, // NOOP or unknown
+        _ => {
+            tracing::debug!(action = decision.action.as_str(), reason = decision.reason.as_str(), "conflict resolution: unknown action, skipping");
+            false
+        }
     }
 }
 
