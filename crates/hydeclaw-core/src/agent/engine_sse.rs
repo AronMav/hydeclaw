@@ -609,6 +609,20 @@ impl AgentEngine {
 
         lifecycle_guard.done().await;
 
+        // Post-session knowledge extraction (background, non-blocking)
+        if messages.len() >= 5 {
+            let db = self.db.clone();
+            let provider = self.provider.clone();
+            let memory = self.memory_store.clone();
+            let agent = self.agent.name.clone();
+            let sid = session_id;
+            tokio::spawn(async move {
+                crate::agent::knowledge_extractor::extract_and_save(
+                    db, sid, agent, provider, memory,
+                ).await;
+            });
+        }
+
         // Clear processing session context
         *self.processing_session_id().lock().await = None;
         *self.sse_event_tx().lock().await = None;
