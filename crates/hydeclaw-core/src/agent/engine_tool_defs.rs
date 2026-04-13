@@ -246,6 +246,11 @@ impl AgentEngine {
                             "type": "string",
                             "description": "Topic tag (for index/search)"
                         },
+                        "shared": {
+                            "type": "boolean",
+                            "description": "Make visible to all agents (for index). Default: private to this agent only.",
+                            "default": false
+                        },
                         "clear_existing": {
                             "type": "boolean",
                             "description": "Delete all existing chunks before re-indexing (for reindex)",

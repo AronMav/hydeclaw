@@ -103,6 +103,10 @@ impl AgentEngine {
         let pinned = args.get("pinned").and_then(|v| v.as_bool()).unwrap_or(false);
         let category = args.get("category").and_then(|v| v.as_str());
         let topic = args.get("topic").and_then(|v| v.as_str());
+        let scope = match args.get("shared").and_then(|v| v.as_bool()).unwrap_or(false) {
+            true => "shared",
+            false => "private",
+        };
 
         if content.is_empty() {
             return "Error: 'content' is required".to_string();
@@ -123,7 +127,7 @@ impl AgentEngine {
             }
         }
 
-        match self.memory_store.index(content, source, pinned, category, topic, "private", &self.agent.name).await {
+        match self.memory_store.index(content, source, pinned, category, topic, scope, &self.agent.name).await {
             Ok(id) => format!("Indexed as {}", id),
             Err(e) => format!("Memory index error: {}", e),
         }

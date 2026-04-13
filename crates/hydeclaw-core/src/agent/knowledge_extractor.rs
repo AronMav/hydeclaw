@@ -269,9 +269,9 @@ async fn update_rolling_summary(
         s.trim().to_string()
     };
 
-    // Delete old summary chunk if exists
-    if let Ok(chunks) = memory_store.get(None, Some(&summary_source), 1).await {
-        for chunk in &chunks {
+    // Delete ALL old summary chunks (limit=10 prevents orphaned duplicates)
+    if let Ok(chunks) = memory_store.get(None, Some(&summary_source), 10).await {
+        for chunk in chunks.iter() {
             let _ = memory_store.delete(&chunk.id).await;
         }
     }
