@@ -2,6 +2,7 @@
   "common.loading": "Загрузка...",
   "common.running": "В процессе...",
   "common.done": "Готово",
+  "common.copied": "Скопировано",
   "common.error": "Ошибка",
   "common.pending": "Ожидание",
   "tasks.plan_title": "Планы задач",

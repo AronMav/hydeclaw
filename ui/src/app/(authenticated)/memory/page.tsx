@@ -12,15 +12,17 @@ import { ErrorBanner } from "@/components/ui/error-banner";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Markdown } from "@/components/ui/markdown";
-import { Brain, Search, Trash2, Pin, PinOff, ChevronLeft, ChevronRight, ChevronDown, X } from "lucide-react";
+import { Brain, Search, Trash2, Pin, PinOff, ChevronLeft, ChevronRight, ExternalLink, ArrowLeft, Copy, Check, X } from "lucide-react";
+import { useSearchParams, useRouter } from "next/navigation";
 import type { MemoryDocument } from "@/types/api";
 
-// ── Lazy-load full document content ──
+// ── Full document view ──────────────────────────────────────────
 
-function DocumentContent({ id, onCollapse }: { id: string; onCollapse: () => void }) {
+function DocumentFullView({ id, onBack }: { id: string; onBack: () => void }) {
   const { t } = useTranslation();
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     apiGet<{ content: string }>(`/api/memory/documents/${id}`)
@@ -28,27 +30,50 @@ function DocumentContent({ id, onCollapse }: { id: string; onCollapse: () => voi
       .finally(() => setLoading(false));
   }, [id]);
 
-  if (loading) return <Skeleton className="h-24 w-full mt-2" />;
+  const handleCopy = () => {
+    if (content) {
+      navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex flex-col h-full p-4 md:p-8 max-w-4xl mx-auto w-full">
+        <Skeleton className="h-8 w-48 mb-4" />
+        <Skeleton className="h-64 w-full" />
+      </div>
+    );
+  }
 
   return (
-    <div className="mt-2 text-sm leading-relaxed text-muted-foreground border-t pt-2 relative group">
-      <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-li:my-0.5">
-        <Markdown>{content || ""}</Markdown>
+    <div className="flex flex-col h-full p-4 md:p-8 max-w-4xl mx-auto w-full overflow-hidden">
+      <div className="flex items-center justify-between mb-6 shrink-0">
+        <Button variant="ghost" size="sm" onClick={onBack}>
+          <ArrowLeft className="h-4 w-4 mr-2" /> {t("common.back")}
+        </Button>
+        <Button variant="outline" size="sm" onClick={handleCopy} className="text-xs">
+          {copied ? <Check className="h-3 w-3 mr-1.5" /> : <Copy className="h-3 w-3 mr-1.5" />}
+          {copied ? t("common.copied") : t("common.copy")}
+        </Button>
       </div>
-      <Button
-        variant="ghost"
-        size="sm"
-        className="absolute top-2 right-0 h-6 px-2 opacity-0 group-hover:opacity-100 transition-opacity"
-        onClick={onCollapse}
-      >
-        <ChevronDown className="h-3 w-3 rotate-180" />
-      </Button>
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-headings:my-3 prose-ul:my-2 prose-li:my-0.5 prose-pre:my-3">
+          <Markdown>{content || ""}</Markdown>
+        </div>
+      </div>
     </div>
   );
 }
 
+// ── Memory list page ────────────────────────────────────────────
+
 export default function MemoryPage() {
   const { t, locale } = useTranslation();
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const docId = searchParams.get("doc");
   const qc = useQueryClient();
   const { data: stats } = useMemoryStats();
 
@@ -58,7 +83,6 @@ export default function MemoryPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const limit = 20;
 
@@ -115,6 +139,11 @@ export default function MemoryPage() {
   useEffect(() => {
     setOffset(0);
   }, [query]);
+
+  // Full document view mode
+  if (docId) {
+    return <DocumentFullView id={docId} onBack={() => router.push("/memory")} />;
+  }
 
   return (
     <div className="flex flex-col h-full p-4 md:p-8 max-w-6xl mx-auto w-full overflow-hidden">
@@ -225,13 +254,8 @@ export default function MemoryPage() {
                       </div>
 
                       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setExpandedId(expandedId === doc.id ? null : doc.id)}
-                          className="h-7 text-xs px-2"
-                        >
-                          {expandedId === doc.id ? t("common.collapse") : t("memory.show_full_document")}
+                        <Button variant="ghost" size="sm" className="h-7 text-xs px-2" onClick={() => router.push(`/memory?doc=${doc.id}`)}>
+                          <ExternalLink className="h-3 w-3 mr-1.5" /> {t("memory.show_full_document")}
                         </Button>
                         <Button variant="ghost" size="sm" onClick={() => togglePin(doc)} className="h-7 w-7 p-0">
                           {doc.pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
@@ -241,10 +265,6 @@ export default function MemoryPage() {
                         </Button>
                       </div>
                     </div>
-
-                    {expandedId === doc.id && (
-                      <DocumentContent id={doc.id} onCollapse={() => setExpandedId(null)} />
-                    )}
                   </div>
                 ))}
               </div>
