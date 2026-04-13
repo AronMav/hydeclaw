@@ -72,11 +72,9 @@ async fn extract_and_save_inner(
     let relevant: Vec<&crate::db::sessions::MessageRow> = rows.iter()
         .filter(|m| m.role == "user" || m.role == "assistant")
         .collect();
-    let context_msgs: Vec<&crate::db::sessions::MessageRow> = if relevant.len() > MAX_CONTEXT_MESSAGES {
-        relevant[relevant.len() - MAX_CONTEXT_MESSAGES..].to_vec()
-    } else {
-        relevant
-    };
+
+    let start_idx = relevant.len().saturating_sub(MAX_CONTEXT_MESSAGES);
+    let context_msgs = &relevant[start_idx..];
 
     if context_msgs.is_empty() {
         return Ok(());
@@ -84,7 +82,7 @@ async fn extract_and_save_inner(
 
     // 3. Format conversation for LLM
     let mut conversation = String::new();
-    for m in &context_msgs {
+    for m in context_msgs {
         let role_label = match m.role.as_str() {
             "user" => "User",
             "assistant" => "Assistant",

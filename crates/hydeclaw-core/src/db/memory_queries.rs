@@ -104,7 +104,7 @@ pub async fn fetch_pinned(db: &PgPool, agent_id: &str) -> Result<Vec<MemoryChunk
                   created_at, accessed_at,
                   category, topic, archived
            FROM memory_chunks
-           WHERE (agent_id = $1 OR scope = 'shared') AND pinned = true AND archived = false
+           WHERE ($1 = '' OR agent_id = $1 OR scope = 'shared') AND pinned = true AND archived = false
            ORDER BY created_at ASC",
     )
     .bind(agent_id)
