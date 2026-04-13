@@ -37,7 +37,7 @@ impl AgentEngine {
         let items: Vec<(String, String, bool, String)> = facts
             .iter()
             .filter(|f| !f.trim().is_empty())
-            .map(|f| (f.clone(), "extracted".to_string(), false, "private".to_string()))
+            .map(|f| (f.clone(), "extracted".to_string(), false, "shared".to_string()))
             .collect();
         if items.is_empty() {
             return;

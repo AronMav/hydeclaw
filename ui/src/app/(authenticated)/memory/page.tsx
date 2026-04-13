@@ -67,7 +67,7 @@ export default function MemoryPage() {
         limit: limit.toString(),
         offset: offset.toString(),
       });
-      if (query) params.append("q", query);
+      if (query) params.append("query", query);
 
       const res = await apiGet<{ documents: MemoryDocument[]; total: number }>(`/api/memory/documents?${params.toString()}`);
       setChunks(res.documents);
