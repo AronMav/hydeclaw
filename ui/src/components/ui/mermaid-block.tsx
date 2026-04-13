@@ -129,8 +129,13 @@ export function MermaidBlock({ code }: { code: string }) {
           className={`overflow-auto ${expanded ? "flex-1" : ""}`}
           style={expanded ? undefined : { maxHeight: "400px" }}
           onWheel={handleWheel}
+          tabIndex={0}
+          role="region"
+          aria-label="Diagram viewer"
         >
           <div
+            role="img"
+            aria-label="Mermaid flowchart or diagram"
             className="flex min-h-[120px] items-center justify-center p-4 [&_svg]:max-w-full"
             style={{
               transform: `scale(${zoom})`,

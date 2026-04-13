@@ -7,6 +7,7 @@ import {
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { Markdown } from "./markdown"
+import { ErrorBoundary } from "./error-boundary"
 
 export type MessageProps = {
   children: React.ReactNode
@@ -65,9 +66,11 @@ const MessageContent = ({
   )
 
   return markdown ? (
-    <Markdown className={classNames} isStreaming={isStreaming} {...props}>
-      {children as string}
-    </Markdown>
+    <ErrorBoundary fallback={<div className={cn(classNames, "border-destructive text-destructive")}>Failed to render message content.</div>}>
+      <Markdown className={classNames} isStreaming={isStreaming} {...props}>
+        {children as string}
+      </Markdown>
+    </ErrorBoundary>
   ) : (
     <div className={classNames} {...props}>
       {children}

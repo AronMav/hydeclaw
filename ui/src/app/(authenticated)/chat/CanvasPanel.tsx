@@ -10,6 +10,7 @@ import { useChatStore } from "@/stores/chat-store";
 import { apiGet } from "@/lib/api";
 import { sanitizeUrl } from "@/lib/sanitize-url";
 import { Markdown } from "@/components/ui/markdown";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { TableCard } from "@/components/ui/rich-card";
 import { Button } from "@/components/ui/button";
 import { PanelRight, Trash2 } from "lucide-react";
@@ -85,7 +86,9 @@ export function CanvasPanel({ agent }: CanvasPanelProps) {
       <div className="flex-1 overflow-auto p-4">
         {canvas.contentType === "markdown" && (
           <div className="prose prose-sm dark:prose-invert max-w-none">
-            <Markdown>{canvas.content}</Markdown>
+            <ErrorBoundary>
+              <Markdown>{canvas.content}</Markdown>
+            </ErrorBoundary>
           </div>
         )}
 

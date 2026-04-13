@@ -1,5 +1,12 @@
 {
   "common.loading": "Loading...",
+  "common.running": "Running...",
+  "common.done": "Done",
+  "common.error": "Error",
+  "common.pending": "Pending",
+  "tasks.plan_title": "Task Plans",
+  "tasks.hide_done": "Hide done",
+  "tasks.done_count": "+{{count}} done",
   "common.error_prefix": "Error: {{error}}",
   "common.save": "Save",
   "common.saving": "Saving...",

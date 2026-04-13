@@ -1,5 +1,12 @@
 {
   "common.loading": "Загрузка...",
+  "common.running": "В процессе...",
+  "common.done": "Готово",
+  "common.error": "Ошибка",
+  "common.pending": "Ожидание",
+  "tasks.plan_title": "Планы задач",
+  "tasks.hide_done": "Скрыть готовые",
+  "tasks.done_count": "+{{count}} готово",
   "common.error_prefix": "Ошибка: {{error}}",
   "common.save": "Сохранить",
   "common.saving": "Сохранение...",
