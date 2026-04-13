@@ -143,17 +143,17 @@ async fn extract_and_save_inner(
     let source_prefix = format!("auto:session:{}", session_id);
 
     for fact in &extracted.user_facts {
-        if save_if_new(memory_store, fact, &format!("{}:user", source_prefix), agent_name).await {
+        if save_if_new(memory_store, fact, &format!("{}:user", source_prefix), agent_name, "shared").await {
             saved += 1;
         }
     }
     for outcome in &extracted.outcomes {
-        if save_if_new(memory_store, outcome, &format!("{}:outcome", source_prefix), agent_name).await {
+        if save_if_new(memory_store, outcome, &format!("{}:outcome", source_prefix), agent_name, "shared").await {
             saved += 1;
         }
     }
     for insight in &extracted.tool_insights {
-        if save_if_new(memory_store, insight, &format!("{}:tool", source_prefix), agent_name).await {
+        if save_if_new(memory_store, insight, &format!("{}:tool", source_prefix), agent_name, "private").await {
             saved += 1;
         }
     }
@@ -211,6 +211,7 @@ async fn save_if_new(
     text: &str,
     source: &str,
     _agent_name: &str,
+    scope: &str,
 ) -> bool {
     let text = text.trim();
     if text.is_empty() || text.len() < 10 {
@@ -232,7 +233,7 @@ async fn save_if_new(
     }
 
     // Save as new memory chunk
-    match memory_store.index(text, source, false, None, None).await {
+    match memory_store.index(text, source, false, None, None, scope).await {
         Ok(_) => true,
         Err(e) => {
             tracing::warn!(error = %e, "failed to save extracted knowledge");
@@ -331,16 +332,16 @@ mod tests {
     #[tokio::test]
     async fn save_if_new_skips_short_text() {
         let mock = Arc::new(crate::agent::memory_service::mock::MockMemoryService::available()) as Arc<dyn MemoryService>;
-        assert!(!save_if_new(&mock, "", "src", "agent").await);
-        assert!(!save_if_new(&mock, "short", "src", "agent").await);
-        assert!(!save_if_new(&mock, "  ", "src", "agent").await);
+        assert!(!save_if_new(&mock, "", "src", "agent", "private").await);
+        assert!(!save_if_new(&mock, "short", "src", "agent", "private").await);
+        assert!(!save_if_new(&mock, "  ", "src", "agent", "private").await);
     }
 
     #[tokio::test]
     async fn save_if_new_saves_valid_text() {
         let mock = Arc::new(crate::agent::memory_service::mock::MockMemoryService::available()) as Arc<dyn MemoryService>;
         // Mock search returns empty results → no duplicate → should save
-        let result = save_if_new(&mock, "This is a long enough fact to save", "auto:test", "agent").await;
+        let result = save_if_new(&mock, "This is a long enough fact to save", "auto:test", "agent", "shared").await;
         assert!(result);
     }
 }

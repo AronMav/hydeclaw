@@ -429,7 +429,7 @@ pub(crate) async fn api_create_memory(
     }
     let source = req.source.as_deref().unwrap_or("ui");
     let pinned = req.pinned.unwrap_or(false);
-    match state.memory_store.index(&req.content, source, pinned, None, None).await {
+    match state.memory_store.index(&req.content, source, pinned, None, None, "private").await {
         Ok(id) => Json(json!({"id": id, "ok": true})).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -29,6 +29,7 @@ pub trait MemoryService: Send + Sync {
     ) -> Result<(Vec<crate::memory::MemoryResult>, String)>;
 
     /// Index a new memory chunk. Returns the new chunk UUID.
+    /// `scope`: "private" (agent-only) or "shared" (visible to all agents).
     async fn index(
         &self,
         content: &str,
@@ -36,10 +37,12 @@ pub trait MemoryService: Send + Sync {
         pinned: bool,
         category: Option<&str>,
         topic: Option<&str>,
+        scope: &str,
     ) -> Result<String>;
 
     /// Batch-index memory chunks. Returns a vec of new chunk UUIDs.
-    async fn index_batch(&self, items: &[(String, String, bool)]) -> Result<Vec<String>>;
+    /// Tuple: (content, source, pinned, scope).
+    async fn index_batch(&self, items: &[(String, String, bool, String)]) -> Result<Vec<String>>;
 
     /// Load pinned memory chunks formatted for context injection.
     /// Returns (formatted text, list of chunk IDs).
@@ -103,11 +106,12 @@ impl MemoryService for crate::memory::MemoryStore {
         pinned: bool,
         category: Option<&str>,
         topic: Option<&str>,
+        scope: &str,
     ) -> Result<String> {
-        self.index(content, source, pinned, category, topic).await
+        self.index(content, source, pinned, category, topic, scope).await
     }
 
-    async fn index_batch(&self, items: &[(String, String, bool)]) -> Result<Vec<String>> {
+    async fn index_batch(&self, items: &[(String, String, bool, String)]) -> Result<Vec<String>> {
         self.index_batch(items).await
     }
 
@@ -195,13 +199,14 @@ pub mod mock {
             _pinned: bool,
             _category: Option<&str>,
             _topic: Option<&str>,
+            _scope: &str,
         ) -> Result<String> {
             Ok("mock-chunk-id".to_string())
         }
 
         async fn index_batch(
             &self,
-            items: &[(String, String, bool)],
+            items: &[(String, String, bool, String)],
         ) -> Result<Vec<String>> {
             Ok(items.iter().map(|_| "mock-chunk-id".to_string()).collect())
         }
