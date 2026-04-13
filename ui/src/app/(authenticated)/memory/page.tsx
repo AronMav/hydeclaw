@@ -208,6 +208,11 @@ export default function MemoryPage() {
                           <span className="text-[10px] text-muted-foreground/60">
                             {doc.created_at ? new Date(doc.created_at).toLocaleDateString(locale) : ""}
                           </span>
+                          {doc.scope === "shared" && (
+                            <Badge variant="secondary" className="h-4 text-[9px] px-1 py-0 bg-blue-500/10 text-blue-400 border-none">
+                              shared
+                            </Badge>
+                          )}
                           {doc.category && (
                             <Badge variant="outline" className="h-4 text-[9px] px-1 py-0 border-muted-foreground/30 text-muted-foreground/80">
                               {doc.category}

@@ -72,7 +72,7 @@ pub(crate) async fn api_list_memory(
     // Admin endpoint: shows all chunks (no agent_id filter). Protected by auth middleware.
     // No query: list all chunks by relevance
     let result = sqlx::query_as::<_, MemoryChunkRow>(
-        "SELECT id, content, source, relevance_score, pinned, created_at, accessed_at, parent_id, chunk_index \
+        "SELECT id, content, source, relevance_score, pinned, created_at, accessed_at, parent_id, chunk_index, scope, agent_id \
          FROM memory_chunks ORDER BY relevance_score DESC LIMIT $1 OFFSET $2",
     )
     .bind(limit as i64)
@@ -95,6 +95,8 @@ pub(crate) async fn api_list_memory(
                         "accessed_at": c.accessed_at.to_rfc3339(),
                         "parent_id": c.parent_id,
                         "chunk_index": c.chunk_index,
+                        "scope": c.scope,
+                        "agent_id": c.agent_id,
                     })
                 })
                 .collect();
@@ -119,6 +121,10 @@ pub(crate) struct MemoryChunkRow {
     accessed_at: chrono::DateTime<chrono::Utc>,
     parent_id: Option<uuid::Uuid>,
     chunk_index: i32,
+    #[sqlx(default)]
+    scope: String,
+    #[sqlx(default)]
+    agent_id: String,
 }
 
 pub(crate) async fn api_memory_stats(State(state): State<AppState>) -> Json<Value> {
@@ -197,6 +203,8 @@ struct DocumentRow {
     total_chars: Option<i64>,
     category: Option<String>,
     topic: Option<String>,
+    #[sqlx(default)]
+    scope: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -303,7 +311,7 @@ pub(crate) async fn api_list_documents(
            LEFT(m.content, 200) AS preview, \
            COALESCE(ds.child_count, 0) + 1 AS chunks_count, \
            COALESCE(ds.child_chars, 0) + LENGTH(m.content) AS total_chars, \
-           m.category, m.topic \
+           m.category, m.topic, m.scope \
          FROM memory_chunks m \
          LEFT JOIN doc_stats ds ON ds.parent_id = m.id \
          WHERE m.parent_id IS NULL{where_extra} \
@@ -338,6 +346,7 @@ pub(crate) async fn api_list_documents(
                 "total_chars": r.total_chars,
                 "category": r.category,
                 "topic": r.topic,
+                "scope": r.scope,
             })).collect();
             Json(json!({ "documents": documents, "total": total })).into_response()
         }
