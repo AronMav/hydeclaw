@@ -95,6 +95,7 @@ pub async fn ensure_hnsw_index(db: &PgPool, dim: u32) -> Result<()> {
 // ── Search ───────────────────────────────────────────────────────────────────
 
 /// Fetch all pinned, non-archived chunks for a given agent, ordered oldest first.
+/// Includes shared chunks (scope = 'shared') visible to all agents.
 /// Used by L0 context loading — no embedding or search query needed.
 pub async fn fetch_pinned(db: &PgPool, agent_id: &str) -> Result<Vec<MemoryChunk>> {
     let rows = sqlx::query(
@@ -103,7 +104,7 @@ pub async fn fetch_pinned(db: &PgPool, agent_id: &str) -> Result<Vec<MemoryChunk
                   created_at, accessed_at,
                   category, topic, archived
            FROM memory_chunks
-           WHERE agent_id = $1 AND pinned = true AND archived = false
+           WHERE (agent_id = $1 OR scope = 'shared') AND pinned = true AND archived = false
            ORDER BY created_at ASC",
     )
     .bind(agent_id)
@@ -240,13 +241,14 @@ pub async fn insert_chunk(
     chunk_index: i32,
     category: Option<&str>,
     topic: Option<&str>,
+    scope: &str,
 ) -> Result<()> {
     validate_fts_lang(lang)?;
     // SAFETY: `lang` is validated by validate_fts_lang() which only allows lowercase ASCII
     // letters. Not user input -- comes from server config.
     let sql = format!(
-        r"INSERT INTO memory_chunks (id, user_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic)
-           VALUES ($1::uuid, '', $2, $3::halfvec, $4, $5, 1.0, to_tsvector('{lang}', $2), $6::uuid, $7, $8, $9)",
+        r"INSERT INTO memory_chunks (id, user_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope)
+           VALUES ($1::uuid, '', $2, $3::halfvec, $4, $5, 1.0, to_tsvector('{lang}', $2), $6::uuid, $7, $8, $9, $10)",
     );
 
     sqlx::query(&sql)
@@ -259,6 +261,7 @@ pub async fn insert_chunk(
         .bind(chunk_index)
         .bind(category)
         .bind(topic)
+        .bind(scope)
         .execute(db)
         .await
         .context("failed to insert memory chunk")?;

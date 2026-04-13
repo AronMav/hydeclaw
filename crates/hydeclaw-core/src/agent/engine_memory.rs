@@ -34,10 +34,10 @@ impl AgentEngine {
         if !self.memory_store.is_available() {
             return;
         }
-        let items: Vec<(String, String, bool)> = facts
+        let items: Vec<(String, String, bool, String)> = facts
             .iter()
             .filter(|f| !f.trim().is_empty())
-            .map(|f| (f.clone(), "extracted".to_string(), false))
+            .map(|f| (f.clone(), "extracted".to_string(), false, "private".to_string()))
             .collect();
         if items.is_empty() {
             return;
@@ -48,8 +48,8 @@ impl AgentEngine {
                 tracing::warn!(error = %e, "batch index failed, falling back to individual inserts");
                 let mut ok = 0usize;
                 let mut fail = 0usize;
-                for (content, source, pinned) in &items {
-                    match self.memory_store.index(content, source, *pinned, None, None).await {
+                for (content, source, pinned, scope) in &items {
+                    match self.memory_store.index(content, source, *pinned, None, None, scope).await {
                         Ok(_) => ok += 1,
                         Err(ie) => {
                             fail += 1;
@@ -123,7 +123,7 @@ impl AgentEngine {
             }
         }
 
-        match self.memory_store.index(content, source, pinned, category, topic).await {
+        match self.memory_store.index(content, source, pinned, category, topic, "private").await {
             Ok(id) => format!("Indexed as {}", id),
             Err(e) => format!("Memory index error: {}", e),
         }

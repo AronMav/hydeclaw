@@ -401,7 +401,8 @@ impl MemoryStore {
     /// Long texts (> `DEFAULT_CHUNK_SIZE`) are delegated to `index()` for auto-chunking.
     /// Short texts are batch-embedded in a single request for efficiency.
     /// Category and topic are not supported in batch index (pass None/None per item).
-    pub async fn index_batch(&self, items: &[(String, String, bool)]) -> Result<Vec<String>> {
+    /// Tuple: (content, source, pinned, scope).
+    pub async fn index_batch(&self, items: &[(String, String, bool, String)]) -> Result<Vec<String>> {
         self.ensure_initialized().await;
         if items.is_empty() {
             return Ok(vec![]);
@@ -411,27 +412,27 @@ impl MemoryStore {
         let mut ids: Vec<(usize, String)> = Vec::with_capacity(items.len());
 
         // Split: long items use index() with chunking, short items batch-embed
-        let mut short_items: Vec<(usize, &str, &str, bool)> = Vec::new();
-        for (idx, (content, source, pinned)) in items.iter().enumerate() {
+        let mut short_items: Vec<(usize, &str, &str, bool, &str)> = Vec::new();
+        for (idx, (content, source, pinned, scope)) in items.iter().enumerate() {
             if content.len() > crate::chunker::DEFAULT_CHUNK_SIZE {
-                let id = self.index(content, source, *pinned, None, None).await
+                let id = self.index(content, source, *pinned, None, None, scope).await
                     .context("failed to index long item in batch")?;
                 ids.push((idx, id));
             } else {
-                short_items.push((idx, content, source, *pinned));
+                short_items.push((idx, content, source, *pinned, scope));
             }
         }
 
         if !short_items.is_empty() {
-            let texts: Vec<&str> = short_items.iter().map(|(_, c, _, _)| *c).collect();
+            let texts: Vec<&str> = short_items.iter().map(|(_, c, _, _, _)| *c).collect();
             let embeddings = self.embed_batch(&texts).await?;
 
-            for (i, &(idx, content, source, pinned)) in short_items.iter().enumerate() {
+            for (i, &(idx, content, source, pinned, scope)) in short_items.iter().enumerate() {
                 let vec_str = Self::fmt_vec(&embeddings[i]);
                 let id = uuid::Uuid::new_v4().to_string();
                 crate::db::memory_queries::insert_chunk(
                     &self.db, &id, content, &vec_str, source, pinned, &lang, None, 0,
-                    None, None,
+                    None, None, scope,
                 ).await
                 .context("failed to insert memory chunk in batch")?;
                 ids.push((idx, id));
@@ -704,6 +705,7 @@ impl MemoryStore {
     /// Generate embedding and insert a new memory chunk. Returns the new chunk UUID.
     /// If content exceeds `DEFAULT_CHUNK_SIZE`, splits into overlapping chunks
     /// linked by `parent_id`. Returns the parent chunk's UUID.
+    /// `scope`: "private" (agent-only) or "shared" (visible to all agents).
     pub async fn index(
         &self,
         content: &str,
@@ -711,6 +713,7 @@ impl MemoryStore {
         pinned: bool,
         category: Option<&str>,
         topic: Option<&str>,
+        scope: &str,
     ) -> Result<String> {
         self.ensure_initialized().await;
         let lang = self.validated_fts_language()?;
@@ -728,7 +731,7 @@ impl MemoryStore {
             let id = uuid::Uuid::new_v4().to_string();
             crate::db::memory_queries::insert_chunk(
                 &self.db, &id, &chunks[0], &vec_str, source, pinned, &lang, None, 0,
-                category, topic,
+                category, topic, scope,
             ).await?;
             return Ok(id);
         }
@@ -748,7 +751,7 @@ impl MemoryStore {
             let parent = if i == 0 { None } else { Some(parent_id.as_str()) };
             crate::db::memory_queries::insert_chunk(
                 &self.db, &id, chunk, &vec_str, source, pinned, &lang, parent, i as i32,
-                category, topic,
+                category, topic, scope,
             ).await?;
         }
 
@@ -916,7 +919,7 @@ pub fn spawn_workspace_watcher(
                                 if let Err(e) = mem.delete_by_source(&source).await {
                                     tracing::debug!(source = %source, error = %e, "no existing chunks to delete");
                                 }
-                                match mem.index(&content, &source, false, None, None).await {
+                                match mem.index(&content, &source, false, None, None, "private").await {
                                     Ok(_) => indexed += 1,
                                     Err(e) => {
                                         tracing::debug!(error = %e, "embedding unavailable — skipping workspace indexing");
