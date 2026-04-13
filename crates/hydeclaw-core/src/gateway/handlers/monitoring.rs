@@ -620,8 +620,11 @@ async fn check_provider_reachability(state: &AppState) -> CheckResult {
         } else {
             let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
             match http.get(&url).send().await {
-                Ok(r) if r.status().is_success() || r.status().as_u16() == 401 => {
-                    // 401 means we reached the server (auth is provider's concern, not connectivity)
+                Ok(r) if r.status().is_success()
+                    || r.status().as_u16() == 401
+                    || r.status().as_u16() == 403
+                    || (!is_local && (r.status().as_u16() == 404 || r.status().as_u16() == 405)) => {
+                    // Server responded — reachable. External APIs may not support GET /v1/models.
                     ("ok", format!("{} reachable", p.name), None)
                 }
                 Ok(r) => {
