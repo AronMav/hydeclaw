@@ -307,4 +307,47 @@ mod tests {
         let v = svc.embed("hello").await.unwrap();
         assert!(!v.is_empty());
     }
+
+    // ── Scope tests ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn index_with_private_scope() {
+        let mock = MockMemoryService::available();
+        let id = mock.index("private fact", "test", false, None, None, "private", "Arty").await.unwrap();
+        assert_eq!(id, "mock-chunk-id");
+    }
+
+    #[tokio::test]
+    async fn index_with_shared_scope() {
+        let mock = MockMemoryService::available();
+        let id = mock.index("shared fact", "test", false, None, None, "shared", "Arty").await.unwrap();
+        assert_eq!(id, "mock-chunk-id");
+    }
+
+    #[tokio::test]
+    async fn index_batch_with_scope() {
+        let mock = MockMemoryService::available();
+        let items = vec![
+            ("fact 1".into(), "src".into(), false, "private".into()),
+            ("fact 2".into(), "src".into(), false, "shared".into()),
+        ];
+        let ids = mock.index_batch(&items, "Arty").await.unwrap();
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn search_with_agent_id_filter() {
+        let mock = MockMemoryService::available();
+        // Mock returns empty regardless, but verify signature accepts agent_id
+        let (results, _) = mock.search("query", 5, &[], None, None, "Arty").await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_with_empty_agent_id_for_admin() {
+        let mock = MockMemoryService::available();
+        // Empty agent_id = admin context, returns all
+        let (results, _) = mock.search("query", 5, &[], None, None, "").await.unwrap();
+        assert!(results.is_empty());
+    }
 }
