@@ -332,8 +332,8 @@ async fn embed_and_insert(
     let parent_id = uuid::Uuid::new_v4().to_string();
     // fts_language is configurable per-deployment (e.g. 'russian', 'english') instead of hardcoded
     let insert_sql = format!(
-        "INSERT INTO memory_chunks (id, user_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, agent_id, scope)
-         VALUES ($1::uuid, '', $2, $3::halfvec, $4, false, 1.0, to_tsvector('{fts_language}', $2), $5::uuid, $6, $7, 'shared')"
+        "INSERT INTO memory_chunks (id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, agent_id, scope)
+         VALUES ($1::uuid, $2, $3::halfvec, $4, false, 1.0, to_tsvector('{fts_language}', $2), $5::uuid, $6, $7, 'shared')"
     );
     for (i, (chunk, emb)) in chunks.iter().zip(embeddings.iter()).enumerate() {
         let vec_str = format!(
