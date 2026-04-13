@@ -251,8 +251,8 @@ pub async fn insert_chunk(
     // SAFETY: `lang` is validated by validate_fts_lang() which only allows lowercase ASCII
     // letters. Not user input -- comes from server config.
     let sql = format!(
-        r"INSERT INTO memory_chunks (id, agent_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope)
-           VALUES ($1::uuid, $11, $2, $3::halfvec, $4, $5, 1.0, to_tsvector('{lang}', $2), $6::uuid, $7, $8, $9, $10)",
+        r"INSERT INTO memory_chunks (id, user_id, agent_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope)
+           VALUES ($1::uuid, '', $11, $2, $3::vector, $4, $5, 1.0, to_tsvector('{lang}', $2), $6::uuid, $7, $8, $9, $10)",
     );
 
     sqlx::query(&sql)
