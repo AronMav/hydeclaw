@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import { useTranslation } from "@/hooks/use-translation";
 import {
   Loader,
   CheckCircle,
@@ -17,26 +18,27 @@ import type { AgentTask, TaskStep } from "@/types/api";
 // ── Step Status Badge ────────────────────────────────────────────────────────
 
 function StepBadge({ step }: { step: TaskStep }) {
+  const { t } = useTranslation();
   switch (step.status) {
     case "in_progress":
       return (
         <Badge variant="secondary" className="gap-1">
           <Loader className="h-3 w-3 animate-spin" />
-          Running
+          {t("common.running")}
         </Badge>
       );
     case "done":
       return (
         <Badge className="bg-green-600 text-white gap-1">
           <CheckCircle className="h-3 w-3" />
-          Done
+          {t("common.done")}
         </Badge>
       );
     case "error":
       return (
         <Badge variant="destructive" className="gap-1">
           <XCircle className="h-3 w-3" />
-          Error
+          {t("common.error")}
         </Badge>
       );
     case "pending":
@@ -44,7 +46,7 @@ function StepBadge({ step }: { step: TaskStep }) {
       return (
         <Badge variant="outline" className="gap-1">
           <Circle className="h-3 w-3" />
-          Pending
+          {t("common.pending")}
         </Badge>
       );
   }
@@ -109,6 +111,7 @@ interface TaskPlanPanelProps {
 }
 
 export function TaskPlanPanel({ agentName, isStreaming = false }: TaskPlanPanelProps) {
+  const { t } = useTranslation();
   const [showCompleted, setShowCompleted] = useState(false);
   const { data: tasks } = useAgentTasks(agentName, isStreaming);
 
@@ -129,13 +132,13 @@ export function TaskPlanPanel({ agentName, isStreaming = false }: TaskPlanPanelP
     <div className="border-b border-border/50 bg-muted/20">
       <div className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
         <ListTodo className="h-3.5 w-3.5" />
-        <span className="flex-1">Task Plans</span>
+        <span className="flex-1">{t("tasks.plan_title")}</span>
         {completedTasks.length > 0 && (
           <button
             className="text-xs font-normal normal-case text-muted-foreground/60 hover:text-muted-foreground transition-colors tracking-normal"
             onClick={() => setShowCompleted((v) => !v)}
           >
-            {showCompleted ? "Hide done" : `+${completedTasks.length} done`}
+            {showCompleted ? t("tasks.hide_done") : t("tasks.done_count", { count: completedTasks.length })}
           </button>
         )}
       </div>
