@@ -67,26 +67,35 @@ pub async fn clear_embeddings(db: &PgPool) -> Result<()> {
     Ok(())
 }
 
-/// Drop the HNSW embedding index.
+/// Drop the embedding index (HNSW or IVFFlat).
 pub async fn drop_hnsw_index(db: &PgPool) -> Result<()> {
     sqlx::query("DROP INDEX IF EXISTS idx_memory_embedding_hnsw")
+        .execute(db)
+        .await?;
+    sqlx::query("DROP INDEX IF EXISTS idx_memory_embedding_ivfflat")
         .execute(db)
         .await?;
     Ok(())
 }
 
-/// Create HNSW index if it doesn't exist.
+/// Create IVFFlat index if it doesn't exist.
+/// IVFFlat supports any dimension (unlike HNSW which caps at 4000 for halfvec).
 pub async fn ensure_hnsw_index(db: &PgPool, dim: u32) -> Result<()> {
-    // SAFETY: `dim` is u32 from embed_dim config, not user input.
+    // Drop old HNSW index if present (may fail on >4000 dims)
+    let _ = sqlx::query("DROP INDEX IF EXISTS idx_memory_embedding_hnsw")
+        .execute(db)
+        .await;
+
+    // IVFFlat: lists=100 is good for <100K rows. Uses vector (not halfvec) for >4000 dim support.
     let sql = format!(
-        "CREATE INDEX IF NOT EXISTS idx_memory_embedding_hnsw \
-         ON memory_chunks USING hnsw ((embedding::halfvec({dim})) halfvec_cosine_ops) \
-         WITH (m = 16, ef_construction = 64)"
+        "CREATE INDEX IF NOT EXISTS idx_memory_embedding_ivfflat \
+         ON memory_chunks USING ivfflat ((embedding::vector({dim})) vector_cosine_ops) \
+         WITH (lists = 100)"
     );
     sqlx::query(&sql)
         .execute(db)
         .await
-        .context("failed to create HNSW index")?;
+        .context("failed to create IVFFlat index")?;
     Ok(())
 }
 
@@ -127,7 +136,7 @@ pub async fn search_semantic(
                   COALESCE(source, '') AS source,
                   pinned,
                   COALESCE(relevance_score, 1.0)::float8 AS relevance_score,
-                  (1.0 - (embedding <=> $1::halfvec))::float8 AS similarity,
+                  (1.0 - (embedding <=> $1::vector))::float8 AS similarity,
                   parent_id::text,
                   chunk_index,
                   category,
@@ -135,7 +144,7 @@ pub async fn search_semantic(
            FROM memory_chunks
            WHERE embedding IS NOT NULL
              AND ($3 = '' OR agent_id = $3 OR scope = 'shared')
-           ORDER BY embedding <=> $1::halfvec
+           ORDER BY embedding <=> $1::vector
            LIMIT $2",
     )
     .bind(vec_str)
@@ -376,6 +385,7 @@ mod tests {
     }
 
     /// Verify insert_chunk uses ::vector not ::halfvec (halfvec max 4000 dims, our model is 4096).
+    /// Also verifies search queries use ::vector.
     #[test]
     fn insert_sql_uses_vector_not_halfvec() {
         let sql = format!(
