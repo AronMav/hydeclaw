@@ -1,5 +1,6 @@
 pub mod access;
 pub mod approvals;
+pub mod audit_queue;
 pub mod github;
 pub mod audit;
 pub mod tool_audit;
