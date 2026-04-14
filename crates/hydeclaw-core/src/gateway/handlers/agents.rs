@@ -588,6 +588,7 @@ pub async fn start_agent_from_config(
         compaction_provider,
         context_builder: std::sync::OnceLock::new(),
         tool_executor: std::sync::OnceLock::new(),
+        audit_queue: deps.audit_queue.clone(),
         session_pools: Some(state.session_pools.clone()),
     });
     engine.set_self_ref(&engine);

@@ -173,6 +173,8 @@ pub struct AgentEngine {
     /// Stored as concrete `Arc<DefaultToolExecutor>` for direct field access in engine methods.
     /// Initialized via `set_tool_executor` after engine Arc creation.
     pub tool_executor: OnceLock<Arc<crate::agent::tool_executor::DefaultToolExecutor>>,
+    /// Bounded audit event queue (tool execution + quality recording).
+    pub audit_queue: std::sync::Arc<crate::db::audit_queue::AuditQueue>,
     /// Session-scoped agent pools (None for subagents / isolated engines).
     pub session_pools: Option<crate::agent::session_agent_pool::SessionPoolsMap>,
 }

@@ -162,6 +162,7 @@ pub struct AgentDeps {
     pub sandbox: Option<Arc<crate::containers::sandbox::CodeSandbox>>,
     pub tool_embed_cache: Arc<crate::tools::embedding::ToolEmbeddingCache>,
     pub penalty_cache: Arc<crate::db::tool_quality::PenaltyCache>,
+    pub audit_queue: Arc<crate::db::audit_queue::AuditQueue>,
 }
 
 impl AppState {

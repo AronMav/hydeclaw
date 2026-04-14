@@ -304,6 +304,8 @@ async fn main() -> Result<()> {
     // Shared agent dependencies (for hot-starting agents from API)
     let penalty_cache = Arc::new(crate::db::tool_quality::PenaltyCache::new(db_pool.clone()));
 
+    let audit_queue = Arc::new(crate::db::audit_queue::AuditQueue::new(db_pool.clone()));
+
     let agent_deps = Arc::new(tokio::sync::RwLock::new(gateway::AgentDeps {
         mcp: mcp_registry.clone(),
         workspace_dir: config::WORKSPACE_DIR.to_string(),
@@ -311,6 +313,7 @@ async fn main() -> Result<()> {
         sandbox: sandbox.clone(),
         tool_embed_cache,
         penalty_cache: penalty_cache.clone(),
+        audit_queue,
     }));
 
     // Build running agent handles + access guards

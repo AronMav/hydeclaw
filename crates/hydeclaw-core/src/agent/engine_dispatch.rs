@@ -16,7 +16,7 @@ impl AgentEngine {
             let audit_start = std::time::Instant::now();
             let result = self.execute_tool_call_inner(name, arguments).await;
 
-            // Fire-and-forget audit record
+            // Audit record (dispatched via bounded queue)
             let duration_ms = audit_start.elapsed().as_millis() as i32;
             let is_error = result.contains("\"status\":\"error\"")
                 || result.starts_with("Error:")
@@ -50,35 +50,23 @@ impl AgentEngine {
                 duration_ms: duration_ms as u64,
             });
 
-            let db = self.db.clone();
-            let agent_name = self.agent.name.clone();
-            let tool_name = name.to_string();
-            let error_msg_for_quality = error_msg.clone();
-            tokio::spawn(async move {
-                let _ = crate::db::tool_audit::record_tool_execution(
-                    &db,
-                    &agent_name,
-                    session_id,
-                    &tool_name,
-                    Some(&clean_params),
-                    status,
-                    Some(duration_ms),
-                    error_msg.as_deref(),
-                )
-                .await;
+            self.audit_queue.send(crate::db::audit_queue::AuditEvent::ToolExecution {
+                agent_name: self.agent.name.clone(),
+                session_id,
+                tool_name: name.to_string(),
+                parameters: Some(clean_params),
+                status: status.to_string(),
+                duration_ms: Some(duration_ms),
+                error: error_msg.clone(),
             });
 
             // Record tool quality (non-system tools only)
             if !tool_defs_impl::all_system_tool_names().contains(&name) {
-                let db2 = self.db.clone();
-                let tool_name2 = name.to_string();
-                let is_ok = !is_error;
-                let dur = duration_ms;
-                let err_msg = error_msg_for_quality;
-                tokio::spawn(async move {
-                    let _ = crate::db::tool_quality::record_tool_result(
-                        &db2, &tool_name2, is_ok, dur, err_msg.as_deref(),
-                    ).await;
+                self.audit_queue.send(crate::db::audit_queue::AuditEvent::ToolQuality {
+                    tool_name: name.to_string(),
+                    success: !is_error,
+                    duration_ms,
+                    error: error_msg,
                 });
             }
 
