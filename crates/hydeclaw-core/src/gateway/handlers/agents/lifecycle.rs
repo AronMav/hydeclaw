@@ -96,6 +96,15 @@ pub async fn start_agent_from_config(
         Arc::new(registry)
     };
 
+    // Shared approval waiters map — used by both ApprovalManager and DefaultToolExecutor.
+    let approval_waiters: crate::agent::approval_manager::ApprovalWaitersMap =
+        Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+
+    let approval_manager = Arc::new(crate::agent::approval_manager::ApprovalManager::new(
+        state.db.clone(),
+        approval_waiters.clone(),
+    ));
+
     let engine = Arc::new(AgentEngine {
         provider,
         agent: agent_cfg.agent.clone(),
@@ -119,6 +128,7 @@ pub async fn start_agent_from_config(
         tool_executor: std::sync::OnceLock::new(),
         session_pools: Some(state.session_pools.clone()),
         audit_queue: deps.audit_queue.clone(),
+        approval_manager,
     });
     engine.set_self_ref(&engine);
     engine.set_context_builder(&engine);
@@ -155,7 +165,7 @@ pub async fn start_agent_from_config(
                     .build()
                     .unwrap_or_default(),
                 hooks: hooks_registry,
-                approval_waiters: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+                approval_waiters: approval_waiters.clone(),
                 processing_session_id: Arc::new(tokio::sync::Mutex::new(None)),
                 sse_event_tx: Arc::new(tokio::sync::Mutex::new(None)),
             },

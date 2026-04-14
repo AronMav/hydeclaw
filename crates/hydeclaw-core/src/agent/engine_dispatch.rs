@@ -94,175 +94,43 @@ impl AgentEngine {
                 if let Ok(true) = crate::db::approvals::check_allowlist(&self.db, &self.agent.name, name).await {
                     // fall through to execution
                 } else {
-                let session_id = context.get("session_id")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| Uuid::parse_str(s).ok());
+                    let timeout_secs = self.agent.approval
+                        .as_ref()
+                        .map(|a| a.timeout_seconds)
+                        .unwrap_or(300);
 
-                // Create DB record
-                let approval_id = match crate::db::approvals::create_approval(
-                    &self.db,
-                    &self.agent.name,
-                    session_id,
-                    name,
-                    arguments,
-                    &context,
-                ).await {
-                    Ok(id) => {
-                        self.audit(crate::db::audit::event_types::APPROVAL_REQUESTED, None, serde_json::json!({
-                            "tool": name, "approval_id": id.to_string()
-                        }));
-                        self.broadcast_ui_event(serde_json::json!({
-                            "type": "approval_requested",
-                            "approval_id": id.to_string(),
-                            "agent": self.agent.name,
-                            "tool_name": name,
-                        }));
-                        if let Some(ref ui_tx) = self.ui_event_tx {
-                            let db = self.db.clone();
-                            let tx = ui_tx.clone();
-                            let tool_name = name.to_string();
-                            let agent_name = self.agent.name.clone();
-                            let approval_id_str = id.to_string();
-                            tokio::spawn(async move {
-                                crate::gateway::notify(
-                                    &db, &tx, "tool_approval",
-                                    "Tool Approval Required",
-                                    &format!("Agent {} is requesting approval to use tool: {}", agent_name, tool_name),
-                                    serde_json::json!({"agent": agent_name, "tool_name": tool_name, "approval_id": approval_id_str}),
-                                ).await.ok();
-                            });
+                    let outcome = self.approval_manager.request_approval(
+                        &self.agent.name,
+                        name,
+                        arguments,
+                        &context,
+                        timeout_secs,
+                        self.channel_router.as_ref(),
+                        self.ui_event_tx.as_ref(),
+                        self.sse_event_tx(),
+                    ).await;
+
+                    use crate::agent::approval_manager::ApprovalOutcome;
+                    match outcome {
+                        ApprovalOutcome::Approved => { /* fall through to execution */ }
+                        ApprovalOutcome::ApprovedWithModifiedArgs(mut modified) => {
+                            // Preserve internal _context from original arguments
+                            if let Some(ctx) = arguments.get("_context")
+                                && let Some(obj) = modified.as_object_mut()
+                            {
+                                obj.insert("_context".to_string(), ctx.clone());
+                            }
+                            return self.execute_tool_call(name, &modified).await;
                         }
-                        id
-                    }
-                    Err(e) => return format!("Error creating approval: {}", e),
-                };
-
-                // Send approval request via channel (adapter formats with localization)
-                let clean_args = {
-                    let mut args_clone = arguments.clone();
-                    if let Some(obj) = args_clone.as_object_mut() {
-                        obj.remove("_context");
-                    }
-                    args_clone
-                };
-
-                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                let action = crate::agent::channel_actions::ChannelAction {
-                    name: "approval_request".to_string(),
-                    params: serde_json::json!({
-                        "tool_name": name,
-                        "args": clean_args,
-                        "approval_id": approval_id.to_string(),
-                    }),
-                    context: context.clone(),
-                    reply: reply_tx,
-                    target_channel: None, // approval buttons go to originating channel
-                };
-                if let Some(ref router) = self.channel_router {
-                    if let Err(e) = router.send(action).await {
-                        tracing::error!(approval_id = %approval_id, error = %e, "failed to send approval_request to channel");
-                    }
-                    tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await.ok();
-                } else {
-                    tracing::warn!(tool = %name, "no channel_router — cannot send approval buttons");
-                }
-
-                // Create oneshot channel for waiting
-                let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-                {
-                    let mut waiters = self.approval_waiters().write().await;
-                    // Opportunistic cleanup: remove expired entries (>5 min).
-                    // Dropping the sender causes RecvError on the receiver, handled as "cancelled" below.
-                    let cutoff = std::time::Instant::now() - std::time::Duration::from_secs(300);
-                    waiters.retain(|_, (_, created_at)| *created_at > cutoff);
-                    waiters.insert(approval_id, (result_tx, std::time::Instant::now()));
-                }
-
-                // Wait for approval with timeout
-                let timeout_secs = self.agent.approval
-                    .as_ref()
-                    .map(|a| a.timeout_seconds)
-                    .unwrap_or(300);
-
-                // Emit SSE event for inline approval in chat UI
-                if let Some(tx) = self.sse_event_tx().lock().await.as_ref() {
-                    let clean_input = {
-                        let mut args_clone = arguments.clone();
-                        if let Some(obj) = args_clone.as_object_mut() {
-                            obj.remove("_context");
+                        ApprovalOutcome::Rejected(reason) => return reason,
+                        ApprovalOutcome::Cancelled => {
+                            return format!("Tool `{}` approval was cancelled.", name);
                         }
-                        args_clone
-                    };
-                    tx.send(StreamEvent::ApprovalNeeded {
-                        approval_id: approval_id.to_string(),
-                        tool_name: name.to_string(),
-                        tool_input: clean_input,
-                        timeout_ms: timeout_secs * 1000,
-                    }).ok();
-                }
-
-                let effective_args: Option<serde_json::Value> = match tokio::time::timeout(
-                    std::time::Duration::from_secs(timeout_secs),
-                    result_rx,
-                ).await {
-                    Ok(Ok(ApprovalResult::Approved)) => {
-                        tracing::info!(tool = %name, approval_id = %approval_id, "tool approved");
-                        None // Fall through to normal execution with original args
-                    }
-                    Ok(Ok(ApprovalResult::ApprovedWithModifiedArgs(modified_args))) => {
-                        tracing::info!(tool = %name, approval_id = %approval_id, "tool approved with modified args");
-                        Some(modified_args) // Use modified args for execution
-                    }
-                    Ok(Ok(ApprovalResult::Rejected(reason))) => {
-                        return format!("Tool `{}` was rejected: {}", name, reason);
-                    }
-                    Ok(Err(_)) => {
-                        // Sender dropped — cleanup waiter
-                        let mut waiters = self.approval_waiters().write().await;
-                        waiters.remove(&approval_id);
-                        return format!("Tool `{}` approval was cancelled.", name);
-                    }
-                    Err(_) => {
-                        // Timeout fired — attempt to mark as timed out in DB.
-                        // WHERE status='pending' ensures only one resolution wins.
-                        let was_pending = crate::db::approvals::resolve_approval(
-                            &self.db, approval_id, "timeout", "system",
-                        ).await.unwrap_or(false);
-
-                        let mut waiters = self.approval_waiters().write().await;
-                        waiters.remove(&approval_id);
-
-                        // Emit SSE event for timeout
-                        if let Some(tx) = self.sse_event_tx().lock().await.as_ref() {
-                            tx.send(StreamEvent::ApprovalResolved {
-                                approval_id: approval_id.to_string(),
-                                action: "timeout_rejected".to_string(),
-                                modified_input: None,
-                            }).ok();
+                        ApprovalOutcome::TimedOut { timeout_secs } => {
+                            return format!("Tool `{}` approval timed out after {}s.", name, timeout_secs);
                         }
-
-                        if !was_pending {
-                            tracing::warn!(
-                                tool = %name,
-                                approval_id = %approval_id,
-                                "approval timeout raced with resolution — timeout takes precedence"
-                            );
-                        }
-                        return format!("Tool `{}` approval timed out after {}s.", name, timeout_secs);
                     }
-                };
-
-                // If approved with modified args, re-inject _context and recurse into execute_tool_call
-                if let Some(mut modified) = effective_args {
-                    // Preserve internal _context from original arguments
-                    if let Some(ctx) = arguments.get("_context")
-                        && let Some(obj) = modified.as_object_mut()
-                    {
-                        obj.insert("_context".to_string(), ctx.clone());
-                    }
-                    return self.execute_tool_call(name, &modified).await;
                 }
-            } // else: allowlist
             }
 
             // Hook: BeforeToolCall
