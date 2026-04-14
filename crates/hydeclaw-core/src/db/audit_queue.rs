@@ -8,6 +8,7 @@ use uuid::Uuid;
 // ── Event types ──────────────────────────────────────────────────────
 
 /// Audit events dispatched to the background worker.
+#[derive(Debug)]
 pub enum AuditEvent {
     ToolExecution {
         agent_name: String,
@@ -29,6 +30,7 @@ pub enum AuditEvent {
 // ── Queue ────────────────────────────────────────────────────────────
 
 /// Bounded channel + single background worker for persisting audit events.
+#[derive(Debug)]
 pub struct AuditQueue {
     tx: mpsc::Sender<AuditEvent>,
 }

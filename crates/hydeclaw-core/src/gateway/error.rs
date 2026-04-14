@@ -9,6 +9,7 @@ use serde_json::json;
 ///
 /// Implements `IntoResponse` so handlers can return `ApiError` directly
 /// (or via `?` with the `From<anyhow::Error>` impl).
+#[derive(Debug)]
 pub enum ApiError {
     NotFound(String),
     BadRequest(String),
