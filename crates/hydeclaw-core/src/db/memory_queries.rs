@@ -86,6 +86,16 @@ pub async fn ensure_hnsw_index(db: &PgPool, dim: u32) -> Result<()> {
         .execute(db)
         .await;
 
+    // pgvector index dimension limits:
+    // - HNSW: max 4000 dims (halfvec) or 2000 (vector)
+    // - IVFFlat: max 2000 dims
+    // For models > 2000 dims (e.g. qwen3-embedding-8b at 4096), skip indexing.
+    // Sequential scan works fine for <100K rows.
+    if dim > 2000 {
+        tracing::info!(dim, "embedding dim > 2000 — skipping vector index (sequential scan)");
+        return Ok(());
+    }
+
     // Count rows to determine lists parameter. IVFFlat requires rows >= lists.
     let row_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory_chunks WHERE embedding IS NOT NULL")
         .fetch_one(db)
@@ -93,7 +103,6 @@ pub async fn ensure_hnsw_index(db: &PgPool, dim: u32) -> Result<()> {
         .unwrap_or(0);
 
     if row_count < 10 {
-        // Too few rows for IVFFlat — skip index creation, sequential scan is fine
         tracing::info!(rows = row_count, "skipping IVFFlat index — too few rows (need ≥10)");
         return Ok(());
     }
