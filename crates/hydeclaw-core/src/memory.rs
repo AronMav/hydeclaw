@@ -557,13 +557,16 @@ impl MemoryStore {
         for r in sem { all.entry(r.id.clone()).or_insert(r); }
         for r in fts { all.entry(r.id.clone()).or_insert(r); }
 
-        // Score each result with RRF: 1/(k + rank_sem) + 1/(k + rank_fts)
+        // Weighted RRF: semantic results get higher weight (0.7) than FTS (0.3)
+        // to prevent noisy short-word FTS matches from displacing semantically relevant results.
+        const W_SEM: f64 = 0.7;
+        const W_FTS: f64 = 0.3;
         let mut scored: Vec<(f64, MemoryResult)> = all.into_values().map(|r| {
             let sem_rrf = sem_ranks.get(&r.id)
                 .map_or(0.0, |&rank| 1.0 / (K + rank as f64 + 1.0));
             let fts_rrf = fts_ranks.get(&r.id)
                 .map_or(0.0, |&rank| 1.0 / (K + rank as f64 + 1.0));
-            (sem_rrf + fts_rrf, r)
+            (W_SEM * sem_rrf + W_FTS * fts_rrf, r)
         }).collect();
 
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
