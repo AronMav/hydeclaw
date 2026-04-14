@@ -62,6 +62,7 @@ export default function ConfigPage() {
   const [editMaxReqPerMin, setEditMaxReqPerMin] = useState("");
   const [editMaxToolConcurrency, setEditMaxToolConcurrency] = useState("");
   const [editMaxAgentTurns, setEditMaxAgentTurns] = useState("");
+  const [editEmbedDimensions, setEditEmbedDimensions] = useState("");
   const [savingFields, setSavingFields] = useState(false);
   const [schema, setSchema] = useState<Record<string, unknown> | null>(null);
 
@@ -78,6 +79,8 @@ export default function ConfigPage() {
         setEditMaxReqPerMin(String(limits?.max_requests_per_minute ?? ""));
         setEditMaxToolConcurrency(String(limits?.max_tool_concurrency ?? ""));
         setEditMaxAgentTurns(String(limits?.max_agent_turns ?? ""));
+        const memory = d.memory as Record<string, unknown> | undefined;
+        setEditEmbedDimensions(String(memory?.embed_dimensions ?? ""));
       })
       .catch((e) => setError(`${e}`));
   }, []);
@@ -114,6 +117,8 @@ export default function ConfigPage() {
       if (editMaxReqPerMin.trim()) payload.max_requests_per_minute = Number(editMaxReqPerMin);
       if (editMaxToolConcurrency.trim()) payload.max_tool_concurrency = Number(editMaxToolConcurrency);
       if (editMaxAgentTurns.trim()) payload.max_agent_turns = Number(editMaxAgentTurns);
+      const dimVal = editEmbedDimensions.trim();
+      payload.embed_dimensions = dimVal ? Number(dimVal) : 0;
       await apiPut("/api/config", payload);
       toast.success(t("config.saved"));
       loadConfig();
@@ -189,7 +194,7 @@ export default function ConfigPage() {
         )}
 
         {config && (() => {
-          const serviceKeys = new Set(["toolgate_url", "public_url", "tts_proxy_url", "searxng_url", "tools", "mcp", "tools_count", "mcp_count", "memory", "subagents", "database", "gateway", "discussion"]);
+          const serviceKeys = new Set(["toolgate_url", "public_url", "tts_proxy_url", "searxng_url", "tools", "mcp", "tools_count", "mcp_count", "memory", "subagents", "database", "gateway", "discussion", "typing"]);
           const sections: Record<string, Record<string, unknown>> = {};
           const topLevel: Record<string, unknown> = {};
           for (const [key, val] of Object.entries(config)) {
@@ -305,6 +310,24 @@ export default function ConfigPage() {
                         </Tooltip>
                         <p className="text-xs text-muted-foreground/60">
                           {t("config.max_agent_turns_description")}
+                        </p>
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="font-mono text-xs text-muted-foreground">embed_dimensions</label>
+                        <Input
+                          type="number"
+                          value={editEmbedDimensions}
+                          onChange={(e) => setEditEmbedDimensions(e.target.value)}
+                          placeholder={t("config.embed_dimensions_placeholder")}
+                          className="font-mono text-sm h-9"
+                          min={0}
+                          max={8192}
+                        />
+                        <p className="text-xs text-muted-foreground/60">
+                          {t("config.embed_dimensions_description")}
+                        </p>
+                        <p className="text-[11px] text-muted-foreground/40 leading-relaxed">
+                          {t("config.embed_dimensions_hint")}
                         </p>
                       </div>
                       <Button

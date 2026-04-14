@@ -173,9 +173,6 @@ pub(crate) async fn api_get_config(State(state): State<AppState>) -> Json<Value>
             "request_timeout_secs": config.limits.request_timeout_secs,
             "max_agent_turns": config.limits.max_agent_turns,
         },
-        "typing": {
-            "mode": config.typing.mode,
-        },
         "subagents": {
             "enabled": config.subagents.enabled,
             "default_mode": config.subagents.default_mode,
