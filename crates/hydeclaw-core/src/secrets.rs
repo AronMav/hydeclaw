@@ -166,7 +166,6 @@ impl SecretsManager {
     }
 
     /// Get a global secret value from cache only (no env fallback).
-    #[allow(dead_code)]
     pub async fn get_strict(&self, name: &str) -> Option<String> {
         self.cache.read().await.get(&(name.to_string(), String::new())).cloned()
     }

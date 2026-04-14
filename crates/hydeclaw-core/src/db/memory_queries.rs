@@ -9,7 +9,7 @@ const ALLOWED_FTS_LANGS: &[&str] = &[
     "italian", "portuguese", "dutch", "swedish", "norwegian", "danish",
     "finnish", "hungarian", "romanian", "turkish", "arabic", "hindi",
     "indonesian", "irish", "nepali", "serbian", "tamil", "yiddish",
-    "greek", "basque", "catalan", "galician", "lithuanian",
+    "greek", "armenian", "basque", "catalan", "lithuanian",
 ];
 
 fn validate_fts_lang(lang: &str) -> Result<()> {
