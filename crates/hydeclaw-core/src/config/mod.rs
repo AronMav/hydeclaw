@@ -865,6 +865,7 @@ pub fn update_memory_config(
     embed_url: Option<&str>,
     embed_model: Option<&str>,
     embed_dim: Option<u32>,
+    embed_dimensions: Option<u32>,
 ) -> Result<()> {
     let content = std::fs::read_to_string(config_path)
         .with_context(|| format!("failed to read config: {config_path}"))?;
@@ -908,6 +909,16 @@ pub fn update_memory_config(
             }
         } else {
             doc["memory"]["embed_dim"] = toml_edit::value(i64::from(dim));
+        }
+    }
+
+    if let Some(dim) = embed_dimensions {
+        if dim == 0 {
+            if let Some(mem) = doc.get_mut("memory") {
+                mem.as_table_mut().map(|t| t.remove("embed_dimensions"));
+            }
+        } else {
+            doc["memory"]["embed_dimensions"] = toml_edit::value(i64::from(dim));
         }
     }
 
