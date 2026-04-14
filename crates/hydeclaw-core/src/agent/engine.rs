@@ -175,6 +175,8 @@ pub struct AgentEngine {
     pub tool_executor: OnceLock<Arc<crate::agent::tool_executor::DefaultToolExecutor>>,
     /// Bounded audit event queue (tool execution + quality recording).
     pub audit_queue: std::sync::Arc<crate::db::audit_queue::AuditQueue>,
+    /// Approval workflow manager (DB records, channel notifications, waiter map).
+    pub approval_manager: Arc<super::approval_manager::ApprovalManager>,
     /// Session-scoped agent pools (None for subagents / isolated engines).
     pub session_pools: Option<crate::agent::session_agent_pool::SessionPoolsMap>,
 }
@@ -435,12 +437,6 @@ impl AgentEngine {
         &self.tex().hooks
     }
 
-    /// Approval waiters accessor — delegates to `DefaultToolExecutor`.
-    #[inline]
-    pub(crate) fn approval_waiters(&self) -> &Arc<tokio::sync::RwLock<std::collections::HashMap<Uuid, (tokio::sync::oneshot::Sender<ApprovalResult>, std::time::Instant)>>> {
-        &self.tex().approval_waiters
-    }
-
     /// Current processing session ID accessor — delegates to `DefaultToolExecutor`.
     #[inline]
     pub(crate) fn processing_session_id(&self) -> &Arc<tokio::sync::Mutex<Option<Uuid>>> {
@@ -544,7 +540,7 @@ impl AgentEngine {
         }
 
         // Wake up the waiting tool execution
-        let mut waiters = self.approval_waiters().write().await;
+        let mut waiters = self.approval_manager.waiters().write().await;
         if let Some((tx, _created_at)) = waiters.remove(&approval_id) {
             let result = if approved {
                 match modified_input {

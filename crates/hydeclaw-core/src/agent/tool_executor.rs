@@ -104,8 +104,8 @@ pub struct DefaultToolExecutor {
     pub(crate) http_client: reqwest::Client,
     /// Event hooks for policy enforcement and logging.
     pub(crate) hooks: Arc<crate::agent::hooks::HookRegistry>,
-    /// In-memory waiters for pending tool-call approvals.
-    #[allow(clippy::type_complexity)]
+    /// In-memory waiters for pending tool-call approvals (shared with ApprovalManager).
+    #[allow(clippy::type_complexity, dead_code)]
     pub(crate) approval_waiters: Arc<tokio::sync::RwLock<std::collections::HashMap<uuid::Uuid, (tokio::sync::oneshot::Sender<crate::agent::engine::ApprovalResult>, std::time::Instant)>>>,
     /// Current session ID being processed — set/cleared by execution loop.
     pub(crate) processing_session_id: Arc<tokio::sync::Mutex<Option<uuid::Uuid>>>,

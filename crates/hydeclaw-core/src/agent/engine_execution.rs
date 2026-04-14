@@ -14,17 +14,7 @@ impl AgentEngine {
         chunk_tx: Option<mpsc::UnboundedSender<String>>,
     ) -> Result<String> {
         // Sweep stale approval waiters (older than 10 minutes)
-        {
-            let mut waiters = self.approval_waiters().write().await;
-            let now = std::time::Instant::now();
-            waiters.retain(|id, (_, created)| {
-                let stale = now.duration_since(*created) > std::time::Duration::from_secs(600);
-                if stale {
-                    tracing::debug!(approval_id = %id, "evicting stale approval waiter (>10min)");
-                }
-                !stale
-            });
-        }
+        self.approval_manager.prune_stale().await;
 
         // Hook: BeforeMessage
         if let crate::agent::hooks::HookAction::Block(reason) = self.hooks().fire(&crate::agent::hooks::HookEvent::BeforeMessage) {
