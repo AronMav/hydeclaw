@@ -244,8 +244,10 @@ impl MemoryStore {
                 crate::db::memory_queries::drop_hnsw_index(&self.db).await?;
             }
 
-        // 4. Ensure HNSW index with correct dimension
-        self.ensure_index(dim).await?;
+        // 4. Try to create vector index (non-fatal — sequential scan works without it)
+        if let Err(e) = self.ensure_index(dim).await {
+            tracing::info!(dim, error = %e, "vector index not created — using sequential scan (OK for <100K rows)");
+        }
 
         let model = self.embed_model_name();
         tracing::info!(
