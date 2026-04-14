@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 use crate::db::sessions;
+use crate::gateway::ApiError;
 use super::super::AppState;
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -38,21 +39,21 @@ pub(crate) async fn api_latest_session(
 ) -> impl IntoResponse {
     let agent = params.get("agent").map_or("", std::string::String::as_str);
     if agent.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "agent parameter required"}))).into_response();
+        return ApiError::BadRequest("agent parameter required".into()).into_response();
     }
 
     let session = match sessions::get_latest_ui_session(&state.db, agent).await {
         Ok(Some(s)) => s,
         Ok(None) => return StatusCode::NO_CONTENT.into_response(),
         Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
+            return ApiError::Internal(e.to_string()).into_response();
         }
     };
 
     let messages = match sessions::load_messages(&state.db, session.id, Some(100)).await {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
+            return ApiError::Internal(e.to_string()).into_response();
         }
     };
 
@@ -108,10 +109,7 @@ pub(crate) async fn api_list_sessions(
     let agent = match q.agent.as_deref() {
         Some(a) if !a.is_empty() => a,
         _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "agent parameter required"})),
-            ).into_response();
+            return ApiError::BadRequest("agent parameter required".into()).into_response();
         }
     };
 
@@ -163,11 +161,7 @@ pub(crate) async fn api_list_sessions(
                 .collect();
             Json(json!({ "sessions": sessions })).into_response()
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )
-            .into_response(),
+        Err(e) => ApiError::Internal(e.to_string()).into_response(),
     }
 }
 
@@ -212,11 +206,7 @@ pub(crate) async fn api_session_messages(
                 .collect();
             Json(json!({ "messages": messages })).into_response()
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )
-            .into_response(),
+        Err(e) => ApiError::Internal(e.to_string()).into_response(),
     }
 }
 
@@ -233,12 +223,8 @@ pub(crate) async fn api_delete_message(
 
     match result {
         Ok(r) if r.rows_affected() > 0 => Json(json!({"ok": true})).into_response(),
-        Ok(_) => (StatusCode::NOT_FOUND, Json(json!({"error": "message not found"}))).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )
-            .into_response(),
+        Ok(_) => ApiError::NotFound("message not found".into()).into_response(),
+        Err(e) => ApiError::Internal(e.to_string()).into_response(),
     }
 }
 
@@ -252,10 +238,7 @@ pub(crate) async fn api_delete_session(
     let agent = match q.agent.as_deref() {
         Some(a) if !a.is_empty() => a,
         _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "agent parameter required for session deletion"})),
-            ).into_response();
+            return ApiError::BadRequest("agent parameter required for session deletion".into()).into_response();
         }
     };
 
@@ -273,7 +256,7 @@ pub(crate) async fn api_delete_session(
 
     match result {
         Ok(r) if r.rows_affected() == 0 => {
-            (StatusCode::NOT_FOUND, Json(json!({"error": "session not found or does not belong to agent"}))).into_response()
+            ApiError::NotFound("session not found or does not belong to agent".into()).into_response()
         }
         Ok(_) => {
             tracing::info!(session_id = %id, agent = %agent, "session deleted via API");
@@ -286,10 +269,7 @@ pub(crate) async fn api_delete_session(
                 }
             Json(json!({"ok": true})).into_response()
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        ).into_response(),
+        Err(e) => ApiError::Internal(e.to_string()).into_response(),
     }
 }
 
@@ -303,9 +283,9 @@ async fn verify_session_agent(db: &sqlx::PgPool, session_id: uuid::Uuid, expecte
 
     match row {
         Ok(Some(agent_id)) if agent_id == expected_agent => Ok(()),
-        Ok(Some(_)) => Err((StatusCode::FORBIDDEN, Json(json!({"error": "session belongs to a different agent"}))).into_response()),
-        Ok(None) => Err((StatusCode::NOT_FOUND, Json(json!({"error": "session not found"}))).into_response()),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()),
+        Ok(Some(_)) => Err(ApiError::Forbidden("session belongs to a different agent".into()).into_response()),
+        Ok(None) => Err(ApiError::NotFound("session not found".into()).into_response()),
+        Err(e) => Err(ApiError::Internal(e.to_string()).into_response()),
     }
 }
 
@@ -340,11 +320,7 @@ pub(crate) async fn api_delete_all_sessions(
             .execute(&state.db)
             .await
     } else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "agent or channel parameter required"})),
-        )
-            .into_response();
+        return ApiError::BadRequest("agent or channel parameter required".into()).into_response();
     };
 
     match result {
@@ -353,10 +329,7 @@ pub(crate) async fn api_delete_all_sessions(
             tracing::info!(filter = %filter, deleted = r.rows_affected(), "sessions deleted via API");
             Json(json!({"ok": true, "deleted": r.rows_affected()})).into_response()
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        ).into_response(),
+        Err(e) => ApiError::Internal(e.to_string()).into_response(),
     }
 }
 
@@ -368,10 +341,7 @@ pub(crate) async fn api_search_sessions(
 ) -> impl IntoResponse {
     let query_str = q.q.as_deref().unwrap_or("").trim();
     if query_str.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "q parameter required"})),
-        ).into_response();
+        return ApiError::BadRequest("q parameter required".into()).into_response();
     }
     let agent = q.agent.as_deref().unwrap_or("main");
     let limit = q.limit.unwrap_or(50).min(200);
@@ -389,10 +359,7 @@ pub(crate) async fn api_search_sessions(
             })).collect();
             Json(json!({"results": items, "count": items.len()})).into_response()
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        ).into_response(),
+        Err(e) => ApiError::Internal(e.to_string()).into_response(),
     }
 }
 
@@ -422,10 +389,7 @@ pub(crate) async fn api_invite_to_session(
         map.contains_key(&req.agent_name)
     };
     if !agent_exists {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("agent '{}' not found", req.agent_name)})),
-        ).into_response();
+        return ApiError::NotFound(format!("agent '{}' not found", req.agent_name)).into_response();
     }
 
     match crate::db::sessions::add_participant(&state.db, id, &req.agent_name).await {
@@ -442,10 +406,7 @@ pub(crate) async fn api_invite_to_session(
 
             Json(json!({ "participants": participants })).into_response()
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        ).into_response(),
+        Err(e) => ApiError::Internal(e.to_string()).into_response(),
     }
 }
 
@@ -460,10 +421,10 @@ pub(crate) async fn api_compact_session(
     let session = match sessions::get_session(&state.db, id).await {
         Ok(Some(s)) => s,
         Ok(None) => {
-            return (StatusCode::NOT_FOUND, Json(json!({"error": "session not found"}))).into_response()
+            return ApiError::NotFound("session not found".into()).into_response()
         }
         Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+            return ApiError::Internal(e.to_string()).into_response()
         }
     };
 
@@ -471,7 +432,7 @@ pub(crate) async fn api_compact_session(
     let engine = match agents.get(&session.agent_id) {
         Some(handle) => handle.engine.clone(),
         None => {
-            return (StatusCode::BAD_REQUEST, Json(json!({"error": "agent not running"}))).into_response()
+            return ApiError::BadRequest("agent not running".into()).into_response()
         }
     };
     drop(agents);
@@ -485,7 +446,7 @@ pub(crate) async fn api_compact_session(
         .into_response(),
         Err(e) => {
             tracing::error!(session_id = %id, error = %e, "session compaction failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+            ApiError::Internal(e.to_string()).into_response()
         }
     }
 }
@@ -506,8 +467,8 @@ pub(crate) async fn api_message_feedback(
         .await;
     match result {
         Ok(r) if r.rows_affected() > 0 => Json(json!({"ok": true})).into_response(),
-        Ok(_) => (StatusCode::NOT_FOUND, Json(json!({"error": "message not found"}))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        Ok(_) => ApiError::NotFound("message not found".into()).into_response(),
+        Err(e) => ApiError::Internal(e.to_string()).into_response(),
     }
 }
 
@@ -531,8 +492,8 @@ pub(crate) async fn api_patch_message(
         .await;
     match result {
         Ok(r) if r.rows_affected() > 0 => Json(json!({"ok": true})).into_response(),
-        Ok(_) => (StatusCode::NOT_FOUND, Json(json!({"error": "message not found or not a user message"}))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        Ok(_) => ApiError::NotFound("message not found or not a user message".into()).into_response(),
+        Err(e) => ApiError::Internal(e.to_string()).into_response(),
     }
 }
 
@@ -565,11 +526,7 @@ pub(crate) async fn api_fork_session(
     {
         Ok(pid) => pid,
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
-            )
-                .into_response()
+            return ApiError::Internal(e.to_string()).into_response()
         }
     };
 
@@ -594,11 +551,7 @@ pub(crate) async fn api_fork_session(
             "branch_from_message_id": body.branch_from_message_id,
         }))
         .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )
-            .into_response(),
+        Err(e) => ApiError::Internal(e.to_string()).into_response(),
     }
 }
 
@@ -617,11 +570,11 @@ pub(crate) async fn api_patch_session(
             .await
         {
             Ok(r) if r.rows_affected() == 0 => {
-                return (StatusCode::NOT_FOUND, Json(json!({"error": "session not found"}))).into_response();
+                return ApiError::NotFound("session not found".into()).into_response();
             }
             Ok(_) => {}
             Err(e) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
+                return ApiError::Internal(e.to_string()).into_response();
             }
         }
     }
@@ -630,7 +583,7 @@ pub(crate) async fn api_patch_session(
         // Validate: must be an object, max 1KB serialized
         let serialized = ui_state.to_string();
         if !ui_state.is_object() || serialized.len() > 1024 {
-            return (StatusCode::BAD_REQUEST, Json(json!({"error": "ui_state must be a JSON object under 1KB"}))).into_response();
+            return ApiError::BadRequest("ui_state must be a JSON object under 1KB".into()).into_response();
         }
         match sqlx::query(
             "UPDATE sessions SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('ui_state', $1::jsonb) WHERE id = $2"
@@ -641,11 +594,11 @@ pub(crate) async fn api_patch_session(
         .await
         {
             Ok(r) if r.rows_affected() == 0 => {
-                return (StatusCode::NOT_FOUND, Json(json!({"error": "session not found"}))).into_response();
+                return ApiError::NotFound("session not found".into()).into_response();
             }
             Ok(_) => {}
             Err(e) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
+                return ApiError::Internal(e.to_string()).into_response();
             }
         }
     }
@@ -677,15 +630,15 @@ pub(crate) async fn api_export_session(
                         md,
                     ).into_response()
                 }
-                Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"error": "session not found"}))).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+                Ok(None) => ApiError::NotFound("session not found".into()).into_response(),
+                Err(e) => ApiError::Internal(e.to_string()).into_response(),
             }
         }
         _ => {
             match crate::db::sessions::export_session(&state.db, id).await {
                 Ok(Some(data)) => Json(data).into_response(),
-                Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"error": "session not found"}))).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+                Ok(None) => ApiError::NotFound("session not found".into()).into_response(),
+                Err(e) => ApiError::Internal(e.to_string()).into_response(),
             }
         }
     }
@@ -766,7 +719,7 @@ pub(crate) async fn api_stuck_sessions(
             }).collect();
             Json(serde_json::json!({"sessions": sessions})).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Err(e) => ApiError::Internal(e.to_string()).into_response(),
     }
 }
 
@@ -783,15 +736,15 @@ pub(crate) async fn api_retry_session(
     .fetch_optional(&state.db)
     .await {
         Ok(Some(s)) => s,
-        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "session not found"}))).into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Ok(None) => return ApiError::NotFound("session not found".into()).into_response(),
+        Err(e) => return ApiError::Internal(e.to_string()).into_response(),
     };
 
     // 2. Get last user message
     let user_text = match sessions::get_last_user_message(&state.db, id).await {
         Ok(Some(text)) => text,
-        Ok(None) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "no user message in session"}))).into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Ok(None) => return ApiError::BadRequest("no user message in session".into()).into_response(),
+        Err(e) => return ApiError::Internal(e.to_string()).into_response(),
     };
 
     // 3. Cleanup: delete empty assistant messages and the last user message
@@ -814,8 +767,8 @@ pub(crate) async fn api_retry_session(
     // 4. Increment retry count (atomic guard against concurrent double-retry)
     let retry_count = match sessions::increment_retry_count(&state.db, id).await {
         Ok(Some(c)) => c,
-        Ok(None) => return (StatusCode::CONFLICT, Json(serde_json::json!({"error": "session not in running state (concurrent retry?)"}))).into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Ok(None) => return ApiError::Conflict("session not in running state (concurrent retry?)".into()).into_response(),
+        Err(e) => return ApiError::Internal(e.to_string()).into_response(),
     };
 
     tracing::info!(session_id = %id, agent = %session.agent_id, retry_count, "retrying stuck session");
@@ -825,7 +778,7 @@ pub(crate) async fn api_retry_session(
         Some(e) => e,
         None => {
             let _ = sessions::mark_session_failed(&state.db, id).await;
-            return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": format!("agent '{}' not found", session.agent_id)}))).into_response();
+            return ApiError::NotFound(format!("agent '{}' not found", session.agent_id)).into_response();
         }
     };
 
@@ -891,7 +844,7 @@ pub(crate) async fn api_active_path(
             }).collect();
             Json(json!({ "messages": messages })).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        Err(e) => ApiError::Internal(e.to_string()).into_response(),
     }
 }
 
