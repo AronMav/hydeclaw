@@ -285,256 +285,39 @@ impl AgentEngine {
                 return format!("Tool blocked by hook: {}", reason);
             }
 
-            // 1. Internal tools
-            if name == "workspace_write" {
-                return self.handle_workspace_write(arguments).await;
-            }
-            if name == "workspace_read" {
-                return self.handle_workspace_read(arguments).await;
-            }
-            if name == "workspace_list" {
-                return self.handle_workspace_list(arguments).await;
-            }
-            if name == "workspace_edit" {
-                return self.handle_workspace_edit(arguments).await;
-            }
-            if name == "workspace_delete" {
-                return self.handle_workspace_delete(arguments).await;
-            }
-            if name == "workspace_rename" {
-                return self.handle_workspace_rename(arguments).await;
-            }
-            if name == "memory" {
-                let action = arguments.get("action").and_then(|v| v.as_str()).unwrap_or("");
-                return match action {
-                    "search" => self.handle_memory_search(arguments).await,
-                    "index" => self.handle_memory_index(arguments).await,
-                    "reindex" => self.handle_memory_reindex(arguments).await,
-                    "get" => self.handle_memory_get(arguments).await,
-                    "delete" => self.handle_memory_delete(arguments).await,
-                    "update" => {
-                        // Remap sub_action -> action for handle_memory_update compatibility
-                        let mut args = arguments.clone();
-                        if let Some(sa) = arguments.get("sub_action").cloned()
-                            && let Some(obj) = args.as_object_mut() {
-                                obj.insert("action".to_string(), sa);
-                            }
-                        self.handle_memory_update(&args).await
-                    }
-                    _ => format!("Error: unknown memory action '{}'. Use: search, index, reindex, get, delete, update.", action),
-                };
-            }
-            if name == "message" {
-                return self.handle_message_action(arguments).await;
-            }
-            // shell_exec removed — use code_exec(language="bash") instead
-            if name == "cron" {
-                return self.handle_cron(arguments).await;
-            }
-            if name == "agent" {
-                return self.handle_agent_tool(arguments).await;
-            }
-            if name == "web_fetch" {
-                return self.handle_web_fetch(arguments).await;
-            }
-            if name == "tool_create" {
-                return self.handle_tool_create(arguments).await;
-            }
-            if name == "tool_list" {
-                return self.handle_tool_list(arguments).await;
-            }
-            if name == "tool_test" {
-                return self.handle_tool_test(arguments).await;
-            }
-            if name == "tool_verify" {
-                return self.handle_tool_verify(arguments).await;
-            }
-            if name == "tool_disable" {
-                return self.handle_tool_disable(arguments).await;
-            }
-            if name == "skill" {
-                let action = arguments.get("action").and_then(|v| v.as_str()).unwrap_or("");
-                return match action {
-                    "create" => self.handle_skill_create(arguments).await,
-                    "update" => self.handle_skill_update(arguments).await,
-                    "list" => self.handle_skill_list(arguments).await,
-                    _ => format!("Error: unknown skill action '{}'. Use: create, update, list.", action),
-                };
-            }
-            if name == "skill_use" {
-                return self.handle_skill_use(arguments).await;
-            }
-            if name == "tool_discover" {
-                return self.handle_tool_discover(arguments).await;
-            }
-            if name == "secret_set" {
-                return self.handle_secret_set(arguments).await;
-            }
-            if name == "session" {
-                let action = arguments.get("action").and_then(|v| v.as_str()).unwrap_or("");
-                return match action {
-                    "list" => self.handle_sessions_list(arguments).await,
-                    "history" => self.handle_sessions_history(arguments).await,
-                    "search" => self.handle_session_search(arguments).await,
-                    "context" => self.handle_session_context(arguments).await,
-                    "send" => self.handle_session_send(arguments).await,
-                    "export" => self.handle_session_export(arguments).await,
-                    _ => format!("Error: unknown session action '{}'. Use: list, history, search, context, send, export.", action),
-                };
-            }
-            if name == "agents_list" {
-                return self.handle_agents_list(arguments).await;
-            }
-            if name == "browser_action" {
-                return self.handle_browser_action(arguments).await;
-            }
-            // service_manage and service_exec removed — base agent uses code_exec on host
-            if name == "code_exec" {
-                return self.handle_code_exec(arguments).await;
-            }
-            if name == "git" {
-                let action = arguments.get("action").and_then(|v| v.as_str()).unwrap_or("");
-
-                // Clone is special — doesn't need existing git dir
-                if action == "clone" {
-                    let url = match arguments.get("url").and_then(|v| v.as_str()).filter(|u| !u.is_empty()) {
-                        Some(u) => u.to_string(),
-                        None => return "Error: url parameter required.".to_string(),
-                    };
-                    // Reject URLs starting with '-' to prevent git option injection (RCE via --upload-pack etc.)
-                    if url.starts_with('-') {
-                        return "Error: URL must not start with '-'".to_string();
-                    }
-                    let url = if url.starts_with("https://github.com/") {
-                        url.replace("https://github.com/", "git@github.com:")
-                    } else { url };
-                    let dir_name = arguments.get("directory").and_then(|v| v.as_str()).filter(|d| !d.is_empty())
-                        .map(|d| d.to_string())
-                        .unwrap_or_else(|| {
-                            url.rsplit('/').next().or_else(|| url.rsplit(':').next())
-                                .unwrap_or("repo").trim_end_matches(".git").to_string()
-                        });
-                    let target = std::path::PathBuf::from(&self.workspace_dir).join(&dir_name);
-                    // No pre-existence check (TOCTOU race). Let git clone fail naturally
-                    // if the directory already exists — git reports a clear error message.
-                    let output = tokio::process::Command::new("git")
-                        .args(["clone", "--", &url, &target.to_string_lossy()])
-                        .output().await;
-                    return match output {
-                        Ok(o) => {
-                            let stdout = String::from_utf8_lossy(&o.stdout);
-                            let stderr = String::from_utf8_lossy(&o.stderr);
-                            if o.status.success() { format!("Cloned {} into {}\n{}{}", url, dir_name, stdout, stderr) }
-                            else { format!("git clone failed:\n{}{}", stdout, stderr) }
-                        }
-                        Err(e) => format!("Error running git clone: {}", e),
-                    };
-                }
-
-                // All other actions need a git working directory
-                let git_dir = match arguments.get("directory").and_then(|v| v.as_str()).filter(|d| !d.is_empty()) {
-                    Some(sub) => {
-                        let p = std::path::PathBuf::from(&self.workspace_dir).join(sub);
-                        if !p.exists() || !p.is_dir() { return format!("Error: directory '{}' not found in workspace.", sub); }
-                        p.to_string_lossy().to_string()
-                    }
-                    None => {
-                        let ws = std::path::PathBuf::from(&self.workspace_dir);
-                        if !ws.join(".git").exists() {
-                            let mut git_dirs = Vec::new();
-                            if let Ok(mut entries) = tokio::fs::read_dir(&ws).await {
-                                while let Ok(Some(entry)) = entries.next_entry().await {
-                                    let p = entry.path();
-                                    if p.is_dir() && p.join(".git").exists()
-                                        && let Some(dn) = p.file_name().and_then(|n| n.to_str()) { git_dirs.push(dn.to_string()); }
-                                }
-                            }
-                            if !git_dirs.is_empty() {
-                                return format!("Error: workspace root is not a git repo. Use directory parameter. Found: {}", git_dirs.join(", "));
-                            }
-                            return "Error: no git repository found in workspace.".to_string();
-                        }
-                        ws.to_string_lossy().to_string()
-                    }
-                };
-
-                return match action {
-                    "commit" => {
-                        let message = arguments.get("message").and_then(|v| v.as_str()).unwrap_or("chore: update files");
-                        match tokio::process::Command::new("git").args(["commit", "-am", message]).current_dir(&git_dir).output().await {
-                            Ok(o) => { let s = String::from_utf8_lossy(&o.stdout); let e = String::from_utf8_lossy(&o.stderr);
-                                if o.status.success() { s.to_string() } else { format!("git commit failed: {}{}", s, e) } }
-                            Err(e) => format!("Error: {}", e),
-                        }
-                    }
-                    "log" => {
-                        let limit = arguments.get("limit").and_then(|v| v.as_i64()).unwrap_or(20);
-                        let oneline = arguments.get("oneline").and_then(|v| v.as_bool()).unwrap_or(true);
-                        let mut args = vec!["log".to_string(), format!("-{}", limit)];
-                        if oneline { args.push("--oneline".to_string()); }
-                        else { args.push("--format=%h %ad %an: %s".to_string()); args.push("--date=short".to_string()); }
-                        match tokio::process::Command::new("git").args(&args).current_dir(&git_dir).output().await {
-                            Ok(o) => { let out = String::from_utf8_lossy(&o.stdout).to_string();
-                                if out.is_empty() { "No commits found.".to_string() } else { out } }
-                            Err(e) => format!("Error: {}", e),
-                        }
-                    }
-                    "add" => {
-                        let files: Vec<String> = arguments.get("files").and_then(|v| v.as_array())
-                            .map(|arr| arr.iter().filter_map(|f| f.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
-                        if files.is_empty() { return "Error: files parameter required.".to_string(); }
-                        let mut args = vec!["add".to_string()]; args.extend(files);
-                        match tokio::process::Command::new("git").args(&args).current_dir(&git_dir).output().await {
-                            Ok(o) => if o.status.success() { let s = String::from_utf8_lossy(&o.stdout);
-                                if s.is_empty() { "Files staged.".to_string() } else { s.to_string() } }
-                                else { format!("git add failed: {}", String::from_utf8_lossy(&o.stderr)) }
-                            Err(e) => format!("Error: {}", e),
-                        }
-                    }
-                    "branch" => {
-                        let branch_act = arguments.get("branch_action").and_then(|v| v.as_str()).unwrap_or("list");
-                        let branch_name = arguments.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                        let args: Vec<&str> = match branch_act {
-                            "list" => vec!["branch", "-a"],
-                            "create" => { if branch_name.is_empty() { return "Error: name required.".to_string(); } vec!["checkout", "-b", branch_name] }
-                            "switch" => { if branch_name.is_empty() { return "Error: name required.".to_string(); } vec!["checkout", branch_name] }
-                            "delete" => { if branch_name.is_empty() { return "Error: name required.".to_string(); } vec!["branch", "-d", branch_name] }
-                            _ => return format!("Error: unknown branch_action '{}'.", branch_act),
-                        };
-                        match tokio::process::Command::new("git").args(&args).current_dir(&git_dir).output().await {
-                            Ok(o) => { let mut out = String::from_utf8_lossy(&o.stdout).to_string();
-                                let stderr = String::from_utf8_lossy(&o.stderr); if !stderr.is_empty() { out.push_str(&stderr); }
-                                if out.is_empty() { format!("Exit code: {}", o.status.code().unwrap_or(-1)) } else { out } }
-                            Err(e) => format!("Error: {}", e),
-                        }
-                    }
-                    "status" | "diff" | "push" | "pull" => {
-                        match tokio::process::Command::new("git").args([action]).current_dir(&git_dir).output().await {
-                            Ok(o) => { let mut out = String::from_utf8_lossy(&o.stdout).to_string();
-                                let stderr = String::from_utf8_lossy(&o.stderr);
-                                if !stderr.is_empty() { out.push_str("\n--- stderr ---\n"); out.push_str(&stderr); }
-                                if out.is_empty() { format!("Exit code: {}", o.status.code().unwrap_or(-1)) } else { out } }
-                            Err(e) => format!("Error running git {}: {}", action, e),
-                        }
-                    }
-                    _ => format!("Error: unknown git action '{}'. Use: status, diff, log, commit, add, push, pull, branch, clone.", action),
-                };
-            }
-            if name == "canvas" {
-                return self.handle_canvas(arguments).await;
-            }
-            if name == "rich_card" {
-                return self.handle_rich_card(arguments);
-            }
-            if name == "process" {
-                let action = arguments.get("action").and_then(|v| v.as_str()).unwrap_or("");
-                return match action {
-                    "start" => self.handle_process_start(arguments).await,
-                    "status" => self.handle_process_status(arguments).await,
-                    "logs" => self.handle_process_logs(arguments).await,
-                    "kill" => self.handle_process_kill(arguments).await,
-                    _ => format!("Error: unknown process action '{}'. Use: start, status, logs, kill.", action),
-                };
+            // 1. Internal tools — match dispatch table
+            if let Some(result) = match name {
+                "workspace_write" => Some(self.handle_workspace_write(arguments).await),
+                "workspace_read" => Some(self.handle_workspace_read(arguments).await),
+                "workspace_list" => Some(self.handle_workspace_list(arguments).await),
+                "workspace_edit" => Some(self.handle_workspace_edit(arguments).await),
+                "workspace_delete" => Some(self.handle_workspace_delete(arguments).await),
+                "workspace_rename" => Some(self.handle_workspace_rename(arguments).await),
+                "memory" => Some(self.dispatch_memory_tool(arguments).await),
+                "message" => Some(self.handle_message_action(arguments).await),
+                "cron" => Some(self.handle_cron(arguments).await),
+                "agent" => Some(self.handle_agent_tool(arguments).await),
+                "web_fetch" => Some(self.handle_web_fetch(arguments).await),
+                "tool_create" => Some(self.handle_tool_create(arguments).await),
+                "tool_list" => Some(self.handle_tool_list(arguments).await),
+                "tool_test" => Some(self.handle_tool_test(arguments).await),
+                "tool_verify" => Some(self.handle_tool_verify(arguments).await),
+                "tool_disable" => Some(self.handle_tool_disable(arguments).await),
+                "skill" => Some(self.dispatch_skill_tool(arguments).await),
+                "skill_use" => Some(self.handle_skill_use(arguments).await),
+                "tool_discover" => Some(self.handle_tool_discover(arguments).await),
+                "secret_set" => Some(self.handle_secret_set(arguments).await),
+                "session" => Some(self.dispatch_session_tool(arguments).await),
+                "agents_list" => Some(self.handle_agents_list(arguments).await),
+                "browser_action" => Some(self.handle_browser_action(arguments).await),
+                "code_exec" => Some(self.handle_code_exec(arguments).await),
+                "git" => Some(self.dispatch_git_tool(arguments).await),
+                "canvas" => Some(self.handle_canvas(arguments).await),
+                "rich_card" => Some(self.handle_rich_card(arguments)),
+                "process" => Some(self.dispatch_process_tool(arguments).await),
+                _ => None,
+            } {
+                return result;
             }
             // 2. YAML-defined tools (workspace/tools/) — only VERIFIED may be called directly.
             // Draft tools are blocked here; they can only be invoked through tool_test.
@@ -745,5 +528,191 @@ impl AgentEngine {
             );
         }
         filtered
+    }
+
+    // ── Dispatch helpers for tools with sub-action routing ──────────────
+
+    async fn dispatch_memory_tool(&self, arguments: &serde_json::Value) -> String {
+        let action = arguments.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        match action {
+            "search" => self.handle_memory_search(arguments).await,
+            "index" => self.handle_memory_index(arguments).await,
+            "reindex" => self.handle_memory_reindex(arguments).await,
+            "get" => self.handle_memory_get(arguments).await,
+            "delete" => self.handle_memory_delete(arguments).await,
+            "update" => {
+                // Remap sub_action -> action for handle_memory_update compatibility
+                let mut args = arguments.clone();
+                if let Some(sa) = arguments.get("sub_action").cloned()
+                    && let Some(obj) = args.as_object_mut() {
+                        obj.insert("action".to_string(), sa);
+                    }
+                self.handle_memory_update(&args).await
+            }
+            _ => format!("Error: unknown memory action '{}'. Use: search, index, reindex, get, delete, update.", action),
+        }
+    }
+
+    async fn dispatch_skill_tool(&self, arguments: &serde_json::Value) -> String {
+        let action = arguments.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        match action {
+            "create" => self.handle_skill_create(arguments).await,
+            "update" => self.handle_skill_update(arguments).await,
+            "list" => self.handle_skill_list(arguments).await,
+            _ => format!("Error: unknown skill action '{}'. Use: create, update, list.", action),
+        }
+    }
+
+    async fn dispatch_session_tool(&self, arguments: &serde_json::Value) -> String {
+        let action = arguments.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        match action {
+            "list" => self.handle_sessions_list(arguments).await,
+            "history" => self.handle_sessions_history(arguments).await,
+            "search" => self.handle_session_search(arguments).await,
+            "context" => self.handle_session_context(arguments).await,
+            "send" => self.handle_session_send(arguments).await,
+            "export" => self.handle_session_export(arguments).await,
+            _ => format!("Error: unknown session action '{}'. Use: list, history, search, context, send, export.", action),
+        }
+    }
+
+    async fn dispatch_process_tool(&self, arguments: &serde_json::Value) -> String {
+        let action = arguments.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        match action {
+            "start" => self.handle_process_start(arguments).await,
+            "status" => self.handle_process_status(arguments).await,
+            "logs" => self.handle_process_logs(arguments).await,
+            "kill" => self.handle_process_kill(arguments).await,
+            _ => format!("Error: unknown process action '{}'. Use: start, status, logs, kill.", action),
+        }
+    }
+
+    async fn dispatch_git_tool(&self, arguments: &serde_json::Value) -> String {
+        let action = arguments.get("action").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Clone is special — doesn't need existing git dir
+        if action == "clone" {
+            let url = match arguments.get("url").and_then(|v| v.as_str()).filter(|u| !u.is_empty()) {
+                Some(u) => u.to_string(),
+                None => return "Error: url parameter required.".to_string(),
+            };
+            // Reject URLs starting with '-' to prevent git option injection (RCE via --upload-pack etc.)
+            if url.starts_with('-') {
+                return "Error: URL must not start with '-'".to_string();
+            }
+            let url = if url.starts_with("https://github.com/") {
+                url.replace("https://github.com/", "git@github.com:")
+            } else { url };
+            let dir_name = arguments.get("directory").and_then(|v| v.as_str()).filter(|d| !d.is_empty())
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| {
+                    url.rsplit('/').next().or_else(|| url.rsplit(':').next())
+                        .unwrap_or("repo").trim_end_matches(".git").to_string()
+                });
+            let target = std::path::PathBuf::from(&self.workspace_dir).join(&dir_name);
+            // No pre-existence check (TOCTOU race). Let git clone fail naturally
+            // if the directory already exists — git reports a clear error message.
+            let output = tokio::process::Command::new("git")
+                .args(["clone", "--", &url, &target.to_string_lossy()])
+                .output().await;
+            return match output {
+                Ok(o) => {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    if o.status.success() { format!("Cloned {} into {}\n{}{}", url, dir_name, stdout, stderr) }
+                    else { format!("git clone failed:\n{}{}", stdout, stderr) }
+                }
+                Err(e) => format!("Error running git clone: {}", e),
+            };
+        }
+
+        // All other actions need a git working directory
+        let git_dir = match arguments.get("directory").and_then(|v| v.as_str()).filter(|d| !d.is_empty()) {
+            Some(sub) => {
+                let p = std::path::PathBuf::from(&self.workspace_dir).join(sub);
+                if !p.exists() || !p.is_dir() { return format!("Error: directory '{}' not found in workspace.", sub); }
+                p.to_string_lossy().to_string()
+            }
+            None => {
+                let ws = std::path::PathBuf::from(&self.workspace_dir);
+                if !ws.join(".git").exists() {
+                    let mut git_dirs = Vec::new();
+                    if let Ok(mut entries) = tokio::fs::read_dir(&ws).await {
+                        while let Ok(Some(entry)) = entries.next_entry().await {
+                            let p = entry.path();
+                            if p.is_dir() && p.join(".git").exists()
+                                && let Some(dn) = p.file_name().and_then(|n| n.to_str()) { git_dirs.push(dn.to_string()); }
+                        }
+                    }
+                    if !git_dirs.is_empty() {
+                        return format!("Error: workspace root is not a git repo. Use directory parameter. Found: {}", git_dirs.join(", "));
+                    }
+                    return "Error: no git repository found in workspace.".to_string();
+                }
+                ws.to_string_lossy().to_string()
+            }
+        };
+
+        match action {
+            "commit" => {
+                let message = arguments.get("message").and_then(|v| v.as_str()).unwrap_or("chore: update files");
+                match tokio::process::Command::new("git").args(["commit", "-am", message]).current_dir(&git_dir).output().await {
+                    Ok(o) => { let s = String::from_utf8_lossy(&o.stdout); let e = String::from_utf8_lossy(&o.stderr);
+                        if o.status.success() { s.to_string() } else { format!("git commit failed: {}{}", s, e) } }
+                    Err(e) => format!("Error: {}", e),
+                }
+            }
+            "log" => {
+                let limit = arguments.get("limit").and_then(|v| v.as_i64()).unwrap_or(20);
+                let oneline = arguments.get("oneline").and_then(|v| v.as_bool()).unwrap_or(true);
+                let mut args = vec!["log".to_string(), format!("-{}", limit)];
+                if oneline { args.push("--oneline".to_string()); }
+                else { args.push("--format=%h %ad %an: %s".to_string()); args.push("--date=short".to_string()); }
+                match tokio::process::Command::new("git").args(&args).current_dir(&git_dir).output().await {
+                    Ok(o) => { let out = String::from_utf8_lossy(&o.stdout).to_string();
+                        if out.is_empty() { "No commits found.".to_string() } else { out } }
+                    Err(e) => format!("Error: {}", e),
+                }
+            }
+            "add" => {
+                let files: Vec<String> = arguments.get("files").and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|f| f.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
+                if files.is_empty() { return "Error: files parameter required.".to_string(); }
+                let mut args = vec!["add".to_string()]; args.extend(files);
+                match tokio::process::Command::new("git").args(&args).current_dir(&git_dir).output().await {
+                    Ok(o) => if o.status.success() { let s = String::from_utf8_lossy(&o.stdout);
+                        if s.is_empty() { "Files staged.".to_string() } else { s.to_string() } }
+                        else { format!("git add failed: {}", String::from_utf8_lossy(&o.stderr)) }
+                    Err(e) => format!("Error: {}", e),
+                }
+            }
+            "branch" => {
+                let branch_act = arguments.get("branch_action").and_then(|v| v.as_str()).unwrap_or("list");
+                let branch_name = arguments.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let args: Vec<&str> = match branch_act {
+                    "list" => vec!["branch", "-a"],
+                    "create" => { if branch_name.is_empty() { return "Error: name required.".to_string(); } vec!["checkout", "-b", branch_name] }
+                    "switch" => { if branch_name.is_empty() { return "Error: name required.".to_string(); } vec!["checkout", branch_name] }
+                    "delete" => { if branch_name.is_empty() { return "Error: name required.".to_string(); } vec!["branch", "-d", branch_name] }
+                    _ => return format!("Error: unknown branch_action '{}'.", branch_act),
+                };
+                match tokio::process::Command::new("git").args(&args).current_dir(&git_dir).output().await {
+                    Ok(o) => { let mut out = String::from_utf8_lossy(&o.stdout).to_string();
+                        let stderr = String::from_utf8_lossy(&o.stderr); if !stderr.is_empty() { out.push_str(&stderr); }
+                        if out.is_empty() { format!("Exit code: {}", o.status.code().unwrap_or(-1)) } else { out } }
+                    Err(e) => format!("Error: {}", e),
+                }
+            }
+            "status" | "diff" | "push" | "pull" => {
+                match tokio::process::Command::new("git").args([action]).current_dir(&git_dir).output().await {
+                    Ok(o) => { let mut out = String::from_utf8_lossy(&o.stdout).to_string();
+                        let stderr = String::from_utf8_lossy(&o.stderr);
+                        if !stderr.is_empty() { out.push_str("\n--- stderr ---\n"); out.push_str(&stderr); }
+                        if out.is_empty() { format!("Exit code: {}", o.status.code().unwrap_or(-1)) } else { out } }
+                    Err(e) => format!("Error running git {}: {}", action, e),
+                }
+            }
+            _ => format!("Error: unknown git action '{}'. Use: status, diff, log, commit, add, push, pull, branch, clone.", action),
+        }
     }
 }
