@@ -20,6 +20,10 @@ pub struct MemoryConfig {
     pub enabled: bool,
     /// Vector dimension (optional, auto-detected at startup)
     pub embed_dim: Option<u32>,
+    /// Requested embedding dimensions (sent as `dimensions` param to API).
+    /// Some models (e.g. Qwen3-Embedding) support flexible output dims.
+    /// If set, the API will return vectors of this size instead of the model default.
+    pub embed_dimensions: Option<u32>,
     /// `PostgreSQL` FTS dictionary name (e.g. "russian", "english", "simple").
     /// Auto-detected from first agent's language if not set.
     pub fts_language: Option<String>,
@@ -81,6 +85,8 @@ pub struct MemoryStore {
     embed_model: OnceLock<String>,
     /// 0 = not yet detected
     embed_dim: AtomicU32,
+    /// Requested dimensions for the embedding API (0 = use model default)
+    embed_dimensions: u32,
     /// `PostgreSQL` FTS dictionary (e.g. "russian", "english", "simple").
     /// Mutable at runtime via API.
     fts_language: RwLock<String>,
@@ -107,6 +113,7 @@ impl MemoryStore {
             embed_url,
             embed_model: OnceLock::new(),
             embed_dim: AtomicU32::new(config.embed_dim.unwrap_or(0)),
+            embed_dimensions: config.embed_dimensions.unwrap_or(0),
             fts_language: RwLock::new(fts_lang),
             initialized: OnceCell::new(),
         }
@@ -285,6 +292,9 @@ impl MemoryStore {
         if !model.is_empty() && !model.starts_with('(') {
             body["model"] = serde_json::Value::String(model);
         }
+        if self.embed_dimensions > 0 {
+            body["dimensions"] = serde_json::json!(self.embed_dimensions);
+        }
         let resp = self.http
             .post(&url)
             .json(&body)
@@ -341,6 +351,9 @@ impl MemoryStore {
         let mut body = serde_json::json!({ "input": texts });
         if !model.is_empty() && !model.starts_with('(') {
             body["model"] = serde_json::Value::String(model);
+        }
+        if self.embed_dimensions > 0 {
+            body["dimensions"] = serde_json::json!(self.embed_dimensions);
         }
         let resp = self.http
             .post(&url)
@@ -1130,6 +1143,7 @@ mod tests {
         MemoryConfig {
             enabled,
             embed_dim: None,
+            embed_dimensions: None,
             fts_language: None,
             pinned_budget_tokens: 2000,
             compression_age_days: 30,

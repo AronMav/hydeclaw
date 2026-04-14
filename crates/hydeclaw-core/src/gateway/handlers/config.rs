@@ -196,6 +196,7 @@ pub(crate) async fn api_get_config(State(state): State<AppState>) -> Json<Value>
         "memory": {
             "enabled": config.memory.enabled,
             "embed_dim": embed_dim_val,
+            "embed_dimensions": config.memory.embed_dimensions,
             "available": state.memory_store.is_available(),
         },
         "toolgate_url": state.agent_deps.read().await.toolgate_url,
@@ -221,6 +222,7 @@ pub(crate) struct ConfigUpdatePayload {
     toolgate_url: Option<String>,
     embed_enabled: Option<bool>,
     embed_dim: Option<u32>,
+    embed_dimensions: Option<u32>,
     subagents_enabled: Option<bool>,
     max_requests_per_minute: Option<u32>,
     max_tool_concurrency: Option<u32>,
@@ -296,13 +298,14 @@ pub(crate) async fn api_update_config(
     }
 
     // Update memory config in TOML
-    if (payload.embed_enabled.is_some() || payload.embed_dim.is_some())
+    if (payload.embed_enabled.is_some() || payload.embed_dim.is_some() || payload.embed_dimensions.is_some())
         && let Err(e) = crate::config::update_memory_config(
             "config/hydeclaw.toml",
             payload.embed_enabled,
             None, // embed_url removed — managed by toolgate
             None, // embed_model removed — managed by toolgate
             payload.embed_dim,
+            payload.embed_dimensions,
         ) {
             restore_and_fail!("failed to update memory config", e);
         }
@@ -378,7 +381,7 @@ pub(crate) async fn api_update_config(
     }
 
     // Re-initialize memory store if embedding config changed
-    if payload.embed_enabled.is_some() || payload.embed_dim.is_some() {
+    if payload.embed_enabled.is_some() || payload.embed_dim.is_some() || payload.embed_dimensions.is_some() {
         tracing::info!("memory config updated — restart required to apply changes");
     }
 
