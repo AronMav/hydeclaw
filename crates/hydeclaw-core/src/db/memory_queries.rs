@@ -90,9 +90,12 @@ pub async fn drop_hnsw_index(db: &PgPool) -> Result<()> {
 /// IVFFlat supports any dimension (unlike HNSW which caps at 4000 for halfvec).
 pub async fn ensure_hnsw_index(db: &PgPool, dim: u32) -> Result<()> {
     // Drop old HNSW index if present (may fail on >4000 dims)
-    let _ = sqlx::query("DROP INDEX IF EXISTS idx_memory_embedding_hnsw")
+    if let Err(e) = sqlx::query("DROP INDEX IF EXISTS idx_memory_embedding_hnsw")
         .execute(db)
-        .await;
+        .await
+    {
+        tracing::warn!(error = %e, "failed to drop old HNSW index (non-fatal)");
+    }
 
     // pgvector index dimension limits:
     // - HNSW: max 4000 dims (halfvec) or 2000 (vector)

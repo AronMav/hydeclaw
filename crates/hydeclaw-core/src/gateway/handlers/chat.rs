@@ -800,6 +800,11 @@ pub(crate) async fn api_chat_sse(
                     cached_tools_json = None;
                     streaming_msg_id = uuid::Uuid::new_v4();
                     text_id_counter = 0;
+                    // Reset guard for next turn to prevent streaming row leak
+                    streaming_guard = StreamingMessageGuard::new(chat_db.clone(), streaming_msg_id);
+                    if let Some(sid) = session_uuid {
+                        streaming_guard.set_session_id(sid);
+                    }
                     continue;
                 }
                 StreamEvent::Error(ref text) => {
@@ -867,9 +872,10 @@ pub(crate) async fn api_chat_sse(
             // Flush any remaining text-end (if stream ended without Finish event)
             if let Some(text_id) = pending_text_end {
                 let end_data = json!({"type": sse_types::TEXT_END, "id": text_id});
-                let _ = sse_tx.try_send(Ok(Event::default().data(end_data.to_string())));
+                let _ = sse_tx.send(Ok(Event::default().data(end_data.to_string()))).await;
             }
-            let _ = sse_tx.try_send(Ok(Event::default().data("[DONE]")));
+            // [DONE] is critical for client stream termination — must not be silently dropped
+            let _ = sse_tx.send(Ok(Event::default().data("[DONE]"))).await;
         }
 
         // Auto-title: set session title from first user message if not already titled
