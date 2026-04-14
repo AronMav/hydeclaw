@@ -225,9 +225,14 @@ impl ApprovalManager {
                 ApprovalOutcome::Rejected(format!("Tool `{}` was rejected: {}", tool_name, reason))
             }
             Ok(Err(_)) => {
-                // Sender dropped — cleanup waiter
-                let mut waiters = self.waiters.write().await;
-                waiters.remove(&approval_id);
+                // Sender dropped (pruned or retain cleanup) — resolve DB record
+                {
+                    let mut waiters = self.waiters.write().await;
+                    waiters.remove(&approval_id);
+                }
+                let _ = crate::db::approvals::resolve_approval(
+                    &self.db, approval_id, "cancelled", "system",
+                ).await;
                 ApprovalOutcome::Cancelled
             }
             Err(_) => {
@@ -241,10 +246,23 @@ impl ApprovalManager {
                 .await
                 .unwrap_or(false);
 
-                let mut waiters = self.waiters.write().await;
-                waiters.remove(&approval_id);
+                // Release waiters lock BEFORE acquiring sse_event_tx (prevents deadlock
+                // with resolve_approval which acquires locks in opposite order)
+                {
+                    let mut waiters = self.waiters.write().await;
+                    waiters.remove(&approval_id);
+                }
 
-                // Emit SSE event for timeout
+                // If timeout raced with approval (DB already resolved), log it
+                if !was_pending {
+                    tracing::warn!(
+                        tool = %tool_name,
+                        approval_id = %approval_id,
+                        "approval timeout raced with resolution — timeout takes precedence"
+                    );
+                }
+
+                // Emit SSE event for timeout (lock-safe: waiters already released)
                 if let Some(tx) = sse_event_tx.lock().await.as_ref() {
                     tx.send(StreamEvent::ApprovalResolved {
                         approval_id: approval_id.to_string(),
@@ -254,13 +272,6 @@ impl ApprovalManager {
                     .ok();
                 }
 
-                if !was_pending {
-                    tracing::warn!(
-                        tool = %tool_name,
-                        approval_id = %approval_id,
-                        "approval timeout raced with resolution — timeout takes precedence"
-                    );
-                }
                 ApprovalOutcome::TimedOut { timeout_secs }
             }
         }

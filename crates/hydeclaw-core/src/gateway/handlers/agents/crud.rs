@@ -272,7 +272,7 @@ pub(crate) async fn api_create_agent(
         Err(e) => {
             tracing::error!(agent = %name, error = %e, "failed to start agent");
 
-            Json(json!({ "ok": true, "name": name, "start_error": e.to_string() })).into_response()
+            Json(json!({ "ok": false, "name": name, "start_error": e.to_string() })).into_response()
         }
     }
 }
