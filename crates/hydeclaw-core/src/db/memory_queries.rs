@@ -3,10 +3,18 @@ use sqlx::PgPool;
 
 use crate::memory::{MemoryChunk, MemoryResult};
 
-/// Validate FTS language is a safe identifier (letters only, no SQL injection).
+/// Allowed PostgreSQL FTS dictionaries (whitelist prevents SQL injection).
+const ALLOWED_FTS_LANGS: &[&str] = &[
+    "simple", "english", "russian", "spanish", "french", "german",
+    "italian", "portuguese", "dutch", "swedish", "norwegian", "danish",
+    "finnish", "hungarian", "romanian", "turkish", "arabic", "hindi",
+    "indonesian", "irish", "nepali", "serbian", "tamil", "yiddish",
+    "greek", "basque", "catalan", "galician", "lithuanian",
+];
+
 fn validate_fts_lang(lang: &str) -> Result<()> {
-    if lang.is_empty() || !lang.chars().all(|c| c.is_ascii_lowercase()) {
-        anyhow::bail!("invalid FTS language: {lang}");
+    if !ALLOWED_FTS_LANGS.contains(&lang) {
+        anyhow::bail!("invalid FTS language: {lang} (not in whitelist)");
     }
     Ok(())
 }
@@ -189,7 +197,7 @@ pub async fn search_fts(
     agent_id: &str,
 ) -> Result<Vec<MemoryResult>> {
     validate_fts_lang(lang)?;
-    // SAFETY: `lang` is validated by validate_fts_lang() which only allows lowercase ASCII
+    // SAFETY: `lang` is validated by validate_fts_lang() whitelist
     // letters. Not user input -- comes from server config.
     let sql = format!(
         r"SELECT id::text,
@@ -226,12 +234,15 @@ pub async fn touch_accessed(db: &PgPool, ids: &[uuid::Uuid]) {
     if ids.is_empty() {
         return;
     }
-    let _ = sqlx::query(
+    if let Err(e) = sqlx::query(
         "UPDATE memory_chunks SET accessed_at = now() WHERE id = ANY($1)",
     )
     .bind(ids)
     .execute(db)
-    .await;
+    .await
+    {
+        tracing::warn!(count = ids.len(), error = %e, "failed to update accessed_at on memory chunks");
+    }
 }
 
 /// Return the most-recently-accessed memory chunks (pinned first).
@@ -279,25 +290,25 @@ pub async fn insert_chunk(
     agent_id: &str,
 ) -> Result<()> {
     validate_fts_lang(lang)?;
-    // SAFETY: `lang` is validated by validate_fts_lang() which only allows lowercase ASCII
+    // SAFETY: `lang` is validated by validate_fts_lang() whitelist
     // letters. Not user input -- comes from server config.
     let sql = format!(
-        r"INSERT INTO memory_chunks (id, user_id, agent_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope)
-           VALUES ($1::uuid, '', $11, $2, $3::vector, $4, $5, 1.0, to_tsvector('{lang}', $2), $6::uuid, $7, $8, $9, $10)",
+        r"INSERT INTO memory_chunks (id, agent_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope)
+           VALUES ($1::uuid, $2, $3, $4::vector, $5, $6, 1.0, to_tsvector('{lang}', $3), $7::uuid, $8, $9, $10, $11)",
     );
 
     sqlx::query(&sql)
-        .bind(id)
-        .bind(content)
-        .bind(vec_str)
-        .bind(source)
-        .bind(pinned)
-        .bind(parent_id)
-        .bind(chunk_index)
-        .bind(category)
-        .bind(topic)
-        .bind(scope)
-        .bind(agent_id)
+        .bind(id)           // $1
+        .bind(agent_id)     // $2
+        .bind(content)      // $3
+        .bind(vec_str)      // $4 (embedding)
+        .bind(source)       // $5
+        .bind(pinned)       // $6
+        .bind(parent_id)    // $7
+        .bind(chunk_index)  // $8
+        .bind(category)     // $9
+        .bind(topic)        // $10
+        .bind(scope)        // $11
         .execute(db)
         .await
         .context("failed to insert memory chunk")?;
@@ -367,7 +378,7 @@ pub async fn get_chunks_recent(db: &PgPool, limit: i64) -> Result<Vec<MemoryChun
 /// Rebuild all tsv columns with the given FTS language.
 pub async fn rebuild_fts(db: &PgPool, lang: &str) -> Result<u64> {
     validate_fts_lang(lang)?;
-    // SAFETY: `lang` is validated by validate_fts_lang() which only allows lowercase ASCII
+    // SAFETY: `lang` is validated by validate_fts_lang() whitelist
     // letters. Not user input -- comes from server config.
     let sql = format!(
         "UPDATE memory_chunks SET tsv = to_tsvector('{lang}', content)"
@@ -395,48 +406,40 @@ mod tests {
     // These catch the class of bugs where column removal breaks INSERT/SELECT
     // (like the user_id NOT NULL bug caught in production).
 
-    /// Verify insert_chunk SQL includes user_id (NOT NULL column without DEFAULT).
+    /// Verify insert_chunk SQL includes required columns (no user_id — dropped in m021).
     #[test]
-    fn insert_sql_includes_user_id() {
-        let sql = format!(
-            r"INSERT INTO memory_chunks (id, user_id, agent_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope)
-               VALUES ($1::uuid, '', $11, $2, $3::vector, $4, $5, 1.0, to_tsvector('english', $2), $6::uuid, $7, $8, $9, $10)"
-        );
-        assert!(sql.contains("user_id"), "INSERT must include user_id (NOT NULL constraint)");
-        assert!(sql.contains("''"), "user_id must have empty string literal");
+    fn insert_sql_includes_required_columns() {
+        let sql = r"INSERT INTO memory_chunks (id, agent_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope)";
+        assert!(sql.contains("agent_id"), "INSERT must include agent_id");
+        assert!(sql.contains("scope"), "INSERT must include scope");
+        assert!(!sql.contains("user_id"), "user_id column dropped in migration 021");
     }
 
-    /// Verify insert_chunk uses ::vector not ::halfvec (halfvec max 4000 dims, our model is 4096).
-    /// Also verifies search queries use ::vector.
+    /// Verify insert_chunk uses ::vector not ::halfvec.
     #[test]
     fn insert_sql_uses_vector_not_halfvec() {
-        let sql = format!(
-            r"INSERT INTO memory_chunks (id, user_id, agent_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope)
-               VALUES ($1::uuid, '', $11, $2, $3::vector, $4, $5, 1.0, to_tsvector('english', $2), $6::uuid, $7, $8, $9, $10)"
-        );
-        assert!(sql.contains("$3::vector"), "embedding must be cast to ::vector (not ::halfvec) for 4096-dim support");
+        let sql = r"VALUES ($1::uuid, $2, $3, $4::vector, $5, $6, 1.0, to_tsvector('english', $3), $7::uuid, $8, $9, $10, $11)";
+        assert!(sql.contains("$4::vector"), "embedding must be cast to ::vector (not ::halfvec)");
         assert!(!sql.contains("halfvec"), "halfvec has 4000 dim limit, must use vector");
     }
 
     /// Verify insert_chunk has exactly 11 bind positions ($1 through $11).
     #[test]
     fn insert_sql_bind_count() {
-        let sql = r"VALUES ($1::uuid, '', $11, $2, $3::vector, $4, $5, 1.0, to_tsvector('english', $2), $6::uuid, $7, $8, $9, $10)";
+        let sql = r"VALUES ($1::uuid, $2, $3, $4::vector, $5, $6, 1.0, to_tsvector('english', $3), $7::uuid, $8, $9, $10, $11)";
         for i in 1..=11 {
             let placeholder = format!("${}", i);
             assert!(sql.contains(&placeholder), "Missing bind placeholder {}", placeholder);
         }
-        assert!(!sql.contains("$12"), "Unexpected $12 placeholder — too many binds");
+        assert!(!sql.contains("$12"), "Unexpected $12 — too many binds");
     }
 
-    /// Verify INSERT column count matches VALUES placeholder count.
+    /// Verify INSERT column count matches VALUES count.
     #[test]
     fn insert_sql_column_value_parity() {
-        let columns = "id, user_id, agent_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope";
+        let columns = "id, agent_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope";
         let col_count = columns.split(',').count();
-        // VALUES has: $1, '', $11, $2, $3, $4, $5, 1.0, to_tsvector(...), $6, $7, $8, $9, $10
-        // = 14 values (matching 14 columns)
-        assert_eq!(col_count, 14, "Column count must match VALUES count (14)");
+        assert_eq!(col_count, 13, "Column count must be 13");
     }
 
     /// Verify search_semantic includes scope/agent filtering.
@@ -469,24 +472,26 @@ mod tests {
     fn fts_lang_validation_blocks_injection() {
         assert!(super::validate_fts_lang("russian").is_ok());
         assert!(super::validate_fts_lang("english").is_ok());
-        assert!(super::validate_fts_lang("Russian").is_err(), "Must reject uppercase");
+        assert!(super::validate_fts_lang("simple").is_ok());
+        assert!(super::validate_fts_lang("french").is_ok());
+        assert!(super::validate_fts_lang("Russian").is_err(), "Must reject — not in whitelist");
         assert!(super::validate_fts_lang("english; DROP TABLE").is_err(), "Must reject SQL injection");
         assert!(super::validate_fts_lang("").is_err(), "Must reject empty");
-        assert!(super::validate_fts_lang("lang123").is_err(), "Must reject digits");
+        assert!(super::validate_fts_lang("lang123").is_err(), "Must reject unknown lang");
+        assert!(super::validate_fts_lang("custom_dict").is_err(), "Must reject custom dicts");
     }
 
     /// Verify memory_chunks required NOT NULL columns are always included in INSERT.
     #[test]
     fn insert_covers_not_null_columns() {
-        // These columns are NOT NULL without DEFAULT in the DB schema:
-        // id, user_id, agent_id (has DEFAULT ''), content, pinned (has DEFAULT false),
-        // relevance_score (has DEFAULT 1.0), chunk_index (has DEFAULT 0), scope (has DEFAULT 'private')
-        let insert = "INSERT INTO memory_chunks (id, user_id, agent_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope)";
+        // Required columns after migration 021 (user_id dropped):
+        // id, agent_id, content, scope
+        let insert = "INSERT INTO memory_chunks (id, agent_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope)";
         assert!(insert.contains("id"), "Must include id");
-        assert!(insert.contains("user_id"), "Must include user_id (NOT NULL, no DEFAULT)");
         assert!(insert.contains("content"), "Must include content");
         assert!(insert.contains("agent_id"), "Must include agent_id");
         assert!(insert.contains("scope"), "Must include scope");
+        assert!(!insert.contains("user_id"), "user_id dropped in migration 021");
     }
 }
 

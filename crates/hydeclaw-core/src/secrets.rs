@@ -144,15 +144,25 @@ impl SecretsManager {
     ///   3. env var       — legacy env fallback
     pub async fn get_scoped(&self, name: &str, scope: &str) -> Option<String> {
         let cache = self.cache.read().await;
-        if !scope.is_empty()
-            && let Some(val) = cache.get(&(name.to_string(), scope.to_string())) {
+        if !scope.is_empty() {
+            if let Some(val) = cache.get(&(name.to_string(), scope.to_string())) {
                 return Some(val.clone());
             }
+        }
         if let Some(val) = cache.get(&(name.to_string(), String::new())) {
+            if !scope.is_empty() {
+                tracing::debug!(secret = %name, scope = %scope, "scoped secret not found, using global fallback");
+            }
             return Some(val.clone());
         }
         drop(cache);
-        std::env::var(name).ok()
+        if let Ok(val) = std::env::var(name) {
+            if !scope.is_empty() {
+                tracing::warn!(secret = %name, scope = %scope, "secret resolved from env var — consider migrating to vault");
+            }
+            return Some(val);
+        }
+        None
     }
 
     /// Get a global secret value from cache only (no env fallback).
