@@ -319,6 +319,50 @@ pub async fn insert_chunk(
     Ok(())
 }
 
+/// Insert a new memory chunk within an existing transaction.
+/// Identical SQL to `insert_chunk`, but executes on a transaction handle.
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_chunk_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: &str,
+    content: &str,
+    vec_str: &str,
+    source: &str,
+    pinned: bool,
+    lang: &str,
+    parent_id: Option<&str>,
+    chunk_index: i32,
+    category: Option<&str>,
+    topic: Option<&str>,
+    scope: &str,
+    agent_id: &str,
+) -> Result<()> {
+    validate_fts_lang(lang)?;
+    // SAFETY: `lang` is validated by validate_fts_lang() whitelist
+    let sql = format!(
+        r"INSERT INTO memory_chunks (id, agent_id, content, embedding, source, pinned, relevance_score, tsv, parent_id, chunk_index, category, topic, scope)
+           VALUES ($1::uuid, $2, $3, $4::vector, $5, $6, 1.0, to_tsvector('{lang}', $3), $7::uuid, $8, $9, $10, $11)",
+    );
+
+    sqlx::query(&sql)
+        .bind(id)           // $1
+        .bind(agent_id)     // $2
+        .bind(content)      // $3
+        .bind(vec_str)      // $4 (embedding)
+        .bind(source)       // $5
+        .bind(pinned)       // $6
+        .bind(parent_id)    // $7
+        .bind(chunk_index)  // $8
+        .bind(category)     // $9
+        .bind(topic)        // $10
+        .bind(scope)        // $11
+        .execute(&mut **tx)
+        .await
+        .context("failed to insert memory chunk")?;
+
+    Ok(())
+}
+
 // ── Get ──────────────────────────────────────────────────────────────────────
 
 /// Retrieve a single chunk by ID.

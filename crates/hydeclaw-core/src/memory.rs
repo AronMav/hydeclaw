@@ -441,16 +441,18 @@ impl MemoryStore {
             let texts: Vec<&str> = short_items.iter().map(|(_, c, _, _, _)| *c).collect();
             let embeddings = self.embed_batch(&texts).await?;
 
+            let mut tx = self.db.begin().await.context("failed to begin transaction for batch index")?;
             for (i, &(idx, content, source, pinned, scope)) in short_items.iter().enumerate() {
                 let vec_str = Self::fmt_vec(&embeddings[i]);
                 let id = uuid::Uuid::new_v4().to_string();
-                crate::db::memory_queries::insert_chunk(
-                    &self.db, &id, content, &vec_str, source, pinned, &lang, None, 0,
+                crate::db::memory_queries::insert_chunk_tx(
+                    &mut tx, &id, content, &vec_str, source, pinned, &lang, None, 0,
                     None, None, scope, agent_id,
                 ).await
                 .context("failed to insert memory chunk in batch")?;
                 ids.push((idx, id));
             }
+            tx.commit().await.context("failed to commit batch index")?;
         }
 
         ids.sort_by_key(|(idx, _)| *idx);
