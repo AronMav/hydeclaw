@@ -434,6 +434,23 @@ export default function ChannelsPage() {
                   />
                 </div>
               ))}
+              {(formType === "telegram" || formType === "discord") && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-muted-foreground">{t("channels.typing_mode")}</label>
+                <Select value={formConfig["typing_mode"] || "instant"} onValueChange={(v) => setFormConfig({ ...formConfig, typing_mode: v })}>
+                  <SelectTrigger className="font-mono text-sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="instant">{t("channels.typing_instant")}</SelectItem>
+                    <SelectItem value="thinking">{t("channels.typing_thinking")}</SelectItem>
+                    <SelectItem value="message">{t("channels.typing_message")}</SelectItem>
+                    <SelectItem value="never">{t("channels.typing_never")}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground/50">{t("channels.typing_hint")}</p>
+              </div>
+              )}
             </div>
             <DialogFooter>
               <Button variant="ghost" onClick={() => setDialogOpen(false)}>

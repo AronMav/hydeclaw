@@ -180,6 +180,8 @@ export interface MemoryStats {
   total_chunks: number;
   pinned: number;
   avg_score: number;
+  embed_model?: string | null;
+  embed_dim?: number | null;
 }
 
 export interface ToolEntry {

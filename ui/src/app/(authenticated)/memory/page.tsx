@@ -172,6 +172,15 @@ export default function MemoryPage() {
                 <span className="text-xs text-muted-foreground">{t("memory.pinned")}</span>
                 <span className="font-mono text-sm font-bold text-foreground">{stats.pinned.toLocaleString()}</span>
               </div>
+              {stats.embed_dim && (
+                <>
+                  <div className="w-[1px] h-8 bg-border/50" />
+                  <div className="flex flex-col">
+                    <span className="text-xs text-muted-foreground">{t("memory.embed_dim")}</span>
+                    <span className="font-mono text-sm font-bold text-foreground">{stats.embed_dim.toLocaleString()}</span>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>

@@ -178,24 +178,24 @@ async fn channel_ws_loop(
                         }
 
                         // Register in connected channels registry, resolving channel_id from DB
+                        let ch_row = sqlx::query_as::<_, (sqlx::types::Uuid, String, serde_json::Value)>(
+                            "SELECT id, display_name, config FROM agent_channels \
+                             WHERE agent_name = $1 AND channel_type = $2 \
+                             ORDER BY created_at LIMIT 1",
+                        )
+                        .bind(agent_name)
+                        .bind(&channel_type)
+                        .fetch_optional(&state.db)
+                        .await
+                        .ok()
+                        .flatten();
+
+                        let (ch_id, ch_display, ch_config) = match ch_row {
+                            Some((id, name, cfg)) => (Some(id), name, cfg),
+                            None => (None, format!("{agent_name}/{channel_type}"), serde_json::Value::Object(Default::default())),
+                        };
+
                         {
-                            let ch_row = sqlx::query_as::<_, (sqlx::types::Uuid, String)>(
-                                "SELECT id, display_name FROM agent_channels \
-                                 WHERE agent_name = $1 AND channel_type = $2 \
-                                 ORDER BY created_at LIMIT 1",
-                            )
-                            .bind(agent_name)
-                            .bind(&channel_type)
-                            .fetch_optional(&state.db)
-                            .await
-                            .ok()
-                            .flatten();
-
-                            let (ch_id, ch_display) = match ch_row {
-                                Some((id, name)) => (Some(id), name),
-                                None => (None, format!("{agent_name}/{channel_type}")),
-                            };
-
                             let now = chrono::Utc::now();
                             let entry = crate::gateway::state::ConnectedChannel {
                                 agent_name: agent_name.to_string(),
@@ -224,10 +224,15 @@ async fn channel_ws_loop(
                         let owner_id = engine.agent.access.as_ref()
                             .and_then(|a| a.owner_id.clone());
 
+                        let typing_mode = ch_config.get("typing_mode")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("instant")
+                            .to_string();
+
                         let config_msg = ChannelOutbound::Config {
                             language: engine.agent.language.clone(),
                             owner_id,
-                            typing_mode: state.config.typing.mode.clone(),
+                            typing_mode,
                         };
                         if ws_sink.send(ws_json(&config_msg)).await.is_err() { break; }
 

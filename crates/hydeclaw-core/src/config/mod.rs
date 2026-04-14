@@ -19,8 +19,6 @@ pub struct AppConfig {
     #[serde(default)]
     pub limits: LimitsConfig,
     #[serde(default)]
-    pub typing: TypingConfig,
-    #[serde(default)]
     pub subagents: SubagentsConfig,
     #[serde(default)]
     #[allow(dead_code)]
@@ -166,24 +164,7 @@ impl Default for LimitsConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
-pub struct TypingConfig {
-    /// Typing indicator mode: "instant" (on message received), "thinking" (during LLM),
-    /// "message" (simulated delay before response), "never" (disabled).
-    #[serde(default = "default_typing_mode")]
-    pub mode: String,
-}
-
 pub(crate) fn default_true() -> bool { true }
-fn default_typing_mode() -> String { "instant".to_string() }
-
-impl Default for TypingConfig {
-    fn default() -> Self {
-        Self {
-            mode: default_typing_mode(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[allow(dead_code)] // Deserialized from TOML; fields used for subagent configuration
@@ -1362,15 +1343,7 @@ max_agent_turns = 10
         assert_eq!(cfg.limits.max_agent_turns, 10);
     }
 
-    // ── 5. TypingConfig defaults ──
-
-    #[test]
-    fn typing_config_defaults() {
-        let cfg = TypingConfig::default();
-        assert_eq!(cfg.mode, "instant");
-    }
-
-    // ── 6. SubagentsConfig defaults ──
+    // ── 5. SubagentsConfig defaults ──
 
     #[test]
     fn subagents_config_defaults() {
@@ -1465,7 +1438,6 @@ url = "postgres://localhost/test"
         // All optional sections should use defaults
         assert_eq!(cfg.limits.max_requests_per_minute, 300);
         assert_eq!(cfg.limits.max_tool_concurrency, 10);
-        assert_eq!(cfg.typing.mode, "instant");
         assert!(cfg.subagents.enabled);
         assert_eq!(cfg.subagents.default_mode, "in-process");
         assert!(cfg.mcp.is_empty());
@@ -1494,9 +1466,6 @@ url = "postgres://user:pass@db:5432/hydeclaw"
 max_requests_per_minute = 200
 max_tool_concurrency = 20
 
-[typing]
-mode = "message"
-
 [sandbox]
 enabled = true
 image = "node:20-slim"
@@ -1513,7 +1482,6 @@ funnel = true
         assert_eq!(cfg.database.url, "postgres://user:pass@db:5432/hydeclaw");
         assert_eq!(cfg.limits.max_requests_per_minute, 200);
         assert_eq!(cfg.limits.max_tool_concurrency, 20);
-        assert_eq!(cfg.typing.mode, "message");
         assert!(cfg.sandbox.enabled);
         assert_eq!(cfg.sandbox.image, "node:20-slim");
         assert_eq!(cfg.sandbox.timeout_secs, 60);
