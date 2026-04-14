@@ -244,10 +244,24 @@ async fn update_rolling_summary(
         thinking_blocks: vec![],
     }];
 
-    let response = match tokio::time::timeout(EXTRACTION_TIMEOUT, provider.chat(&messages, &[])).await {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => { tracing::debug!(error = %e, "rolling summary LLM call failed"); return; }
-        Err(_) => { tracing::debug!("rolling summary LLM call timed out"); return; }
+    // Retry up to 2 times on failure (LLM calls can be flaky)
+    let mut response = None;
+    for attempt in 0..2 {
+        match tokio::time::timeout(EXTRACTION_TIMEOUT, provider.chat(&messages, &[])).await {
+            Ok(Ok(r)) => { response = Some(r); break; }
+            Ok(Err(e)) => {
+                tracing::warn!(attempt, error = %e, "rolling summary LLM call failed, retrying");
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+            Err(_) => {
+                tracing::warn!(attempt, "rolling summary LLM call timed out, retrying");
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
+    }
+    let response = match response {
+        Some(r) => r,
+        None => { tracing::warn!(agent = agent_name, "rolling summary failed after retries"); return; }
     };
 
     let new_summary = response.content.trim().to_string();
