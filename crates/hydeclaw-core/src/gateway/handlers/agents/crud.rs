@@ -1,44 +1,20 @@
 use axum::{
-    Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
-    routing::{get, post, delete},
 };
-use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
-
-/// Deserialize a field that distinguishes absent (preserve) from explicit null (clear).
-/// absent → None (outer), explicit null → Some(None) (inner), value → Some(Some(T)).
-fn nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Ok(Some(Option::deserialize(deserializer)?))
-}
 use std::fs::canonicalize;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
 use uuid::Uuid;
 
-use super::super::AppState;
-use crate::agent::handle::AgentHandle;
-use crate::channels::access::AccessGuard;
+use super::super::super::AppState;
 use crate::config::AgentConfig;
+use super::schema::*;
+use super::lifecycle::start_agent_from_config;
 
-pub(crate) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/api/agents", get(api_agents).post(api_create_agent))
-        .route("/api/agents/{name}", get(api_get_agent).put(api_update_agent).delete(api_delete_agent))
-        .route("/api/agents/{name}/tasks", get(api_agent_tasks))
-        .route("/api/agents/{name}/model-override", post(super::chat::set_model_override))
-        .route("/api/approvals", get(api_list_approvals))
-        .route("/api/approvals/{id}/resolve", post(api_resolve_approval))
-        .route("/api/approvals/allowlist", get(api_list_allowlist).post(api_add_to_allowlist))
-        .route("/api/approvals/allowlist/{id}", delete(api_delete_from_allowlist))
-}
+// ── Agent list ──────────────────────────────────────────
 
 pub(crate) async fn api_agents(State(state): State<AppState>) -> Json<Value> {
     // Read configs from disk (source of truth)
@@ -126,112 +102,7 @@ pub(crate) async fn api_agents(State(state): State<AppState>) -> Json<Value> {
     Json(json!({ "agents": agents }))
 }
 
-// ── Agent CRUD ──
-
-pub(crate) fn agent_config_path(name: &str) -> std::path::PathBuf {
-    std::path::Path::new("config/agents").join(format!("{name}.toml"))
-}
-
-pub(crate) fn validate_agent_name(name: &str) -> Result<(), String> {
-    if name.is_empty() || name.len() > 32 {
-        return Err("name must be 1-32 characters".into());
-    }
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err("name must contain only alphanumeric, dash, or underscore".into());
-    }
-    Ok(())
-}
-
-pub(crate) fn agent_to_detail(cfg: &AgentConfig, is_running: bool, config_dirty: bool) -> Value {
-    let a = &cfg.agent;
-    json!({
-        "name": a.name,
-        "language": a.language,
-        "provider": a.provider,
-        "model": a.model,
-        "provider_connection": a.provider_connection,
-        "fallback_provider": a.fallback_provider,
-        "temperature": a.temperature,
-        "max_tokens": a.max_tokens,
-        "access": a.access.as_ref().map(|ac| json!({
-            "mode": ac.mode,
-            "owner_id": ac.owner_id,
-        })),
-        "heartbeat": a.heartbeat.as_ref().map(|h| json!({
-            "cron": h.cron,
-            "timezone": h.timezone,
-            "announce_to": h.announce_to,
-        })),
-        "tools": a.tools.as_ref().map(|t| json!({
-            "allow": t.allow,
-            "deny": t.deny,
-            "allow_all": t.allow_all,
-            "deny_all_others": t.deny_all_others,
-            "groups": {
-                "git": t.groups.git,
-                "tool_management": t.groups.tool_management,
-                "skill_editing": t.groups.skill_editing,
-                "session_tools": t.groups.session_tools,
-            },
-        })),
-        "compaction": a.compaction.as_ref().map(|c| json!({
-            "enabled": c.enabled,
-            "threshold": c.threshold,
-            "preserve_tool_calls": c.preserve_tool_calls,
-            "preserve_last_n": c.preserve_last_n,
-            "max_context_tokens": c.max_context_tokens,
-        })),
-        "session": a.session.as_ref().map(|s| json!({
-            "dm_scope": s.dm_scope,
-            "ttl_days": s.ttl_days,
-            "max_messages": s.max_messages,
-            "prune_tool_output_after_turns": s.prune_tool_output_after_turns,
-        })),
-        "icon": a.icon,
-        "max_tools_in_context": a.max_tools_in_context,
-        "tool_loop": a.tool_loop.as_ref().map(|tl| json!({
-            "max_iterations": tl.max_iterations,
-            "compact_on_overflow": tl.compact_on_overflow,
-            "detect_loops": tl.detect_loops,
-            "warn_threshold": tl.warn_threshold,
-            "break_threshold": tl.break_threshold,
-            "max_consecutive_failures": tl.max_consecutive_failures,
-            "max_auto_continues": tl.max_auto_continues,
-            "max_loop_nudges": tl.max_loop_nudges,
-            "ngram_cycle_length": tl.ngram_cycle_length,
-        })),
-        "approval": a.approval.as_ref().map(|ap| json!({
-            "enabled": ap.enabled,
-            "require_for": ap.require_for,
-            "require_for_categories": ap.require_for_categories,
-            "timeout_seconds": ap.timeout_seconds,
-        })),
-        "routing": a.routing.iter().map(|r| json!({
-            "provider": r.provider,
-            "model": r.model,
-            "condition": r.condition,
-            "base_url": r.base_url,
-            "api_key_env": r.api_key_env,
-            "api_key_envs": if r.api_key_envs.is_empty() { None::<&Vec<String>> } else { Some(&r.api_key_envs) },
-            "temperature": r.temperature,
-            "max_tokens": r.max_tokens,
-            "prompt_cache": r.prompt_cache,
-            "cooldown_secs": r.cooldown_secs,
-        })).collect::<Vec<_>>(),
-        "watchdog": a.watchdog.as_ref().map(|w| json!({
-            "inactivity_secs": w.inactivity_secs,
-        })),
-        "hooks": a.hooks.as_ref().map(|h| json!({
-            "log_all_tool_calls": h.log_all_tool_calls,
-            "block_tools": h.block_tools,
-        })),
-        "max_history_messages": a.max_history_messages,
-        "daily_budget_tokens": a.daily_budget_tokens,
-        "max_agent_turns": a.max_agent_turns,
-        "is_running": is_running,
-        "config_dirty": config_dirty,
-    })
-}
+// ── Agent CRUD ──────────────────────────────────────────
 
 pub(crate) async fn api_get_agent(
     State(state): State<AppState>,
@@ -258,421 +129,6 @@ pub(crate) async fn api_get_agent(
         detail["voice"] = json!(voice);
     }
     Json(detail).into_response()
-}
-
-#[derive(Deserialize)]
-pub(crate) struct AgentCreatePayload {
-    pub name: String,
-    pub language: Option<String>,
-    pub provider: String,
-    pub model: String,
-    /// Named LLM provider connection (overrides provider/model when set).
-    pub provider_connection: Option<String>,
-    /// Optional fallback provider connection name for consecutive-failure switching.
-    pub fallback_provider: Option<String>,
-    pub temperature: Option<f64>,
-    pub max_tokens: Option<u32>,
-    /// Nullable fields: absent = preserve existing, explicit null = clear, value = update.
-    #[serde(default, deserialize_with = "nullable")]
-    pub access: Option<Option<AccessPayload>>,
-    #[serde(default, deserialize_with = "nullable")]
-    pub heartbeat: Option<Option<HeartbeatPayload>>,
-    #[serde(default, deserialize_with = "nullable")]
-    pub tools: Option<Option<ToolPolicyPayload>>,
-    #[serde(default, deserialize_with = "nullable")]
-    pub compaction: Option<Option<CompactionPayload>>,
-    #[serde(default, deserialize_with = "nullable")]
-    pub session: Option<Option<SessionPayload>>,
-    pub max_tools_in_context: Option<usize>,
-    #[serde(default, deserialize_with = "nullable")]
-    pub routing: Option<Option<Vec<RoutingRulePayload>>>,
-    pub voice: Option<String>,
-    pub icon: Option<String>,
-    #[serde(default, deserialize_with = "nullable")]
-    pub approval: Option<Option<ApprovalPayload>>,
-    #[serde(default, deserialize_with = "nullable")]
-    pub tool_loop: Option<Option<ToolLoopPayload>>,
-    #[serde(default, deserialize_with = "nullable")]
-    pub watchdog: Option<Option<WatchdogPayload>>,
-    #[serde(default, deserialize_with = "nullable")]
-    pub hooks: Option<Option<HooksPayload>>,
-    pub max_history_messages: Option<usize>,
-    pub daily_budget_tokens: Option<u64>,
-    pub max_agent_turns: Option<usize>,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct HooksPayload {
-    pub log_all_tool_calls: Option<bool>,
-    pub block_tools: Option<Vec<String>>,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct ApprovalPayload {
-    pub enabled: Option<bool>,
-    pub require_for: Option<Vec<String>>,
-    pub require_for_categories: Option<Vec<String>>,
-    pub timeout_seconds: Option<u64>,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct RoutingRulePayload {
-    pub provider: String,
-    pub model: String,
-    pub condition: Option<String>,
-    pub base_url: Option<String>,
-    pub api_key_env: Option<String>,
-    pub api_key_envs: Option<Vec<String>>,
-    pub temperature: Option<f64>,
-    pub prompt_cache: Option<bool>,
-    pub max_tokens: Option<u32>,
-    pub cooldown_secs: Option<u64>,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct AccessPayload {
-    pub mode: Option<String>,
-    pub owner_id: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct HeartbeatPayload {
-    pub cron: String,
-    pub timezone: Option<String>,
-    pub announce_to: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct ToolPolicyPayload {
-    pub allow: Option<Vec<String>>,
-    pub deny: Option<Vec<String>>,
-    pub allow_all: Option<bool>,
-    pub deny_all_others: Option<bool>,
-    pub groups: Option<crate::config::ToolGroups>,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct CompactionPayload {
-    pub enabled: Option<bool>,
-    pub threshold: Option<f64>,
-    pub preserve_tool_calls: Option<bool>,
-    pub preserve_last_n: Option<u32>,
-    pub max_context_tokens: Option<u32>,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct SessionPayload {
-    pub dm_scope: Option<String>,
-    pub ttl_days: Option<u32>,
-    pub max_messages: Option<u32>,
-    pub prune_tool_output_after_turns: Option<usize>,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct ToolLoopPayload {
-    pub max_iterations: Option<usize>,
-    pub compact_on_overflow: Option<bool>,
-    pub detect_loops: Option<bool>,
-    pub warn_threshold: Option<usize>,
-    pub break_threshold: Option<usize>,
-    pub max_consecutive_failures: Option<usize>,
-    pub max_auto_continues: Option<u8>,
-    pub max_loop_nudges: Option<usize>,
-    pub ngram_cycle_length: Option<usize>,
-    pub error_break_threshold: Option<usize>,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct WatchdogPayload {
-    pub inactivity_secs: Option<u64>,
-}
-
-pub(crate) fn build_agent_config(name: String, p: AgentCreatePayload) -> AgentConfig {
-    use crate::config::{AgentConfig, AgentSettings, AgentAccessConfig, HeartbeatConfig, AgentToolPolicy, CompactionConfig};
-
-    AgentConfig {
-        agent: AgentSettings {
-            name,
-            language: p.language.unwrap_or_else(|| "ru".to_string()),
-            provider: p.provider,
-            model: p.model,
-            provider_connection: p.provider_connection,
-            fallback_provider: p.fallback_provider,
-            temperature: p.temperature.unwrap_or(1.0),
-            max_tokens: p.max_tokens,
-            access: p.access.flatten().map(|a| AgentAccessConfig {
-                mode: a.mode.unwrap_or_else(|| "open".to_string()),
-                owner_id: a.owner_id,
-            }),
-            heartbeat: p.heartbeat.flatten().map(|h| HeartbeatConfig {
-                cron: h.cron,
-                timezone: h.timezone,
-                announce_to: h.announce_to,
-            }),
-            tools: p.tools.flatten().map(|t| AgentToolPolicy {
-                allow: t.allow.unwrap_or_default(),
-                deny: t.deny.unwrap_or_default(),
-                allow_all: t.allow_all.unwrap_or(false),
-                deny_all_others: t.deny_all_others.unwrap_or(false),
-                groups: t.groups.unwrap_or_default(),
-            }),
-            compaction: p.compaction.flatten().map(|c| CompactionConfig {
-                enabled: c.enabled.unwrap_or(true),
-                threshold: c.threshold.unwrap_or(0.8),
-                preserve_tool_calls: c.preserve_tool_calls.unwrap_or(false),
-                preserve_last_n: c.preserve_last_n.unwrap_or(10),
-                max_context_tokens: c.max_context_tokens,
-            }),
-            icon: p.icon,
-            max_tools_in_context: p.max_tools_in_context,
-            routing: p.routing.flatten().unwrap_or_default().into_iter().map(|r| {
-                crate::config::ProviderRouteConfig {
-                    provider: r.provider,
-                    model: r.model,
-                    condition: r.condition.unwrap_or_else(|| "default".to_string()),
-                    base_url: r.base_url,
-                    api_key_env: r.api_key_env,
-                    api_key_envs: r.api_key_envs.unwrap_or_default(),
-                    temperature: r.temperature,
-                    prompt_cache: r.prompt_cache.unwrap_or(false),
-                    max_tokens: r.max_tokens,
-                    cooldown_secs: r.cooldown_secs.unwrap_or(60),
-                }
-            }).collect(),
-            session: p.session.flatten().map(|s| crate::config::SessionConfig {
-                dm_scope: s.dm_scope.unwrap_or_else(|| "per-channel-peer".to_string()),
-                ttl_days: s.ttl_days.unwrap_or(30),
-                max_messages: s.max_messages.unwrap_or(0),
-                prune_tool_output_after_turns: s.prune_tool_output_after_turns,
-            }),
-            approval: p.approval.flatten().map(|a| crate::config::ApprovalConfig {
-                enabled: a.enabled.unwrap_or(false),
-                require_for: a.require_for.unwrap_or_default(),
-                require_for_categories: a.require_for_categories.unwrap_or_default(),
-                timeout_seconds: a.timeout_seconds.unwrap_or(300),
-            }),
-            tool_loop: p.tool_loop.flatten().map(|tl| crate::config::ToolLoopSettings {
-                max_iterations: tl.max_iterations.unwrap_or(50),
-                compact_on_overflow: tl.compact_on_overflow.unwrap_or(true),
-                detect_loops: tl.detect_loops.unwrap_or(true),
-                warn_threshold: tl.warn_threshold.unwrap_or(5),
-                break_threshold: tl.break_threshold.unwrap_or(10),
-                max_consecutive_failures: tl.max_consecutive_failures.unwrap_or(3),
-                max_auto_continues: tl.max_auto_continues.unwrap_or(5),
-                max_loop_nudges: tl.max_loop_nudges.unwrap_or(3),
-                ngram_cycle_length: tl.ngram_cycle_length.unwrap_or(6),
-                error_break_threshold: tl.error_break_threshold,
-            }),
-            watchdog: p.watchdog.flatten().map(|w| crate::config::WatchdogConfig {
-                inactivity_secs: w.inactivity_secs.unwrap_or(600),
-            }),
-            max_history_messages: p.max_history_messages,
-            hooks: p.hooks.flatten().map(|h| crate::config::HooksConfig {
-                log_all_tool_calls: h.log_all_tool_calls.unwrap_or(false),
-                block_tools: h.block_tools.unwrap_or_default(),
-            }),
-            daily_budget_tokens: p.daily_budget_tokens.unwrap_or(0),
-            max_agent_turns: p.max_agent_turns,
-            base: false,
-        },
-    }
-}
-
-/// Start an agent from config: create engine, channel adapter, scheduler jobs.
-/// Returns the `AgentHandle` and optional `AccessGuard`.
-pub async fn start_agent_from_config(
-    agent_cfg: &AgentConfig,
-    state: &AppState,
-) -> anyhow::Result<(AgentHandle, Option<Arc<AccessGuard>>)> {
-    use crate::agent::{engine::AgentEngine, providers};
-    use crate::channels;
-
-    let deps = state.agent_deps.read().await;
-    let name = &agent_cfg.agent.name;
-
-    // Apply [agent.defaults] fallback: use global temperature/max_tokens when agent doesn't override.
-    let global_defaults = &state.config.agent.defaults;
-    let effective_temperature = global_defaults.temperature.unwrap_or(agent_cfg.agent.temperature);
-    let effective_max_tokens = agent_cfg.agent.max_tokens.or(global_defaults.max_tokens);
-
-    // Use routing provider if routing rules are configured, otherwise resolve provider
-    // (named connection → legacy provider_type fallback).
-    let provider = if agent_cfg.agent.routing.is_empty() {
-        providers::resolve_provider_for_agent(
-            &state.db,
-            &agent_cfg.agent,
-            effective_temperature,
-            effective_max_tokens,
-            state.secrets.clone(),
-            deps.sandbox.clone(),
-            name,
-            &deps.workspace_dir,
-            agent_cfg.agent.base,
-        ).await
-    } else {
-        tracing::info!(
-            agent = %name,
-            routes = agent_cfg.agent.routing.len(),
-            "using multi-provider routing"
-        );
-        providers::create_routing_provider(
-            &agent_cfg.agent.routing,
-            effective_temperature,
-            state.secrets.clone(),
-        )
-    };
-
-    let channel_router = crate::agent::channel_actions::ChannelActionRouter::new();
-
-    let default_timezone = crate::agent::workspace::parse_user_timezone(&deps.workspace_dir).await;
-
-    // Load dedicated compaction provider from provider_active (optional — falls back to primary).
-    let compaction_provider: Option<Arc<dyn crate::agent::providers::LlmProvider>> = {
-        match crate::db::providers::get_provider_active(&state.db, crate::db::providers::CAPABILITY_COMPACTION).await {
-            Ok(Some(provider_name)) => {
-                match crate::db::providers::get_provider_by_name(&state.db, &provider_name).await {
-                    Ok(Some(provider_row)) => {
-                        let p = providers::create_provider_from_connection(
-                            &provider_row,
-                            None,
-                            0.3,
-                            None,
-                            state.secrets.clone(),
-                            deps.sandbox.clone(),
-                            name,
-                            &deps.workspace_dir,
-                            agent_cfg.agent.base,
-                        ).await;
-                        tracing::info!(agent = %name, provider = %provider_name, "using dedicated compaction provider");
-                        Some(p)
-                    }
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    };
-
-    // Build the hooks registry (goes into DefaultToolExecutor, Phase 39-02)
-    let hooks_registry = {
-        let mut registry = crate::agent::hooks::HookRegistry::new();
-        if let Some(ref hc) = agent_cfg.agent.hooks {
-            if hc.log_all_tool_calls {
-                registry.register("log_tool_calls".into(), crate::agent::hooks::logging_hook());
-            }
-            if !hc.block_tools.is_empty() {
-                registry.register("block_tools".into(), crate::agent::hooks::block_tools_hook(hc.block_tools.clone()));
-            }
-        }
-        Arc::new(registry)
-    };
-
-    let engine = Arc::new(AgentEngine {
-        provider,
-        agent: agent_cfg.agent.clone(),
-        db: state.db.clone(),
-        tools: state.tools.clone(),
-        workspace_dir: deps.workspace_dir.clone(),
-        memory_store: state.memory_store.clone() as Arc<dyn crate::agent::memory_service::MemoryService>,
-        channel_router: Some(channel_router.clone()),
-        scheduler: Some(state.scheduler.clone()),
-        agent_map: Some(state.agents.clone()),
-        self_ref: std::sync::OnceLock::new(),
-        ui_event_tx: Some(state.ui_event_tx.clone()),
-        processing_tracker: Some(state.processing_tracker.clone()),
-        default_timezone,
-        channel_formatting_prompt: tokio::sync::RwLock::new(None),
-        channel_info_cache: tokio::sync::RwLock::new(None),
-        thinking_level: std::sync::atomic::AtomicU8::new(0),
-        app_config: std::sync::Arc::new(state.config.clone()),
-        compaction_provider,
-        context_builder: std::sync::OnceLock::new(),
-        tool_executor: std::sync::OnceLock::new(),
-        audit_queue: deps.audit_queue.clone(),
-        session_pools: Some(state.session_pools.clone()),
-    });
-    engine.set_self_ref(&engine);
-    engine.set_context_builder(&engine);
-
-    // Build DefaultToolExecutor with its own fields (Phase 39-02: TOOL-04).
-    // These 20 fields are owned by the executor; engine accesses them via proxy methods (engine.tex()).
-    {
-        use crate::agent::tool_executor::{DefaultToolExecutor, DefaultToolExecutorFields, ToolExecutorDeps};
-        let deps_arc = engine.clone() as Arc<dyn ToolExecutorDeps>;
-        let executor = Arc::new(DefaultToolExecutor::new(
-            deps_arc,
-            DefaultToolExecutorFields {
-                // Privileged agents run code directly on host (no Docker sandbox)
-                sandbox: if agent_cfg.agent.base { None } else { deps.sandbox.clone() },
-                bg_processes: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
-                yaml_tools_cache: tokio::sync::RwLock::new((std::time::Instant::now(), std::collections::HashMap::new())),
-                search_cache: tokio::sync::RwLock::new(std::collections::HashMap::new()),
-                tool_embed_cache: deps.tool_embed_cache.clone(),
-                penalty_cache: deps.penalty_cache.clone(),
-                pinned_chunk_ids: tokio::sync::Mutex::new(vec![]),
-                memory_md_lock: tokio::sync::Mutex::new(()),
-                canvas_state: tokio::sync::RwLock::new(None),
-                ssrf_http_client: crate::tools::ssrf::ssrf_safe_client(
-                    std::time::Duration::from_secs(30),
-                ),
-                oauth: Some(state.oauth.clone()),
-                subagent_registry: crate::agent::subagent_state::SubagentRegistry::new(),
-                // Shared fields (Phase 39-02 wave 2)
-                secrets: state.secrets.clone(),
-                mcp: deps.mcp.clone(),
-                http_client: reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(120))
-                    .build()
-                    .unwrap_or_default(),
-                hooks: hooks_registry,
-                approval_waiters: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-                processing_session_id: Arc::new(tokio::sync::Mutex::new(None)),
-                sse_event_tx: Arc::new(tokio::sync::Mutex::new(None)),
-            },
-        ));
-        engine.set_tool_executor(executor);
-    }
-    let workspace_dir = deps.workspace_dir.clone();
-    drop(deps); // Release read lock before async operations
-
-    // Ensure workspace directory + scaffold files exist
-    if let Err(e) = crate::agent::workspace::ensure_workspace_scaffold(
-        &workspace_dir,
-        name,
-        agent_cfg.agent.base,
-    ).await {
-        tracing::warn!(agent = %name, error = %e, "failed to scaffold workspace");
-    }
-
-    // Schedule heartbeat
-    let mut scheduler_job_ids = Vec::new();
-    if let Ok(Some(uuid)) = state.scheduler.add_heartbeat(agent_cfg, engine.clone()).await {
-        scheduler_job_ids.push(uuid);
-    }
-
-    // Set up access guard if access config is present.
-    // Channel adapter connects externally via /ws/channel/{agent}.
-    let mut access_guard = None;
-
-    if let Some(ref ac) = agent_cfg.agent.access {
-        let restricted = ac.mode == "restricted";
-        let guard = Arc::new(channels::access::AccessGuard::new(
-            name.clone(),
-            ac.owner_id.clone(),
-            restricted,
-            state.db.clone(),
-        ));
-        access_guard = Some(guard.clone());
-        tracing::info!(agent = %name, mode = %ac.mode, "access guard configured (adapter via /ws/channel)");
-    }
-
-    let agent_handle = AgentHandle {
-        engine,
-        scheduler_job_ids,
-        channel_router: Some(channel_router),
-    };
-
-    Ok((agent_handle, access_guard))
 }
 
 pub(crate) async fn api_create_agent(
@@ -1231,7 +687,7 @@ pub(crate) async fn api_delete_agent(
     Json(json!({ "ok": true })).into_response()
 }
 
-// ── Approvals API ──
+// ── Approvals API ───────────────────────────────────────
 
 /// GET /api/approvals?agent=xxx&status=pending
 /// If agent is omitted, returns pending approvals for all agents.
@@ -1326,7 +782,7 @@ pub(crate) async fn api_resolve_approval(
     }
 }
 
-// ── Approval Allowlist ──
+// ── Approval Allowlist ──────────────────────────────────
 
 pub(crate) async fn api_list_allowlist(
     State(state): State<AppState>,
@@ -1368,7 +824,7 @@ pub(crate) async fn api_delete_from_allowlist(
     }
 }
 
-// ── Hooks API ──
+// ── Hooks API ───────────────────────────────────────────
 
 pub(crate) async fn api_agent_hooks(
     State(state): State<AppState>,
@@ -1382,7 +838,7 @@ pub(crate) async fn api_agent_hooks(
     }
 }
 
-// ── Inter-Agent API ──
+// ── Inter-Agent API ─────────────────────────────────────
 
 /// GET /api/inter-agent/messages?limit=100
 /// Returns messages from inter-agent communication sessions (read-only).
@@ -1531,6 +987,8 @@ pub(crate) async fn api_agent_tasks(
     Json(json!({"tasks": tasks})).into_response()
 }
 
+// ── Tests ───────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -1628,4 +1086,3 @@ mod tests {
         }
     }
 }
-
