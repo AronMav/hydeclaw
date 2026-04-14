@@ -150,6 +150,8 @@ pub struct AppState {
     pub wan_ip_cache: Arc<tokio::sync::RwLock<Option<WanIpCache>>>,
     /// Session-scoped agent pools: maps session UUID → pool of alive agents.
     pub session_pools: crate::agent::session_agent_pool::SessionPoolsMap,
+    /// Mutex to serialize config file writes (prevents partial writes from concurrent requests).
+    pub config_write_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// Shared dependencies needed to start new agents at runtime (from CRUD endpoints).

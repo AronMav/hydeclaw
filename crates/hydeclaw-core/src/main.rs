@@ -369,6 +369,7 @@ async fn main() -> Result<()> {
         polling_diagnostics: Arc::new(crate::gateway::state::PollingDiagnostics::new()),
         wan_ip_cache: Arc::new(tokio::sync::RwLock::new(None)),
         session_pools: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        config_write_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
 
     // Managed processes started after TcpListener::bind below — toolgate needs Core API ready.

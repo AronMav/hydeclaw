@@ -590,13 +590,16 @@ pub async fn cleanup_interrupted_sessions(db: &PgPool) -> Result<usize> {
             tracing::warn!(error = %e, session_id = %session_id, "failed to insert synthetic tool results");
         }
 
-        // 2. Delete orphaned streaming placeholder
-        if let Err(e) = sqlx::query("DELETE FROM messages WHERE session_id = $1 AND status = 'streaming'")
+        // 2. Mark orphaned streaming messages as interrupted (instead of deleting)
+        if let Err(e) = sqlx::query(
+            "UPDATE messages SET status = 'interrupted', content = COALESCE(NULLIF(content, ''), '[interrupted]')
+             WHERE session_id = $1 AND status = 'streaming'"
+        )
             .bind(session_id)
             .execute(db)
             .await
         {
-            tracing::warn!(error = %e, session_id = %session_id, "failed to delete orphaned streaming message");
+            tracing::warn!(error = %e, session_id = %session_id, "failed to mark orphaned streaming messages");
         }
 
         // 3. Mark session as interrupted

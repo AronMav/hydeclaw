@@ -61,28 +61,34 @@ impl CodeSandbox {
 
         if !exists {
             tracing::info!(image = %self.image, "image not found, pulling from registry...");
-            let mut stream = self.docker.create_image(
-                Some(CreateImageOptions {
-                    from_image: self.image.clone(),
-                    ..Default::default()
-                }),
-                None,
-                None,
-            );
+            let pull_future = async {
+                let mut stream = self.docker.create_image(
+                    Some(CreateImageOptions {
+                        from_image: self.image.clone(),
+                        ..Default::default()
+                    }),
+                    None,
+                    None,
+                );
 
-            while let Some(pull_result) = stream.next().await {
-                match pull_result {
-                    Ok(info) => {
-                        if let Some(status) = info.status {
-                            tracing::debug!(image = %self.image, status = %status, "pulling...");
+                while let Some(pull_result) = stream.next().await {
+                    match pull_result {
+                        Ok(info) => {
+                            if let Some(status) = info.status {
+                                tracing::debug!(image = %self.image, status = %status, "pulling...");
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(image = %self.image, error = %e, "error during image pull");
                         }
                     }
-                    Err(e) => {
-                        tracing::warn!(image = %self.image, error = %e, "error during image pull");
-                    }
                 }
+            };
+
+            match tokio::time::timeout(std::time::Duration::from_secs(300), pull_future).await {
+                Ok(()) => tracing::info!(image = %self.image, "image pull complete"),
+                Err(_) => anyhow::bail!("image pull timed out after 5 min: {}", self.image),
             }
-            tracing::info!(image = %self.image, "image pull complete");
         }
         Ok(())
     }
