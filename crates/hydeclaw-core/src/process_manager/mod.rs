@@ -285,7 +285,7 @@ impl ProcessManager {
 
     /// Background loop: check if processes exited and restart them.
     async fn monitor_loop(self: Arc<Self>) {
-        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        let mut interval = tokio::time::interval(Duration::from_secs(2));
         loop {
             interval.tick().await;
             let names: Vec<String> = self.names();

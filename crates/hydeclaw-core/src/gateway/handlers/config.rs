@@ -255,6 +255,9 @@ pub(crate) async fn api_update_config(
 
     let config_path = "config/hydeclaw.toml";
 
+    // Serialize config writes to prevent concurrent partial updates
+    let _config_guard = state.config_write_lock.lock().await;
+
     // Create backup before modifying — fail if unreadable (don't risk empty restore)
     let config_backup = match tokio::fs::read_to_string(config_path).await {
         Ok(s) => s,
