@@ -214,7 +214,7 @@ pub(crate) async fn chat_completions(
 
     if req.stream {
         let (sse_tx, sse_rx) =
-            tokio::sync::mpsc::unbounded_channel::<Result<Event, std::convert::Infallible>>();
+            tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(256);
 
         let messages = req.messages.clone();
         tokio::spawn(async move {
@@ -233,7 +233,7 @@ pub(crate) async fn chat_completions(
                     "model": model_name,
                     "choices": [{"index": 0, "delta": {"content": chunk}, "finish_reason": null}]
                 });
-                sse_tx.send(Ok(Event::default().data(data.to_string()))).ok();
+                sse_tx.try_send(Ok(Event::default().data(data.to_string()))).ok();
             }
 
             // Final stop chunk
@@ -244,15 +244,15 @@ pub(crate) async fn chat_completions(
                 "model": model_name,
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
             });
-            sse_tx.send(Ok(Event::default().data(data.to_string()))).ok();
-            sse_tx.send(Ok(Event::default().data("[DONE]"))).ok();
+            sse_tx.try_send(Ok(Event::default().data(data.to_string()))).ok();
+            sse_tx.try_send(Ok(Event::default().data("[DONE]"))).ok();
 
             if let Ok(Err(e)) = handle.await {
                 tracing::error!(error = %e, "streaming chat completion error");
             }
         });
 
-        return Sse::new(UnboundedReceiverStream::new(sse_rx))
+        return Sse::new(tokio_stream::wrappers::ReceiverStream::new(sse_rx))
             .keep_alive(KeepAlive::default())
             .into_response();
     }
@@ -498,7 +498,7 @@ pub(crate) async fn api_chat_sse(
     let (event_tx, mut event_rx) =
         tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
     let (sse_tx, sse_rx) =
-        tokio::sync::mpsc::unbounded_channel::<Result<Event, std::convert::Infallible>>();
+        tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(256);
 
     // Engine task: process message and emit StreamEvents.
     // Inter-agent communication now happens via the `agent` tool (polling model),
@@ -561,7 +561,7 @@ pub(crate) async fn api_chat_sse(
                 }
                 if !sse_tx.is_closed() {
                     client_gone_since = None;
-                    sse_tx.send(Ok(Event::default().data($json_str))).is_ok()
+                    sse_tx.try_send(Ok(Event::default().data($json_str))).is_ok()
                 } else {
                     // Client disconnected — keep buffering for DB save + resume.
                     // Do NOT abort the engine: let it finish naturally so the result
@@ -867,9 +867,9 @@ pub(crate) async fn api_chat_sse(
             // Flush any remaining text-end (if stream ended without Finish event)
             if let Some(text_id) = pending_text_end {
                 let end_data = json!({"type": sse_types::TEXT_END, "id": text_id});
-                let _ = sse_tx.send(Ok(Event::default().data(end_data.to_string())));
+                let _ = sse_tx.try_send(Ok(Event::default().data(end_data.to_string())));
             }
-            let _ = sse_tx.send(Ok(Event::default().data("[DONE]")));
+            let _ = sse_tx.try_send(Ok(Event::default().data("[DONE]")));
         }
 
         // Auto-title: set session title from first user message if not already titled
@@ -886,7 +886,7 @@ pub(crate) async fn api_chat_sse(
         // explicitly killed via agent(action: "kill") or session expiry.
     });
 
-    let stream = UnboundedReceiverStream::new(sse_rx);
+    let stream = tokio_stream::wrappers::ReceiverStream::new(sse_rx);
 
     (
         [(

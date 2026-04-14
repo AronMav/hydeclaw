@@ -21,8 +21,9 @@ use sqlx::PgPool;
 
 pub async fn create_pool(url: &str) -> Result<PgPool> {
     let pool = PgPoolOptions::new()
-        .max_connections(10)
-        .min_connections(2)
+        .max_connections(30)
+        .min_connections(3)
+        .acquire_timeout(std::time::Duration::from_secs(5))
         .connect(url)
         .await?;
     Ok(pool)
