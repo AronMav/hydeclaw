@@ -97,8 +97,14 @@ impl AuditQueue {
 
     /// Enqueue an event without blocking. Drops the event on backpressure.
     pub fn send(&self, event: AuditEvent) {
-        if self.tx.try_send(event).is_err() {
-            tracing::warn!("audit queue full — dropping event");
+        match self.tx.try_send(event) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                tracing::warn!("audit queue full — dropping event");
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                tracing::error!("audit worker dead — audit events permanently lost");
+            }
         }
     }
 }

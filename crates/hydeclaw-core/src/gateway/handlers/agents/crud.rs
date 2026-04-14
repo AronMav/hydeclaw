@@ -440,6 +440,9 @@ pub(crate) async fn api_update_agent(
     if cfg.agent.max_history_messages.is_none() {
         cfg.agent.max_history_messages = existing_cfg.agent.max_history_messages;
     }
+    if cfg.agent.max_agent_turns.is_none() {
+        cfg.agent.max_agent_turns = existing_cfg.agent.max_agent_turns;
+    }
     // daily_budget_tokens: 0 means "no budget" — always honor explicit value from payload
     let toml_str = match cfg.to_toml() {
         Ok(s) => s,

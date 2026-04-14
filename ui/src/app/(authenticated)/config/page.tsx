@@ -117,8 +117,7 @@ export default function ConfigPage() {
       if (editMaxReqPerMin.trim()) payload.max_requests_per_minute = Number(editMaxReqPerMin);
       if (editMaxToolConcurrency.trim()) payload.max_tool_concurrency = Number(editMaxToolConcurrency);
       if (editMaxAgentTurns.trim()) payload.max_agent_turns = Number(editMaxAgentTurns);
-      const dimVal = editEmbedDimensions.trim();
-      payload.embed_dimensions = dimVal ? Number(dimVal) : 0;
+      if (editEmbedDimensions.trim()) payload.embed_dimensions = Number(editEmbedDimensions);
       await apiPut("/api/config", payload);
       toast.success(t("config.saved"));
       loadConfig();

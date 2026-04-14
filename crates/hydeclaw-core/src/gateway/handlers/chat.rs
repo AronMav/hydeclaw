@@ -872,10 +872,16 @@ pub(crate) async fn api_chat_sse(
             // Flush any remaining text-end (if stream ended without Finish event)
             if let Some(text_id) = pending_text_end {
                 let end_data = json!({"type": sse_types::TEXT_END, "id": text_id});
-                let _ = sse_tx.send(Ok(Event::default().data(end_data.to_string()))).await;
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    sse_tx.send(Ok(Event::default().data(end_data.to_string())))
+                ).await;
             }
-            // [DONE] is critical for client stream termination — must not be silently dropped
-            let _ = sse_tx.send(Ok(Event::default().data("[DONE]"))).await;
+            // [DONE] is critical — use timeout to avoid blocking if client gone
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                sse_tx.send(Ok(Event::default().data("[DONE]")))
+            ).await;
         }
 
         // Auto-title: set session title from first user message if not already titled
