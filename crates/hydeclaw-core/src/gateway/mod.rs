@@ -5,11 +5,13 @@ use axum::{
 use tower_http::services::{ServeDir, ServeFile};
 use serde::{Deserialize, Serialize};
 
+pub mod error;
 pub(crate) mod middleware;
 pub mod stream_registry;
 pub mod stream_jobs;
 pub mod state;
 mod handlers;
+pub use error::ApiError;
 pub use state::*;
 use middleware::{AuthRateLimiter, auth_middleware, RequestRateLimiter, WsConnectionBudget, request_rate_limit_middleware};
 // Re-export for use by main.rs
