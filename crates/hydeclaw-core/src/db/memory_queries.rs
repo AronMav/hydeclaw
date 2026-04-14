@@ -86,11 +86,24 @@ pub async fn ensure_hnsw_index(db: &PgPool, dim: u32) -> Result<()> {
         .execute(db)
         .await;
 
-    // IVFFlat: lists=100 is good for <100K rows. Uses vector (not halfvec) for >4000 dim support.
+    // Count rows to determine lists parameter. IVFFlat requires rows >= lists.
+    let row_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory_chunks WHERE embedding IS NOT NULL")
+        .fetch_one(db)
+        .await
+        .unwrap_or(0);
+
+    if row_count < 10 {
+        // Too few rows for IVFFlat — skip index creation, sequential scan is fine
+        tracing::info!(rows = row_count, "skipping IVFFlat index — too few rows (need ≥10)");
+        return Ok(());
+    }
+
+    // IVFFlat lists: sqrt(rows) clamped to [1, 1000]
+    let lists = (row_count as f64).sqrt().ceil().max(1.0).min(1000.0) as u32;
     let sql = format!(
         "CREATE INDEX IF NOT EXISTS idx_memory_embedding_ivfflat \
          ON memory_chunks USING ivfflat ((embedding::vector({dim})) vector_cosine_ops) \
-         WITH (lists = 100)"
+         WITH (lists = {lists})"
     );
     sqlx::query(&sql)
         .execute(db)
