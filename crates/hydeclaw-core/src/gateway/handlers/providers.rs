@@ -17,6 +17,7 @@ use regex::Regex;
 use crate::agent::providers::PROVIDER_CREDENTIALS;
 use crate::db::providers::{self, CreateProvider, UpdateProvider, ProviderRow};
 use crate::gateway::AppState;
+use crate::gateway::clusters::{AuthServices, ConfigServices, InfraServices};
 use crate::secrets::SecretsManager;
 use super::secrets::mask_secret_value;
 
@@ -96,19 +97,20 @@ pub(crate) struct ListProvidersQuery {
 }
 
 pub(crate) async fn api_list_providers(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(auth): State<AuthServices>,
     axum::extract::Query(params): axum::extract::Query<ListProvidersQuery>,
 ) -> impl IntoResponse {
     let result = if let Some(ref cat) = params.category {
-        providers::list_providers_by_type(&state.db, cat).await
+        providers::list_providers_by_type(&infra.db, cat).await
     } else {
-        providers::list_providers(&state.db).await
+        providers::list_providers(&infra.db).await
     };
     match result {
         Ok(providers) => {
             let mut out = Vec::with_capacity(providers.len());
             for p in &providers {
-                out.push(provider_json(&state.secrets, p).await);
+                out.push(provider_json(&auth.secrets, p).await);
             }
             (StatusCode::OK, Json(json!({ "providers": out }))).into_response()
         }
@@ -132,7 +134,9 @@ pub(crate) struct CreateProviderBody {
 }
 
 pub(crate) async fn api_create_provider(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(auth): State<AuthServices>,
+    State(cfg): State<ConfigServices>,
     Json(body): Json<CreateProviderBody>,
 ) -> impl IntoResponse {
     // Validate type
@@ -166,18 +170,18 @@ pub(crate) async fn api_create_provider(
         notes: body.notes,
     };
 
-    match providers::create_provider(&state.db, input).await {
+    match providers::create_provider(&infra.db, input).await {
         Ok(p) => {
             if let Some(key) = api_key {
                 let desc = format!("Credentials for provider '{}'", p.name);
-                if let Err(e) = state.secrets.set_scoped(PROVIDER_CREDENTIALS, &p.id.to_string(), &key, Some(&desc)).await {
+                if let Err(e) = auth.secrets.set_scoped(PROVIDER_CREDENTIALS, &p.id.to_string(), &key, Some(&desc)).await {
                     tracing::warn!(provider = %p.name, error = %e, "failed to store provider key in vault");
                 }
             }
             if p.category != "text" {
-                notify_toolgate_reload(state.config.toolgate_url.clone());
+                notify_toolgate_reload(cfg.config.toolgate_url.clone());
             }
-            let json = provider_json(&state.secrets, &p).await;
+            let json = provider_json(&auth.secrets, &p).await;
             (StatusCode::CREATED, Json(json)).into_response()
         }
         Err(e) if e.to_string().contains("unique") || e.to_string().contains("duplicate") => {
@@ -188,11 +192,12 @@ pub(crate) async fn api_create_provider(
 }
 
 pub(crate) async fn api_get_provider(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(auth): State<AuthServices>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    match providers::get_provider(&state.db, id).await {
-        Ok(Some(p)) => (StatusCode::OK, Json(provider_json(&state.secrets, &p).await)).into_response(),
+    match providers::get_provider(&infra.db, id).await {
+        Ok(Some(p)) => (StatusCode::OK, Json(provider_json(&auth.secrets, &p).await)).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     }
@@ -214,7 +219,9 @@ pub(crate) struct UpdateProviderBody {
 }
 
 pub(crate) async fn api_update_provider(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(auth): State<AuthServices>,
+    State(cfg): State<ConfigServices>,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateProviderBody>,
 ) -> impl IntoResponse {
@@ -229,7 +236,7 @@ pub(crate) async fn api_update_provider(
 
     // Check if type is changing — need to clear provider_active references
     let old_provider = if body.category.is_some() {
-        providers::get_provider(&state.db, id).await.ok().flatten()
+        providers::get_provider(&infra.db, id).await.ok().flatten()
     } else {
         None
     };
@@ -246,11 +253,11 @@ pub(crate) async fn api_update_provider(
         notes: body.notes,
     };
 
-    match providers::update_provider(&state.db, id, input).await {
+    match providers::update_provider(&infra.db, id, input).await {
         Ok(Some(p)) => {
             if let Some(key) = api_key {
                 let desc = format!("Credentials for provider '{}'", p.name);
-                if let Err(e) = state.secrets.set_scoped(PROVIDER_CREDENTIALS, &p.id.to_string(), &key, Some(&desc)).await {
+                if let Err(e) = auth.secrets.set_scoped(PROVIDER_CREDENTIALS, &p.id.to_string(), &key, Some(&desc)).await {
                     tracing::warn!(provider = %p.name, error = %e, "failed to update provider key in vault");
                 }
             }
@@ -260,18 +267,18 @@ pub(crate) async fn api_update_provider(
                 && old.category != p.category
             {
                 // Clear active binding for old capabilities that referenced this provider
-                let active = providers::list_provider_active(&state.db).await.unwrap_or_default();
+                let active = providers::list_provider_active(&infra.db).await.unwrap_or_default();
                 for a in active {
                     if a.provider_name.as_deref() == Some(&p.name) {
-                        let _ = providers::set_provider_active(&state.db, &a.capability, None).await;
+                        let _ = providers::set_provider_active(&infra.db, &a.capability, None).await;
                     }
                 }
             }
 
             if p.category != "text" {
-                notify_toolgate_reload(state.config.toolgate_url.clone());
+                notify_toolgate_reload(cfg.config.toolgate_url.clone());
             }
-            let json = provider_json(&state.secrets, &p).await;
+            let json = provider_json(&auth.secrets, &p).await;
             (StatusCode::OK, Json(json)).into_response()
         }
         Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
@@ -280,18 +287,20 @@ pub(crate) async fn api_update_provider(
 }
 
 pub(crate) async fn api_delete_provider(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(auth): State<AuthServices>,
+    State(cfg): State<ConfigServices>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     // Check type before deleting to decide about toolgate reload
-    let provider = providers::get_provider(&state.db, id).await.ok().flatten();
-    match providers::delete_provider(&state.db, id).await {
+    let provider = providers::get_provider(&infra.db, id).await.ok().flatten();
+    match providers::delete_provider(&infra.db, id).await {
         Ok(true) => {
-            if let Err(e) = state.secrets.delete_scoped(PROVIDER_CREDENTIALS, &id.to_string()).await {
+            if let Err(e) = auth.secrets.delete_scoped(PROVIDER_CREDENTIALS, &id.to_string()).await {
                 tracing::debug!(provider = %id, error = %e, "no vault key to delete for provider");
             }
             if provider.is_some_and(|p| p.category != "text") {
-                notify_toolgate_reload(state.config.toolgate_url.clone());
+                notify_toolgate_reload(cfg.config.toolgate_url.clone());
             }
             StatusCode::NO_CONTENT.into_response()
         }
@@ -303,20 +312,21 @@ pub(crate) async fn api_delete_provider(
 // ── Model discovery ─────────────────────────────────────────────────────────
 
 pub(crate) async fn api_unified_provider_models(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(auth): State<AuthServices>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let provider = match providers::get_provider(&state.db, id).await {
+    let provider = match providers::get_provider(&infra.db, id).await {
         Ok(Some(p)) => p,
         Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({"error": "provider not found"}))).into_response(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     };
 
-    let api_key = resolve_key(&state.secrets, &provider).await;
+    let api_key = resolve_key(&auth.secrets, &provider).await;
 
     let models = crate::agent::model_discovery::discover_models_with_key(
         &provider.provider_type,
-        &state.secrets,
+        &auth.secrets,
         provider.base_url.as_deref(),
         api_key.as_deref(),
     )
@@ -349,16 +359,17 @@ pub(crate) async fn api_unified_provider_models(
 // ── Resolve (unmasked credentials for internal use) ─────────────────────────
 
 pub(crate) async fn api_provider_resolve(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(auth): State<AuthServices>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let provider = match providers::get_provider(&state.db, id).await {
+    let provider = match providers::get_provider(&infra.db, id).await {
         Ok(Some(p)) => p,
         Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({"error": "provider not found"}))).into_response(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     };
 
-    let api_key = resolve_key(&state.secrets, &provider).await.unwrap_or_default();
+    let api_key = resolve_key(&auth.secrets, &provider).await.unwrap_or_default();
 
     Json(json!({
         "base_url": provider.base_url,
@@ -370,8 +381,8 @@ pub(crate) async fn api_provider_resolve(
 
 // ── Active handlers ─────────────────────────────────────────────────────────
 
-pub(crate) async fn api_list_provider_active(State(state): State<AppState>) -> impl IntoResponse {
-    match providers::list_provider_active(&state.db).await {
+pub(crate) async fn api_list_provider_active(State(infra): State<InfraServices>) -> impl IntoResponse {
+    match providers::list_provider_active(&infra.db).await {
         Ok(active) => (StatusCode::OK, Json(json!({ "active": active }))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
@@ -384,7 +395,8 @@ pub(crate) struct SetProviderActiveInput {
 }
 
 pub(crate) async fn api_set_provider_active(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(cfg): State<ConfigServices>,
     Json(input): Json<SetProviderActiveInput>,
 ) -> impl IntoResponse {
     if !VALID_CAPABILITIES.contains(&input.capability.as_str()) {
@@ -393,7 +405,7 @@ pub(crate) async fn api_set_provider_active(
         }))).into_response();
     }
     match providers::set_provider_active(
-        &state.db,
+        &infra.db,
         &input.capability,
         input.provider_name.as_deref(),
     )
@@ -401,7 +413,7 @@ pub(crate) async fn api_set_provider_active(
     {
         Ok(row) => {
             if MEDIA_CAPABILITIES.contains(&input.capability.as_str()) {
-                notify_toolgate_reload(state.config.toolgate_url.clone());
+                notify_toolgate_reload(cfg.config.toolgate_url.clone());
             }
             (StatusCode::OK, Json(json!(row))).into_response()
         }
@@ -414,23 +426,23 @@ pub(crate) async fn api_set_provider_active(
 /// Internal endpoint for toolgate — returns full config with real `api_keys`.
 /// Emits `"driver"` field (mapped from `provider_type`) which toolgate matches on.
 /// Build media config JSON — used by API handler and main.rs toolgate export.
-pub(crate) async fn build_media_config(state: &AppState) -> Value {
+pub(crate) async fn build_media_config(infra: &InfraServices, auth: &AuthServices) -> Value {
     // Collect all media-type providers
     let mut all_providers = Vec::new();
     for media_type in &["stt", "tts", "vision", "imagegen", "embedding"] {
-        if let Ok(rows) = providers::list_providers_by_type(&state.db, media_type).await {
+        if let Ok(rows) = providers::list_providers_by_type(&infra.db, media_type).await {
             all_providers.extend(rows);
         }
     }
 
-    let active_rows = providers::list_provider_active(&state.db).await.unwrap_or_default();
+    let active_rows = providers::list_provider_active(&infra.db).await.unwrap_or_default();
 
     let mut provider_map = serde_json::Map::new();
     for p in &all_providers {
         if !p.enabled {
             continue;
         }
-        let api_key = resolve_key(&state.secrets, p).await;
+        let api_key = resolve_key(&auth.secrets, p).await;
         provider_map.insert(
             p.name.clone(),
             json!({
@@ -460,8 +472,11 @@ pub(crate) async fn build_media_config(state: &AppState) -> Value {
     })
 }
 
-pub(crate) async fn api_media_config_export(State(state): State<AppState>) -> Json<Value> {
-    Json(build_media_config(&state).await)
+pub(crate) async fn api_media_config_export(
+    State(infra): State<InfraServices>,
+    State(auth): State<AuthServices>,
+) -> Json<Value> {
+    Json(build_media_config(&infra, &auth).await)
 }
 
 // ── Static metadata ─────────────────────────────────────────────────────────
@@ -847,11 +862,12 @@ async fn run_cli_health_check(
 ///
 /// Validates CLI installation, API key, and runs a test prompt.
 pub(crate) async fn api_test_cli(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(auth): State<AuthServices>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     // Load provider
-    let provider = match providers::get_provider(&state.db, id).await {
+    let provider = match providers::get_provider(&infra.db, id).await {
         Ok(Some(p)) => p,
         Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({"error": "provider not found"}))).into_response(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
@@ -862,7 +878,7 @@ pub(crate) async fn api_test_cli(
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "Not a CLI provider"}))).into_response();
     }
 
-    let result = run_cli_health_check(&provider, &state.secrets).await;
+    let result = run_cli_health_check(&provider, &auth.secrets).await;
     (StatusCode::OK, Json(serde_json::to_value(result).unwrap_or_default())).into_response()
 }
 
@@ -879,14 +895,15 @@ pub(crate) struct PatchCliOptionsBody {
 /// with validation: command override is checked via which/where.exe.
 /// After successful update, runs a health-check and returns the result.
 pub(crate) async fn api_patch_cli_options(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(auth): State<AuthServices>,
     Path(id): Path<Uuid>,
     Json(body): Json<PatchCliOptionsBody>,
 ) -> impl IntoResponse {
     use std::process::Stdio;
 
     // Load provider
-    let provider = match providers::get_provider(&state.db, id).await {
+    let provider = match providers::get_provider(&infra.db, id).await {
         Ok(Some(p)) => p,
         Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
@@ -951,11 +968,11 @@ pub(crate) async fn api_patch_cli_options(
         notes: None,
     };
 
-    match providers::update_provider(&state.db, id, input).await {
+    match providers::update_provider(&infra.db, id, input).await {
         Ok(Some(updated)) => {
             // Run health-check on the updated provider
-            let health_check = run_cli_health_check(&updated, &state.secrets).await;
-            let provider_json = provider_json(&state.secrets, &updated).await;
+            let health_check = run_cli_health_check(&updated, &auth.secrets).await;
+            let provider_json = provider_json(&auth.secrets, &updated).await;
             (StatusCode::OK, Json(json!({
                 "provider": provider_json,
                 "health_check": health_check,
