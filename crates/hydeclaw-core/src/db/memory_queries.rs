@@ -447,6 +447,35 @@ pub async fn delete_chunk(db: &PgPool, chunk_id: &str) -> Result<bool> {
     Ok(res.rows_affected() > 0)
 }
 
+/// Delete all chunks with a given source (e.g. filename).
+pub async fn delete_by_source(db: &PgPool, source: &str) -> Result<u64> {
+    let result = sqlx::query("DELETE FROM memory_chunks WHERE source = $1")
+        .bind(source)
+        .execute(db)
+        .await?;
+    Ok(result.rows_affected())
+}
+
+/// Wipe all memory for an agent.
+pub async fn wipe_agent_memory(db: &PgPool, agent_id: &str) -> Result<u64> {
+    let result = sqlx::query("DELETE FROM memory_chunks WHERE agent_id = $1")
+        .bind(agent_id)
+        .execute(db)
+        .await?;
+    Ok(result.rows_affected())
+}
+
+/// Insert a reindex task into the memory worker queue.
+pub async fn enqueue_reindex_task(db: &PgPool, params: serde_json::Value) -> Result<uuid::Uuid> {
+    sqlx::query_scalar(
+        "INSERT INTO memory_tasks (task_type, params) VALUES ('reindex', $1) RETURNING id",
+    )
+    .bind(params)
+    .fetch_one(db)
+    .await
+    .map_err(Into::into)
+}
+
 #[cfg(test)]
 mod tests {
     // ── SQL structure tests ─────────────────────────────────────────
