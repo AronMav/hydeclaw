@@ -74,6 +74,7 @@ impl ToolgateEmbedder {
     }
 
     /// Create a disabled embedder (no URL). Used in tests when no embedding is needed.
+    #[allow(dead_code)]
     pub fn new_disabled() -> Self {
         Self {
             db: sqlx::PgPool::connect_lazy("postgres://invalid").unwrap(),
@@ -113,6 +114,30 @@ impl ToolgateEmbedder {
         }
     }
 
+    /// Raw HTTP probe: call `/v1/embeddings` directly to detect dimension.
+    /// Does NOT go through `embed()` — used by `do_initialize()` to avoid re-entrant
+    /// `OnceCell` deadlock (since `embed()` calls `ensure_initialized()`).
+    async fn probe_dimension(&self) -> Result<u32> {
+        let url = format!("{}/embeddings", self.embed_url.trim_end_matches('/'));
+        let body = serde_json::json!({ "input": "dimension probe" });
+        let resp = self.http
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .context("embedding probe request failed")?;
+        resp.error_for_status_ref().context("embedding probe API error")?;
+        let body: serde_json::Value = resp.json().await.context("failed to parse embedding probe response")?;
+        let vec: Vec<f32> = body["data"][0]["embedding"]
+            .as_array()
+            .context("missing 'data[0].embedding' in probe response")?
+            .iter()
+            .filter_map(|v| v.as_f64().map(|f| f as f32))
+            .collect();
+        anyhow::ensure!(!vec.is_empty(), "embedding probe returned empty vector");
+        Ok(vec.len() as u32)
+    }
+
     /// Initialize embedding: auto-detect dimension, validate DB, ensure HNSW index.
     /// Graceful: if embedding endpoint is unreachable, logs a warning and continues
     /// (FTS fallback will be used for search).
@@ -122,14 +147,15 @@ impl ToolgateEmbedder {
             return Ok(());
         }
 
-        // 1. Detect dimension (from config or probe request)
+        // 1. Detect dimension (from config or probe request).
+        // Uses probe_dimension() (raw HTTP) instead of embed() to avoid re-entrant
+        // OnceCell deadlock — embed() calls ensure_initialized() which calls do_initialize().
         let current_dim = self.embed_dim.load(Ordering::Relaxed);
         let dim = if current_dim > 0 {
             current_dim
         } else {
-            match self.embed("dimension probe").await {
-                Ok(probe) => {
-                    let d = probe.len() as u32;
+            match self.probe_dimension().await {
+                Ok(d) => {
                     self.embed_dim.store(d, Ordering::Relaxed);
                     d
                 }
@@ -209,9 +235,10 @@ impl EmbeddingService for ToolgateEmbedder {
     }
 
     /// Call the OpenAI-compatible /v1/embeddings endpoint and return the vector.
-    /// On first successful call (dim == 0), performs lazy initialization:
-    /// detects dimension and creates HNSW index.
+    /// On first call, runs `ensure_initialized()` to detect dimension, discover model name,
+    /// check for DB dimension mismatch, and create the HNSW index.
     async fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        self.ensure_initialized().await;
         let url = format!("{}/embeddings", self.embed_url.trim_end_matches('/'));
         let model = self.embed_model_str();
         let mut body = serde_json::json!({ "input": text });
@@ -269,6 +296,7 @@ impl EmbeddingService for ToolgateEmbedder {
         if texts.is_empty() {
             return Ok(vec![]);
         }
+        self.ensure_initialized().await;
         if texts.len() == 1 {
             return Ok(vec![self.embed(texts[0]).await?]);
         }

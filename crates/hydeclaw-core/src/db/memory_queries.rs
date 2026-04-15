@@ -473,7 +473,7 @@ pub async fn enqueue_reindex_task(db: &PgPool, params: serde_json::Value) -> Res
     .bind(params)
     .fetch_one(db)
     .await
-    .map_err(Into::into)
+    .context("failed to enqueue reindex task")
 }
 
 #[cfg(test)]
