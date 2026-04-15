@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use sqlx::Row;
 
 use super::super::AppState;
+use crate::gateway::clusters::{AgentCore, InfraServices};
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -22,12 +23,12 @@ pub(crate) fn routes() -> Router<AppState> {
 
 // ── Cron Jobs API ──
 
-pub(crate) async fn api_list_cron(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn api_list_cron(State(infra): State<InfraServices>) -> impl IntoResponse {
     let rows = sqlx::query_as::<_, crate::scheduler::ScheduledJob>(
         "SELECT id, agent_id, name, cron_expr, timezone, task_message, enabled, created_at, last_run_at, silent, announce_to, jitter_secs, run_once, run_at, tool_policy \
          FROM scheduled_jobs ORDER BY created_at DESC",
     )
-    .fetch_all(&state.db)
+    .fetch_all(&infra.db)
     .await;
 
     match rows {
@@ -89,7 +90,8 @@ pub(crate) struct CreateCronRequest {
 }
 
 pub(crate) async fn api_create_cron(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(agents): State<AgentCore>,
     Json(req): Json<CreateCronRequest>,
 ) -> impl IntoResponse {
     if req.name.is_empty() || req.agent.is_empty() || req.task.is_empty() {
@@ -151,14 +153,14 @@ pub(crate) async fn api_create_cron(
     .bind(req.run_once)
     .bind(req.run_at)
     .bind(&req.tool_policy)
-    .fetch_one(&state.db)
+    .fetch_one(&infra.db)
     .await;
 
     match result {
         Ok(id) => {
             // Schedule the job if agent engine exists
-            if let Some(engine) = state.get_engine(&req.agent).await
-                && let Err(e) = state
+            if let Some(engine) = agents.get_engine(&req.agent).await
+                && let Err(e) = agents
                     .scheduler
                     .add_dynamic_job(
                         id,
@@ -167,7 +169,7 @@ pub(crate) async fn api_create_cron(
                         req.task,
                         req.agent,
                         engine.clone(),
-                        state.db.clone(),
+                        infra.db.clone(),
                         req.announce_to,
                         silent,
                         req.jitter_secs,
@@ -222,7 +224,8 @@ pub(crate) struct UpdateCronRequest {
 }
 
 pub(crate) async fn api_update_cron(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(agents): State<AgentCore>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     Json(req): Json<UpdateCronRequest>,
 ) -> impl IntoResponse {
@@ -232,7 +235,7 @@ pub(crate) async fn api_update_cron(
          FROM scheduled_jobs WHERE id = $1",
     )
     .bind(id)
-    .fetch_optional(&state.db)
+    .fetch_optional(&infra.db)
     .await;
 
     let current = match current {
@@ -309,16 +312,16 @@ pub(crate) async fn api_update_cron(
     .bind(run_once)
     .bind(run_at)
     .bind(&tool_policy)
-    .execute(&state.db)
+    .execute(&infra.db)
     .await;
 
     match result {
         Ok(_) => {
             // Remove old scheduler entry and re-add if enabled
-            state.scheduler.remove_dynamic_job(id).await.ok();
+            agents.scheduler.remove_dynamic_job(id).await.ok();
             if enabled
-                && let Some(engine) = state.get_engine(&current.agent_id).await {
-                    state
+                && let Some(engine) = agents.get_engine(&current.agent_id).await {
+                    agents
                         .scheduler
                         .add_dynamic_job(
                             id,
@@ -327,7 +330,7 @@ pub(crate) async fn api_update_cron(
                             task_message,
                             current.agent_id,
                             engine.clone(),
-                            state.db.clone(),
+                            infra.db.clone(),
                             announce_to,
                             silent,
                             jitter_secs,
@@ -349,15 +352,16 @@ pub(crate) async fn api_update_cron(
 }
 
 pub(crate) async fn api_delete_cron(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(agents): State<AgentCore>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
 ) -> impl IntoResponse {
     // Remove from scheduler
-    state.scheduler.remove_dynamic_job(id).await.ok();
+    agents.scheduler.remove_dynamic_job(id).await.ok();
 
     let result = sqlx::query("DELETE FROM scheduled_jobs WHERE id = $1")
         .bind(id)
-        .execute(&state.db)
+        .execute(&infra.db)
         .await;
 
     match result {
@@ -372,7 +376,8 @@ pub(crate) async fn api_delete_cron(
 }
 
 pub(crate) async fn api_run_cron(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(agents): State<AgentCore>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
 ) -> impl IntoResponse {
     let job = sqlx::query_as::<_, crate::scheduler::ScheduledJob>(
@@ -380,7 +385,7 @@ pub(crate) async fn api_run_cron(
          FROM scheduled_jobs WHERE id = $1",
     )
     .bind(id)
-    .fetch_optional(&state.db)
+    .fetch_optional(&infra.db)
     .await;
 
     let job = match job {
@@ -397,7 +402,7 @@ pub(crate) async fn api_run_cron(
         }
     };
 
-    let engine = match state.get_engine(&job.agent_id).await {
+    let engine = match agents.get_engine(&job.agent_id).await {
         Some(e) => e,
         None => {
             return (
@@ -408,7 +413,7 @@ pub(crate) async fn api_run_cron(
         }
     };
 
-    let db = state.db.clone();
+    let db = infra.db.clone();
     let task_message = job.task_message.clone();
     let agent_id = job.agent_id.clone();
     let announce_to = job.announce_to.clone();
@@ -490,7 +495,7 @@ pub(crate) struct CronRunsQuery {
 }
 
 pub(crate) async fn api_cron_runs(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     Query(q): Query<CronRunsQuery>,
 ) -> impl IntoResponse {
@@ -501,7 +506,7 @@ pub(crate) async fn api_cron_runs(
     )
     .bind(id)
     .bind(limit)
-    .fetch_all(&state.db)
+    .fetch_all(&infra.db)
     .await;
 
     match rows {
@@ -528,7 +533,7 @@ pub(crate) async fn api_cron_runs(
 }
 
 pub(crate) async fn api_cron_runs_all(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Query(q): Query<CronRunsQuery>,
 ) -> impl IntoResponse {
     let limit = q.limit.unwrap_or(50).min(200);
@@ -542,7 +547,7 @@ pub(crate) async fn api_cron_runs_all(
     )
     .bind(days as i32)
     .bind(limit)
-    .fetch_all(&state.db)
+    .fetch_all(&infra.db)
     .await;
 
     match rows {
