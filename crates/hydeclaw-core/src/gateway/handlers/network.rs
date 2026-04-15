@@ -1,6 +1,7 @@
 use axum::{Router, extract::State, Json, routing::get};
 use serde_json::json;
 
+use crate::gateway::clusters::StatusMonitor;
 use crate::gateway::state::{AppState, WanIpCache};
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -88,12 +89,12 @@ async fn enumerate_lan_addresses() -> Vec<serde_json::Value> {
 
 /// Fetches the public WAN IP, using a 5-minute in-process cache to avoid
 /// hammering external lookup services on every /api/doctor call.
-async fn fetch_wan_ip(state: &AppState) -> serde_json::Value {
+async fn fetch_wan_ip(status: &StatusMonitor) -> serde_json::Value {
     const CACHE_TTL_SECS: u64 = 300;
 
     // Check cache
     {
-        let cache = state.wan_ip_cache.read().await;
+        let cache = status.wan_ip_cache.read().await;
         if let Some(ref cached) = *cache
             && cached.fetched_at.elapsed().as_secs() < CACHE_TTL_SECS {
                 return json!({
@@ -120,7 +121,7 @@ async fn fetch_wan_ip(state: &AppState) -> serde_json::Value {
                 is_cgnat,
                 fetched_at: std::time::Instant::now(),
             };
-            *state.wan_ip_cache.write().await = Some(entry);
+            *status.wan_ip_cache.write().await = Some(entry);
 
             json!({
                 "ip": ip_str,
@@ -141,11 +142,11 @@ async fn fetch_wan_ip(state: &AppState) -> serde_json::Value {
 
 /// Assembles the full network summary used by both `/api/network/addresses` and
 /// `/api/doctor` (as the "network" check details).
-pub(crate) async fn fetch_network_summary(state: &AppState) -> serde_json::Value {
+pub(crate) async fn fetch_network_summary(status: &StatusMonitor) -> serde_json::Value {
     let (tailscale_raw, lan) =
         tokio::join!(detect_tailscale(), enumerate_lan_addresses());
 
-    let mut wan = fetch_wan_ip(state).await;
+    let mut wan = fetch_wan_ip(status).await;
 
     // Build Tailscale block
     let tailscale = match tailscale_raw {
@@ -199,9 +200,9 @@ pub(crate) async fn fetch_network_summary(state: &AppState) -> serde_json::Value
 
 /// GET /api/network/addresses
 pub(crate) async fn api_network_addresses(
-    State(state): State<AppState>,
+    State(status): State<StatusMonitor>,
 ) -> Json<serde_json::Value> {
-    let summary = fetch_network_summary(&state).await;
+    let summary = fetch_network_summary(&status).await;
     Json(summary)
 }
 
@@ -281,5 +282,15 @@ mod tests {
             assert_ne!(ip_str, "127.0.0.1", "loopback 127.0.0.1 must be excluded");
             assert_ne!(ip_str, "::1", "loopback ::1 must be excluded");
         }
+    }
+
+    #[tokio::test]
+    async fn network_addresses_returns_ok() {
+        let status = StatusMonitor::test_new();
+        let Json(resp) = api_network_addresses(axum::extract::State(status)).await;
+        // Response must be a JSON object with at least the expected top-level keys
+        assert!(resp.is_object(), "response must be a JSON object");
+        assert!(resp.get("lan").is_some(), "response must contain 'lan' key");
+        assert!(resp.get("wan").is_some(), "response must contain 'wan' key");
     }
 }

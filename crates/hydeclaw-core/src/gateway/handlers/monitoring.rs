@@ -1204,7 +1204,7 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
         std::time::Duration::from_secs(5),
         async {
             let start = std::time::Instant::now();
-            let summary = super::network::fetch_network_summary(&state).await;
+            let summary = super::network::fetch_network_summary(&state.status).await;
             let ms = start.elapsed().as_millis() as u64;
             let mut cr = CheckResult::ok("network discovery available", ms);
             cr.details = Some(summary);
