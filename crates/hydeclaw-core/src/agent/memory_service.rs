@@ -79,6 +79,35 @@ pub trait MemoryService: Send + Sync {
     /// Insert a reindex task into the memory worker queue.
     /// Returns the task UUID.
     async fn enqueue_reindex_task(&self, params: serde_json::Value) -> Result<uuid::Uuid>;
+
+    // ── Concrete-store helpers exposed via trait for gateway handlers ────────
+
+    /// Embedding vector dimensionality (0 if unavailable).
+    fn embed_dim(&self) -> u32 { 0 }
+
+    /// Name of the active embedding model (empty string if unavailable).
+    fn embed_model_name(&self) -> String { String::new() }
+
+    /// Current FTS language setting (e.g. "english").
+    fn fts_language(&self) -> String { "english".to_string() }
+
+    /// FTS language validated against `pg_catalog.pg_ts_config`.
+    fn validated_fts_language(&self) -> anyhow::Result<String> { Ok("english".to_string()) }
+
+    /// Update the in-memory FTS language (does NOT write to DB).
+    fn set_fts_language(&self, _lang: &str) {}
+
+    /// Rebuild the FTS column for all existing memory chunks.
+    async fn rebuild_fts(&self) -> anyhow::Result<u64> { Ok(0) }
+
+    /// Batch-embed multiple texts in a single Toolgate call.
+    async fn embed_batch(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+        let mut result = Vec::with_capacity(texts.len());
+        for t in texts {
+            result.push(self.embed(t).await?);
+        }
+        Ok(result)
+    }
 }
 
 // ── MemoryStore impl ─────────────────────────────────────────────────────────
@@ -154,6 +183,34 @@ impl MemoryService for crate::memory::MemoryStore {
 
     async fn enqueue_reindex_task(&self, params: serde_json::Value) -> Result<uuid::Uuid> {
         self.enqueue_reindex_task(params).await
+    }
+
+    fn embed_dim(&self) -> u32 {
+        self.embed_dim()
+    }
+
+    fn embed_model_name(&self) -> String {
+        self.embed_model_name()
+    }
+
+    fn fts_language(&self) -> String {
+        self.fts_language()
+    }
+
+    fn validated_fts_language(&self) -> anyhow::Result<String> {
+        self.validated_fts_language()
+    }
+
+    fn set_fts_language(&self, lang: &str) {
+        self.set_fts_language(lang);
+    }
+
+    async fn rebuild_fts(&self) -> anyhow::Result<u64> {
+        self.rebuild_fts().await
+    }
+
+    async fn embed_batch(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+        self.embed_batch(texts).await
     }
 }
 

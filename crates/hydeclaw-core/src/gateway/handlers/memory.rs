@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::super::AppState;
+use crate::gateway::clusters::InfraServices;
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -32,7 +33,7 @@ pub(crate) struct MemoryQuery {
 }
 
 pub(crate) async fn api_list_memory(
-    State(state): State<AppState>,
+    State(state): State<InfraServices>,
     Query(q): Query<MemoryQuery>,
 ) -> impl IntoResponse {
     let limit = q.limit.unwrap_or(20).min(100) as usize;
@@ -127,7 +128,7 @@ pub(crate) struct MemoryChunkRow {
     agent_id: String,
 }
 
-pub(crate) async fn api_memory_stats(State(state): State<AppState>) -> Json<Value> {
+pub(crate) async fn api_memory_stats(State(state): State<InfraServices>) -> Json<Value> {
     let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory_chunks")
         .fetch_one(&state.db).await
         .inspect_err(|e| tracing::error!(error = %e, "stats: failed to count chunks"))
@@ -178,7 +179,7 @@ pub(crate) async fn api_memory_stats(State(state): State<AppState>) -> Json<Valu
 
 
 /// GET /api/memory/tasks — list memory worker tasks
-pub(crate) async fn api_memory_tasks(State(state): State<AppState>) -> Json<Value> {
+pub(crate) async fn api_memory_tasks(State(state): State<InfraServices>) -> Json<Value> {
     let rows = sqlx::query_as::<_, (uuid::Uuid, String, String, serde_json::Value, Option<String>, chrono::DateTime<chrono::Utc>)>(
         "SELECT id, task_type, status, params, error, created_at FROM memory_tasks ORDER BY created_at DESC LIMIT 50"
     ).fetch_all(&state.db).await.unwrap_or_default();
@@ -217,7 +218,7 @@ pub(crate) struct DocumentsQuery {
 }
 
 pub(crate) async fn api_list_documents(
-    State(state): State<AppState>,
+    State(state): State<InfraServices>,
     Query(q): Query<DocumentsQuery>,
 ) -> impl IntoResponse {
     let limit = q.limit.unwrap_or(20).min(100);
@@ -355,7 +356,7 @@ pub(crate) async fn api_list_documents(
 }
 
 pub(crate) async fn api_get_document(
-    State(state): State<AppState>,
+    State(state): State<InfraServices>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
 ) -> impl IntoResponse {
     let rows = sqlx::query_as::<_, (String, i32)>(
@@ -402,7 +403,7 @@ pub(crate) async fn api_get_document(
 }
 
 pub(crate) async fn api_patch_document(
-    State(state): State<AppState>,
+    State(state): State<InfraServices>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     Json(req): Json<PatchMemoryRequest>,
 ) -> impl IntoResponse {
@@ -427,7 +428,7 @@ pub(crate) struct CreateMemoryRequest {
 }
 
 pub(crate) async fn api_create_memory(
-    State(state): State<AppState>,
+    State(state): State<InfraServices>,
     Json(req): Json<CreateMemoryRequest>,
 ) -> impl IntoResponse {
     if req.content.trim().is_empty() {
@@ -451,7 +452,7 @@ pub(crate) async fn api_create_memory(
 }
 
 pub(crate) async fn api_delete_memory(
-    State(state): State<AppState>,
+    State(state): State<InfraServices>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
 ) -> impl IntoResponse {
     let result = sqlx::query("DELETE FROM memory_chunks WHERE id = $1 OR parent_id = $1")
@@ -480,7 +481,7 @@ pub(crate) struct PatchMemoryRequest {
 }
 
 pub(crate) async fn api_patch_memory(
-    State(state): State<AppState>,
+    State(state): State<InfraServices>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     Json(req): Json<PatchMemoryRequest>,
 ) -> impl IntoResponse {
@@ -558,7 +559,7 @@ pub(crate) async fn api_patch_memory(
 // ── FTS Language API ──
 
 /// GET /api/memory/fts-language — return current FTS language and available options.
-pub(crate) async fn api_get_fts_language(State(state): State<AppState>) -> Json<Value> {
+pub(crate) async fn api_get_fts_language(State(state): State<InfraServices>) -> Json<Value> {
     let current = state.memory_store.fts_language();
     Json(json!({
         "language": current,
@@ -572,7 +573,7 @@ pub(crate) async fn api_get_fts_language(State(state): State<AppState>) -> Json<
 
 /// PUT /api/memory/fts-language — change FTS language and rebuild tsvector index.
 pub(crate) async fn api_set_fts_language(
-    State(state): State<AppState>,
+    State(state): State<InfraServices>,
     Json(req): Json<Value>,
 ) -> impl IntoResponse {
     let lang = match req.get("language").and_then(|v| v.as_str()) {
@@ -610,7 +611,7 @@ pub(crate) async fn api_set_fts_language(
 /// GET /api/memory/export — bulk export all memory chunks (without embeddings).
 /// Limited to 100k chunks to prevent OOM.
 pub(crate) async fn api_export_memory(
-    State(state): State<AppState>,
+    State(state): State<InfraServices>,
 ) -> impl IntoResponse {
     const EXPORT_LIMIT: i64 = 100_000;
     let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory_chunks")
