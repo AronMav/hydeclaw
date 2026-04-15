@@ -69,6 +69,21 @@ impl Scheduler {
         })
     }
 
+    /// Construct a no-op `Arc<Scheduler>` for unit tests.
+    /// The underlying `JobScheduler` is created but never started — no jobs will fire.
+    #[cfg(test)]
+    pub async fn new_noop() -> Arc<Self> {
+        let (tx, _rx) = tokio::sync::broadcast::channel(1);
+        let scheduler = JobScheduler::new().await.expect("noop scheduler");
+        Arc::new(Self {
+            scheduler,
+            dynamic_jobs: RwLock::new(HashMap::new()),
+            agent_jobs: RwLock::new(HashMap::new()),
+            ui_event_tx: tx,
+            agent_locks: Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new())),
+        })
+    }
+
     /// Add heartbeat job for an agent. Returns the scheduler job UUID.
     pub async fn add_heartbeat(
         &self,

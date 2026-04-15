@@ -50,6 +50,20 @@ impl ToolRegistry {
         map
     }
 
+    /// Create an empty registry with no tools registered.
+    /// Used in tests and as a placeholder before config is loaded.
+    #[cfg(test)]
+    pub fn empty() -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_default();
+        Self {
+            tools: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            client,
+        }
+    }
+
     pub fn from_config(tools: &HashMap<String, ToolConfig>) -> Self {
         let map = Self::build_map(tools);
         let client = reqwest::Client::builder()
