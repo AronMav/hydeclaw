@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use crate::db::sessions;
 use crate::gateway::ApiError;
 use super::super::AppState;
+use crate::gateway::clusters::{AgentCore, ChannelBus, InfraServices};
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -34,7 +35,7 @@ pub(crate) fn routes() -> Router<AppState> {
 // ── Latest Session endpoint ──
 
 pub(crate) async fn api_latest_session(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let agent = params.get("agent").map_or("", std::string::String::as_str);
@@ -42,7 +43,7 @@ pub(crate) async fn api_latest_session(
         return ApiError::BadRequest("agent parameter required".into()).into_response();
     }
 
-    let session = match sessions::get_latest_ui_session(&state.db, agent).await {
+    let session = match sessions::get_latest_ui_session(&infra.db, agent).await {
         Ok(Some(s)) => s,
         Ok(None) => return StatusCode::NO_CONTENT.into_response(),
         Err(e) => {
@@ -50,7 +51,7 @@ pub(crate) async fn api_latest_session(
         }
     };
 
-    let messages = match sessions::load_messages(&state.db, session.id, Some(100)).await {
+    let messages = match sessions::load_messages(&infra.db, session.id, Some(100)).await {
         Ok(m) => m,
         Err(e) => {
             return ApiError::Internal(e.to_string()).into_response();
@@ -101,7 +102,7 @@ pub(crate) struct SessionsQuery {
 }
 
 pub(crate) async fn api_list_sessions(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Query(q): Query<SessionsQuery>,
 ) -> impl IntoResponse {
     let limit = q.limit.unwrap_or(20).min(100);
@@ -124,7 +125,7 @@ pub(crate) async fn api_list_sessions(
             .bind(agent)
             .bind(&channels)
             .bind(limit)
-            .fetch_all(&state.db)
+            .fetch_all(&infra.db)
             .await
         }
         None => {
@@ -135,7 +136,7 @@ pub(crate) async fn api_list_sessions(
             )
             .bind(agent)
             .bind(limit)
-            .fetch_all(&state.db)
+            .fetch_all(&infra.db)
             .await
         }
     };
@@ -172,18 +173,18 @@ pub(crate) struct MessagesQuery {
 }
 
 pub(crate) async fn api_session_messages(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     Query(q): Query<MessagesQuery>,
 ) -> impl IntoResponse {
     let limit = q.limit.unwrap_or(50).min(200);
 
     if let Some(ref agent) = q.agent
-        && let Err(resp) = verify_session_agent(&state.db, id, agent).await {
+        && let Err(resp) = verify_session_agent(&infra.db, id, agent).await {
             return resp;
         }
 
-    match sessions::load_messages(&state.db, id, Some(limit)).await {
+    match sessions::load_messages(&infra.db, id, Some(limit)).await {
         Ok(rows) => {
             let messages: Vec<Value> = rows
                 .iter()
@@ -213,12 +214,12 @@ pub(crate) async fn api_session_messages(
 /// DELETE /api/messages/{id}
 /// Deletes a single message by UUID.
 pub(crate) async fn api_delete_message(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
 ) -> impl IntoResponse {
     let result = sqlx::query("DELETE FROM messages WHERE id = $1")
         .bind(id)
-        .execute(&state.db)
+        .execute(&infra.db)
         .await;
 
     match result {
@@ -231,7 +232,8 @@ pub(crate) async fn api_delete_message(
 /// DELETE /api/sessions/{id}
 /// Deletes a session and all its messages. Requires agent param for ownership check.
 pub(crate) async fn api_delete_session(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(agents): State<AgentCore>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     Query(q): Query<SessionsQuery>,
 ) -> impl IntoResponse {
@@ -245,13 +247,13 @@ pub(crate) async fn api_delete_session(
     let _ = sqlx::query("DELETE FROM messages WHERE session_id = $1 AND session_id IN (SELECT id FROM sessions WHERE agent_id = $2)")
         .bind(id)
         .bind(agent)
-        .execute(&state.db)
+        .execute(&infra.db)
         .await;
 
     let result = sqlx::query("DELETE FROM sessions WHERE id = $1 AND agent_id = $2")
         .bind(id)
         .bind(agent)
-        .execute(&state.db)
+        .execute(&infra.db)
         .await;
 
     match result {
@@ -261,7 +263,7 @@ pub(crate) async fn api_delete_session(
         Ok(_) => {
             tracing::info!(session_id = %id, agent = %agent, "session deleted via API");
             // Kill any live agents in the session pool
-            let mut pools = state.session_pools.write().await;
+            let mut pools = agents.session_pools.write().await;
             if let Some(mut pool) = pools.remove(&id)
                 && !pool.is_empty() {
                     tracing::info!(session_id = %id, count = pool.len(), "killing session agent pool on delete");
@@ -292,7 +294,7 @@ async fn verify_session_agent(db: &sqlx::PgPool, session_id: uuid::Uuid, expecte
 /// DELETE /api/sessions?agent=xxx or DELETE /api/sessions?channel=discuss,group
 /// Deletes all sessions (and their messages) for a specific agent or channel(s).
 pub(crate) async fn api_delete_all_sessions(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Query(q): Query<SessionsQuery>,
 ) -> impl IntoResponse {
     // Support either agent or channel filter
@@ -302,22 +304,22 @@ pub(crate) async fn api_delete_all_sessions(
             "DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE channel = ANY($1))",
         )
         .bind(&channels)
-        .execute(&state.db)
+        .execute(&infra.db)
         .await;
         sqlx::query("DELETE FROM sessions WHERE channel = ANY($1)")
             .bind(&channels)
-            .execute(&state.db)
+            .execute(&infra.db)
             .await
     } else if let Some(ref agent) = q.agent {
         let _ = sqlx::query(
             "DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE agent_id = $1)",
         )
         .bind(agent)
-        .execute(&state.db)
+        .execute(&infra.db)
         .await;
         sqlx::query("DELETE FROM sessions WHERE agent_id = $1")
             .bind(agent)
-            .execute(&state.db)
+            .execute(&infra.db)
             .await
     } else {
         return ApiError::BadRequest("agent or channel parameter required".into()).into_response();
@@ -336,7 +338,7 @@ pub(crate) async fn api_delete_all_sessions(
 /// GET /api/sessions/search?q=...&agent=...&limit=50
 /// Full-text search across conversation history (messages).
 pub(crate) async fn api_search_sessions(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Query(q): Query<SessionSearchQuery>,
 ) -> impl IntoResponse {
     let query_str = q.q.as_deref().unwrap_or("").trim();
@@ -346,7 +348,7 @@ pub(crate) async fn api_search_sessions(
     let agent = q.agent.as_deref().unwrap_or("main");
     let limit = q.limit.unwrap_or(50).min(200);
 
-    match sessions::search_messages(&state.db, agent, query_str, limit).await {
+    match sessions::search_messages(&infra.db, agent, query_str, limit).await {
         Ok(results) => {
             let items: Vec<Value> = results.iter().map(|r| json!({
                 "content": r.content,
@@ -379,20 +381,22 @@ pub(crate) struct InviteRequest {
 
 /// POST /api/sessions/{id}/invite — invite an agent into a multi-agent session.
 pub(crate) async fn api_invite_to_session(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(agents): State<AgentCore>,
+    State(bus): State<ChannelBus>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     Json(req): Json<InviteRequest>,
 ) -> impl IntoResponse {
     // Validate agent exists
     let agent_exists = {
-        let map = state.agents.read().await;
+        let map = agents.map.read().await;
         map.contains_key(&req.agent_name)
     };
     if !agent_exists {
         return ApiError::NotFound(format!("agent '{}' not found", req.agent_name)).into_response();
     }
 
-    match crate::db::sessions::add_participant(&state.db, id, &req.agent_name).await {
+    match crate::db::sessions::add_participant(&infra.db, id, &req.agent_name).await {
         Ok(participants) => {
             // Broadcast to WebSocket for live UI updates
             let event = serde_json::json!({
@@ -402,7 +406,7 @@ pub(crate) async fn api_invite_to_session(
                 "invited_by": "user",
                 "participants": participants,
             });
-            state.ui_event_tx.send(event.to_string()).ok();
+            bus.ui_event_tx.send(event.to_string()).ok();
 
             Json(json!({ "participants": participants })).into_response()
         }
@@ -414,11 +418,12 @@ pub(crate) async fn api_invite_to_session(
 
 /// POST /api/sessions/{id}/compact — manually compact a session's history.
 pub(crate) async fn api_compact_session(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(agents): State<AgentCore>,
     Path(id): Path<uuid::Uuid>,
 ) -> impl IntoResponse {
     // Find which agent owns this session
-    let session = match sessions::get_session(&state.db, id).await {
+    let session = match sessions::get_session(&infra.db, id).await {
         Ok(Some(s)) => s,
         Ok(None) => {
             return ApiError::NotFound("session not found".into()).into_response()
@@ -428,14 +433,14 @@ pub(crate) async fn api_compact_session(
         }
     };
 
-    let agents = state.agents.read().await;
-    let engine = match agents.get(&session.agent_id) {
+    let agents_map = agents.map.read().await;
+    let engine = match agents_map.get(&session.agent_id) {
         Some(handle) => handle.engine.clone(),
         None => {
             return ApiError::BadRequest("agent not running".into()).into_response()
         }
     };
-    drop(agents);
+    drop(agents_map);
 
     match engine.compact_session(id).await {
         Ok((facts, new_count)) => Json(json!({
@@ -455,7 +460,7 @@ pub(crate) async fn api_compact_session(
 
 /// POST /api/messages/{id}/feedback — set feedback (1=like, -1=dislike, 0=clear)
 pub(crate) async fn api_message_feedback(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Path(id): Path<uuid::Uuid>,
     Json(body): Json<FeedbackRequest>,
 ) -> impl IntoResponse {
@@ -463,7 +468,7 @@ pub(crate) async fn api_message_feedback(
     let result = sqlx::query("UPDATE messages SET feedback = $1 WHERE id = $2")
         .bind(feedback as i16)
         .bind(id)
-        .execute(&state.db)
+        .execute(&infra.db)
         .await;
     match result {
         Ok(r) if r.rows_affected() > 0 => Json(json!({"ok": true})).into_response(),
@@ -479,7 +484,7 @@ pub(crate) struct FeedbackRequest {
 
 /// PATCH /api/messages/{id} — edit message content
 pub(crate) async fn api_patch_message(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Path(id): Path<uuid::Uuid>,
     Json(body): Json<PatchMessageRequest>,
 ) -> impl IntoResponse {
@@ -488,7 +493,7 @@ pub(crate) async fn api_patch_message(
     )
         .bind(&body.content)
         .bind(id)
-        .execute(&state.db)
+        .execute(&infra.db)
         .await;
     match result {
         Ok(r) if r.rows_affected() > 0 => Json(json!({"ok": true})).into_response(),
@@ -512,13 +517,13 @@ pub(crate) struct ForkRequest {
 
 /// POST /api/sessions/{id}/fork — create a branched user message from an existing message.
 pub(crate) async fn api_fork_session(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Path(session_id): Path<uuid::Uuid>,
     Json(body): Json<ForkRequest>,
 ) -> impl IntoResponse {
     // 1. Find the parent of the branch_from message (the message BEFORE it)
     let parent_id = match sessions::find_parent_of_message(
-        &state.db,
+        &infra.db,
         session_id,
         body.branch_from_message_id,
     )
@@ -532,7 +537,7 @@ pub(crate) async fn api_fork_session(
 
     // 2. Save the new user message with branch pointers
     match sessions::save_message_branched(
-        &state.db,
+        &infra.db,
         session_id,
         "user",
         &body.content,
@@ -557,7 +562,7 @@ pub(crate) async fn api_fork_session(
 
 /// PATCH /api/sessions/{id} — update session metadata (title).
 pub(crate) async fn api_patch_session(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Path(id): Path<uuid::Uuid>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
@@ -566,7 +571,7 @@ pub(crate) async fn api_patch_session(
         match sqlx::query("UPDATE sessions SET title = $1 WHERE id = $2")
             .bind(title)
             .bind(id)
-            .execute(&state.db)
+            .execute(&infra.db)
             .await
         {
             Ok(r) if r.rows_affected() == 0 => {
@@ -590,7 +595,7 @@ pub(crate) async fn api_patch_session(
         )
         .bind(ui_state)
         .bind(id)
-        .execute(&state.db)
+        .execute(&infra.db)
         .await
         {
             Ok(r) if r.rows_affected() == 0 => {
@@ -608,19 +613,19 @@ pub(crate) async fn api_patch_session(
 
 /// GET /api/sessions/{id}/export — export full session as JSON (metadata + all messages).
 pub(crate) async fn api_export_session(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Path(id): Path<uuid::Uuid>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     if let Some(agent) = params.get("agent")
-        && let Err(resp) = verify_session_agent(&state.db, id, agent).await {
+        && let Err(resp) = verify_session_agent(&infra.db, id, agent).await {
             return resp;
         }
 
     let format = params.get("format").map_or("json", std::string::String::as_str);
     match format {
         "markdown" | "md" => {
-            match crate::db::sessions::export_session(&state.db, id).await {
+            match crate::db::sessions::export_session(&infra.db, id).await {
                 Ok(Some(data)) => {
                     let md = format_session_as_markdown(&data);
                     let disposition = format!("attachment; filename=\"session-{id}.md\"");
@@ -635,7 +640,7 @@ pub(crate) async fn api_export_session(
             }
         }
         _ => {
-            match crate::db::sessions::export_session(&state.db, id).await {
+            match crate::db::sessions::export_session(&infra.db, id).await {
                 Ok(Some(data)) => Json(data).into_response(),
                 Ok(None) => ApiError::NotFound("session not found".into()).into_response(),
                 Err(e) => ApiError::Internal(e.to_string()).into_response(),
@@ -706,13 +711,13 @@ pub(crate) struct StuckSessionsQuery {
 
 /// GET /api/sessions/stuck — find sessions needing retry
 pub(crate) async fn api_stuck_sessions(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Query(q): Query<StuckSessionsQuery>,
 ) -> impl IntoResponse {
     let stale_secs = q.stale_secs.unwrap_or(90);
     let max_retries = q.max_retries.unwrap_or(3);
 
-    match sessions::find_stuck_sessions(&state.db, stale_secs, max_retries).await {
+    match sessions::find_stuck_sessions(&infra.db, stale_secs, max_retries).await {
         Ok(rows) => {
             let sessions: Vec<serde_json::Value> = rows.iter().map(|(id, agent)| {
                 serde_json::json!({"id": id, "agent_id": agent})
@@ -725,7 +730,8 @@ pub(crate) async fn api_stuck_sessions(
 
 /// POST /api/sessions/{id}/retry — replay last user message through engine
 pub(crate) async fn api_retry_session(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(agents): State<AgentCore>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
 ) -> impl IntoResponse {
     // 1. Load session
@@ -733,7 +739,7 @@ pub(crate) async fn api_retry_session(
         "SELECT * FROM sessions WHERE id = $1"
     )
     .bind(id)
-    .fetch_optional(&state.db)
+    .fetch_optional(&infra.db)
     .await {
         Ok(Some(s)) => s,
         Ok(None) => return ApiError::NotFound("session not found".into()).into_response(),
@@ -741,7 +747,7 @@ pub(crate) async fn api_retry_session(
     };
 
     // 2. Get last user message
-    let user_text = match sessions::get_last_user_message(&state.db, id).await {
+    let user_text = match sessions::get_last_user_message(&infra.db, id).await {
         Ok(Some(text)) => text,
         Ok(None) => return ApiError::BadRequest("no user message in session".into()).into_response(),
         Err(e) => return ApiError::Internal(e.to_string()).into_response(),
@@ -749,7 +755,7 @@ pub(crate) async fn api_retry_session(
 
     // 3. Cleanup: delete empty assistant messages and the last user message
     //    (handle_sse will re-save it, so we remove to avoid duplicates)
-    if let Ok(deleted) = sessions::delete_empty_assistant_messages(&state.db, id).await
+    if let Ok(deleted) = sessions::delete_empty_assistant_messages(&infra.db, id).await
         && deleted > 0 {
         tracing::info!(session_id = %id, deleted, "cleaned up empty assistant messages before retry");
     }
@@ -760,11 +766,11 @@ pub(crate) async fn api_retry_session(
          ORDER BY created_at DESC LIMIT 1)"
     )
     .bind(id)
-    .execute(&state.db)
+    .execute(&infra.db)
     .await;
 
     // 4. Increment retry count (atomic guard against concurrent double-retry)
-    let retry_count = match sessions::increment_retry_count(&state.db, id).await {
+    let retry_count = match sessions::increment_retry_count(&infra.db, id).await {
         Ok(Some(c)) => c,
         Ok(None) => return ApiError::Conflict("session not in running state (concurrent retry?)".into()).into_response(),
         Err(e) => return ApiError::Internal(e.to_string()).into_response(),
@@ -773,10 +779,10 @@ pub(crate) async fn api_retry_session(
     tracing::info!(session_id = %id, agent = %session.agent_id, retry_count, "retrying stuck session");
 
     // 5. Get engine
-    let engine = match state.get_engine(&session.agent_id).await {
+    let engine = match agents.get_engine(&session.agent_id).await {
         Some(e) => e,
         None => {
-            let _ = sessions::mark_session_failed(&state.db, id).await;
+            let _ = sessions::mark_session_failed(&infra.db, id).await;
             return ApiError::NotFound(format!("agent '{}' not found", session.agent_id)).into_response();
         }
     };
@@ -796,7 +802,7 @@ pub(crate) async fn api_retry_session(
     };
 
     // Spawn background task
-    let db = state.db.clone();
+    let db = infra.db.clone();
     let session_id = id;
     tokio::spawn(async move {
         // Bounded drain channel — prevents unbounded memory growth during retry
@@ -819,11 +825,11 @@ pub(crate) async fn api_retry_session(
 
 /// GET /api/sessions/{id}/active-path -- resolve the linear message chain for display.
 pub(crate) async fn api_active_path(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Path(session_id): Path<uuid::Uuid>,
     Query(q): Query<ActivePathQuery>,
 ) -> impl IntoResponse {
-    match sessions::resolve_active_path(&state.db, session_id, q.leaf).await {
+    match sessions::resolve_active_path(&infra.db, session_id, q.leaf).await {
         Ok(msgs) => {
             let messages: Vec<Value> = msgs.iter().map(|m| {
                 json!({

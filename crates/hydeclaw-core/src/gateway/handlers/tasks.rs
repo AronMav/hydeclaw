@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use super::super::AppState;
 use crate::tasks;
+use crate::gateway::clusters::{AgentCore, InfraServices};
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -30,13 +31,13 @@ pub(crate) struct TasksQuery {
 
 /// GET /api/tasks?agent=main&limit=50
 pub(crate) async fn api_list_tasks(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Query(q): Query<TasksQuery>,
 ) -> impl IntoResponse {
     let agent = q.agent.as_deref().unwrap_or("main");
     let limit = q.limit.unwrap_or(50).min(200);
 
-    match tasks::list_tasks(&state.db, agent, limit).await {
+    match tasks::list_tasks(&infra.db, agent, limit).await {
         Ok(rows) => Json(json!({"tasks": rows})).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     }
@@ -54,7 +55,8 @@ fn default_task_source() -> String { "api".to_string() }
 
 /// POST /api/tasks — create a new task and optionally start execution.
 pub(crate) async fn api_create_task_endpoint(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(agents): State<AgentCore>,
     Json(req): Json<CreateTaskRequest>,
 ) -> impl IntoResponse {
     if req.input.trim().is_empty() {
@@ -62,11 +64,11 @@ pub(crate) async fn api_create_task_endpoint(
     }
 
     // Check if agent exists
-    if !state.agents.read().await.contains_key(&req.agent) {
+    if !agents.map.read().await.contains_key(&req.agent) {
         return (StatusCode::NOT_FOUND, Json(json!({"error": format!("agent '{}' not found", req.agent)}))).into_response();
     }
 
-    match tasks::create_task(&state.db, &req.agent, "api", &req.source, &req.input).await {
+    match tasks::create_task(&infra.db, &req.agent, "api", &req.source, &req.input).await {
         Ok(task_id) => {
             tracing::info!(task_id = %task_id, agent = %req.agent, "task created via API");
             Json(json!({"ok": true, "task_id": task_id.to_string()})).into_response()
@@ -77,10 +79,10 @@ pub(crate) async fn api_create_task_endpoint(
 
 /// GET /api/tasks/{id}
 pub(crate) async fn api_get_task(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    match tasks::get_task(&state.db, id).await {
+    match tasks::get_task(&infra.db, id).await {
         Ok(Some(task)) => Json(json!(task)).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"error": "task not found"}))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
@@ -89,10 +91,10 @@ pub(crate) async fn api_get_task(
 
 /// DELETE /api/tasks/{id}
 pub(crate) async fn api_delete_task(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    match tasks::delete_task(&state.db, id).await {
+    match tasks::delete_task(&infra.db, id).await {
         Ok(true) => Json(json!({"ok": true})).into_response(),
         Ok(false) => (StatusCode::NOT_FOUND, Json(json!({"error": "task not found"}))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
@@ -101,10 +103,10 @@ pub(crate) async fn api_delete_task(
 
 /// GET /api/tasks/{id}/steps
 pub(crate) async fn api_task_steps(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    match tasks::load_task_steps(&state.db, id).await {
+    match tasks::load_task_steps(&infra.db, id).await {
         Ok(steps) => {
             let items: Vec<Value> = steps.iter().map(|s| json!({
                 "id": s.id.to_string(),
@@ -130,7 +132,7 @@ pub(crate) struct AuditQuery {
 
 /// GET /api/tasks/audit — tool execution audit trail.
 pub(crate) async fn api_task_audit(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Query(q): Query<AuditQuery>,
 ) -> impl IntoResponse {
     let limit = q.limit.unwrap_or(50).min(200);
@@ -146,7 +148,7 @@ pub(crate) async fn api_task_audit(
     .bind(q.agent.as_deref())
     .bind(q.status.as_deref())
     .bind(limit)
-    .fetch_all(&state.db)
+    .fetch_all(&infra.db)
     .await;
 
     match rows {
