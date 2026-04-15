@@ -8,7 +8,8 @@ use axum::{
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::super::AppState;
+use crate::gateway::clusters::InfraServices;
+use crate::gateway::AppState;
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -34,12 +35,12 @@ fn default_limit() -> i64 { 50 }
 
 /// GET /api/notifications?limit=50&offset=0
 pub(crate) async fn api_list_notifications(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
     let limit = q.limit.clamp(1, 200);
     let offset = q.offset.max(0);
-    match crate::db::notifications::list_notifications(&state.db, limit, offset).await {
+    match crate::db::notifications::list_notifications(&infra.db, limit, offset).await {
         Ok((items, unread_count)) => Json(serde_json::json!({
             "items": items,
             "unread_count": unread_count,
@@ -55,10 +56,10 @@ pub(crate) async fn api_list_notifications(
 
 /// PATCH /api/notifications/{id}  — mark single notification read
 pub(crate) async fn api_mark_notification_read(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    match crate::db::notifications::mark_read(&state.db, id).await {
+    match crate::db::notifications::mark_read(&infra.db, id).await {
         Ok(updated) => Json(serde_json::json!({"ok": true, "updated": updated})).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -69,9 +70,9 @@ pub(crate) async fn api_mark_notification_read(
 
 /// POST /api/notifications/read-all  — mark all notifications read
 pub(crate) async fn api_mark_all_notifications_read(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
 ) -> impl IntoResponse {
-    match crate::db::notifications::mark_all_read(&state.db).await {
+    match crate::db::notifications::mark_all_read(&infra.db).await {
         Ok(count) => Json(serde_json::json!({"ok": true, "updated": count})).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -81,10 +82,10 @@ pub(crate) async fn api_mark_all_notifications_read(
 }
 
 pub(crate) async fn api_clear_all_notifications(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
 ) -> impl IntoResponse {
     match sqlx::query("DELETE FROM notifications")
-        .execute(&state.db)
+        .execute(&infra.db)
         .await
     {
         Ok(r) => Json(serde_json::json!({"ok": true, "deleted": r.rows_affected()})).into_response(),
