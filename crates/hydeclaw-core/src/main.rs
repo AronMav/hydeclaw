@@ -219,7 +219,15 @@ async fn main() -> Result<()> {
 
     // Memory store (embedding via toolgate proxy)
     let toolgate_url = cfg.toolgate_url.clone().unwrap_or_else(|| "http://localhost:9011".to_string());
-    let memory_store = Arc::new(memory::MemoryStore::new(db_pool.clone(), &cfg.memory, &toolgate_url));
+    let effective_toolgate_url = if cfg.memory.enabled { &toolgate_url } else { "" };
+    let embedder: Arc<dyn memory::EmbeddingService> = Arc::new(memory::ToolgateEmbedder::new(
+        db_pool.clone(),
+        effective_toolgate_url,
+        cfg.memory.embed_dim.unwrap_or(0),
+        cfg.memory.embed_dimensions.unwrap_or(0),
+    ));
+    let fts_lang = cfg.memory.fts_language.clone().unwrap_or_else(|| "simple".to_string());
+    let memory_store = Arc::new(memory::MemoryStore::new(db_pool.clone(), embedder, fts_lang));
     if memory_store.is_available() {
         tracing::info!("embedding configured — will initialize on first memory operation");
         // Watch workspace files for auto-reindexing
@@ -255,7 +263,7 @@ async fn main() -> Result<()> {
     // Auto-detect FTS language from first agent's language (if not explicitly configured)
     if cfg.memory.fts_language.is_none()
         && let Some(first) = agent_configs.first() {
-            let detected = memory::MemoryStore::detect_fts_language(&first.agent.language);
+            let detected = memory::MemoryAdmin::detect_fts_language(&first.agent.language);
             tracing::info!(
                 agent = %first.agent.name,
                 agent_lang = %first.agent.language,

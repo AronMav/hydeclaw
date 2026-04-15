@@ -115,11 +115,11 @@ pub trait MemoryService: Send + Sync {
 #[async_trait]
 impl MemoryService for crate::memory::MemoryStore {
     fn is_available(&self) -> bool {
-        self.is_available()
+        self.embedder().is_available()
     }
 
     async fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        self.embed(text).await
+        self.embedder().embed(text).await
     }
 
     async fn search(
@@ -131,7 +131,7 @@ impl MemoryService for crate::memory::MemoryStore {
         topic: Option<&str>,
         agent_id: &str,
     ) -> Result<(Vec<crate::memory::MemoryResult>, String)> {
-        let (results, mode) = self.search(query, limit, exclude_ids, category, topic, agent_id).await?;
+        let (results, mode) = crate::memory::MemoryStore::search(self, query, limit, exclude_ids, category, topic, agent_id).await?;
         Ok((results, mode.to_string()))
     }
 
@@ -145,11 +145,11 @@ impl MemoryService for crate::memory::MemoryStore {
         scope: &str,
         agent_id: &str,
     ) -> Result<String> {
-        self.index(content, source, pinned, category, topic, scope, agent_id).await
+        crate::memory::MemoryStore::index(self, content, source, pinned, category, topic, scope, agent_id).await
     }
 
     async fn index_batch(&self, items: &[(String, String, bool, String)], agent_id: &str) -> Result<Vec<String>> {
-        self.index_batch(items, agent_id).await
+        crate::memory::MemoryStore::index_batch(self, items, agent_id).await
     }
 
     async fn load_pinned(
@@ -157,7 +157,7 @@ impl MemoryService for crate::memory::MemoryStore {
         agent_id: &str,
         budget_tokens: u32,
     ) -> Result<(String, Vec<String>)> {
-        self.load_pinned(agent_id, budget_tokens).await
+        crate::memory::MemoryStore::load_pinned(self, agent_id, budget_tokens).await
     }
 
     async fn get(
@@ -166,51 +166,51 @@ impl MemoryService for crate::memory::MemoryStore {
         source: Option<&str>,
         limit: usize,
     ) -> Result<Vec<crate::memory::MemoryChunk>> {
-        self.get(chunk_id, source, limit).await
+        crate::memory::MemoryStore::get(self, chunk_id, source, limit).await
     }
 
     async fn delete(&self, chunk_id: &str) -> Result<bool> {
-        self.delete(chunk_id).await
+        crate::memory::MemoryStore::delete(self, chunk_id).await
     }
 
     async fn recent(&self, limit: i64) -> Result<Vec<crate::memory::MemoryResult>> {
-        self.recent(limit).await
+        crate::memory::MemoryStore::recent(self, limit).await
     }
 
     async fn wipe_agent_memory(&self, agent_id: &str) -> Result<u64> {
-        self.wipe_agent_memory(agent_id).await
+        crate::memory::MemoryStore::wipe_agent_memory(self, agent_id).await
     }
 
     async fn enqueue_reindex_task(&self, params: serde_json::Value) -> Result<uuid::Uuid> {
-        self.enqueue_reindex_task(params).await
+        crate::memory::MemoryStore::enqueue_reindex_task(self, params).await
     }
 
     fn embed_dim(&self) -> u32 {
-        self.embed_dim()
+        self.embedder().embed_dim()
     }
 
     fn embed_model_name(&self) -> String {
-        self.embed_model_name()
+        self.embedder().embed_model_name().unwrap_or_default()
     }
 
     fn fts_language(&self) -> String {
-        self.fts_language()
+        crate::memory::MemoryStore::fts_language(self)
     }
 
     fn validated_fts_language(&self) -> anyhow::Result<String> {
-        self.validated_fts_language()
+        crate::memory::MemoryStore::validated_fts_language(self)
     }
 
     fn set_fts_language(&self, lang: &str) {
-        self.set_fts_language(lang);
+        crate::memory::MemoryStore::set_fts_language(self, lang);
     }
 
     async fn rebuild_fts(&self) -> anyhow::Result<u64> {
-        self.rebuild_fts().await
+        crate::memory::MemoryStore::rebuild_fts(self).await
     }
 
     async fn embed_batch(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
-        self.embed_batch(texts).await
+        self.embedder().embed_batch(texts).await
     }
 }
 

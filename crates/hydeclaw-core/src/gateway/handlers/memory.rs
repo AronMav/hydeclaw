@@ -527,7 +527,7 @@ pub(crate) async fn api_patch_memory(
                 return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("embedding failed: {e}")}))).into_response();
             }
         };
-        let vec_str = crate::memory::MemoryStore::fmt_vec(&embedding);
+        let vec_str = crate::memory::fmt_vec(&embedding);
         let lang = match state.memory_store.validated_fts_language() {
             Ok(l) => l,
             Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "invalid FTS language configuration"}))).into_response(),
