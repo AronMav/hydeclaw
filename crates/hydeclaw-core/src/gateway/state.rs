@@ -2,18 +2,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use axum::extract::FromRef;
+#[cfg(test)]
 use sqlx::PgPool;
 
-use crate::agent::engine::AgentEngine;
 use crate::agent::handle::AgentHandle;
 use crate::channels::access::AccessGuard;
-use crate::config::{AppConfig, SharedConfig};
-use crate::memory::MemoryStore;
-use crate::scheduler::Scheduler;
-use crate::secrets::SecretsManager;
-use crate::tools::ToolRegistry;
-
-use super::stream_registry;
+use crate::gateway::clusters::{
+    AgentCore, AuthServices, ChannelBus, ConfigServices, InfraServices, StatusMonitor,
+};
 
 /// Tracks which agents are currently processing a request.
 /// Used to replay `agent_processing` state to newly connected WS clients.
@@ -107,53 +104,31 @@ pub struct WanIpCache {
 
 #[derive(Clone)]
 pub struct AppState {
-    pub db: PgPool,
-    pub config: AppConfig,
-    /// Dynamic config that updates on file changes (via config watcher).
-    pub shared_config: SharedConfig,
-    pub tools: ToolRegistry,
-    /// Running agent handles (mutable: agents can be added/removed at runtime).
-    pub agents: AgentMap,
-    pub secrets: Arc<SecretsManager>,
-    pub scheduler: Arc<Scheduler>,
-    /// Access guards per agent (mutable: created/removed with agents).
-    pub access_guards: AccessGuardMap,
-    /// Process start time for uptime calculation.
-    pub started_at: std::time::Instant,
-    /// Broadcast channel for real-time log streaming to UI.
-    pub log_tx: tokio::sync::broadcast::Sender<String>,
-    /// Shared deps for starting new agents at runtime (`RwLock` for hot-update via PUT /api/config).
-    pub agent_deps: Arc<tokio::sync::RwLock<AgentDeps>>,
-    /// Native memory store (pgvector + external embedding endpoint).
-    pub memory_store: Arc<MemoryStore>,
-    /// Docker container manager (for MCP lifecycle + runtime config updates).
-    pub container_manager: Option<Arc<crate::containers::ContainerManager>>,
-    /// Docker code execution sandbox (managed per-agent containers).
-    pub sandbox: Option<Arc<crate::containers::sandbox::CodeSandbox>>,
-    /// Broadcast channel for UI events (`session_updated`, `cron_completed`, etc.).
-    pub ui_event_tx: tokio::sync::broadcast::Sender<String>,
-    /// In-memory registry of active SSE streams for resume support.
-    pub stream_registry: Arc<stream_registry::StreamRegistry>,
-    /// Tracks which agents are currently processing (for WS reconnection).
-    pub processing_tracker: ProcessingTracker,
-    /// Runtime registry of connected channel adapters (Telegram, Discord, etc.).
-    pub connected_channels: ConnectedChannelsRegistry,
-    /// Native child process manager (channels, toolgate — spawned by Core, not Docker).
-    pub process_manager: Option<Arc<crate::process_manager::ProcessManager>>,
-    /// One-time WS tickets: ticket UUID → creation time. Consumed on first use, 30s TTL.
-    pub ws_tickets: Arc<tokio::sync::Mutex<HashMap<String, std::time::Instant>>>,
-    /// OAuth 2.0 connection manager (Google, GitHub, etc.)
-    pub oauth: Arc<crate::oauth::OAuthManager>,
-    /// Atomic counters for channel message diagnostics.
-    pub polling_diagnostics: Arc<PollingDiagnostics>,
-    /// Cached WAN IP address (refreshed every 5 minutes to avoid hammering STUN/TURN services).
-    pub wan_ip_cache: Arc<tokio::sync::RwLock<Option<WanIpCache>>>,
-    /// Session-scoped agent pools: maps session UUID → pool of alive agents.
-    pub session_pools: crate::agent::session_agent_pool::SessionPoolsMap,
-    /// Mutex to serialize config file writes (prevents partial writes from concurrent requests).
-    pub config_write_lock: Arc<tokio::sync::Mutex<()>>,
-    /// Flag to suppress file-watcher reload when API just wrote the config file.
-    pub config_api_write_flag: crate::config::ConfigApiWriteFlag,
+    pub agents:   AgentCore,
+    pub auth:     AuthServices,
+    pub infra:    InfraServices,
+    pub channels: ChannelBus,
+    pub config:   ConfigServices,
+    pub status:   StatusMonitor,
+}
+
+impl FromRef<AppState> for AgentCore {
+    fn from_ref(s: &AppState) -> Self { s.agents.clone() }
+}
+impl FromRef<AppState> for AuthServices {
+    fn from_ref(s: &AppState) -> Self { s.auth.clone() }
+}
+impl FromRef<AppState> for InfraServices {
+    fn from_ref(s: &AppState) -> Self { s.infra.clone() }
+}
+impl FromRef<AppState> for ChannelBus {
+    fn from_ref(s: &AppState) -> Self { s.channels.clone() }
+}
+impl FromRef<AppState> for ConfigServices {
+    fn from_ref(s: &AppState) -> Self { s.config.clone() }
+}
+impl FromRef<AppState> for StatusMonitor {
+    fn from_ref(s: &AppState) -> Self { s.status.clone() }
 }
 
 /// Shared dependencies needed to start new agents at runtime (from CRUD endpoints).
@@ -185,43 +160,3 @@ impl AgentDeps {
     }
 }
 
-impl AppState {
-    /// Get an engine by agent name (read-locks the agents map briefly).
-    pub async fn get_engine(&self, name: &str) -> Option<Arc<AgentEngine>> {
-        self.agents.read().await.get(name).map(|h| h.engine.clone())
-    }
-
-    /// Get a snapshot map of all running agent engines.
-    pub async fn get_engines_map(&self) -> std::collections::HashMap<String, Arc<AgentEngine>> {
-        self.agents.read().await.iter()
-            .map(|(k, v)| (k.clone(), v.engine.clone()))
-            .collect()
-    }
-
-    /// Get the first available engine.
-    pub async fn first_engine(&self) -> Option<Arc<AgentEngine>> {
-        self.agents.read().await.values().next().map(|h| h.engine.clone())
-    }
-
-    /// Get list of running agent names (base agents first, then alphabetical).
-    pub async fn agent_names(&self) -> Vec<String> {
-        let mut names: Vec<(bool, String)> = self.agents.read().await.values()
-            .map(|h| (h.engine.agent.base, h.engine.agent.name.clone()))
-            .collect();
-        names.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
-        names.into_iter().map(|(_, n)| n).collect()
-    }
-
-    /// Get list of running agents with name and icon (base agents first, then alphabetical).
-    #[allow(dead_code)]
-    pub async fn agent_summaries(&self) -> Vec<serde_json::Value> {
-        let mut summaries: Vec<(bool, String, serde_json::Value)> = self.agents.read().await.values()
-            .map(|h| (h.engine.agent.base, h.engine.agent.name.clone(), serde_json::json!({
-                "name": h.engine.agent.name,
-                "icon": h.engine.agent.icon,
-            })))
-            .collect();
-        summaries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
-        summaries.into_iter().map(|(_, _, v)| v).collect()
-    }
-}
