@@ -117,14 +117,13 @@ impl AgentEngine {
 
         // Validate category if provided
         const VALID_CATEGORIES: &[&str] = &["decision", "preference", "event", "discovery", "advice", "general"];
-        if let Some(cat) = category {
-            if !VALID_CATEGORIES.contains(&cat) {
-                return format!(
-                    "Error: invalid category '{}'. Valid values: {}",
-                    cat,
-                    VALID_CATEGORIES.join(", ")
-                );
-            }
+        if let Some(cat) = category
+            && !VALID_CATEGORIES.contains(&cat) {
+            return format!(
+                "Error: invalid category '{}'. Valid values: {}",
+                cat,
+                VALID_CATEGORIES.join(", ")
+            );
         }
 
         match self.memory_store.index(content, source, pinned, category, topic, scope, &self.agent.name).await {

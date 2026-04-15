@@ -29,6 +29,7 @@ pub struct OpenAiCompatibleProvider {
 }
 
 impl OpenAiCompatibleProvider {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         provider_name: &str,
         url: &str,

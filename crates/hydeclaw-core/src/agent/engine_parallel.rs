@@ -66,14 +66,10 @@ impl super::AgentEngine {
         for (i, tc) in tool_calls.iter().enumerate() {
             if is_tool_cacheable(&tc.name) && self.memory_store.is_available() {
                 let query_text = tc.arguments.get("query").or_else(|| tc.arguments.get("url")).and_then(|v| v.as_str()).unwrap_or("");
-                if !query_text.is_empty() {
-                    match SemanticCache::check(&self.db, &self.memory_store, &tc.name, query_text, 0.95).await {
-                        Ok(Some(cached_res)) => {
-                            tracing::info!(tool = %tc.name, query = %query_text, "semantic cache hit");
-                            results[i] = Some(cached_res);
-                        }
-                        _ => {}
-                    }
+                if !query_text.is_empty()
+                    && let Ok(Some(cached_res)) = SemanticCache::check(&self.db, &self.memory_store, &tc.name, query_text, 0.95).await {
+                    tracing::info!(tool = %tc.name, query = %query_text, "semantic cache hit");
+                    results[i] = Some(cached_res);
                 }
             }
         }

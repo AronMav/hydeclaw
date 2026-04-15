@@ -24,6 +24,7 @@ impl AnthropicProvider {
         Self::with_options(model, temperature, max_tokens, secrets, None, None, false, None)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn with_options(
         model: String,
         temperature: f64,

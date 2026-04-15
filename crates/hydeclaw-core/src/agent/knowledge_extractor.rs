@@ -319,11 +319,10 @@ fn parse_extraction(content: &str) -> Result<ExtractedKnowledge> {
         .to_string();
 
     // Find JSON object in the text
-    if let Some(start) = cleaned.find('{') {
-        if let Some(end) = cleaned.rfind('}') {
-            let json_str = &cleaned[start..=end];
-            return Ok(serde_json::from_str(json_str)?);
-        }
+    if let Some(start) = cleaned.find('{')
+        && let Some(end) = cleaned.rfind('}') {
+        let json_str = &cleaned[start..=end];
+        return Ok(serde_json::from_str(json_str)?);
     }
 
     anyhow::bail!("no JSON object found in extraction response")
@@ -440,10 +439,7 @@ async fn resolve_conflict(
         Ok(Ok(r)) => r,
         _ => {
             // LLM failed — safe fallback: ADD
-            return match memory_store.index(new_fact, source, false, None, None, scope, agent_name).await {
-                Ok(_) => true,
-                Err(_) => false,
-            };
+            return memory_store.index(new_fact, source, false, None, None, scope, agent_name).await.is_ok();
         }
     };
 
@@ -464,16 +460,10 @@ async fn resolve_conflict(
                     "memory conflict resolved"
                 );
             }
-            match memory_store.index(new_fact, source, false, None, None, scope, agent_name).await {
-                Ok(_) => true,
-                Err(_) => false,
-            }
+            memory_store.index(new_fact, source, false, None, None, scope, agent_name).await.is_ok()
         }
         "ADD" => {
-            match memory_store.index(new_fact, source, false, None, None, scope, agent_name).await {
-                Ok(_) => true,
-                Err(_) => false,
-            }
+            memory_store.index(new_fact, source, false, None, None, scope, agent_name).await.is_ok()
         }
         _ => {
             tracing::debug!(action = decision.action.as_str(), reason = decision.reason.as_str(), "conflict resolution: unknown action, skipping");
@@ -841,7 +831,7 @@ Some trailing explanation here."#;
     #[test]
     fn extraction_scope_assignment() {
         // Verify the design: user_facts=shared, outcomes=shared, tool_insights=private, feedback=shared
-        let scopes = vec![
+        let scopes = [
             ("user_facts", "shared"),
             ("outcomes", "shared"),
             ("tool_insights", "private"),

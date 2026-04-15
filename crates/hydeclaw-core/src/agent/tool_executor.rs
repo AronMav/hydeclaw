@@ -24,6 +24,7 @@ use crate::agent::tool_loop::LoopDetector;
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
     /// Execute a batch of tool calls with loop detection and partitioned parallelism.
+    #[allow(clippy::too_many_arguments)]
     async fn execute_batch(
         &self,
         tool_calls: &[ToolCall],
@@ -44,6 +45,7 @@ pub trait ToolExecutor: Send + Sync {
 #[async_trait]
 pub(crate) trait ToolExecutorDeps: Send + Sync {
     /// Batch execution — delegates to `engine_parallel.rs`.
+    #[allow(clippy::too_many_arguments)]
     async fn execute_tool_calls_partitioned_raw(
         &self,
         tool_calls: &[ToolCall],

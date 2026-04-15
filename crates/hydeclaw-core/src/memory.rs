@@ -729,6 +729,7 @@ impl MemoryStore {
     /// linked by `parent_id`. Returns the parent chunk's UUID.
     /// `scope`: "private" (agent-only) or "shared" (visible to all agents).
     /// `agent_id`: the agent that owns this chunk (used for visibility filtering).
+    #[allow(clippy::too_many_arguments)]
     pub async fn index(
         &self,
         content: &str,
