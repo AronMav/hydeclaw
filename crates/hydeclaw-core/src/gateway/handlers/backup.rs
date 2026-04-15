@@ -16,7 +16,8 @@ use tokio::fs;
 
 use sqlx::Row;
 
-use super::super::AppState;
+use crate::gateway::AppState;
+use crate::gateway::clusters::{AgentCore, AuthServices, InfraServices};
 use crate::secrets::{PlaintextSecret, SecretsManager};
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -303,9 +304,13 @@ pub(crate) async fn create_backup_internal(
 }
 
 /// Create a backup: collect all data, save to disk, clean up old files.
-pub(crate) async fn api_create_backup(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn api_create_backup(
+    State(infra): State<InfraServices>,
+    State(auth): State<AuthServices>,
+    State(agents): State<AgentCore>,
+) -> impl IntoResponse {
     let now = Utc::now();
-    match create_backup_internal(&state.db, &state.secrets, &state.agent_deps, RETENTION_DAYS).await {
+    match create_backup_internal(&infra.db, &auth.secrets, &agents.deps, RETENTION_DAYS).await {
         Ok(filename) => {
             let filepath = format!("{BACKUP_DIR}/{filename}");
             Json(json!({
@@ -397,7 +402,12 @@ pub(crate) async fn api_delete_backup(Path(filename): Path<String>) -> impl Into
 // ── POST /api/restore ─────────────────────────────────────────────────────────
 
 pub(crate) async fn api_restore(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(auth): State<AuthServices>,
+    State(agents): State<AgentCore>,
+    State(bus): State<crate::gateway::clusters::ChannelBus>,
+    State(cfg_svc): State<crate::gateway::clusters::ConfigServices>,
+    State(status): State<crate::gateway::clusters::StatusMonitor>,
     headers: axum::http::HeaderMap,
     Json(backup): Json<BackupFile>,
 ) -> impl IntoResponse {
@@ -413,11 +423,11 @@ pub(crate) async fn api_restore(
 
     // Stop all running agents before restore to prevent stale state
     {
-        let mut agents = state.agents.write().await;
-        let names: Vec<String> = agents.keys().cloned().collect();
+        let mut agents_map = agents.map.write().await;
+        let names: Vec<String> = agents_map.keys().cloned().collect();
         for name in &names {
-            if let Some(handle) = agents.remove(name) {
-                handle.shutdown(&state.scheduler).await;
+            if let Some(handle) = agents_map.remove(name) {
+                handle.shutdown(&agents.scheduler).await;
                 tracing::info!(agent = %name, "agent stopped for restore");
             }
         }
@@ -435,7 +445,7 @@ pub(crate) async fn api_restore(
 
     // 2. Workspace
     let workspace_dir = {
-        let deps = state.agent_deps.read().await;
+        let deps = agents.deps.read().await;
         deps.workspace_dir.clone()
     };
     let ws_count = restore_workspace(&workspace_dir, &backup.workspace).await;
@@ -443,7 +453,7 @@ pub(crate) async fn api_restore(
 
     // 3. Secrets
     let secret_count = backup.secrets.len();
-    match state.secrets.restore_plaintext(backup.secrets).await {
+    match auth.secrets.restore_plaintext(backup.secrets).await {
         Ok(_) => restored["secrets"] = json!(secret_count),
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("secrets restore failed: {e}")}))).into_response();
@@ -451,13 +461,13 @@ pub(crate) async fn api_restore(
     }
 
     // 4+5. Memory + Cron — atomic: both succeed or neither is committed
-    let fts_lang = match state.memory_store.validated_fts_language() {
+    let fts_lang = match infra.memory_store.validated_fts_language() {
         Ok(lang) => lang,
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("invalid fts language: {e}")}))).into_response();
         }
     };
-    match restore_memory_and_cron(&state, &backup.memory, &backup.cron, &fts_lang).await {
+    match restore_memory_and_cron(&infra.db, &backup.memory, &backup.cron, &fts_lang).await {
         Ok((mem_n, cron_n)) => {
             restored["memory"] = json!(mem_n);
             restored["cron"] = json!(cron_n);
@@ -470,7 +480,7 @@ pub(crate) async fn api_restore(
     // V2 sections — wrapped in transaction for atomicity (D-10, D-11)
     // Errors are propagated instead of silently swallowed; on failure the transaction
     // rolls back automatically, preventing partial state corruption.
-    let mut tx = match state.db.begin().await {
+    let mut tx = match infra.db.begin().await {
         Ok(tx) => tx,
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("v2 restore tx begin failed: {e}")}))).into_response();
@@ -562,21 +572,22 @@ pub(crate) async fn api_restore(
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("restore succeeded but config reload failed: {}", e)}))).into_response();
         }
     };
+
     let mut restarted = Vec::new();
     let mut failed = Vec::new();
     for cfg in &agent_configs {
-        match super::agents::start_agent_from_config(cfg, &state).await {
+        match super::agents::start_agent_from_config(cfg, &agents, &infra, &auth, &bus, &cfg_svc, &status).await {
             Ok((handle, guard)) => {
                 let name = cfg.agent.name.clone();
-                state.agents.write().await.insert(name.clone(), handle);
+                agents.map.write().await.insert(name.clone(), handle);
                 if let Some(g) = guard {
-                    state.access_guards.write().await.insert(name.clone(), g);
+                    auth.access_guards.write().await.insert(name.clone(), g);
                 }
                 // Ensure Docker sandbox for non-base agents
                 if !cfg.agent.base
-                    && let Some(ref sandbox) = state.sandbox
+                    && let Some(ref sandbox) = infra.sandbox
                     && let Ok(host_path) = std::fs::canonicalize(crate::config::WORKSPACE_DIR)
-                    && let Err(e) = sandbox.ensure_container(&name, &host_path.to_string_lossy(), false, Some(&state.oauth)).await
+                    && let Err(e) = sandbox.ensure_container(&name, &host_path.to_string_lossy(), false, Some(&auth.oauth)).await
                 {
                     tracing::warn!(agent = %name, error = %e, "failed to ensure container after restore");
                 }
@@ -1051,12 +1062,12 @@ async fn restore_workspace(workspace_dir: &str, files: &[WorkspaceFile]) -> usiz
 /// Restore memory and cron jobs atomically within a single DB transaction.
 /// Preserves the `daily-backup` cron job so the base agent continues working after restore.
 async fn restore_memory_and_cron(
-    state: &AppState,
+    db: &PgPool,
     chunks: &[MemoryChunk],
     jobs: &[CronJob],
     fts_lang: &str,
 ) -> sqlx::Result<(usize, usize)> {
-    let mut tx = state.db.begin().await?;
+    let mut tx = db.begin().await?;
 
     // Disable FK checks for bulk restore (parent_id references may arrive out of order)
     sqlx::query("SET CONSTRAINTS ALL DEFERRED").execute(&mut *tx).await?;

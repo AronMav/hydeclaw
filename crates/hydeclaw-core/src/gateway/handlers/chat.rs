@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::super::{AppState, OpenAiMessage, sse_types};
 use crate::agent::engine::StreamEvent;
+use crate::gateway::clusters::{AgentCore, ChannelBus, ConfigServices, InfraServices};
 use crate::tasks;
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -179,7 +180,7 @@ struct ChatResponseUsage {
 }
 
 pub(crate) async fn chat_completions(
-    State(state): State<AppState>,
+    State(agents): State<AgentCore>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
     // Route to agent: req.agent extension first, then req.model as agent name, then first available
@@ -187,12 +188,12 @@ pub(crate) async fn chat_completions(
         let by_ext = req.agent.as_deref().filter(|s| !s.is_empty());
         let by_model = req.model.as_deref().filter(|s| !s.is_empty());
         match (by_ext, by_model) {
-            (Some(name), _) => state.get_engine(name).await,
+            (Some(name), _) => agents.get_engine(name).await,
             (None, Some(name)) => {
-                let e = state.get_engine(name).await;
-                if e.is_some() { e } else { state.first_engine().await }
+                let e = agents.get_engine(name).await;
+                if e.is_some() { e } else { agents.first_engine().await }
             }
-            _ => state.first_engine().await,
+            _ => agents.first_engine().await,
         }
     };
 
@@ -296,8 +297,8 @@ pub(crate) async fn chat_completions(
 
 // ── GET /v1/models ──
 
-pub(crate) async fn list_models(State(state): State<AppState>) -> Json<Value> {
-    let agents_map = state.agents.read().await;
+pub(crate) async fn list_models(State(agents): State<AgentCore>) -> Json<Value> {
+    let agents_map = agents.map.read().await;
     let data: Vec<Value> = agents_map
         .keys()
         .map(|name| {
@@ -314,10 +315,10 @@ pub(crate) async fn list_models(State(state): State<AppState>) -> Json<Value> {
 
 /// POST /v1/embeddings — proxy to configured embedding endpoint (OpenAI-compatible).
 pub(crate) async fn embeddings_proxy(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Json(req): Json<Value>,
 ) -> impl IntoResponse {
-    if !state.memory_store.is_available() {
+    if !infra.memory_store.is_available() {
         return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({
             "error": {"message": "embeddings not configured", "type": "server_error"}
         }))).into_response();
@@ -341,7 +342,7 @@ pub(crate) async fn embeddings_proxy(
     }
 
     let refs: Vec<&str> = texts.iter().map(std::string::String::as_str).collect();
-    match state.memory_store.embed_batch(&refs).await {
+    match infra.memory_store.embed_batch(&refs).await {
         Ok(embeddings) => {
             let data: Vec<Value> = embeddings.iter().enumerate().map(|(i, emb)| {
                 json!({"object": "embedding", "index": i, "embedding": emb})
@@ -349,7 +350,7 @@ pub(crate) async fn embeddings_proxy(
             Json(json!({
                 "object": "list",
                 "data": data,
-                "model": state.memory_store.embed_model_name(),
+                "model": infra.memory_store.embed_model_name(),
                 "usage": {"prompt_tokens": 0, "total_tokens": 0}
             })).into_response()
         }
@@ -379,14 +380,16 @@ pub(crate) struct ChatSseRequest {
 
 #[allow(unused_assignments)]
 pub(crate) async fn api_chat_sse(
-    State(state): State<AppState>,
+    State(agents): State<AgentCore>,
+    State(infra): State<InfraServices>,
+    State(bus): State<ChannelBus>,
     Json(req): Json<ChatSseRequest>,
 ) -> impl IntoResponse {
     let agent_name = req.agent.clone().unwrap_or_default();
     let engine = if agent_name.is_empty() {
-        state.first_engine().await
+        agents.first_engine().await
     } else {
-        state.get_engine(&agent_name).await
+        agents.get_engine(&agent_name).await
     };
 
     let engine = match engine {
@@ -452,7 +455,7 @@ pub(crate) async fn api_chat_sse(
     // ── @-mention routing ──────────────────────────────────────────
     // If user message contains @AgentName, route to that agent instead.
     let all_agent_names: Vec<String> = {
-        let map = state.agents.read().await;
+        let map = agents.map.read().await;
         map.keys().cloned().collect()
     };
 
@@ -462,7 +465,7 @@ pub(crate) async fn api_chat_sse(
     {
         tracing::info!(mentioned = %mentioned, "mention routing: found @-mention");
         // Resolve the mentioned agent's engine
-        let mentioned_engine = state.get_engine(&mentioned).await;
+        let mentioned_engine = agents.get_engine(&mentioned).await;
         match mentioned_engine {
             Some(eng) => {
                 let cleaned = crate::agent::mention_parser::strip_mention(&user_text, &mentioned);
@@ -502,9 +505,9 @@ pub(crate) async fn api_chat_sse(
     // Engine task: process message and emit StreamEvents.
     // Inter-agent communication now happens via the `agent` tool (polling model),
     // so no turn loop is needed — a single handle_sse call suffices.
-    let ui_tx = state.ui_event_tx.clone();
+    let ui_tx = bus.ui_event_tx.clone();
     let agent_for_broadcast = msg.agent_id.clone();
-    let invite_db = state.db.clone();
+    let invite_db = infra.db.clone();
     let mentioned_for_invite = mentioned_agent.clone();
     let engine_handle = tokio::spawn(async move {
         let current_agent_name = engine.name().to_string();
@@ -540,7 +543,7 @@ pub(crate) async fn api_chat_sse(
     //    converter sends error SSE event, marks stream as error in registry, finalizes
     //    the streaming message, then sends [DONE]. Client always receives error before
     //    connection close in both paths.
-    let registry = state.stream_registry.clone();
+    let registry = bus.stream_registry.clone();
     tokio::spawn(async move {
         let mut text_id_counter: usize = 0;
         let mut pending_text_end: Option<String> = None;
@@ -578,14 +581,14 @@ pub(crate) async fn api_chat_sse(
         let mut finished_sent = false;
         let mut cancel_token: Option<CancellationToken> = None;
         let mut job_id: Option<uuid::Uuid> = None;
-        let chat_db = state.db.clone();
+        let chat_db = infra.db.clone();
         let mut accumulated_text = String::new();
         let mut accumulated_tools: Vec<serde_json::Value> = Vec::new();
         let mut tools_flushed_count: usize = 0;
         let mut cached_tools_json: Option<serde_json::Value> = None;
         // Periodic DB flush for streaming messages (LibreChat-style)
         let mut streaming_msg_id = uuid::Uuid::new_v4();
-        let mut streaming_guard = StreamingMessageGuard::new(state.db.clone(), streaming_msg_id);
+        let mut streaming_guard = StreamingMessageGuard::new(infra.db.clone(), streaming_msg_id);
         let mut last_db_flush = std::time::Instant::now();
         let mut session_uuid: Option<uuid::Uuid> = None;
         let flush_interval = std::time::Duration::from_secs(2);
@@ -916,18 +919,18 @@ pub(crate) async fn api_chat_sse(
 /// Returns 204 if no active stream, or SSE with replay + live events.
 pub(crate) async fn api_chat_resume_stream(
     Path(id): Path<String>,
-    State(state): State<AppState>,
+    State(bus): State<ChannelBus>,
 ) -> impl IntoResponse {
     use async_stream::stream;
     use tokio::sync::broadcast;
 
-    match state.stream_registry.subscribe(&id).await {
+    match bus.stream_registry.subscribe(&id).await {
         None => {
             // No in-memory stream — check DB for recently finished/interrupted job
             let session_uuid = uuid::Uuid::parse_str(&id).ok();
             if let Some(sid) = session_uuid
                 && let Ok(Some(job)) = crate::gateway::stream_jobs::get_active_job(
-                    state.stream_registry.db(), sid
+                    bus.stream_registry.db(), sid
                 ).await {
                     let sync_status = match job.status.as_str() {
                         "finished" => "finished",
@@ -935,7 +938,7 @@ pub(crate) async fn api_chat_resume_stream(
                         "running" => {
                             // Running in DB but not in memory = Core restarted mid-stream
                             if let Err(e) = crate::gateway::stream_jobs::error_job(
-                                state.stream_registry.db(), job.id, "stream lost: core restarted"
+                                bus.stream_registry.db(), job.id, "stream lost: core restarted"
                             ).await {
                                 tracing::warn!(error = %e, "failed to mark stream job as error on resume");
                             }
@@ -1034,11 +1037,11 @@ pub(crate) struct ModelOverrideBody {
 }
 
 pub(crate) async fn set_model_override(
-    State(state): State<AppState>,
+    State(agents): State<AgentCore>,
     Path(agent_name): Path<String>,
     Json(body): Json<ModelOverrideBody>,
 ) -> impl IntoResponse {
-    let Some(engine) = state.get_engine(&agent_name).await else {
+    let Some(engine) = agents.get_engine(&agent_name).await else {
         return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"not found"}))).into_response();
     };
     engine.set_model_override(body.model.clone());
@@ -1046,13 +1049,16 @@ pub(crate) async fn set_model_override(
     Json(serde_json::json!({"model": current})).into_response()
 }
 
-pub(crate) async fn health(State(state): State<AppState>) -> Json<Value> {
+pub(crate) async fn health(
+    State(infra): State<InfraServices>,
+    State(cfg): State<ConfigServices>,
+) -> Json<Value> {
     let db_ok = sqlx::query("SELECT 1")
-        .execute(&state.db)
+        .execute(&infra.db)
         .await
         .is_ok();
 
-    let config = state.shared_config.read().await;
+    let config = cfg.shared_config.read().await;
 
     // Agent names and icons are intentionally omitted here — /health is unauthenticated
     // and must not leak information about which agents are configured.
@@ -1066,7 +1072,7 @@ pub(crate) async fn health(State(state): State<AppState>) -> Json<Value> {
 }
 
 pub(crate) async fn mcp_callback(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Json(payload): Json<hydeclaw_types::McpCallback>,
 ) -> StatusCode {
     tracing::info!(
@@ -1075,7 +1081,7 @@ pub(crate) async fn mcp_callback(
         "MCP callback received"
     );
 
-    if let Err(e) = tasks::update_step_from_callback(&state.db, &payload).await {
+    if let Err(e) = tasks::update_step_from_callback(&infra.db, &payload).await {
         tracing::error!(error = %e, "failed to process MCP callback");
         return StatusCode::INTERNAL_SERVER_ERROR;
     }
@@ -1086,9 +1092,9 @@ pub(crate) async fn mcp_callback(
 /// POST /api/chat/{id}/abort — cancel an in-progress stream from any client.
 pub(crate) async fn api_chat_abort(
     Path(session_id): Path<String>,
-    State(state): State<AppState>,
+    State(bus): State<ChannelBus>,
 ) -> impl IntoResponse {
-    let cancelled = state.stream_registry.cancel(&session_id).await;
+    let cancelled = bus.stream_registry.cancel(&session_id).await;
     if cancelled {
         tracing::info!(session_id = %session_id, "stream cancelled via API");
         Json(json!({"ok": true, "message": "stream cancelled"})).into_response()
