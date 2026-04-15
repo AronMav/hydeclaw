@@ -167,6 +167,24 @@ pub struct AgentDeps {
     pub audit_queue: Arc<crate::db::audit_queue::AuditQueue>,
 }
 
+#[cfg(test)]
+impl AgentDeps {
+    /// Construct a minimal `AgentDeps` for unit tests.
+    /// Uses a lazy (never-connecting) pool so no real DB is needed.
+    pub fn test_new() -> Self {
+        let db = PgPool::connect_lazy("postgres://invalid").expect("lazy pool");
+        Self {
+            mcp: None,
+            workspace_dir: std::env::temp_dir().to_string_lossy().into_owned(),
+            toolgate_url: None,
+            sandbox: None,
+            tool_embed_cache: Arc::new(crate::tools::embedding::ToolEmbeddingCache::new()),
+            penalty_cache: Arc::new(crate::db::tool_quality::PenaltyCache::new(db.clone())),
+            audit_queue: Arc::new(crate::db::audit_queue::AuditQueue::new(db)),
+        }
+    }
+}
+
 impl AppState {
     /// Get an engine by agent name (read-locks the agents map briefly).
     pub async fn get_engine(&self, name: &str) -> Option<Arc<AgentEngine>> {
