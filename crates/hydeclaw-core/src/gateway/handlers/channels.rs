@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::super::AppState;
+use crate::gateway::clusters::{AgentCore, AuthServices, ChannelBus, InfraServices};
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -35,8 +36,8 @@ const CREDENTIAL_KEYS: &[&str] = &[
 // ── Channel management ────────────────────────────────────────────────────────
 
 /// Invalidate channel info cache on the agent engine after CRUD operations.
-async fn invalidate_agent_channel_cache(state: &AppState, agent_name: &str) {
-    if let Some(engine) = state.get_engine(agent_name).await {
+async fn invalidate_agent_channel_cache(agents: &AgentCore, agent_name: &str) {
+    if let Some(engine) = agents.get_engine(agent_name).await {
         engine.invalidate_channel_cache().await;
     }
 }
@@ -63,7 +64,7 @@ pub(crate) struct ChannelCreateBody {
 }
 
 pub(crate) async fn api_channels_list(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Path(agent_name): Path<String>,
 ) -> impl IntoResponse {
     let rows: Result<Vec<AgentChannelRow>, _> = sqlx::query_as(
@@ -71,7 +72,7 @@ pub(crate) async fn api_channels_list(
          FROM agent_channels WHERE agent_name = $1 ORDER BY created_at"
     )
     .bind(&agent_name)
-    .fetch_all(&state.db)
+    .fetch_all(&infra.db)
     .await;
 
     match rows {
@@ -84,7 +85,9 @@ pub(crate) async fn api_channels_list(
 }
 
 pub(crate) async fn api_channel_create(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(auth): State<AuthServices>,
+    State(agents): State<AgentCore>,
     Path(agent_name): Path<String>,
     Json(body): Json<ChannelCreateBody>,
 ) -> impl IntoResponse {
@@ -108,7 +111,7 @@ pub(crate) async fn api_channel_create(
     .bind(&body.channel_type)
     .bind(&body.display_name)
     .bind(&config_redacted)
-    .fetch_one(&state.db)
+    .fetch_one(&infra.db)
     .await;
 
     let r = match row {
@@ -119,7 +122,7 @@ pub(crate) async fn api_channel_create(
     // Store credentials in vault after we have the channel UUID
     if let Some(creds_json) = credentials {
         let desc = format!("Channel credentials for {}/{}", agent_name, body.channel_type);
-        if let Err(e) = state.secrets.set_scoped(
+        if let Err(e) = auth.secrets.set_scoped(
             "CHANNEL_CREDENTIALS",
             &r.id.to_string(),
             &creds_json,
@@ -129,7 +132,7 @@ pub(crate) async fn api_channel_create(
             // Rollback: remove the inserted row to keep state consistent
             if let Err(re) = sqlx::query("DELETE FROM agent_channels WHERE id = $1")
                 .bind(r.id)
-                .execute(&state.db)
+                .execute(&infra.db)
                 .await
             {
                 tracing::error!(channel_id = %r.id, error = %re, "rollback DELETE failed after vault error");
@@ -139,12 +142,14 @@ pub(crate) async fn api_channel_create(
     }
 
     tracing::info!(agent = %agent_name, channel_id = %r.id, "channel created");
-    invalidate_agent_channel_cache(&state, &agent_name).await;
+    invalidate_agent_channel_cache(&agents, &agent_name).await;
     Json(json!({"ok": true, "id": r.id, "status": "stopped"})).into_response()
 }
 
 pub(crate) async fn api_channel_delete(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(auth): State<AuthServices>,
+    State(agents): State<AgentCore>,
     Path((agent_name, id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let Ok(uuid) = id.parse::<sqlx::types::Uuid>() else {
@@ -157,7 +162,7 @@ pub(crate) async fn api_channel_delete(
     )
     .bind(uuid)
     .bind(&agent_name)
-    .fetch_optional(&state.db)
+    .fetch_optional(&infra.db)
     .await
     .unwrap_or(None);
 
@@ -167,24 +172,24 @@ pub(crate) async fn api_channel_delete(
 
     if let Err(e) = sqlx::query("DELETE FROM agent_channels WHERE id = $1")
         .bind(uuid)
-        .execute(&state.db)
+        .execute(&infra.db)
         .await
     {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("delete failed: {}", e)}))).into_response();
     }
 
     // Best-effort: delete vault credentials (non-fatal if already absent)
-    if let Err(e) = state.secrets.delete_scoped("CHANNEL_CREDENTIALS", &uuid.to_string()).await {
+    if let Err(e) = auth.secrets.delete_scoped("CHANNEL_CREDENTIALS", &uuid.to_string()).await {
         tracing::warn!(channel_id = %uuid, error = %e, "Failed to delete channel credentials from vault (non-fatal)");
     }
 
     tracing::info!(agent = %agent_name, channel_id = %uuid, "channel deleted");
-    invalidate_agent_channel_cache(&state, &agent_name).await;
+    invalidate_agent_channel_cache(&agents, &agent_name).await;
     Json(json!({"ok": true})).into_response()
 }
 
 pub(crate) async fn api_channel_restart(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Path((agent_name, id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let Ok(uuid) = id.parse::<sqlx::types::Uuid>() else {
@@ -197,7 +202,7 @@ pub(crate) async fn api_channel_restart(
     )
     .bind(uuid)
     .bind(&agent_name)
-    .fetch_one(&state.db)
+    .fetch_one(&infra.db)
     .await
     .unwrap_or(false);
 
@@ -210,7 +215,7 @@ pub(crate) async fn api_channel_restart(
         "UPDATE agent_channels SET status = 'pending_restart', error_msg = NULL WHERE id = $1"
     )
     .bind(uuid)
-    .execute(&state.db)
+    .execute(&infra.db)
     .await
     {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("restart failed: {}", e)}))).into_response();
@@ -222,7 +227,7 @@ pub(crate) async fn api_channel_restart(
 
 /// Acknowledge channel status change from adapter (running/stopped).
 pub(crate) async fn api_channel_ack(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Path((_agent_name, channel_id)): Path<(String, String)>,
     body: Option<Json<serde_json::Value>>,
 ) -> impl IntoResponse {
@@ -243,7 +248,7 @@ pub(crate) async fn api_channel_ack(
     .bind(status)
     .bind(uuid)
     .bind(&_agent_name)
-    .execute(&state.db)
+    .execute(&infra.db)
     .await
     {
         tracing::warn!(channel_id = %uuid, error = %e, "channel ack DB update failed");
@@ -261,7 +266,9 @@ pub(crate) struct ChannelUpdateBody {
 }
 
 pub(crate) async fn api_channel_update(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(auth): State<AuthServices>,
+    State(agents): State<AgentCore>,
     Path((agent_name, id)): Path<(String, String)>,
     Json(body): Json<ChannelUpdateBody>,
 ) -> impl IntoResponse {
@@ -275,7 +282,7 @@ pub(crate) async fn api_channel_update(
     )
     .bind(uuid)
     .bind(&agent_name)
-    .fetch_one(&state.db)
+    .fetch_one(&infra.db)
     .await
     .unwrap_or(false);
 
@@ -288,7 +295,7 @@ pub(crate) async fn api_channel_update(
         && let Err(e) = sqlx::query("UPDATE agent_channels SET display_name = $1 WHERE id = $2")
             .bind(dn)
             .bind(uuid)
-            .execute(&state.db)
+            .execute(&infra.db)
             .await
     {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("update display_name failed: {}", e)}))).into_response();
@@ -297,7 +304,7 @@ pub(crate) async fn api_channel_update(
         // Store new credentials in vault if provided
         if let Some(creds_json) = extract_credentials(new_cfg) {
             let desc = format!("Channel credentials for agent {agent_name}");
-            if let Err(e) = state.secrets.set_scoped(
+            if let Err(e) = auth.secrets.set_scoped(
                 "CHANNEL_CREDENTIALS",
                 &uuid.to_string(),
                 &creds_json,
@@ -313,7 +320,7 @@ pub(crate) async fn api_channel_update(
             "SELECT config FROM agent_channels WHERE id = $1"
         )
         .bind(uuid)
-        .fetch_optional(&state.db)
+        .fetch_optional(&infra.db)
         .await
         .ok()
         .flatten();
@@ -335,7 +342,7 @@ pub(crate) async fn api_channel_update(
         if let Err(e) = sqlx::query("UPDATE agent_channels SET config = $1 WHERE id = $2")
             .bind(&merged)
             .bind(uuid)
-            .execute(&state.db)
+            .execute(&infra.db)
             .await
         {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("update config failed: {}", e)}))).into_response();
@@ -343,12 +350,12 @@ pub(crate) async fn api_channel_update(
     }
 
     tracing::info!(agent = %agent_name, channel_id = %uuid, "channel updated");
-    invalidate_agent_channel_cache(&state, &agent_name).await;
+    invalidate_agent_channel_cache(&agents, &agent_name).await;
     Json(json!({"ok": true})).into_response()
 }
 
 pub(crate) async fn api_channel_status(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Path((agent_name, id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let Ok(uuid) = id.parse::<sqlx::types::Uuid>() else {
@@ -361,7 +368,7 @@ pub(crate) async fn api_channel_status(
     )
     .bind(uuid)
     .bind(&agent_name)
-    .fetch_optional(&state.db)
+    .fetch_optional(&infra.db)
     .await
     .unwrap_or(None);
 
@@ -376,7 +383,8 @@ pub(crate) async fn api_channel_status(
 
 /// GET /api/channels — list ALL channels across all agents.
 pub(crate) async fn api_list_all_channels(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(auth): State<AuthServices>,
     query: axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let reveal = query.get("reveal").is_some_and(|v| v == "true");
@@ -384,7 +392,7 @@ pub(crate) async fn api_list_all_channels(
         "SELECT id, agent_name, channel_type, display_name, config, container_name, status, error_msg \
          FROM agent_channels ORDER BY agent_name, created_at",
     )
-    .fetch_all(&state.db)
+    .fetch_all(&infra.db)
     .await;
 
     match rows {
@@ -392,7 +400,7 @@ pub(crate) async fn api_list_all_channels(
             if reveal {
                 let mut channels = Vec::with_capacity(rows.len());
                 for row in &rows {
-                    let config = match state.secrets.get_scoped(
+                    let config = match auth.secrets.get_scoped(
                         "CHANNEL_CREDENTIALS",
                         &row.id.to_string(),
                     ).await {
@@ -421,9 +429,9 @@ pub(crate) async fn api_list_all_channels(
 
 /// GET /api/channels/active — list currently connected channel adapters.
 pub(crate) async fn api_channels_active(
-    State(state): State<AppState>,
+    State(bus): State<ChannelBus>,
 ) -> impl IntoResponse {
-    let channels = state.connected_channels.read().await;
+    let channels = bus.connected_channels.read().await;
     Json(json!({ "channels": &*channels }))
 }
 
@@ -506,7 +514,9 @@ fn channel_row_json(r: &AgentChannelRow) -> Value {
 /// Body: {"`channel_id"`: "uuid", "text": "message"}
 /// Used by watchdog for alerting.
 pub(crate) async fn api_channel_notify(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(agents): State<AgentCore>,
+    State(bus): State<ChannelBus>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let channel_id = match body["channel_id"].as_str() {
@@ -523,7 +533,7 @@ pub(crate) async fn api_channel_notify(
         "SELECT agent_name, channel_type FROM agent_channels WHERE id = $1::uuid",
     )
     .bind(channel_id)
-    .fetch_optional(&state.db)
+    .fetch_optional(&infra.db)
     .await
     .ok()
     .flatten();
@@ -533,7 +543,7 @@ pub(crate) async fn api_channel_notify(
     };
 
     // Get the agent's engine for channel_router access
-    let engine = match state.get_engine(&agent_name).await {
+    let engine = match agents.get_engine(&agent_name).await {
         Some(e) => e,
         None => return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("agent '{}' not running", agent_name)}))).into_response(),
     };
@@ -564,8 +574,8 @@ pub(crate) async fn api_channel_notify(
         Ok(Ok(())) => {
             let ok_response = Json(json!({"ok": true})).into_response();
             {
-                let db = state.db.clone();
-                let tx = state.ui_event_tx.clone();
+                let db = infra.db.clone();
+                let tx = bus.ui_event_tx.clone();
                 let body = text.to_string();
                 let agent = agent_name.clone();
                 let ctype = channel_type_for_notify;

@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use super::super::AppState;
 use crate::db::outbound;
+use crate::gateway::clusters::{AgentCore, AuthServices, ChannelBus, ConfigServices, InfraServices, StatusMonitor};
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -34,58 +35,77 @@ pub(crate) fn ws_json(msg: &impl serde::Serialize) -> WsMessage {
     }
 }
 
+// ── Context bundle for channel WS loop ────────────────────────────────────────
+
+/// All cluster state needed by the channel WS loop. Cheap to clone (all Arc-backed).
+#[derive(Clone)]
+struct CwsCtx {
+    agents:  AgentCore,
+    auth:    AuthServices,
+    bus:     ChannelBus,
+    infra:   InfraServices,
+    status:  StatusMonitor,
+    cfg:     ConfigServices,
+}
+
 // ── Channel Connector WebSocket (external adapters: Telegram, Discord, etc.) ──
 
 pub(crate) async fn channel_ws_handler(
     ws: WebSocketUpgrade,
     axum::extract::Path(agent_name): axum::extract::Path<String>,
-    State(state): State<AppState>,
+    State(agents): State<AgentCore>,
+    State(auth): State<AuthServices>,
+    State(bus): State<ChannelBus>,
+    State(infra): State<InfraServices>,
+    State(status): State<StatusMonitor>,
+    State(cfg): State<ConfigServices>,
 ) -> impl IntoResponse {
     // Look up the agent — check it exists and has channel support.
-    let agents = state.agents.read().await;
-    let handle = if let Some(h) = agents.get(&agent_name) { h } else {
-        drop(agents);
+    let agents_map = agents.map.read().await;
+    let handle = if let Some(h) = agents_map.get(&agent_name) { h } else {
+        drop(agents_map);
         return (StatusCode::NOT_FOUND, Json(json!({"error": "agent not found"}))).into_response();
     };
 
     if handle.channel_router.is_none() {
-        drop(agents);
+        drop(agents_map);
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "agent is not in external channel mode"}))).into_response();
     }
-    drop(agents);
+    drop(agents_map);
 
-    ws.on_upgrade(move |socket| handle_channel_ws(socket, state, agent_name))
+    let ctx = CwsCtx { agents, auth, bus, infra, status, cfg };
+    ws.on_upgrade(move |socket| handle_channel_ws(socket, ctx, agent_name))
 }
 
-async fn handle_channel_ws(socket: WebSocket, state: AppState, agent_name: String) {
+async fn handle_channel_ws(socket: WebSocket, ctx: CwsCtx, agent_name: String) {
     tracing::info!(agent = %agent_name, "channel adapter connected");
 
     // Subscribe to channel actions (non-exclusive — multiple channels per agent).
     let (engine, access_guard) = {
-        let agents = state.agents.read().await;
-        let handle = if let Some(h) = agents.get(&agent_name) { h } else {
+        let agents_map = ctx.agents.map.read().await;
+        let handle = if let Some(h) = agents_map.get(&agent_name) { h } else {
             tracing::warn!(agent = %agent_name, "agent disappeared before WS upgrade");
             return;
         };
 
         let engine = handle.engine.clone();
-        let guard = state.access_guards.read().await.get(&agent_name).cloned();
+        let guard = ctx.auth.access_guards.read().await.get(&agent_name).cloned();
         tracing::info!(agent = %agent_name, has_guard = guard.is_some(), "channel WS: access guard resolved");
         (engine, guard)
     };
 
     // Run the main WS loop — channel_action_rx is created inside after Ready handshake.
     let connected_channel_type = channel_ws_loop(
-        socket, &state, &agent_name, &engine, &access_guard,
+        socket, &ctx, &agent_name, &engine, &access_guard,
     ).await;
 
     // Deregister from connected channels registry
     {
-        let mut channels = state.connected_channels.write().await;
+        let mut channels = ctx.bus.connected_channels.write().await;
         channels.retain(|c| !(c.agent_name == agent_name && c.channel_type == connected_channel_type));
     }
     // Notify UI about channel disconnect
-    state.ui_event_tx.send(
+    ctx.bus.ui_event_tx.send(
         serde_json::json!({"type": "channels_changed", "agent": &agent_name}).to_string()
     ).ok();
 
@@ -95,7 +115,7 @@ async fn handle_channel_ws(socket: WebSocket, state: AppState, agent_name: Strin
 /// Main WS event loop for a channel adapter. Returns the `channel_type` on disconnect.
 async fn channel_ws_loop(
     socket: WebSocket,
-    state: &AppState,
+    ctx: &CwsCtx,
     agent_name: &str,
     engine: &Arc<crate::agent::engine::AgentEngine>,
     access_guard: &Option<Arc<crate::channels::access::AccessGuard>>,
@@ -159,7 +179,7 @@ async fn channel_ws_loop(
                     ChannelInbound::Ping => {
                         // Bump last_activity — ping proves adapter is alive
                         {
-                            let mut channels = state.connected_channels.write().await;
+                            let mut channels = ctx.bus.connected_channels.write().await;
                             if let Some(ch) = channels.iter_mut().find(|c| c.agent_name == agent_name && c.channel_type == channel_type) {
                                 ch.last_activity = chrono::Utc::now();
                             }
@@ -185,7 +205,7 @@ async fn channel_ws_loop(
                         )
                         .bind(agent_name)
                         .bind(&channel_type)
-                        .fetch_optional(&state.db)
+                        .fetch_optional(&ctx.infra.db)
                         .await
                         .ok()
                         .flatten();
@@ -206,9 +226,9 @@ async fn channel_ws_loop(
                                 connected_at: now,
                                 last_activity: now,
                             };
-                            state.connected_channels.write().await.push(entry);
+                            ctx.bus.connected_channels.write().await.push(entry);
                         }
-                        state.ui_event_tx.send(
+                        ctx.bus.ui_event_tx.send(
                             serde_json::json!({"type": "channels_changed", "agent": agent_name}).to_string()
                         ).ok();
 
@@ -241,13 +261,13 @@ async fn channel_ws_loop(
                             "SELECT COUNT(*) FROM sessions WHERE agent_id = $1",
                         )
                         .bind(agent_name)
-                        .fetch_one(&state.db)
+                        .fetch_one(&ctx.infra.db)
                         .await
                         .unwrap_or(0);
 
                         // Deliver any pending messages from previous disconnection.
                         // Re-save undelivered ones if WS fails mid-delivery.
-                        match crate::db::pending::take_pending(&state.db, agent_name).await {
+                        match crate::db::pending::take_pending(&ctx.infra.db, agent_name).await {
                             Ok(pending) if !pending.is_empty() => {
                                 tracing::info!(agent = %agent_name, count = pending.len(), "delivering pending messages after reconnect");
                                 let mut failed = false;
@@ -255,7 +275,7 @@ async fn channel_ws_loop(
                                     if failed {
                                         // WS already broken — re-save remaining messages
                                         crate::db::pending::save_pending(
-                                            &state.db, agent_name, &pm.request_id, &pm.channel, &pm.message_type, &pm.text,
+                                            &ctx.infra.db, agent_name, &pm.request_id, &pm.channel, &pm.message_type, &pm.text,
                                         ).await.ok();
                                         continue;
                                     }
@@ -268,7 +288,7 @@ async fn channel_ws_loop(
                                         failed = true;
                                         // Re-save this message too
                                         crate::db::pending::save_pending(
-                                            &state.db, agent_name, &pm.request_id, &pm.channel, &pm.message_type, &pm.text,
+                                            &ctx.infra.db, agent_name, &pm.request_id, &pm.channel, &pm.message_type, &pm.text,
                                         ).await.ok();
                                     }
                                 }
@@ -278,7 +298,7 @@ async fn channel_ws_loop(
                         }
 
                         // Replay unacked outbound queue actions for this channel.
-                        match outbound::get_pending(&state.db, &channel_type, 50).await {
+                        match outbound::get_pending(&ctx.infra.db, &channel_type, 50).await {
                             Ok(queued) if !queued.is_empty() => {
                                 tracing::info!(agent = %agent_name, channel = %channel_type, count = queued.len(), "replaying outbound queue after reconnect");
                                 for (queue_id, _q_agent_id, q_action_name, q_payload) in queued {
@@ -302,7 +322,7 @@ async fn channel_ws_loop(
                                         break;
                                     }
                                     // Mark as sent (non-blocking)
-                                    let db = state.db.clone();
+                                    let db = ctx.infra.db.clone();
                                     tokio::spawn(async move {
                                         if let Err(e) = outbound::mark_sent(&db, queue_id).await {
                                             tracing::warn!(queue_id = %queue_id, error = %e, "outbound mark_sent failed");
@@ -338,12 +358,12 @@ async fn channel_ws_loop(
                     ChannelInbound::Message { request_id, msg } => {
                         // Bump last_activity for stale-channel detection
                         {
-                            let mut channels = state.connected_channels.write().await;
+                            let mut channels = ctx.bus.connected_channels.write().await;
                             if let Some(ch) = channels.iter_mut().find(|c| c.agent_name == agent_name && c.channel_type == channel_type) {
                                 ch.last_activity = chrono::Utc::now();
                             }
                         }
-                        state.polling_diagnostics.record_inbound();
+                        ctx.status.polling_diagnostics.record_inbound();
                         // Intercept approval callback buttons (approve:UUID / reject:UUID)
                         let is_callback = msg.context.get("is_callback").and_then(serde_json::Value::as_bool).unwrap_or(false);
                         if is_callback {
@@ -396,7 +416,7 @@ async fn channel_ws_loop(
                         let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
                         // Spawn engine processing with request timeout
-                        let timeout_secs = state.config.limits.request_timeout_secs;
+                        let timeout_secs = ctx.cfg.config.limits.request_timeout_secs;
                         let mut engine_handle = tokio::spawn(async move {
                             let fut = engine_clone.handle_with_status(&incoming, Some(status_tx), Some(chunk_tx));
                             if timeout_secs > 0 {
@@ -454,7 +474,7 @@ async fn channel_ws_loop(
                                         // Enqueue to persistent outbound queue (non-blocking)
                                         let payload = serde_json::json!({"action": &name, "params": &params, "context": &context});
                                         {
-                                            let db = state.db.clone();
+                                            let db = ctx.infra.db.clone();
                                             let agent_id = agent_name.to_string();
                                             let ch = channel_type.clone();
                                             let act_name = name.clone();
@@ -478,7 +498,7 @@ async fn channel_ws_loop(
                                         let outbound_msg = ChannelOutbound::Action { action_id: action_id.clone(), action: dto };
                                         if ws_sink.send(ws_json(&outbound_msg)).await.is_ok() {
                                             // Mark sent (non-blocking) — queue_id may not be available yet from spawn
-                                            let db = state.db.clone();
+                                            let db = ctx.infra.db.clone();
                                             let oids = outbound_ids.clone();
                                             let aid = action_id;
                                             tokio::spawn(async move {
@@ -511,7 +531,7 @@ async fn channel_ws_loop(
                                     // Enqueue to persistent outbound queue (non-blocking)
                                     let payload = serde_json::json!({"action": &name, "params": &params, "context": &context});
                                     {
-                                        let db = state.db.clone();
+                                        let db = ctx.infra.db.clone();
                                         let agent_id = agent_name.to_string();
                                         let ch = channel_type.clone();
                                         let act_name = name.clone();
@@ -542,7 +562,7 @@ async fn channel_ws_loop(
                                     if ws_sink.send(ws_json(&msg)).await.is_err() { break; }
                                     // Mark sent (non-blocking)
                                     {
-                                        let db = state.db.clone();
+                                        let db = ctx.infra.db.clone();
                                         let oids = outbound_ids.clone();
                                         tokio::spawn(async move {
                                             // Retry with backoff: enqueue spawn may not have completed yet
@@ -568,7 +588,7 @@ async fn channel_ws_loop(
                                                     let result = if success { Ok(()) } else { Err(error.unwrap_or_default()) };
                                                     // Update outbound queue status (non-blocking)
                                                     {
-                                                        let db = state.db.clone();
+                                                        let db = ctx.infra.db.clone();
                                                         let oids = outbound_ids.clone();
                                                         let is_success = success;
                                                         let aid = action_id.clone();
@@ -637,7 +657,7 @@ async fn channel_ws_loop(
                             if ws_sink.send(ws_json(&outbound)).await.is_err() {
                                 tracing::warn!(agent = %agent_name, msg_type, "WS send failed, saving as pending");
                                 crate::db::pending::save_pending(
-                                    &state.db, agent_name, &req_id, &channel_type, msg_type, &text,
+                                    &ctx.infra.db, agent_name, &req_id, &channel_type, msg_type, &text,
                                 ).await.ok();
                             }
                         }
@@ -647,13 +667,13 @@ async fn channel_ws_loop(
                             "agent": agent_name,
                             "channel": channel_type,
                         });
-                        state.ui_event_tx.send(event.to_string()).ok();
+                        ctx.bus.ui_event_tx.send(event.to_string()).ok();
                     }
                     ChannelInbound::ActionResult { action_id, success, error } => {
                         let result = if success { Ok(()) } else { Err(error.unwrap_or_default()) };
                         // Update outbound queue status (non-blocking)
                         {
-                            let db = state.db.clone();
+                            let db = ctx.infra.db.clone();
                             let oids = outbound_ids.clone();
                             let is_success = success;
                             let aid = action_id.clone();
@@ -696,8 +716,8 @@ async fn channel_ws_loop(
                             let c = guard.create_pairing_code(&user_id, display_name.as_deref()).await;
                             tracing::info!(agent = %agent_name, user_id = %user_id, code = %c, "pairing code created");
                             {
-                                let db = state.db.clone();
-                                let tx = state.ui_event_tx.clone();
+                                let db = ctx.infra.db.clone();
+                                let tx = ctx.bus.ui_event_tx.clone();
                                 let uid = user_id.clone();
                                 let dname = display_name.clone();
                                 let code_val = c.clone();
@@ -764,7 +784,7 @@ async fn channel_ws_loop(
                 // Enqueue to persistent outbound queue (non-blocking)
                 let payload = serde_json::json!({"action": &name, "params": &params, "context": &context});
                 {
-                    let db = state.db.clone();
+                    let db = ctx.infra.db.clone();
                     let agent_id = agent_name.to_string();
                     let ch = channel_type.clone();
                     let act_name = name.clone();
@@ -802,11 +822,11 @@ async fn channel_ws_loop(
                     tracing::error!(agent = %agent_name, "WS sink send failed for action");
                     break;
                 }
-                state.polling_diagnostics.record_outbound();
+                ctx.status.polling_diagnostics.record_outbound();
                 tracing::info!(agent = %agent_name, action_id = %action_id, "WS message sent to adapter OK");
                 // Mark sent (non-blocking)
                 {
-                    let db = state.db.clone();
+                    let db = ctx.infra.db.clone();
                     let oids = outbound_ids.clone();
                     let aid = action_id;
                     tokio::spawn(async move {
@@ -883,12 +903,14 @@ enum WsServerMessage {
 
 pub(crate) async fn ws_handler(
     ws: WebSocketUpgrade,
-    State(state): State<AppState>,
+    State(agents): State<AgentCore>,
+    State(bus): State<ChannelBus>,
+    State(status): State<StatusMonitor>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(|socket| handle_ws(socket, state))
+    ws.on_upgrade(|socket| handle_ws(socket, agents, bus, status))
 }
 
-async fn handle_ws(socket: WebSocket, state: AppState) {
+async fn handle_ws(socket: WebSocket, agents: AgentCore, bus: ChannelBus, status: StatusMonitor) {
     use futures_util::{SinkExt, StreamExt};
     use tokio::sync::mpsc;
 
@@ -896,11 +918,11 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
 
     let (mut ws_sink, mut ws_stream) = socket.split();
     let mut log_rx: Option<tokio::sync::broadcast::Receiver<String>> = None;
-    let mut ui_event_rx = state.ui_event_tx.subscribe();
+    let mut ui_event_rx = bus.ui_event_tx.subscribe();
 
     // Send current processing state to newly connected client
     {
-        let events: Vec<String> = match state.processing_tracker.read() {
+        let events: Vec<String> = match status.processing_tracker.read() {
             Ok(t) => t.values().map(std::string::ToString::to_string).collect(),
             Err(_) => vec![],
         };
@@ -949,7 +971,7 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                         if ws_sink.send(ws_json(&WsServerMessage::Pong)).await.is_err() { break; }
                     }
                     WsClientMessage::SubscribeLogs => {
-                        log_rx = Some(state.log_tx.subscribe());
+                        log_rx = Some(bus.log_tx.subscribe());
                         tracing::debug!("WS client subscribed to logs");
                     }
                     WsClientMessage::UnsubscribeLogs => {
@@ -959,9 +981,9 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                     WsClientMessage::Chat { agent, text } => {
                         let agent_name = agent.as_deref().unwrap_or("");
                         let engine = if agent_name.is_empty() {
-                            state.first_engine().await
+                            agents.first_engine().await
                         } else {
-                            state.get_engine(agent_name).await
+                            agents.get_engine(agent_name).await
                         };
 
                         let engine = if let Some(e) = engine { e } else {
