@@ -312,8 +312,8 @@ pub(crate) async fn auth_middleware(
     // Don't lock loopback — internal services must not be locked out.
     // Don't count static asset failures — browsers preflight these without tokens.
     let is_static_asset = path.starts_with("/_next/") || path.ends_with(".js") || path.ends_with(".css")
-        || path.ends_with(".png") || path.ends_with(".jpg") || path.ends_with(".woff2")
-        || path.starts_with("/api/setup/");
+        || path.ends_with(".png") || path.ends_with(".jpg") || path.ends_with(".ico") || path.ends_with(".svg")
+        || path.ends_with(".woff2") || path.starts_with("/api/setup/");
     if !exempt_from_lockout && !is_static_asset {
         rate_limiter.record_failure(&client_ip).await;
     }
