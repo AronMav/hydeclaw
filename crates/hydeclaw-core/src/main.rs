@@ -179,7 +179,8 @@ async fn main() -> Result<()> {
 
     // Config hot-reload watcher
     let shared_config = std::sync::Arc::new(tokio::sync::RwLock::new(cfg.clone()));
-    config::spawn_config_watcher("config/hydeclaw.toml".to_string(), shared_config.clone());
+    let config_api_write_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    config::spawn_config_watcher("config/hydeclaw.toml".to_string(), shared_config.clone(), config_api_write_flag.clone());
 
     // Database pool — DATABASE_URL env var overrides hydeclaw.toml value
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| cfg.database.url.clone());
@@ -373,6 +374,7 @@ async fn main() -> Result<()> {
         wan_ip_cache: Arc::new(tokio::sync::RwLock::new(None)),
         session_pools: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         config_write_lock: Arc::new(tokio::sync::Mutex::new(())),
+        config_api_write_flag: config_api_write_flag.clone(),
     };
 
     // Managed processes started after TcpListener::bind below — toolgate needs Core API ready.

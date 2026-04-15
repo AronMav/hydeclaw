@@ -1038,9 +1038,14 @@ use tokio::sync::RwLock;
 /// Shared config handle that supports atomic hot-reload.
 pub type SharedConfig = Arc<RwLock<AppConfig>>;
 
+/// Atomic flag to suppress file-watcher reload when the API just wrote the file.
+/// Set to `true` by the API handler before writing; watcher skips one cycle.
+pub type ConfigApiWriteFlag = Arc<std::sync::atomic::AtomicBool>;
+
 /// Watch config file for changes and reload atomically.
 /// Debounces changes (500ms) and validates before applying.
-pub fn spawn_config_watcher(config_path: String, shared: SharedConfig) {
+/// Skips reload when `api_write_flag` is set (API handler already updated in-memory config).
+pub fn spawn_config_watcher(config_path: String, shared: SharedConfig, api_write_flag: ConfigApiWriteFlag) {
     use notify::{Event, EventKind, RecursiveMode, Watcher};
 
     // Capture tokio runtime handle before spawning OS thread
@@ -1073,6 +1078,13 @@ pub fn spawn_config_watcher(config_path: String, shared: SharedConfig) {
                 }) => {
                     // Debounce: skip if less than 500ms since last reload
                     if last_reload.elapsed() < std::time::Duration::from_millis(500) {
+                        continue;
+                    }
+
+                    // Skip if the API handler just wrote this file (it already updated in-memory config)
+                    if api_write_flag.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                        tracing::debug!("config watcher: skipping reload (API-initiated write)");
+                        last_reload = std::time::Instant::now();
                         continue;
                     }
 
