@@ -127,10 +127,13 @@ pub(crate) async fn api_channel_create(
         ).await {
             tracing::error!(channel_id = %r.id, error = %e, "Failed to store channel credentials in vault");
             // Rollback: remove the inserted row to keep state consistent
-            let _ = sqlx::query("DELETE FROM agent_channels WHERE id = $1")
+            if let Err(re) = sqlx::query("DELETE FROM agent_channels WHERE id = $1")
                 .bind(r.id)
                 .execute(&state.db)
-                .await;
+                .await
+            {
+                tracing::error!(channel_id = %r.id, error = %re, "rollback DELETE failed after vault error");
+            }
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "failed to store credentials"}))).into_response();
         }
     }
