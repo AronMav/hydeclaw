@@ -13,6 +13,7 @@ pub mod watcher;
 pub use admin::MemoryAdmin;
 pub use embedding::{fmt_vec, EmbeddingService, ToolgateEmbedder};
 pub use store::MemoryStore;
+pub use watcher::spawn_workspace_watcher;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
