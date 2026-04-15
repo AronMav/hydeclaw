@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::super::AppState;
+use crate::gateway::clusters::{AgentCore, AuthServices, InfraServices};
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -157,7 +158,9 @@ struct TriggerRow {
 }
 
 pub(crate) async fn gmail_push_handler(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(auth): State<AuthServices>,
+    State(agents): State<AgentCore>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
     Json(body): Json<PubsubPush>,
 ) -> impl IntoResponse {
@@ -202,14 +205,14 @@ pub(crate) async fn gmail_push_handler(
          WHERE email_address = $1 AND enabled = true LIMIT 1",
     )
     .bind(&email)
-    .fetch_optional(&state.db)
+    .fetch_optional(&infra.db)
     .await
     {
         Ok(Some(t)) => t,
         _ => return StatusCode::NO_CONTENT.into_response(),
     };
 
-    let token = match state.oauth.get_token("google", &trigger.agent_id).await {
+    let token = match auth.oauth.get_token("google", &trigger.agent_id).await {
         Ok(t) => t,
         Err(e) => {
             tracing::warn!(
@@ -228,7 +231,7 @@ pub(crate) async fn gmail_push_handler(
         )
         .bind(&history_id)
         .bind(&email)
-        .execute(&state.db)
+        .execute(&infra.db)
         .await
         {
             tracing::warn!(error = %e, email = %email, "gmail: failed to initialize history_id cursor");
@@ -237,7 +240,7 @@ pub(crate) async fn gmail_push_handler(
         return axum::http::StatusCode::NO_CONTENT.into_response();
     };
 
-    let messages = match gmail_history(&state.oauth.client, &token, &since).await {
+    let messages = match gmail_history(&auth.oauth.client, &token, &since).await {
         Ok(msgs) => msgs,
         Err(e) => {
             tracing::warn!(error = %e, email = %email, "gmail: history fetch failed, not advancing cursor");
@@ -251,16 +254,16 @@ pub(crate) async fn gmail_push_handler(
     )
     .bind(&history_id)
     .bind(&email)
-    .execute(&state.db)
+    .execute(&infra.db)
     .await
     {
         tracing::warn!(error = %e, "gmail: failed to update history_id cursor");
     }
 
     // Dispatch to agent
-    let agents = state.agents.read().await;
+    let agent_map = agents.map.read().await;
     for msg_summary in messages {
-        let Some(handle) = agents.get(&trigger.agent_id) else {
+        let Some(handle) = agent_map.get(&trigger.agent_id) else {
             continue;
         };
         let engine = handle.engine.clone();
@@ -314,10 +317,11 @@ struct GmailTriggerRow {
 }
 
 pub(crate) async fn api_create_gmail_trigger(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(auth): State<AuthServices>,
     Json(req): Json<CreateGmailTriggerReq>,
 ) -> impl IntoResponse {
-    let token = match state.oauth.get_token("google", &req.agent_id).await {
+    let token = match auth.oauth.get_token("google", &req.agent_id).await {
         Ok(t) => t,
         Err(e) => {
             return (
@@ -329,7 +333,7 @@ pub(crate) async fn api_create_gmail_trigger(
     };
 
     let (history_id, expiry_ms) =
-        match gmail_watch(&state.oauth.client, &token, &req.pubsub_topic).await {
+        match gmail_watch(&auth.oauth.client, &token, &req.pubsub_topic).await {
             Ok(r) => r,
             Err(e) => {
                 return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
@@ -352,7 +356,7 @@ pub(crate) async fn api_create_gmail_trigger(
     .bind(&history_id)
     .bind(watch_expiry)
     .bind(&req.pubsub_topic)
-    .fetch_one(&state.db)
+    .fetch_one(&infra.db)
     .await;
 
     match result {
@@ -362,13 +366,13 @@ pub(crate) async fn api_create_gmail_trigger(
 }
 
 pub(crate) async fn api_list_gmail_triggers(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
 ) -> impl IntoResponse {
     let rows = sqlx::query_as::<_, GmailTriggerRow>(
         "SELECT id, agent_id, email_address, history_id, watch_expiry, pubsub_topic, enabled, created_at \
          FROM gmail_triggers ORDER BY created_at DESC",
     )
-    .fetch_all(&state.db)
+    .fetch_all(&infra.db)
     .await;
 
     match rows {
@@ -399,7 +403,8 @@ struct AgentIdRow {
 }
 
 pub(crate) async fn api_delete_gmail_trigger(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(auth): State<AuthServices>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
 ) -> impl IntoResponse {
     // Fetch trigger info first for OAuth token
@@ -407,7 +412,7 @@ pub(crate) async fn api_delete_gmail_trigger(
         "SELECT agent_id FROM gmail_triggers WHERE id = $1",
     )
     .bind(id)
-    .fetch_optional(&state.db)
+    .fetch_optional(&infra.db)
     .await
     {
         Ok(Some(r)) => r,
@@ -420,13 +425,13 @@ pub(crate) async fn api_delete_gmail_trigger(
     };
 
     // Try to stop Gmail watch (best effort)
-    if let Ok(token) = state.oauth.get_token("google", &row.agent_id).await {
-        let _ = gmail_stop(&state.oauth.client, &token).await;
+    if let Ok(token) = auth.oauth.get_token("google", &row.agent_id).await {
+        let _ = gmail_stop(&auth.oauth.client, &token).await;
     }
 
     match sqlx::query("DELETE FROM gmail_triggers WHERE id = $1")
         .bind(id)
-        .execute(&state.db)
+        .execute(&infra.db)
         .await
     {
         Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
