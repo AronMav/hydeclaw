@@ -113,6 +113,15 @@ impl OAuthManager {
         Self { db, secrets, client, pending: Default::default(), public_url }
     }
 
+    /// Create a no-op OAuthManager for unit tests (never issues real requests).
+    #[cfg(test)]
+    pub fn new_noop() -> Self {
+        let db = sqlx::PgPool::connect_lazy("postgres://invalid").expect("lazy pool");
+        let secrets = Arc::new(crate::secrets::SecretsManager::new_noop());
+        let client = reqwest::Client::new();
+        Self { db, secrets, client, pending: Default::default(), public_url: String::new() }
+    }
+
     // -----------------------------------------------------------------------
     // Shared helpers
     // -----------------------------------------------------------------------
