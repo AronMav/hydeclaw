@@ -1076,8 +1076,10 @@ pub fn spawn_config_watcher(config_path: String, shared: SharedConfig, api_write
                     kind: EventKind::Modify(_),
                     ..
                 }) => {
-                    // Debounce: skip if less than 500ms since last reload
+                    // Debounce: skip if less than 500ms since last reload.
+                    // Consume the API-write flag even on debounce so it doesn't leak to the next event.
                     if last_reload.elapsed() < std::time::Duration::from_millis(500) {
+                        api_write_flag.swap(false, std::sync::atomic::Ordering::AcqRel);
                         continue;
                     }
 
