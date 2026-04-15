@@ -9,6 +9,7 @@ use axum::{
 use serde_json::{json, Value};
 
 use super::super::AppState;
+use crate::gateway::clusters::{AgentCore, ConfigServices, InfraServices};
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -27,10 +28,10 @@ static TOOLGATE_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLo
 
 /// Return the current canvas state for a given agent (or null if empty).
 pub(crate) async fn api_canvas_state(
-    State(state): State<AppState>,
+    State(agents): State<AgentCore>,
     axum::extract::Path(agent): axum::extract::Path<String>,
 ) -> impl IntoResponse {
-    let engine = match state.get_engine(&agent).await {
+    let engine = match agents.get_engine(&agent).await {
         Some(e) => e,
         None => return Json(json!({"visible": false})).into_response(),
     };
@@ -52,19 +53,19 @@ pub(crate) async fn api_canvas_state(
 }
 
 pub(crate) async fn api_canvas_clear(
-    State(state): State<AppState>,
+    State(agents): State<AgentCore>,
     axum::extract::Path(agent): axum::extract::Path<String>,
 ) -> StatusCode {
-    if let Some(engine) = state.get_engine(&agent).await {
+    if let Some(engine) = agents.get_engine(&agent).await {
         let mut guard = engine.tex().canvas_state.write().await;
         *guard = None;
     }
     StatusCode::NO_CONTENT
 }
 
-pub(crate) async fn api_tts_voices(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn api_tts_voices(State(agents): State<AgentCore>) -> impl IntoResponse {
     let toolgate_url = {
-        let deps = state.agent_deps.read().await;
+        let deps = agents.deps.read().await;
         deps.toolgate_url.clone()
     };
     let Some(base) = toolgate_url else {
@@ -85,11 +86,11 @@ pub(crate) async fn api_tts_voices(State(state): State<AppState>) -> impl IntoRe
 
 /// POST /api/tts/synthesize — synthesize speech via Toolgate
 pub(crate) async fn api_tts_synthesize(
-    State(state): State<AppState>,
+    State(agents): State<AgentCore>,
     Json(body): Json<TtsSynthesizeRequest>,
 ) -> impl IntoResponse {
     let toolgate_url = {
-        let deps = state.agent_deps.read().await;
+        let deps = agents.deps.read().await;
         deps.toolgate_url.clone()
     };
     let Some(base) = toolgate_url else {
@@ -152,9 +153,13 @@ pub(crate) async fn api_get_config_schema() -> impl IntoResponse {
     Json(schema.clone())
 }
 
-pub(crate) async fn api_get_config(State(state): State<AppState>) -> Json<Value> {
-    let config = state.shared_config.read().await;
-    let embed_dim = state.memory_store.embed_dim();
+pub(crate) async fn api_get_config(
+    State(agents): State<AgentCore>,
+    State(infra): State<InfraServices>,
+    State(cfg_svc): State<ConfigServices>,
+) -> Json<Value> {
+    let config = cfg_svc.shared_config.read().await;
+    let embed_dim = infra.memory_store.embed_dim();
     let embed_dim_val: Option<u32> = if embed_dim > 0 { Some(embed_dim) } else { None };
 
     // Return config structure without sensitive values
@@ -186,17 +191,17 @@ pub(crate) async fn api_get_config(State(state): State<AppState>) -> Json<Value>
             "rebuild_allowed": config.docker.rebuild_allowed,
             "rebuild_timeout_secs": config.docker.rebuild_timeout_secs,
         },
-        "tools_count": state.tools.len().await,
+        "tools_count": agents.tools.len().await,
         "mcp_count": config.mcp.len(),
-        "tools": state.tools.entries().await,
+        "tools": agents.tools.entries().await,
         "mcp": config.mcp.keys().collect::<Vec<_>>(),
         "memory": {
             "enabled": config.memory.enabled,
             "embed_dim": embed_dim_val,
             "embed_dimensions": config.memory.embed_dimensions,
-            "available": state.memory_store.is_available(),
+            "available": infra.memory_store.is_available(),
         },
-        "toolgate_url": state.agent_deps.read().await.toolgate_url,
+        "toolgate_url": agents.deps.read().await.toolgate_url,
         "sandbox": {
             "enabled": config.sandbox.enabled,
             "image": config.sandbox.image,
@@ -231,12 +236,14 @@ pub(crate) struct ConfigUpdatePayload {
 }
 
 pub(crate) async fn api_update_config(
-    State(state): State<AppState>,
+    State(agents): State<AgentCore>,
+    State(infra): State<InfraServices>,
+    State(cfg_svc): State<ConfigServices>,
     Json(payload): Json<ConfigUpdatePayload>,
 ) -> impl IntoResponse {
     // Structured validation — build proposed config and validate before writing
     {
-        let current = state.shared_config.read().await.clone();
+        let current = cfg_svc.shared_config.read().await.clone();
         let mut proposed = current.clone();
         if let Some(ref url) = payload.toolgate_url {
             proposed.toolgate_url = if url.is_empty() { None } else { Some(url.clone()) };
@@ -256,7 +263,7 @@ pub(crate) async fn api_update_config(
     let config_path = "config/hydeclaw.toml";
 
     // Serialize config writes to prevent concurrent partial updates
-    let _config_guard = state.config_write_lock.lock().await;
+    let _config_guard = cfg_svc.config_write_lock.lock().await;
 
     // Create backup before modifying — fail if unreadable (don't risk empty restore)
     let config_backup = match tokio::fs::read_to_string(config_path).await {
@@ -270,7 +277,7 @@ pub(crate) async fn api_update_config(
 
     // Tell the file watcher to skip the next change (we'll update in-memory config ourselves).
     // Set AFTER backup read so the flag is never leaked if the read fails (no file write occurs).
-    state.config_api_write_flag.store(true, std::sync::atomic::Ordering::Release);
+    cfg_svc.config_api_write_flag.store(true, std::sync::atomic::Ordering::Release);
 
     // Helper: restore backup and return an error response.
     // Defined as a closure-like macro pattern since async closures can't capture by ref easily.
@@ -367,7 +374,7 @@ pub(crate) async fn api_update_config(
 
     // Update live AgentDeps
     {
-        let mut deps = state.agent_deps.write().await;
+        let mut deps = agents.deps.write().await;
         if let Some(ref url) = payload.toolgate_url {
             deps.toolgate_url = if url.is_empty() { None } else { Some(url.clone()) };
         }
@@ -376,7 +383,7 @@ pub(crate) async fn api_update_config(
     // Reload shared config from file (hot-reload)
     match crate::config::AppConfig::load("config/hydeclaw.toml") {
         Ok(new_config) => {
-            let mut config = state.shared_config.write().await;
+            let mut config = cfg_svc.shared_config.write().await;
             *config = new_config;
         }
         Err(e) => {
@@ -390,7 +397,7 @@ pub(crate) async fn api_update_config(
     }
 
     tracing::info!("config updated via API");
-    crate::db::audit::audit_spawn(state.db.clone(), String::new(), crate::db::audit::event_types::CONFIG_UPDATED, None, json!({"source": "api"}));
+    crate::db::audit::audit_spawn(infra.db.clone(), String::new(), crate::db::audit::event_types::CONFIG_UPDATED, None, json!({"source": "api"}));
     Json(json!({"ok": true})).into_response()
 }
 

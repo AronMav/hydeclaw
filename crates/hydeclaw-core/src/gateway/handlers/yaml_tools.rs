@@ -8,6 +8,7 @@ use axum::{
 use serde_json::{json, Value};
 
 use super::super::AppState;
+use crate::gateway::clusters::InfraServices;
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -22,7 +23,7 @@ pub(crate) fn routes() -> Router<AppState> {
 }
 
 /// GET /api/yaml-tools — global, not per-agent.
-pub(crate) async fn api_yaml_tools_list_global(State(_state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn api_yaml_tools_list_global(State(_state): State<InfraServices>) -> impl IntoResponse {
     let tools = crate::tools::yaml_tools::load_all_yaml_tools(crate::config::WORKSPACE_DIR).await;
     let list: Vec<Value> = tools.iter().map(|t| json!({
         "name": t.name,
@@ -38,7 +39,7 @@ pub(crate) async fn api_yaml_tools_list_global(State(_state): State<AppState>) -
 
 /// POST /api/yaml-tools — create a new YAML tool.
 pub(crate) async fn api_yaml_tool_create_global(
-    State(_state): State<AppState>,
+    State(_state): State<InfraServices>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
     use crate::tools::yaml_tools::{ToolStatus, YamlToolDef, tool_file_path};
@@ -81,7 +82,7 @@ pub(crate) async fn api_yaml_tool_create_global(
 
 /// POST /api/yaml-tools/{tool}/verify — global.
 pub(crate) async fn api_yaml_tool_verify_global(
-    State(_state): State<AppState>,
+    State(_state): State<InfraServices>,
     axum::extract::Path(tool_name): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     if !tool_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
@@ -110,7 +111,7 @@ pub(crate) async fn api_yaml_tool_verify_global(
 
 /// POST /api/yaml-tools/{tool}/disable — global.
 pub(crate) async fn api_yaml_tool_disable_global(
-    State(_state): State<AppState>,
+    State(_state): State<InfraServices>,
     axum::extract::Path(tool_name): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     if !tool_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
@@ -138,7 +139,7 @@ pub(crate) async fn api_yaml_tool_disable_global(
 
 /// POST /api/yaml-tools/{tool}/enable — re-enable a disabled tool (set status back to verified).
 pub(crate) async fn api_yaml_tool_enable_global(
-    State(_state): State<AppState>,
+    State(_state): State<InfraServices>,
     axum::extract::Path(tool_name): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     if !tool_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
@@ -169,7 +170,7 @@ pub(crate) async fn api_yaml_tool_enable_global(
 
 /// GET /api/yaml-tools/{tool} — return raw YAML content of a tool.
 pub(crate) async fn api_yaml_tool_get_global(
-    State(_state): State<AppState>,
+    State(_state): State<InfraServices>,
     axum::extract::Path(tool_name): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     if !tool_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
@@ -188,7 +189,7 @@ pub(crate) async fn api_yaml_tool_get_global(
 
 /// PUT /api/yaml-tools/{tool} — update a YAML tool by writing raw YAML content.
 pub(crate) async fn api_yaml_tool_update_global(
-    State(_state): State<AppState>,
+    State(_state): State<InfraServices>,
     axum::extract::Path(tool_name): axum::extract::Path<String>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
@@ -225,7 +226,7 @@ pub(crate) async fn api_yaml_tool_update_global(
 
 /// DELETE /api/yaml-tools/{tool} — delete a YAML tool file.
 pub(crate) async fn api_yaml_tool_delete_global(
-    State(_state): State<AppState>,
+    State(_state): State<InfraServices>,
     axum::extract::Path(tool_name): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     if !tool_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
@@ -246,7 +247,7 @@ pub(crate) async fn api_yaml_tool_delete_global(
 /// GET /api/agents/{name}/yaml-tools
 /// List all YAML tools for an agent with their status (verified/draft/disabled).
 pub(crate) async fn api_yaml_tools_list(
-    State(_state): State<AppState>,
+    State(_state): State<InfraServices>,
     axum::extract::Path(agent_name): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     let tools = crate::tools::yaml_tools::load_all_yaml_tools(
@@ -271,7 +272,7 @@ pub(crate) async fn api_yaml_tools_list(
 /// POST /api/agents/{name}/yaml-tools/{tool}/verify
 /// Promote a draft tool to verified. No Telegram approval required (UI is already authed).
 pub(crate) async fn api_yaml_tool_verify(
-    State(_state): State<AppState>,
+    State(_state): State<InfraServices>,
     axum::extract::Path((agent_name, tool_name)): axum::extract::Path<(String, String)>,
 ) -> impl IntoResponse {
     if !tool_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
@@ -308,7 +309,7 @@ pub(crate) async fn api_yaml_tool_verify(
 /// POST /api/agents/{name}/yaml-tools/{tool}/disable
 /// Move a verified or draft tool to disabled.
 pub(crate) async fn api_yaml_tool_disable(
-    State(_state): State<AppState>,
+    State(_state): State<InfraServices>,
     axum::extract::Path((agent_name, tool_name)): axum::extract::Path<(String, String)>,
 ) -> impl IntoResponse {
     if !tool_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {

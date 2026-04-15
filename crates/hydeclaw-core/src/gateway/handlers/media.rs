@@ -8,6 +8,7 @@ use axum::{
 use serde_json::json;
 
 use super::super::AppState;
+use crate::gateway::clusters::{AgentCore, ConfigServices};
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -21,10 +22,11 @@ pub(crate) fn routes() -> Router<AppState> {
 
 /// POST /api/media/upload — multipart upload, saves to workspace/uploads/{uuid}.{ext}
 pub(crate) async fn api_media_upload(
-    State(state): State<AppState>,
+    State(agents): State<AgentCore>,
+    State(cfg): State<ConfigServices>,
     mut multipart: axum::extract::Multipart,
 ) -> impl IntoResponse {
-    let workspace_dir = state.agent_deps.read().await.workspace_dir.clone();
+    let workspace_dir = agents.deps.read().await.workspace_dir.clone();
     let uploads_dir = std::path::PathBuf::from(&workspace_dir).join("uploads");
     if let Err(e) = tokio::fs::create_dir_all(&uploads_dir).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("mkdir: {e}")}))).into_response();
@@ -65,10 +67,10 @@ pub(crate) async fn api_media_upload(
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("write: {e}")}))).into_response();
     }
 
-    let base = if let Some(ref pu) = state.config.gateway.public_url {
+    let base = if let Some(ref pu) = cfg.config.gateway.public_url {
         pu.trim_end_matches('/').to_string()
     } else {
-        let port = state.config.gateway.listen.rsplit(':').next().unwrap_or("18789");
+        let port = cfg.config.gateway.listen.rsplit(':').next().unwrap_or("18789");
         format!("http://localhost:{port}")
     };
     let url = format!("{base}/uploads/{filename}");
@@ -77,7 +79,7 @@ pub(crate) async fn api_media_upload(
 
 /// GET /uploads/{filename} — serve uploaded files (public, no auth)
 pub(crate) async fn api_media_serve(
-    State(state): State<AppState>,
+    State(agents): State<AgentCore>,
     Path(filename): Path<String>,
 ) -> impl IntoResponse {
     // Prevent path traversal
@@ -85,7 +87,7 @@ pub(crate) async fn api_media_serve(
         return StatusCode::BAD_REQUEST.into_response();
     }
 
-    let workspace_dir = state.agent_deps.read().await.workspace_dir.clone();
+    let workspace_dir = agents.deps.read().await.workspace_dir.clone();
     let path = std::path::PathBuf::from(&workspace_dir).join("uploads").join(&filename);
 
     let data = match tokio::fs::read(&path).await {
