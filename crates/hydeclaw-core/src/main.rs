@@ -403,7 +403,7 @@ async fn main() -> Result<()> {
     // Background task: renew expiring Gmail watches every 6 hours
     {
         let renewal_db = db_pool.clone();
-        let renewal_oauth = state.oauth.clone();
+        let renewal_oauth = state.auth.oauth.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
             loop {
@@ -686,7 +686,7 @@ async fn spawn_background_tasks(
     agent_configs: &[config::AgentConfig],
 ) {
     // Periodic session agent pool cleanup (every 5 minutes)
-    let pools = state.session_pools.clone();
+    let pools = state.agents.session_pools.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
         loop {
@@ -696,8 +696,8 @@ async fn spawn_background_tasks(
     });
 
     // Stream cleanup: in-memory broadcast (2 min TTL) + DB jobs (1 hour TTL)
-    let registry = state.stream_registry.clone();
-    let cleanup_db = state.db.clone();
+    let registry = state.channels.stream_registry.clone();
+    let cleanup_db = state.infra.db.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
         loop {
@@ -708,8 +708,8 @@ async fn spawn_background_tasks(
     });
 
     // Watchdog: detect and kill sessions stuck in 'running'
-    let watchdog_db = state.db.clone();
-    let watchdog_registry = state.stream_registry.clone();
+    let watchdog_db = state.infra.db.clone();
+    let watchdog_registry = state.channels.stream_registry.clone();
     let inactivity_secs = agent_configs
         .iter()
         .filter_map(|c| c.agent.watchdog.as_ref())
@@ -739,7 +739,7 @@ async fn spawn_background_tasks(
     });
 
     // Channel health monitor
-    let health_channels = state.connected_channels.clone();
+    let health_channels = state.channels.connected_channels.clone();
     let health_pm = process_manager;
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
@@ -766,18 +766,26 @@ async fn spawn_background_tasks(
 /// Start all agents defined in the configuration.
 async fn start_configured_agents(state: &gateway::AppState, agent_configs: &[config::AgentConfig]) {
     for agent_cfg in agent_configs {
-        match gateway::start_agent_from_config(agent_cfg, state).await {
+        match gateway::start_agent_from_config(
+            agent_cfg,
+            &state.agents,
+            &state.infra,
+            &state.auth,
+            &state.channels,
+            &state.config,
+            &state.status,
+        ).await {
             Ok((handle, guard)) => {
                 let name = agent_cfg.agent.name.clone();
-                state.agents.write().await.insert(name.clone(), handle);
+                state.agents.map.write().await.insert(name.clone(), handle);
                 if let Some(guard) = guard {
-                    state.access_guards.write().await.insert(name.clone(), guard);
+                    state.auth.access_guards.write().await.insert(name.clone(), guard);
                 }
                 // Ensure sandbox
-                if !agent_cfg.agent.base && let Some(ref sb) = state.sandbox {
-                    let deps = state.agent_deps.read().await;
+                if !agent_cfg.agent.base && let Some(ref sb) = state.infra.sandbox {
+                    let deps = state.agents.deps.read().await;
                     if let Ok(host_path) = std::fs::canonicalize(&deps.workspace_dir) {
-                        sb.ensure_container(&name, &host_path.to_string_lossy(), false, Some(&state.oauth)).await.ok();
+                        sb.ensure_container(&name, &host_path.to_string_lossy(), false, Some(&state.auth.oauth)).await.ok();
                     }
                 }
             }
@@ -788,11 +796,11 @@ async fn start_configured_agents(state: &gateway::AppState, agent_configs: &[con
 
 /// Schedule periodic system maintenance jobs (decay, cleanup, backup).
 async fn schedule_periodic_jobs(state: &gateway::AppState, agent_configs: &[config::AgentConfig]) {
-    let sched = &state.scheduler;
-    let db = &state.db;
+    let sched = &state.agents.scheduler;
+    let db = &state.infra.db;
 
     // Load dynamic cron jobs
-    let engines = state.get_engines_map().await;
+    let engines = state.agents.get_engines_map().await;
     sched.load_dynamic_jobs(db, &engines).await.ok();
 
     // Daily maintenance jobs
@@ -810,10 +818,10 @@ async fn schedule_periodic_jobs(state: &gateway::AppState, agent_configs: &[conf
     sched.add_session_cleanup(db.clone(), ttl_days).await.ok();
 
     // Automatic backup
-    if state.config.backup.enabled {
+    if state.config.config.backup.enabled {
         sched.add_backup(
-            &state.config.backup.cron, state.config.backup.retention_days,
-            db.clone(), state.secrets.clone(), state.agent_deps.clone(),
+            &state.config.config.backup.cron, state.config.config.backup.retention_days,
+            db.clone(), state.auth.secrets.clone(), state.agents.deps.clone(),
         ).await.ok();
     }
 
@@ -870,12 +878,20 @@ fn setup_sighup_handler(state: gateway::AppState) {
             if let Ok(configs) = crate::config::load_agent_configs("config/agents") {
                 for cfg in configs {
                     let name = cfg.agent.name.clone();
-                    if let Ok((handle, guard)) = crate::gateway::start_agent_from_config(&cfg, &state).await {
-                        if let Some(old) = state.agents.write().await.remove(&name) {
-                            old.shutdown(&state.scheduler).await;
+                    if let Ok((handle, guard)) = crate::gateway::start_agent_from_config(
+                        &cfg,
+                        &state.agents,
+                        &state.infra,
+                        &state.auth,
+                        &state.channels,
+                        &state.config,
+                        &state.status,
+                    ).await {
+                        if let Some(old) = state.agents.map.write().await.remove(&name) {
+                            old.shutdown(&state.agents.scheduler).await;
                         }
-                        state.agents.write().await.insert(name.clone(), handle);
-                        if let Some(g) = guard { state.access_guards.write().await.insert(name.clone(), g); }
+                        state.agents.map.write().await.insert(name.clone(), handle);
+                        if let Some(g) = guard { state.auth.access_guards.write().await.insert(name.clone(), g); }
                     }
                 }
             }

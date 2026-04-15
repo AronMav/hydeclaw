@@ -310,7 +310,7 @@ impl AgentEngine {
                 let loaded = crate::tools::yaml_tools::load_yaml_tools(&self.workspace_dir, false).await;
                 let map: std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef> =
                     loaded.iter().cloned().map(|t| (t.name.clone(), t)).collect();
-                *self.tex().yaml_tools_cache.write().await = (std::time::Instant::now(), map);
+                *self.tex().yaml_tools_cache.write().await = (std::time::Instant::now(), std::sync::Arc::new(map));
                 loaded
             }
         };

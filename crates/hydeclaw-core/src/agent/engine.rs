@@ -453,7 +453,7 @@ impl AgentEngine {
     pub(crate) async fn invalidate_yaml_tools_cache(&self) {
         *self.tex().yaml_tools_cache.write().await = (
             std::time::Instant::now().checked_sub(std::time::Duration::from_secs(60)).unwrap(),
-            std::collections::HashMap::new(),
+            std::sync::Arc::new(std::collections::HashMap::new()),
         );
     }
 
@@ -1157,7 +1157,7 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
         let loaded = crate::tools::yaml_tools::load_yaml_tools(&self.workspace_dir, false).await;
         let map: std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef> =
             loaded.iter().cloned().map(|t| (t.name.clone(), t)).collect();
-        *self.tex().yaml_tools_cache.write().await = (std::time::Instant::now(), map);
+        *self.tex().yaml_tools_cache.write().await = (std::time::Instant::now(), std::sync::Arc::new(map));
         loaded
     }
 

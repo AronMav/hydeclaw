@@ -1,6 +1,6 @@
 use std::sync::Arc;
+#[cfg(test)]
 use tokio::sync::RwLock;
-
 use crate::config::{AppConfig, ConfigApiWriteFlag, SharedConfig};
 
 // ── ConfigServices cluster ─────────────────────────────────────────────────
