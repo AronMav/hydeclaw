@@ -50,6 +50,7 @@ struct CwsCtx {
 
 // ── Channel Connector WebSocket (external adapters: Telegram, Discord, etc.) ──
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn channel_ws_handler(
     ws: WebSocketUpgrade,
     axum::extract::Path(agent_name): axum::extract::Path<String>,

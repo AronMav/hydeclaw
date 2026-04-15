@@ -283,6 +283,7 @@ pub(crate) async fn api_create_agent(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn api_update_agent(
     State(agents): State<AgentCore>,
     State(auth): State<AuthServices>,
