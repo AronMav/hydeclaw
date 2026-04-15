@@ -236,24 +236,34 @@ pub(crate) async fn auth_middleware(
     ws_tickets: std::sync::Arc<Mutex<HashMap<String, std::time::Instant>>>,
 ) -> impl IntoResponse {
     let path = req.uri().path();
-    // /health is public; /webhook/* has its own per-endpoint auth; /uploads/* uses UUID filenames
-    // /api/oauth/callback is a browser redirect from OAuth provider (no Bearer token possible)
-    if path == "/health" || path.starts_with("/webhook/") || path.starts_with("/uploads/")
-        || path == "/api/oauth/callback" || path == "/api/triggers/email/push" {
+
+    // ── Public paths (no auth required) ──────────────────────────────
+    // /health              — liveness probe
+    // /webhook/*           — per-endpoint auth (HMAC signatures)
+    // /uploads/*           — UUID filenames, no secrets
+    // /api/oauth/callback  — browser redirect from OAuth provider
+    // /api/triggers/email/push — validates ?token= query param internally
+    const PUBLIC_EXACT: &[&str] = &["/health", "/api/oauth/callback", "/api/triggers/email/push"];
+    const PUBLIC_PREFIX: &[&str] = &["/webhook/", "/uploads/"];
+
+    if PUBLIC_EXACT.contains(&path) || PUBLIC_PREFIX.iter().any(|p| path.starts_with(p)) {
         return next.run(req).await;
     }
 
     let client_ip = extract_client_ip(&req);
     tracing::debug!(ip = %client_ip, path = %path, loopback = is_loopback(&client_ip), "auth middleware");
 
-    // Allow loopback self-calls only for specific internal paths (not /api/secrets, /api/backup, etc.)
+    // ── Loopback-only paths (internal service calls) ─────────────────
+    // /api/mcp/callback    — MCP server callbacks
+    // /api/channels/notify — watchdog/internal alerts
+    // /api/media/upload    — toolgate media uploads
+    // /uploads/*           — static file serving
+    // /ws*                 — WebSocket (validated separately via ticket)
     if is_loopback(&client_ip) {
-        let loopback_allowed = path == "/health"
-            || path == "/api/mcp/callback"
-            || path == "/api/channels/notify"
-            || path == "/api/media/upload"
-            || path.starts_with("/uploads/")
-            || path.starts_with("/ws");
+        const LOOPBACK_EXACT: &[&str] = &["/health", "/api/mcp/callback", "/api/channels/notify", "/api/media/upload"];
+        const LOOPBACK_PREFIX: &[&str] = &["/uploads/", "/ws"];
+        let loopback_allowed = LOOPBACK_EXACT.contains(&path)
+            || LOOPBACK_PREFIX.iter().any(|p| path.starts_with(p));
         if loopback_allowed {
             return next.run(req).await;
         }

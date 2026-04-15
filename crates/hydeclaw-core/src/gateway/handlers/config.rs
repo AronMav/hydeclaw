@@ -258,6 +258,9 @@ pub(crate) async fn api_update_config(
     // Serialize config writes to prevent concurrent partial updates
     let _config_guard = state.config_write_lock.lock().await;
 
+    // Tell the file watcher to skip the next change (we'll update in-memory config ourselves)
+    state.config_api_write_flag.store(true, std::sync::atomic::Ordering::Release);
+
     // Create backup before modifying — fail if unreadable (don't risk empty restore)
     let config_backup = match tokio::fs::read_to_string(config_path).await {
         Ok(s) => s,
