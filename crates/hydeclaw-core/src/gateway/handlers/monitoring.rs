@@ -10,16 +10,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::super::AppState;
+use crate::gateway::clusters::{AgentCore, AuthServices, ConfigServices, InfraServices, StatusMonitor};
 use crate::agent::cli_backend::CLI_PRESETS;
 
-pub(crate) fn routes(state: &AppState) -> Router<AppState> {
+pub(crate) fn routes(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/api/setup/status", get(api_setup_status))
         .route("/api/setup/requirements", get(api_setup_requirements))
         .merge(
             Router::new()
                 .route("/api/setup/complete", post(api_setup_complete))
-                .layer(axum_mw::from_fn_with_state(state.clone(), setup_guard_middleware))
+                .layer(axum_mw::from_fn_with_state(state, setup_guard_middleware))
         )
         .route("/api/status", get(api_status))
         .route("/api/stats", get(api_stats))
@@ -96,11 +97,11 @@ impl CheckResult {
     }
 }
 
-pub(crate) async fn api_setup_status(State(state): State<AppState>) -> Json<Value> {
+pub(crate) async fn api_setup_status(State(infra): State<InfraServices>) -> Json<Value> {
     let complete: bool = sqlx::query_scalar::<_, serde_json::Value>(
         "SELECT value FROM system_flags WHERE key = 'setup_complete'"
     )
-    .fetch_optional(&state.db)
+    .fetch_optional(&infra.db)
     .await
     .ok()
     .flatten()
@@ -111,13 +112,13 @@ pub(crate) async fn api_setup_status(State(state): State<AppState>) -> Json<Valu
 }
 
 /// POST /api/setup/complete — mark setup as done; guarded by `setup_guard_middleware`
-pub(crate) async fn api_setup_complete(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn api_setup_complete(State(infra): State<InfraServices>) -> impl IntoResponse {
     let result = sqlx::query(
         "INSERT INTO system_flags (key, value, updated_at)
          VALUES ('setup_complete', 'true'::jsonb, NOW())
          ON CONFLICT (key) DO UPDATE SET value = 'true'::jsonb, updated_at = NOW()"
     )
-    .execute(&state.db)
+    .execute(&infra.db)
     .await;
 
     match result {
@@ -190,7 +191,7 @@ async fn check_cli_tool(name: &str, command: &str) -> serde_json::Value {
 
 /// GET /api/setup/requirements — pre-flight system requirements check for the setup wizard.
 /// Returns docker, postgresql, and `disk_space` check results. No auth required.
-pub(crate) async fn api_setup_requirements(State(state): State<AppState>) -> Json<Value> {
+pub(crate) async fn api_setup_requirements(State(infra): State<InfraServices>) -> Json<Value> {
     // ── Docker check ──────────────────────────────────────────────────────────
     let docker_fut = async {
         let start = std::time::Instant::now();
@@ -231,12 +232,12 @@ pub(crate) async fn api_setup_requirements(State(state): State<AppState>) -> Jso
     };
 
     // ── PostgreSQL check ──────────────────────────────────────────────────────
-    let pg_state = state.clone();
+    let pg_db = infra.db.clone();
     let pg_fut = async {
         let start = std::time::Instant::now();
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(3),
-            sqlx::query("SELECT 1").execute(&pg_state.db),
+            sqlx::query("SELECT 1").execute(&pg_db),
         )
         .await;
         let ms = start.elapsed().as_millis() as u64;
@@ -342,14 +343,14 @@ pub(crate) async fn api_setup_requirements(State(state): State<AppState>) -> Jso
 /// Axum middleware: returns 403 when `system_flags.setup_complete` = true.
 /// Wraps POST /api/setup/complete to prevent re-entry after first setup.
 pub(crate) async fn setup_guard_middleware(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> impl IntoResponse {
     let complete: bool = sqlx::query_scalar::<_, serde_json::Value>(
         "SELECT value FROM system_flags WHERE key = 'setup_complete'"
     )
-    .fetch_optional(&state.db)
+    .fetch_optional(&infra.db)
     .await
     .ok()
     .flatten()
@@ -365,32 +366,37 @@ pub(crate) async fn setup_guard_middleware(
     next.run(req).await
 }
 
-pub(crate) async fn api_status(State(state): State<AppState>) -> Json<Value> {
+pub(crate) async fn api_status(
+    State(infra): State<InfraServices>,
+    State(agents): State<AgentCore>,
+    State(cfg_svc): State<ConfigServices>,
+    State(status): State<StatusMonitor>,
+) -> Json<Value> {
     let db_ok = sqlx::query("SELECT 1")
-        .execute(&state.db)
+        .execute(&infra.db)
         .await
         .is_ok();
 
-    let uptime_secs = state.started_at.elapsed().as_secs();
+    let uptime_secs = status.started_at.elapsed().as_secs();
 
     let memory_chunks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory_chunks")
-        .fetch_one(&state.db)
+        .fetch_one(&infra.db)
         .await
         .unwrap_or(0);
 
     let scheduled_jobs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE enabled = true")
-        .fetch_one(&state.db)
+        .fetch_one(&infra.db)
         .await
         .unwrap_or(0);
 
     let active_sessions: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sessions WHERE last_message_at > now() - interval '4 hours'",
     )
-    .fetch_one(&state.db)
+    .fetch_one(&infra.db)
     .await
     .unwrap_or(0);
 
-    let config = state.shared_config.read().await;
+    let config = cfg_svc.shared_config.read().await;
 
     Json(json!({
         "status": if db_ok { "ok" } else { "degraded" },
@@ -398,11 +404,11 @@ pub(crate) async fn api_status(State(state): State<AppState>) -> Json<Value> {
         "uptime_seconds": uptime_secs,
         "db": db_ok,
         "listen": config.gateway.listen,
-        "agents": state.agent_names().await,
+        "agents": agents.agent_names().await,
         "memory_chunks": memory_chunks,
         "scheduled_jobs": scheduled_jobs,
         "active_sessions": active_sessions,
-        "tools_registered": state.tools.len().await + {
+        "tools_registered": agents.tools.len().await + {
             // Count YAML tool files without parsing them (avoid filesystem overhead per request)
             let yaml_count = match tokio::fs::read_dir("workspace/tools").await {
                 Ok(mut dir) => {
@@ -421,28 +427,28 @@ pub(crate) async fn api_status(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
-pub(crate) async fn api_stats(State(state): State<AppState>) -> Json<Value> {
+pub(crate) async fn api_stats(State(infra): State<InfraServices>) -> Json<Value> {
     let messages_today: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM messages WHERE created_at > CURRENT_DATE",
     )
-    .fetch_one(&state.db)
+    .fetch_one(&infra.db)
     .await
     .unwrap_or(0);
 
     let sessions_today: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sessions WHERE started_at > CURRENT_DATE",
     )
-    .fetch_one(&state.db)
+    .fetch_one(&infra.db)
     .await
     .unwrap_or(0);
 
     let total_messages: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
-        .fetch_one(&state.db)
+        .fetch_one(&infra.db)
         .await
         .unwrap_or(0);
 
     let total_sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions")
-        .fetch_one(&state.db)
+        .fetch_one(&infra.db)
         .await
         .unwrap_or(0);
 
@@ -454,7 +460,7 @@ pub(crate) async fn api_stats(State(state): State<AppState>) -> Json<Value> {
              WHERE last_message_at > NOW() - INTERVAL '24 hours' \
              ORDER BY last_message_at DESC LIMIT 10",
         )
-        .fetch_all(&state.db)
+        .fetch_all(&infra.db)
         .await
         .unwrap_or_default();
 
@@ -480,33 +486,33 @@ pub(crate) struct UsageQuery {
 }
 
 pub(crate) async fn api_usage(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Query(q): Query<UsageQuery>,
 ) -> Json<Value> {
     let days = q.days.unwrap_or(30);
-    match crate::db::usage::usage_summary(&state.db, days).await {
+    match crate::db::usage::usage_summary(&infra.db, days).await {
         Ok(summary) => Json(json!({"ok": true, "days": days, "usage": summary})),
         Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
     }
 }
 
 pub(crate) async fn api_usage_daily(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Query(q): Query<UsageQuery>,
 ) -> Json<Value> {
     let days = q.days.unwrap_or(30);
-    match crate::db::usage::usage_daily(&state.db, days).await {
+    match crate::db::usage::usage_daily(&infra.db, days).await {
         Ok(daily) => Json(json!({"ok": true, "days": days, "daily": daily})),
         Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
     }
 }
 
 pub(crate) async fn api_usage_sessions(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Query(q): Query<UsageQuery>,
 ) -> Json<Value> {
     let days = q.days.unwrap_or(30);
-    match crate::db::usage::usage_by_session(&state.db, q.agent.as_deref(), days).await {
+    match crate::db::usage::usage_by_session(&infra.db, q.agent.as_deref(), days).await {
         Ok(sessions) => Json(json!({"ok": true, "days": days, "sessions": sessions})),
         Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
     }
@@ -523,13 +529,13 @@ pub(crate) struct AuditQuery {
 }
 
 pub(crate) async fn api_audit_events(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Query(q): Query<AuditQuery>,
 ) -> Json<Value> {
     let limit = q.limit.unwrap_or(100).min(500);
     let offset = q.offset.unwrap_or(0);
     match crate::db::audit::query_events(
-        &state.db,
+        &infra.db,
         q.agent.as_deref(),
         q.event_type.as_deref(),
         limit,
@@ -551,13 +557,13 @@ pub(crate) struct ToolAuditQuery {
 }
 
 pub(crate) async fn api_tool_audit(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Query(q): Query<ToolAuditQuery>,
 ) -> Json<Value> {
     let days = q.days.unwrap_or(7);
     let limit = q.limit.unwrap_or(100).min(500);
     match crate::db::tool_audit::query_tool_audit(
-        &state.db,
+        &infra.db,
         q.agent.as_deref(),
         q.tool.as_deref(),
         days,
@@ -570,9 +576,9 @@ pub(crate) async fn api_tool_audit(
 
 // ── Provider reachability check ───────────────────────────────────────────────
 
-async fn check_provider_reachability(state: &AppState) -> CheckResult {
+async fn check_provider_reachability(infra: &InfraServices, auth: &AuthServices) -> CheckResult {
     let start = std::time::Instant::now();
-    let providers = match crate::db::providers::list_providers(&state.db).await {
+    let providers = match crate::db::providers::list_providers(&infra.db).await {
         Ok(p) => p,
         Err(e) => return CheckResult::error(
             format!("failed to list providers: {e}"),
@@ -604,7 +610,7 @@ async fn check_provider_reachability(state: &AppState) -> CheckResult {
         let base_url = p.base_url.as_deref().unwrap_or("");
         let is_local = base_url.starts_with("http://localhost") || base_url.starts_with("http://127.");
 
-        let has_cred = is_local || state.secrets.get_scoped(
+        let has_cred = is_local || auth.secrets.get_scoped(
             crate::agent::providers::PROVIDER_CREDENTIALS,
             &p.id.to_string(),
         ).await.is_some();
@@ -668,7 +674,7 @@ async fn check_provider_reachability(state: &AppState) -> CheckResult {
 
 // ── Security audit check ─────────────────────────────────────────────────────
 
-async fn check_security_audit(state: &AppState) -> CheckResult {
+async fn check_security_audit(_infra: &InfraServices) -> CheckResult {
     use regex::Regex;
 
     let start = std::time::Instant::now();
@@ -777,8 +783,7 @@ async fn check_security_audit(state: &AppState) -> CheckResult {
         }
     }
 
-    // Suppress unused field warning — state is passed for future extensibility
-    let _ = state;
+    // Suppress unused field warning — _infra is passed for future extensibility
 
     let ms = start.elapsed().as_millis() as u64;
     let has_cred_leaks = !credential_findings.is_empty();
@@ -819,13 +824,19 @@ async fn check_security_audit(state: &AppState) -> CheckResult {
 
 // ── Doctor / Health-check API ──
 
-pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
+pub(crate) async fn api_doctor(
+    State(infra): State<InfraServices>,
+    State(agents): State<AgentCore>,
+    State(auth): State<AuthServices>,
+    State(cfg_svc): State<ConfigServices>,
+    State(status): State<StatusMonitor>,
+) -> Json<Value> {
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .unwrap_or_default();
 
-    let config = state.shared_config.read().await;
+    let config = cfg_svc.shared_config.read().await;
     let toolgate_url = config.toolgate_url.clone()
         .unwrap_or_else(|| "http://localhost:9011".to_string());
     let br_base = std::env::var("BROWSER_RENDERER_URL")
@@ -833,12 +844,12 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
     drop(config);
 
     // ── 1. Database check ──────────────────────────────────────────────────
-    let db_state = state.clone();
+    let db_clone = infra.db.clone();
     let database_check = tokio::time::timeout(
         std::time::Duration::from_secs(3),
         async move {
             let start = std::time::Instant::now();
-            let ok = sqlx::query("SELECT 1").execute(&db_state.db).await.is_ok();
+            let ok = sqlx::query("SELECT 1").execute(&db_clone).await.is_ok();
             let ms = start.elapsed().as_millis() as u64;
             if ok {
                 CheckResult::ok("database reachable", ms)
@@ -931,9 +942,9 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
 
     // ── 5. Secrets check ──────────────────────────────────────────────────
     let mut missing_critical: Vec<String> = Vec::new();
-    if let Ok(providers) = crate::db::providers::list_providers_by_type(&state.db, "text").await {
+    if let Ok(providers) = crate::db::providers::list_providers_by_type(&infra.db, "text").await {
         for p in &providers {
-            let has_key = state.secrets.get_scoped(
+            let has_key = auth.secrets.get_scoped(
                 crate::agent::providers::PROVIDER_CREDENTIALS,
                 &p.id.to_string(),
             ).await.is_some();
@@ -944,14 +955,14 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
     }
     if let Ok(channels) = sqlx::query_as::<_, (sqlx::types::Uuid, String, String)>(
         "SELECT id, agent_name, channel_type FROM agent_channels WHERE status != 'deleted'"
-    ).fetch_all(&state.db).await {
+    ).fetch_all(&infra.db).await {
         for (id, agent, ch_type) in &channels {
-            if state.secrets.get_scoped("CHANNEL_CREDENTIALS", &id.to_string()).await.is_none() {
+            if auth.secrets.get_scoped("CHANNEL_CREDENTIALS", &id.to_string()).await.is_none() {
                 missing_critical.push(format!("Channel:{agent}:{ch_type}"));
             }
         }
     }
-    let secrets_count = state.secrets.list().await.map(|v| v.len()).unwrap_or(0);
+    let secrets_count = auth.secrets.list().await.map(|v| v.len()).unwrap_or(0);
     let secrets_check = {
         let mut cr = if missing_critical.is_empty() {
             CheckResult::ok(format!("{secrets_count} secrets configured"), 0)
@@ -993,7 +1004,7 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
     .unwrap_or_else(|_| CheckResult::timeout("channels"));
 
     // ── 7. Agent statuses ─────────────────────────────────────────────────
-    let agents_map = state.agents.read().await;
+    let agents_map = agents.map.read().await;
     let agent_count = agents_map.len();
     let mut agents_details = serde_json::Map::new();
     for (name, _handle) in agents_map.iter() {
@@ -1007,7 +1018,7 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
     };
 
     // ── 8. Tool health ────────────────────────────────────────────────────
-    let degraded_tools = crate::db::tool_quality::get_degraded_tools(&state.db)
+    let degraded_tools = crate::db::tool_quality::get_degraded_tools(&infra.db)
         .await.unwrap_or_default();
     let degraded_count = degraded_tools.len();
     let tool_health_check = {
@@ -1028,14 +1039,14 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
     };
 
     // ── 9. DB migration lag check ─────────────────────────────────────────
-    let mig_state = state.clone();
+    let mig_db = infra.db.clone();
     let migrations_check = tokio::time::timeout(
         std::time::Duration::from_secs(3),
         async move {
             let start = std::time::Instant::now();
             // applied: rows in sqlx tracking table
             let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
-                .fetch_one(&mig_state.db)
+                .fetch_one(&mig_db)
                 .await
                 .unwrap_or(0);
             // total: load migration files from disk at runtime (same path used by main.rs)
@@ -1060,7 +1071,7 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
     .unwrap_or_else(|_| CheckResult::timeout("migrations"));
 
     // ── 10. pgvector extension check ──────────────────────────────────────
-    let pg_state = state.clone();
+    let pg_db = infra.db.clone();
     let pgvector_check = tokio::time::timeout(
         std::time::Duration::from_secs(3),
         async move {
@@ -1068,7 +1079,7 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
             let present: bool = sqlx::query_scalar::<_, bool>(
                 "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'vector')",
             )
-            .fetch_one(&pg_state.db)
+            .fetch_one(&pg_db)
             .await
             .unwrap_or(false);
             let ms = start.elapsed().as_millis() as u64;
@@ -1125,15 +1136,14 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
     };
 
     // ── 12. Provider reachability check ──────────────────────────────────
-    let prov_state = state.clone();
     let (providers_check, security_check) = tokio::join!(
         tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            check_provider_reachability(&prov_state),
+            check_provider_reachability(&infra, &auth),
         ),
         tokio::time::timeout(
             std::time::Duration::from_secs(12),
-            check_security_audit(&state),
+            check_security_audit(&infra),
         ),
     );
     let providers_check = providers_check.unwrap_or_else(|_| CheckResult::timeout("providers"));
@@ -1204,7 +1214,7 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
         std::time::Duration::from_secs(5),
         async {
             let start = std::time::Instant::now();
-            let summary = super::network::fetch_network_summary(&state.status).await;
+            let summary = super::network::fetch_network_summary(&status).await;
             let ms = start.elapsed().as_millis() as u64;
             let mut cr = CheckResult::ok("network discovery available", ms);
             cr.details = Some(summary);
@@ -1216,7 +1226,7 @@ pub(crate) async fn api_doctor(State(state): State<AppState>) -> Json<Value> {
 
     // ── Backup status check ─────────────────────────────────────────────────
     let backup_check = {
-        let config = state.shared_config.read().await;
+        let config = cfg_svc.shared_config.read().await;
         let backup_cfg = &config.backup;
         let enabled = backup_cfg.enabled;
         let cron = backup_cfg.cron.clone();
@@ -1401,12 +1411,12 @@ pub(crate) async fn api_watchdog_restart_check(
 
 /// GET /api/watchdog/settings — read alerting settings from DB
 pub(crate) async fn api_watchdog_settings(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
 ) -> Json<Value> {
     let rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
         "SELECT key, value FROM watchdog_settings",
     )
-    .fetch_all(&state.db)
+    .fetch_all(&infra.db)
     .await
     .unwrap_or_default();
 
@@ -1419,7 +1429,7 @@ pub(crate) async fn api_watchdog_settings(
 
 /// PUT /api/watchdog/settings — update alerting settings
 pub(crate) async fn api_watchdog_settings_update(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let Some(obj) = body.as_object() else {
@@ -1437,7 +1447,7 @@ pub(crate) async fn api_watchdog_settings_update(
         )
         .bind(key)
         .bind(value)
-        .execute(&state.db)
+        .execute(&infra.db)
         .await
         {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();

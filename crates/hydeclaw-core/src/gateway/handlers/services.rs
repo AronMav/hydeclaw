@@ -10,6 +10,7 @@ use axum::{
 use serde_json::{json, Value};
 
 use super::super::AppState;
+use crate::gateway::clusters::{ConfigServices, InfraServices};
 use crate::process_manager::ProcessManager;
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -109,14 +110,14 @@ async fn docker_ps_all() -> Vec<Value> {
     }
 }
 
-pub(crate) async fn api_list_services(State(state): State<AppState>) -> Json<Value> {
-    let _ = &state; // keep State extractor
+pub(crate) async fn api_list_services() -> Json<Value> {
     let result = docker_ps_all().await;
     Json(json!({ "services": result }))
 }
 
 pub(crate) async fn api_service_action(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(cfg): State<ConfigServices>,
     Path((name, action)): Path<(String, String)>,
     body: Option<Json<serde_json::Value>>,
 ) -> impl IntoResponse {
@@ -129,13 +130,13 @@ pub(crate) async fn api_service_action(
     }
 
     // Managed native processes take priority over Docker
-    if let Some(ref pm) = state.process_manager
+    if let Some(ref pm) = infra.process_manager
         && pm.is_managed(&name) {
             let (status, body) = handle_managed_action(pm, &name, &action).await;
             return (status, body).into_response();
         }
 
-    let config = state.shared_config.read().await;
+    let config = cfg.shared_config.read().await;
     if !config.docker.rebuild_allowed.iter().any(|s| s == &name) {
         return (
             StatusCode::FORBIDDEN,

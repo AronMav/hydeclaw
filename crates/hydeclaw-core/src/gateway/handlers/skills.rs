@@ -6,6 +6,7 @@ use axum::{
     routing::get,
 };
 use super::super::AppState;
+use crate::gateway::clusters::InfraServices;
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -56,7 +57,7 @@ pub(crate) async fn find_skill_path(
 
 /// GET /api/skills
 pub(crate) async fn api_skills_list_global(
-    State(_state): State<AppState>,
+    State(_state): State<InfraServices>,
 ) -> impl IntoResponse {
     let skills = crate::skills::load_skills(crate::config::WORKSPACE_DIR).await;
     let result: Vec<serde_json::Value> = skills.iter().map(|s| {
@@ -74,7 +75,7 @@ pub(crate) async fn api_skills_list_global(
 
 /// GET /api/skills/{skill}
 pub(crate) async fn api_skill_get_global(
-    State(_state): State<AppState>,
+    State(_state): State<InfraServices>,
     axum::extract::Path(skill_name): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     let Some(path) = find_skill_path(crate::config::WORKSPACE_DIR, &skill_name).await else {
@@ -99,7 +100,7 @@ pub(crate) async fn api_skill_get_global(
 
 /// PUT /api/skills/{skill}
 pub(crate) async fn api_skill_upsert_global(
-    State(_state): State<AppState>,
+    State(_state): State<InfraServices>,
     axum::extract::Path(skill_name): axum::extract::Path<String>,
     axum::extract::Json(body): axum::extract::Json<SkillUpsertBody>,
 ) -> impl IntoResponse {
@@ -126,7 +127,7 @@ pub(crate) async fn api_skill_upsert_global(
 
 /// DELETE /api/skills/{skill}
 pub(crate) async fn api_skill_delete_global(
-    State(_state): State<AppState>,
+    State(_state): State<InfraServices>,
     axum::extract::Path(skill_name): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     let Some(path) = find_skill_path(crate::config::WORKSPACE_DIR, &skill_name).await else {
@@ -147,7 +148,7 @@ pub(crate) async fn api_skill_delete_global(
 /// GET /api/agents/{name}/skills
 /// Returns list of all skills for the agent (name, description, triggers, `tools_required`, priority).
 pub(crate) async fn api_skills_list(
-    State(_state): State<AppState>,
+    State(_state): State<InfraServices>,
     axum::extract::Path(_agent_name): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     let skills = crate::skills::load_skills(crate::config::WORKSPACE_DIR).await;
@@ -167,7 +168,7 @@ pub(crate) async fn api_skills_list(
 /// GET /api/agents/{name}/skills/{skill}
 /// Returns the skill content and parsed structured fields.
 pub(crate) async fn api_skill_get(
-    State(_state): State<AppState>,
+    State(_state): State<InfraServices>,
     axum::extract::Path((_agent_name, skill_name)): axum::extract::Path<(String, String)>,
 ) -> impl IntoResponse {
     let Some(path) = find_skill_path(crate::config::WORKSPACE_DIR, &skill_name).await else {
@@ -206,7 +207,7 @@ pub(crate) struct SkillUpsertBody {
 /// PUT /api/agents/{name}/skills/{skill}
 /// Creates or updates a skill file.
 pub(crate) async fn api_skill_upsert(
-    State(_state): State<AppState>,
+    State(_state): State<InfraServices>,
     axum::extract::Path((agent_name, skill_name)): axum::extract::Path<(String, String)>,
     axum::extract::Json(body): axum::extract::Json<SkillUpsertBody>,
 ) -> impl IntoResponse {
@@ -234,7 +235,7 @@ pub(crate) async fn api_skill_upsert(
 /// DELETE /api/agents/{name}/skills/{skill}
 /// Deletes a skill file.
 pub(crate) async fn api_skill_delete(
-    State(_state): State<AppState>,
+    State(_state): State<InfraServices>,
     axum::extract::Path((_agent_name, skill_name)): axum::extract::Path<(String, String)>,
 ) -> impl IntoResponse {
     let Some(path) = find_skill_path(crate::config::WORKSPACE_DIR, &skill_name).await else {

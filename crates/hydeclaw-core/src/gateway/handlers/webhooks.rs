@@ -14,6 +14,7 @@ use std::time::Instant;
 use subtle::ConstantTimeEq;
 
 use super::super::AppState;
+use crate::gateway::clusters::{AgentCore, InfraServices};
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -122,7 +123,7 @@ struct WebhookRow {
 
 // ── CRUD endpoints ──
 
-pub(crate) async fn api_list_webhooks(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn api_list_webhooks(State(state): State<InfraServices>) -> impl IntoResponse {
     let rows = sqlx::query_as::<_, WebhookRow>(
         "SELECT id, name, agent_id, secret, prompt_prefix, enabled, created_at, last_triggered_at, trigger_count, webhook_type, event_filter \
          FROM webhooks ORDER BY created_at DESC",
@@ -154,7 +155,7 @@ pub(crate) struct CreateWebhookRequest {
 }
 
 pub(crate) async fn api_create_webhook(
-    State(state): State<AppState>,
+    State(state): State<InfraServices>,
     Json(req): Json<CreateWebhookRequest>,
 ) -> impl IntoResponse {
     if req.name.is_empty() || req.agent.is_empty() {
@@ -230,7 +231,7 @@ pub(crate) struct UpdateWebhookRequest {
 }
 
 pub(crate) async fn api_update_webhook(
-    State(state): State<AppState>,
+    State(state): State<InfraServices>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     Json(req): Json<UpdateWebhookRequest>,
 ) -> impl IntoResponse {
@@ -294,7 +295,7 @@ pub(crate) async fn api_update_webhook(
 }
 
 pub(crate) async fn api_delete_webhook(
-    State(state): State<AppState>,
+    State(state): State<InfraServices>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
 ) -> impl IntoResponse {
     let result = sqlx::query("DELETE FROM webhooks WHERE id = $1")
@@ -320,7 +321,8 @@ pub(crate) async fn api_delete_webhook(
 // ── Webhook trigger handler ──
 
 pub(crate) async fn webhook_handler(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(agents): State<AgentCore>,
     axum::extract::Path(name): axum::extract::Path<String>,
     req: Request<Body>,
 ) -> impl IntoResponse {
@@ -339,7 +341,7 @@ pub(crate) async fn webhook_handler(
          FROM webhooks WHERE name = $1 AND enabled = true",
     )
     .bind(&name)
-    .fetch_optional(&state.db)
+    .fetch_optional(&infra.db)
     .await
     {
         Ok(Some(row)) => row,
@@ -433,7 +435,7 @@ pub(crate) async fn webhook_handler(
         "UPDATE webhooks SET trigger_count = trigger_count + 1, last_triggered_at = now() WHERE id = $1",
     )
     .bind(wh.id)
-    .execute(&state.db)
+    .execute(&infra.db)
     .await;
 
     // Build text payload
@@ -455,7 +457,7 @@ pub(crate) async fn webhook_handler(
     let text = if prefix.is_empty() { payload_text } else { format!("{prefix}\n\n{payload_text}") };
 
     // Get agent engine
-    let Some(engine) = state.get_engine(&wh.agent_id).await else {
+    let Some(engine) = agents.get_engine(&wh.agent_id).await else {
         return (StatusCode::NOT_FOUND, Json(json!({"error": "agent not running"}))).into_response();
     };
 
@@ -495,7 +497,7 @@ pub(crate) async fn webhook_handler(
 // ── Regenerate secret ──
 
 pub(crate) async fn api_regenerate_webhook_secret(
-    State(state): State<AppState>,
+    State(state): State<InfraServices>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
 ) -> impl IntoResponse {
     use rand::Rng;
