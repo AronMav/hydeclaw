@@ -401,6 +401,7 @@ pub(crate) async fn api_delete_backup(Path(filename): Path<String>) -> impl Into
 
 // ── POST /api/restore ─────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn api_restore(
     State(infra): State<InfraServices>,
     State(auth): State<AuthServices>,
