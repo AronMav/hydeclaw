@@ -10,6 +10,7 @@ pub(crate) mod middleware;
 pub mod stream_registry;
 pub mod stream_jobs;
 pub mod state;
+pub mod clusters;
 mod handlers;
 pub use error::ApiError;
 pub use state::*;
