@@ -245,6 +245,7 @@ impl AgentEngine {
     /// Like `run_subagent` but with an explicit session_id for tool context enrichment.
     /// When `session_id` is Some, it is passed to `execute_tool_calls_partitioned` so tools
     /// like `agent` can find the correct SessionAgentPool via enriched `_context`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_subagent_with_session(
         &self,
         task: &str,

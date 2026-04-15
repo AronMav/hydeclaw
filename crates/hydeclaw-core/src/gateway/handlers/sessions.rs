@@ -749,10 +749,9 @@ pub(crate) async fn api_retry_session(
 
     // 3. Cleanup: delete empty assistant messages and the last user message
     //    (handle_sse will re-save it, so we remove to avoid duplicates)
-    if let Ok(deleted) = sessions::delete_empty_assistant_messages(&state.db, id).await {
-        if deleted > 0 {
-            tracing::info!(session_id = %id, deleted, "cleaned up empty assistant messages before retry");
-        }
+    if let Ok(deleted) = sessions::delete_empty_assistant_messages(&state.db, id).await
+        && deleted > 0 {
+        tracing::info!(session_id = %id, deleted, "cleaned up empty assistant messages before retry");
     }
     // Delete the last user message — handle_sse will re-insert it
     let _ = sqlx::query(

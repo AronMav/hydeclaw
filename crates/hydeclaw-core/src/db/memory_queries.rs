@@ -119,7 +119,7 @@ pub async fn ensure_hnsw_index(db: &PgPool, dim: u32) -> Result<()> {
     }
 
     // IVFFlat lists: sqrt(rows) clamped to [1, 1000]
-    let lists = (row_count as f64).sqrt().ceil().max(1.0).min(1000.0) as u32;
+    let lists = (row_count as f64).sqrt().ceil().clamp(1.0, 1000.0) as u32;
     let sql = format!(
         "CREATE INDEX IF NOT EXISTS idx_memory_embedding_ivfflat \
          ON memory_chunks USING ivfflat ((embedding::vector({dim})) vector_cosine_ops) \

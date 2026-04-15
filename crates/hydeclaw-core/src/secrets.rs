@@ -144,10 +144,9 @@ impl SecretsManager {
     ///   3. env var       — legacy env fallback
     pub async fn get_scoped(&self, name: &str, scope: &str) -> Option<String> {
         let cache = self.cache.read().await;
-        if !scope.is_empty() {
-            if let Some(val) = cache.get(&(name.to_string(), scope.to_string())) {
-                return Some(val.clone());
-            }
+        if !scope.is_empty()
+            && let Some(val) = cache.get(&(name.to_string(), scope.to_string())) {
+            return Some(val.clone());
         }
         if let Some(val) = cache.get(&(name.to_string(), String::new())) {
             if !scope.is_empty() {

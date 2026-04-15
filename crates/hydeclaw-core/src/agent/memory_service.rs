@@ -33,6 +33,7 @@ pub trait MemoryService: Send + Sync {
     /// Index a new memory chunk. Returns the new chunk UUID.
     /// `scope`: "private" (agent-only) or "shared" (visible to all agents).
     /// `agent_id`: the agent that owns this chunk.
+    #[allow(clippy::too_many_arguments)]
     async fn index(
         &self,
         content: &str,

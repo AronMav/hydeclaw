@@ -378,21 +378,20 @@ impl AgentEngine {
                     }
                 }
                 // Notify if loop was broken after max nudges
-                if loop_broken && loop_nudge_count >= loop_config.max_loop_nudges {
-                    if let Some(ref ui_tx) = self.ui_event_tx {
-                        let db = self.db.clone();
-                        let tx = ui_tx.clone();
-                        let agent_name = self.agent.name.clone();
-                        let sid = session_id;
-                        tokio::spawn(async move {
-                            crate::gateway::notify(
-                                &db, &tx, "agent_loop_detected",
-                                &format!("Agent stuck in loop: {}", agent_name),
-                                &format!("Agent {} was stopped after detecting a repeating pattern. Session: {}", agent_name, sid),
-                                serde_json::json!({"agent": agent_name, "session_id": sid.to_string()}),
-                            ).await.ok();
-                        });
-                    }
+                if loop_broken && loop_nudge_count >= loop_config.max_loop_nudges
+                    && let Some(ref ui_tx) = self.ui_event_tx {
+                    let db = self.db.clone();
+                    let tx = ui_tx.clone();
+                    let agent_name = self.agent.name.clone();
+                    let sid = session_id;
+                    tokio::spawn(async move {
+                        crate::gateway::notify(
+                            &db, &tx, "agent_loop_detected",
+                            &format!("Agent stuck in loop: {}", agent_name),
+                            &format!("Agent {} was stopped after detecting a repeating pattern. Session: {}", agent_name, sid),
+                            serde_json::json!({"agent": agent_name, "session_id": sid.to_string()}),
+                        ).await.ok();
+                    });
                 }
                 // Forced final call — use streaming if chunk_tx is available
                 let forced_result = if let Some(ref tx) = chunk_tx {

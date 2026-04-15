@@ -16,7 +16,6 @@ pub enum ApiError {
     Conflict(String),
     Forbidden(String),
     Internal(String),
-    ServiceUnavailable(String),
 }
 
 impl IntoResponse for ApiError {
@@ -27,7 +26,6 @@ impl IntoResponse for ApiError {
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg),
             ApiError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
-            ApiError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg),
         };
         (status, Json(json!({"error": message}))).into_response()
     }
