@@ -76,7 +76,7 @@ pub struct DefaultToolExecutor {
     /// Background processes started by `process_start` tool (base agents only).
     pub(crate) bg_processes: Arc<tokio::sync::Mutex<std::collections::HashMap<String, crate::agent::engine::BgProcess>>>,
     /// Cached YAML tool definitions with TTL (avoids per-batch disk reads in parallel execution).
-    pub(crate) yaml_tools_cache: tokio::sync::RwLock<(std::time::Instant, std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef>)>,
+    pub(crate) yaml_tools_cache: tokio::sync::RwLock<(std::time::Instant, std::sync::Arc<std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef>>)>,
     /// Per-engine web search cache (`query_hash` → (result, expiry)). TTL: 5 minutes.
     pub(crate) search_cache: tokio::sync::RwLock<std::collections::HashMap<u64, (String, std::time::Instant)>>,
     /// In-memory cache for tool embeddings (semantic top-K selection).
@@ -119,7 +119,7 @@ pub struct DefaultToolExecutor {
 pub struct DefaultToolExecutorFields {
     pub sandbox: Option<Arc<crate::containers::sandbox::CodeSandbox>>,
     pub bg_processes: Arc<tokio::sync::Mutex<std::collections::HashMap<String, crate::agent::engine::BgProcess>>>,
-    pub yaml_tools_cache: tokio::sync::RwLock<(std::time::Instant, std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef>)>,
+    pub yaml_tools_cache: tokio::sync::RwLock<(std::time::Instant, std::sync::Arc<std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef>>)>,
     pub search_cache: tokio::sync::RwLock<std::collections::HashMap<u64, (String, std::time::Instant)>>,
     pub tool_embed_cache: Arc<crate::tools::embedding::ToolEmbeddingCache>,
     pub penalty_cache: Arc<crate::db::tool_quality::PenaltyCache>,

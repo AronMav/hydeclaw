@@ -75,19 +75,20 @@ impl super::AgentEngine {
         }
 
         // 4. Load YAML tools
-        let yaml_tools = {
+        let yaml_tools: std::sync::Arc<HashMap<String, yaml_tools::YamlToolDef>> = {
             let cache = self.tex().yaml_tools_cache.read().await;
             if cache.0.elapsed() < std::time::Duration::from_secs(30) && !cache.1.is_empty() {
-                cache.1.clone()
+                std::sync::Arc::clone(&cache.1)
             } else {
                 drop(cache);
-                let tools: HashMap<String, yaml_tools::YamlToolDef> =
+                let tools = std::sync::Arc::new(
                     yaml_tools::load_yaml_tools(&self.workspace_dir, false)
                         .await
                         .into_iter()
                         .map(|t| (t.name.clone(), t))
-                        .collect();
-                *self.tex().yaml_tools_cache.write().await = (std::time::Instant::now(), tools.clone());
+                        .collect::<HashMap<String, yaml_tools::YamlToolDef>>(),
+                );
+                *self.tex().yaml_tools_cache.write().await = (std::time::Instant::now(), std::sync::Arc::clone(&tools));
                 tools
             }
         };

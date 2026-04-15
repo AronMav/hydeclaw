@@ -66,6 +66,7 @@ pub struct MessagePart {
 pub fn router(state: AppState) -> anyhow::Result<Router> {
     let auth_token = state
         .config
+        .config
         .gateway
         .auth_token_env
         .as_ref()
@@ -77,7 +78,7 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
         .merge(handlers::channel_ws::routes())      // /ws, /ws/channel/{agent_name}
         .merge(handlers::agents::routes())          // /api/agents/*, /api/approvals/*
         .merge(handlers::sessions::routes())        // /api/sessions/*, /api/messages/*
-        .merge(handlers::monitoring::routes(&state))// /api/setup/*, /api/status, /api/stats, /api/usage/*, /api/doctor, /api/audit/*, /api/watchdog/*
+        .merge(handlers::monitoring::routes(state.clone()))// /api/setup/*, /api/status, /api/stats, /api/usage/*, /api/doctor, /api/audit/*, /api/watchdog/*
         .merge(handlers::providers::routes())       // /api/providers/*, /api/provider-types, /api/media-drivers, /api/media-config, /api/provider-active
         .merge(handlers::network::routes())         // /api/network/addresses
         .merge(handlers::secrets::routes())         // /api/secrets/*
@@ -104,7 +105,7 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
     let app = if let Some(token) = auth_token {
         let shared_token: &'static str = Box::leak(token.into_boxed_str());
         let rate_limiter: &'static AuthRateLimiter = Box::leak(Box::new(AuthRateLimiter::new(500, 30)));
-        let ws_tickets = state.ws_tickets.clone();
+        let ws_tickets = state.auth.ws_tickets.clone();
         app.layer(axum_mw::from_fn(move |req, next| {
             let ws_tickets = ws_tickets.clone();
             async move { auth_middleware(req, next, shared_token, rate_limiter, ws_tickets).await }
@@ -116,7 +117,7 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
     };
 
     // Request rate limiting (per-IP, from config limits.max_requests_per_minute)
-    let max_rpm = state.config.limits.max_requests_per_minute;
+    let max_rpm = state.config.config.limits.max_requests_per_minute;
     let req_limiter: &'static RequestRateLimiter =
         Box::leak(Box::new(RequestRateLimiter::new(max_rpm)));
     let ws_budget: &'static WsConnectionBudget =
@@ -126,10 +127,10 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
     }));
 
     // CORS: restrict to configured origins or derive from listen address.
-    let cors_origins: Vec<axum::http::HeaderValue> = if state.config.gateway.cors_origins.is_empty() {
+    let cors_origins: Vec<axum::http::HeaderValue> = if state.config.config.gateway.cors_origins.is_empty() {
         // Derive from listen address: allow UI on same host (:5173) + API port
-        let host = state.config.gateway.listen.split(':').next().unwrap_or("0.0.0.0");
-        let port = state.config.gateway.listen.rsplit(':').next().unwrap_or("18789");
+        let host = state.config.config.gateway.listen.split(':').next().unwrap_or("0.0.0.0");
+        let port = state.config.config.gateway.listen.rsplit(':').next().unwrap_or("18789");
         let mut origins = vec![
             format!("http://{host}:{port}").parse().expect("valid CORS origin"),
             format!("http://{host}:5173").parse().expect("valid CORS origin"),
@@ -144,17 +145,17 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
                 if let Ok(v) = format!("http://{iface}:5173").parse() { origins.push(v); }
             }
             // Add Docker subnet gateway IPs for CORS
-            for gw in get_docker_subnet_gateways(&state.config.gateway.cors_docker_subnets) {
+            for gw in get_docker_subnet_gateways(&state.config.config.gateway.cors_docker_subnets) {
                 if let Ok(v) = format!("http://{gw}:{port}").parse() { origins.push(v); }
                 if let Ok(v) = format!("http://{gw}:5173").parse() { origins.push(v); }
             }
         }
         // Also add public_url origin if configured
-        if let Some(ref pu) = state.config.gateway.public_url
+        if let Some(ref pu) = state.config.config.gateway.public_url
             && let Ok(v) = pu.trim_end_matches('/').parse() { origins.push(v); }
         origins
     } else {
-        state.config.gateway.cors_origins.iter()
+        state.config.config.gateway.cors_origins.iter()
             .filter_map(|o| o.parse().ok())
             .collect()
     };

@@ -9,14 +9,14 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use uuid::Uuid;
 
-use super::super::super::AppState;
+use crate::gateway::clusters::{AgentCore, AuthServices, InfraServices, ChannelBus, ConfigServices, StatusMonitor};
 use crate::config::AgentConfig;
 use super::schema::*;
 use super::lifecycle::start_agent_from_config;
 
 // ── Agent list ──────────────────────────────────────────
 
-pub(crate) async fn api_agents(State(state): State<AppState>) -> Json<Value> {
+pub(crate) async fn api_agents(State(agents): State<AgentCore>) -> Json<Value> {
     // Read configs from disk (source of truth)
     let mut disk_configs = crate::config::load_agent_configs("config/agents").unwrap_or_default();
     // Base (base infrastructure) agents first, then alphabetical
@@ -24,7 +24,7 @@ pub(crate) async fn api_agents(State(state): State<AppState>) -> Json<Value> {
         b.agent.base.cmp(&a.agent.base)
             .then_with(|| a.agent.name.to_lowercase().cmp(&b.agent.name.to_lowercase()))
     });
-    let agents_map = state.agents.read().await;
+    let agents_map = agents.map.read().await;
 
     let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut agents: Vec<Value> = Vec::new();
@@ -105,7 +105,8 @@ pub(crate) async fn api_agents(State(state): State<AppState>) -> Json<Value> {
 // ── Agent CRUD ──────────────────────────────────────────
 
 pub(crate) async fn api_get_agent(
-    State(state): State<AppState>,
+    State(agents): State<AgentCore>,
+    State(auth): State<AuthServices>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     let path = agent_config_path(&name);
@@ -114,7 +115,7 @@ pub(crate) async fn api_get_agent(
         Err(_) => return (StatusCode::NOT_FOUND, Json(json!({"error": "agent not found"}))).into_response(),
     };
 
-    let agents_map = state.agents.read().await;
+    let agents_map = agents.map.read().await;
     let is_running = agents_map.contains_key(&name);
     let config_dirty = if let Some(handle) = agents_map.get(&name) {
         let running = AgentConfig { agent: handle.engine.agent.clone() };
@@ -125,14 +126,19 @@ pub(crate) async fn api_get_agent(
 
     let mut detail = agent_to_detail(&cfg, is_running, config_dirty);
     // Attach per-agent TTS voice from scoped secrets
-    if let Some(voice) = state.secrets.get_scoped("TTS_VOICE", &name).await {
+    if let Some(voice) = auth.secrets.get_scoped("TTS_VOICE", &name).await {
         detail["voice"] = json!(voice);
     }
     Json(detail).into_response()
 }
 
 pub(crate) async fn api_create_agent(
-    State(state): State<AppState>,
+    State(agents): State<AgentCore>,
+    State(auth): State<AuthServices>,
+    State(infra): State<InfraServices>,
+    State(bus): State<ChannelBus>,
+    State(cfg_svc): State<ConfigServices>,
+    State(status): State<StatusMonitor>,
     Json(mut payload): Json<AgentCreatePayload>,
 ) -> impl IntoResponse {
     let name = payload.name.clone();
@@ -156,15 +162,15 @@ pub(crate) async fn api_create_agent(
     }
 
     // Check if already running
-    if state.agents.read().await.contains_key(&name) {
+    if agents.map.read().await.contains_key(&name) {
         return (StatusCode::CONFLICT, Json(json!({"error": "agent already running"}))).into_response();
     }
 
     // Save per-agent TTS voice as scoped secret
     if let Some(ref v) = voice {
         if v.is_empty() {
-            let _ = state.secrets.delete_scoped("TTS_VOICE", &name).await;
-        } else if let Err(e) = state.secrets.set_scoped("TTS_VOICE", &name, v, None).await {
+            let _ = auth.secrets.delete_scoped("TTS_VOICE", &name).await;
+        } else if let Err(e) = auth.secrets.set_scoped("TTS_VOICE", &name, v, None).await {
             tracing::warn!(error = %e, "failed to save TTS_VOICE secret");
         }
     }
@@ -172,7 +178,7 @@ pub(crate) async fn api_create_agent(
     let mut cfg = build_agent_config(name.clone(), payload);
 
     // First agent created is automatically base (system agent) with safe defaults
-    if state.agents.read().await.is_empty() {
+    if agents.map.read().await.is_empty() {
         cfg.agent.base = true;
         // Set default tool deny-list if none was provided
         if cfg.agent.tools.is_none() {
@@ -215,7 +221,7 @@ pub(crate) async fn api_create_agent(
     // Auto-fill provider/model from provider_connection if not explicitly set
     if let Some(ref conn_name) = cfg.agent.provider_connection
         && !conn_name.is_empty()
-            && let Ok(Some(conn)) = crate::db::providers::get_provider_by_name(&state.db, conn_name).await {
+            && let Ok(Some(conn)) = crate::db::providers::get_provider_by_name(&infra.db, conn_name).await {
                 if cfg.agent.provider.is_empty() || cfg.agent.provider == *conn_name {
                     cfg.agent.provider = conn.provider_type.clone();
                 }
@@ -242,19 +248,19 @@ pub(crate) async fn api_create_agent(
     // Workspace directory + scaffold is created by start_agent_from_config
 
     // Hot-start the agent
-    match start_agent_from_config(&cfg, &state).await {
+    match start_agent_from_config(&cfg, &agents, &infra, &auth, &bus, &cfg_svc, &status).await {
         Ok((handle, guard)) => {
-            state.agents.write().await.insert(name.clone(), handle);
+            agents.map.write().await.insert(name.clone(), handle);
             if let Some(guard) = guard {
-                state.access_guards.write().await.insert(name.clone(), guard);
+                auth.access_guards.write().await.insert(name.clone(), guard);
             }
 
             // Ensure Docker sandbox for non-base agents (base run on host)
             if !cfg.agent.base
-                && let Some(ref sandbox) = state.sandbox {
+                && let Some(ref sandbox) = infra.sandbox {
                     match canonicalize(crate::config::WORKSPACE_DIR) {
                         Ok(host_path) => {
-                            if let Err(e) = sandbox.ensure_container(&name, &host_path.to_string_lossy(), false, Some(&state.oauth)).await {
+                            if let Err(e) = sandbox.ensure_container(&name, &host_path.to_string_lossy(), false, Some(&auth.oauth)).await {
                                 tracing::warn!(agent = %name, error = %e, "failed to ensure agent container");
                             }
                         }
@@ -265,7 +271,7 @@ pub(crate) async fn api_create_agent(
                 }
 
             tracing::info!(agent = %name, "agent created and started via API");
-            crate::db::audit::audit_spawn(state.db.clone(), name.clone(), crate::db::audit::event_types::AGENT_CREATED, None, json!({"agent": name}));
+            crate::db::audit::audit_spawn(infra.db.clone(), name.clone(), crate::db::audit::event_types::AGENT_CREATED, None, json!({"agent": name}));
 
             Json(json!({ "ok": true, "name": name })).into_response()
         }
@@ -278,7 +284,12 @@ pub(crate) async fn api_create_agent(
 }
 
 pub(crate) async fn api_update_agent(
-    State(state): State<AppState>,
+    State(agents): State<AgentCore>,
+    State(auth): State<AuthServices>,
+    State(infra): State<InfraServices>,
+    State(bus): State<ChannelBus>,
+    State(cfg_svc): State<ConfigServices>,
+    State(status): State<StatusMonitor>,
     axum::extract::Path(name): axum::extract::Path<String>,
     Json(mut payload): Json<AgentCreatePayload>,
 ) -> impl IntoResponse {
@@ -473,7 +484,7 @@ pub(crate) async fn api_update_agent(
             "agent_oauth_bindings", "approval_allowlist",
             "memory_chunks",
         ];
-        let mut tx = match state.db.begin().await {
+        let mut tx = match infra.db.begin().await {
             Ok(tx) => tx,
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("transaction start failed: {}", e)}))).into_response(),
         };
@@ -528,7 +539,7 @@ pub(crate) async fn api_update_agent(
             }
 
         // Migrate per-agent scoped secrets: scope='OldName' → scope='NewName'
-        if let Err(e) = state.secrets.rename_scope(&name, &new_name).await {
+        if let Err(e) = auth.secrets.rename_scope(&name, &new_name).await {
             tracing::warn!(
                 from = %name, to = %new_name, error = %e,
                 "failed to migrate scoped secrets on agent rename"
@@ -539,38 +550,38 @@ pub(crate) async fn api_update_agent(
     // Save per-agent TTS voice as scoped secret
     if let Some(ref v) = voice {
         if v.is_empty() {
-            let _ = state.secrets.delete_scoped("TTS_VOICE", &new_name).await;
-        } else if let Err(e) = state.secrets.set_scoped("TTS_VOICE", &new_name, v, None).await {
+            let _ = auth.secrets.delete_scoped("TTS_VOICE", &new_name).await;
+        } else if let Err(e) = auth.secrets.set_scoped("TTS_VOICE", &new_name, v, None).await {
             tracing::warn!(error = %e, "failed to save TTS_VOICE secret");
         }
     }
 
     // Hot-restart: stop old agent, start new one.
-    let old_handle = state.agents.write().await.remove(&name);
-    state.access_guards.write().await.remove(&name);
+    let old_handle = agents.map.write().await.remove(&name);
+    auth.access_guards.write().await.remove(&name);
     if let Some(handle) = old_handle {
-        handle.shutdown(&state.scheduler).await;
+        handle.shutdown(&agents.scheduler).await;
     }
 
     // If renaming, remove old container
     if is_rename
-        && let Some(ref sandbox) = state.sandbox {
+        && let Some(ref sandbox) = infra.sandbox {
             let _ = sandbox.remove_container(&name).await;
         }
 
-    match start_agent_from_config(&cfg, &state).await {
+    match start_agent_from_config(&cfg, &agents, &infra, &auth, &bus, &cfg_svc, &status).await {
         Ok((handle, guard)) => {
-            state.agents.write().await.insert(new_name.clone(), handle);
+            agents.map.write().await.insert(new_name.clone(), handle);
             if let Some(guard) = guard {
-                state.access_guards.write().await.insert(new_name.clone(), guard);
+                auth.access_guards.write().await.insert(new_name.clone(), guard);
             }
 
             // Ensure Docker sandbox for non-base agents (base run on host)
             if !cfg.agent.base
-                && let Some(ref sandbox) = state.sandbox {
+                && let Some(ref sandbox) = infra.sandbox {
                     match canonicalize(crate::config::WORKSPACE_DIR) {
                         Ok(host_path) => {
-                            if let Err(e) = sandbox.ensure_container(&new_name, &host_path.to_string_lossy(), false, Some(&state.oauth)).await {
+                            if let Err(e) = sandbox.ensure_container(&new_name, &host_path.to_string_lossy(), false, Some(&auth.oauth)).await {
                                 tracing::warn!(agent = %new_name, error = %e, "failed to ensure agent container after update");
                             }
                         }
@@ -581,7 +592,7 @@ pub(crate) async fn api_update_agent(
             }
 
             tracing::info!(agent = %new_name, renamed_from = %name, "agent updated and restarted via API");
-            crate::db::audit::audit_spawn(state.db.clone(), new_name.clone(), crate::db::audit::event_types::AGENT_UPDATED, None, json!({"agent": new_name, "renamed_from": name}));
+            crate::db::audit::audit_spawn(infra.db.clone(), new_name.clone(), crate::db::audit::event_types::AGENT_UPDATED, None, json!({"agent": new_name, "renamed_from": name}));
 
         }
         Err(e) => {
@@ -613,7 +624,9 @@ async fn cleanup_agent_data(db: &sqlx::PgPool, agent_name: &str) -> Result<(), s
 }
 
 pub(crate) async fn api_delete_agent(
-    State(state): State<AppState>,
+    State(agents): State<AgentCore>,
+    State(auth): State<AuthServices>,
+    State(infra): State<InfraServices>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     let path = agent_config_path(&name);
@@ -647,9 +660,9 @@ pub(crate) async fn api_delete_agent(
     // Fetch channel IDs before transaction deletes them
     let channels: Vec<(uuid::Uuid,)> = sqlx::query_as(
         "SELECT id FROM agent_channels WHERE agent_name = $1"
-    ).bind(&name).fetch_all(&state.db).await.unwrap_or_default();
+    ).bind(&name).fetch_all(&infra.db).await.unwrap_or_default();
 
-    if let Err(e) = cleanup_agent_data(&state.db, &name).await {
+    if let Err(e) = cleanup_agent_data(&infra.db, &name).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
             "error": format!("failed to clean up agent data: {}", e)
         }))).into_response();
@@ -659,9 +672,9 @@ pub(crate) async fn api_delete_agent(
     // if we deleted credentials before and the transaction failed, channels would
     // lose their tokens irrecoverably)
     for (ch_id,) in &channels {
-        state.secrets.delete_scoped("CHANNEL_CREDENTIALS", &ch_id.to_string()).await.ok();
+        auth.secrets.delete_scoped("CHANNEL_CREDENTIALS", &ch_id.to_string()).await.ok();
     }
-    state.secrets.delete_scope(&name).await.ok();
+    auth.secrets.delete_scope(&name).await.ok();
 
     // Remove TOML from disk
     if path.exists()
@@ -670,22 +683,22 @@ pub(crate) async fn api_delete_agent(
         }
 
     // Hot-stop: remove from running engines
-    let handle = state.agents.write().await.remove(&name);
-    state.access_guards.write().await.remove(&name);
+    let handle = agents.map.write().await.remove(&name);
+    auth.access_guards.write().await.remove(&name);
 
     // Remove agent container
-    if let Some(ref sandbox) = state.sandbox {
+    if let Some(ref sandbox) = infra.sandbox {
         let _ = sandbox.remove_container(&name).await;
     }
 
     if let Some(handle) = handle {
-        handle.shutdown(&state.scheduler).await;
+        handle.shutdown(&agents.scheduler).await;
         tracing::info!(agent = %name, "agent deleted and stopped via API");
     } else {
         tracing::info!(agent = %name, "agent config deleted via API (was not running)");
     }
 
-    crate::db::audit::audit_spawn(state.db.clone(), name.clone(), crate::db::audit::event_types::AGENT_DELETED, None, json!({"agent": name}));
+    crate::db::audit::audit_spawn(infra.db.clone(), name.clone(), crate::db::audit::event_types::AGENT_DELETED, None, json!({"agent": name}));
 
     Json(json!({ "ok": true })).into_response()
 }
@@ -695,15 +708,15 @@ pub(crate) async fn api_delete_agent(
 /// GET /api/approvals?agent=xxx&status=pending
 /// If agent is omitted, returns pending approvals for all agents.
 pub(crate) async fn api_list_approvals(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let agent_name = params.get("agent").cloned().unwrap_or_default();
 
     let result = if agent_name.is_empty() {
-        crate::db::approvals::list_all_pending(&state.db).await
+        crate::db::approvals::list_all_pending(&infra.db).await
     } else {
-        crate::db::approvals::list_pending(&state.db, &agent_name).await
+        crate::db::approvals::list_pending(&infra.db, &agent_name).await
     };
 
     match result {
@@ -732,7 +745,8 @@ pub(crate) async fn api_list_approvals(
 /// POST /api/approvals/{id}/resolve
 /// Body: {"status": "approved"|"rejected"}
 pub(crate) async fn api_resolve_approval(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
+    State(agents_core): State<AgentCore>,
     Path(id): Path<Uuid>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
@@ -747,7 +761,7 @@ pub(crate) async fn api_resolve_approval(
     }
 
     // Find the agent this approval belongs to
-    let approval = match crate::db::approvals::get_approval(&state.db, id).await {
+    let approval = match crate::db::approvals::get_approval(&infra.db, id).await {
         Ok(Some(a)) => a,
         Ok(None) => return (
             StatusCode::NOT_FOUND,
@@ -764,7 +778,7 @@ pub(crate) async fn api_resolve_approval(
         .and_then(|v| if v.is_null() { None } else { Some(v.clone()) });
 
     // Resolve in the engine (updates DB + wakes waiter)
-    let agents = state.agents.read().await;
+    let agents = agents_core.map.read().await;
     if let Some(handle) = agents.get(&approval.agent_id) {
         let approved = status == "approved";
         match handle.engine.resolve_approval(id, approved, resolved_by, modified_input.clone()).await {
@@ -788,21 +802,21 @@ pub(crate) async fn api_resolve_approval(
 // ── Approval Allowlist ──────────────────────────────────
 
 pub(crate) async fn api_list_allowlist(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let agent = params.get("agent").cloned().unwrap_or_default();
     if agent.is_empty() {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "agent parameter required"}))).into_response();
     }
-    match crate::db::approvals::list_allowlist(&state.db, &agent).await {
+    match crate::db::approvals::list_allowlist(&infra.db, &agent).await {
         Ok(entries) => Json(json!({"allowlist": entries})).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     }
 }
 
 pub(crate) async fn api_add_to_allowlist(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let agent = body["agent_id"].as_str().unwrap_or("");
@@ -810,17 +824,17 @@ pub(crate) async fn api_add_to_allowlist(
     if agent.is_empty() || pattern.is_empty() {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "agent_id and tool_pattern required"}))).into_response();
     }
-    match crate::db::approvals::add_to_allowlist(&state.db, agent, pattern).await {
+    match crate::db::approvals::add_to_allowlist(&infra.db, agent, pattern).await {
         Ok(id) => (StatusCode::CREATED, Json(json!({"id": id}))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     }
 }
 
 pub(crate) async fn api_delete_from_allowlist(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Path(id): Path<uuid::Uuid>,
 ) -> impl IntoResponse {
-    match crate::db::approvals::remove_from_allowlist(&state.db, id).await {
+    match crate::db::approvals::remove_from_allowlist(&infra.db, id).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
@@ -830,10 +844,10 @@ pub(crate) async fn api_delete_from_allowlist(
 // ── Hooks API ───────────────────────────────────────────
 
 pub(crate) async fn api_agent_hooks(
-    State(state): State<AppState>,
+    State(agents): State<AgentCore>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(engine) = state.get_engine(&name).await {
+    if let Some(engine) = agents.get_engine(&name).await {
         let names = engine.hooks().names();
         Json(json!({"agent": name, "hooks": names})).into_response()
     } else {
@@ -847,7 +861,7 @@ pub(crate) async fn api_agent_hooks(
 /// Returns messages from inter-agent communication sessions (read-only).
 #[allow(dead_code)]
 pub(crate) async fn api_inter_agent_messages(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let limit: i64 = params
@@ -863,7 +877,7 @@ pub(crate) async fn api_inter_agent_messages(
          ORDER BY m.created_at DESC LIMIT $1",
     )
     .bind(limit)
-    .fetch_all(&state.db)
+    .fetch_all(&infra.db)
     .await;
 
     match rows {
@@ -903,10 +917,10 @@ pub(crate) async fn api_inter_agent_messages(
 /// DELETE /api/inter-agent/messages — clear all inter-agent/group chat messages.
 #[allow(dead_code)]
 pub(crate) async fn api_clear_inter_agent_messages(
-    State(state): State<AppState>,
+    State(infra): State<InfraServices>,
 ) -> impl IntoResponse {
     let result = async {
-        let mut tx = state.db.begin().await?;
+        let mut tx = infra.db.begin().await?;
         sqlx::query(
             "DELETE FROM messages WHERE session_id IN \
              (SELECT id FROM sessions WHERE channel IN ('inter-agent', 'group'))",
@@ -938,15 +952,15 @@ pub(crate) async fn api_clear_inter_agent_messages(
 
 /// GET /api/agents/{name}/tasks — return task plans written by this agent to workspace/tasks/
 pub(crate) async fn api_agent_tasks(
-    State(state): State<AppState>,
+    State(agents): State<AgentCore>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     // Check agent exists
-    if !state.agents.read().await.contains_key(&name) {
+    if !agents.map.read().await.contains_key(&name) {
         return (StatusCode::NOT_FOUND, Json(json!({"error": "agent not found"}))).into_response();
     }
 
-    let workspace_dir = state.agent_deps.read().await.workspace_dir.clone();
+    let workspace_dir = agents.deps.read().await.workspace_dir.clone();
     let tasks_dir = PathBuf::from(&workspace_dir).join("tasks");
 
     // If tasks directory doesn't exist, return empty list
