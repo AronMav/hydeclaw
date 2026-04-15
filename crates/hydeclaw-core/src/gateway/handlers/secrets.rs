@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::super::AppState;
+use crate::gateway::clusters::{AuthServices, ConfigServices, InfraServices};
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -16,8 +17,8 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/secrets/{name}", get(get_secret).delete(delete_secret))
 }
 
-pub(crate) async fn list_secrets(State(state): State<AppState>) -> impl IntoResponse {
-    match state.secrets.list().await {
+pub(crate) async fn list_secrets(State(auth): State<AuthServices>) -> impl IntoResponse {
+    match auth.secrets.list().await {
         Ok(secrets) => Json(json!({ "secrets": secrets })).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -38,7 +39,9 @@ pub(crate) struct SetSecretRequest {
 }
 
 pub(crate) async fn set_secret(
-    State(state): State<AppState>,
+    State(auth): State<AuthServices>,
+    State(infra): State<InfraServices>,
+    State(cfg): State<ConfigServices>,
     Json(req): Json<SetSecretRequest>,
 ) -> impl IntoResponse {
     if req.name.is_empty() {
@@ -77,20 +80,20 @@ pub(crate) async fn set_secret(
             _ => return (StatusCode::BAD_REQUEST, Json(json!({"error": "value is required"}))).into_response(),
         };
         if scope.is_empty() {
-            state.secrets.set(&req.name, value, req.description.as_deref()).await
+            auth.secrets.set(&req.name, value, req.description.as_deref()).await
         } else {
-            state.secrets.set_scoped(&req.name, scope, value, req.description.as_deref()).await
+            auth.secrets.set_scoped(&req.name, scope, value, req.description.as_deref()).await
         }
     } else {
         // Description-only update
-        state.secrets.update_description(&req.name, scope, req.description.as_deref()).await
+        auth.secrets.update_description(&req.name, scope, req.description.as_deref()).await
     };
     match set_result
     {
         Ok(()) => {
-            crate::db::audit::audit_spawn(state.db.clone(), scope.to_string(), crate::db::audit::event_types::SECRET_CREATED, None, json!({"name": req.name, "scope": scope}));
+            crate::db::audit::audit_spawn(infra.db.clone(), scope.to_string(), crate::db::audit::event_types::SECRET_CREATED, None, json!({"name": req.name, "scope": scope}));
             // Notify toolgate to invalidate cached tokens that may depend on this secret
-            super::providers::notify_toolgate_reload(state.config.toolgate_url.clone());
+            super::providers::notify_toolgate_reload(cfg.config.toolgate_url.clone());
             Json(json!({"ok": true})).into_response()
         }
         Err(e) => {
@@ -101,7 +104,8 @@ pub(crate) async fn set_secret(
 }
 
 pub(crate) async fn get_secret(
-    State(state): State<AppState>,
+    State(auth): State<AuthServices>,
+    State(infra): State<InfraServices>,
     axum::extract::Path(name): axum::extract::Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
@@ -109,9 +113,9 @@ pub(crate) async fn get_secret(
     let reveal = params.get("reveal").is_some_and(|v| v == "true");
 
     let value = if scope.is_empty() {
-        state.secrets.get_strict(&name).await
+        auth.secrets.get_strict(&name).await
     } else {
-        state.secrets.get_scoped(&name, &scope).await
+        auth.secrets.get_scoped(&name, &scope).await
     };
 
     match value {
@@ -124,7 +128,7 @@ pub(crate) async fn get_secret(
             if reveal {
                 obj["value"] = serde_json::json!(val);
                 tracing::warn!(secret = %name, scope = %scope, "AUDIT: secret value revealed via API");
-                crate::db::audit::audit_spawn(state.db.clone(), scope.clone(), crate::db::audit::event_types::SECRET_REVEALED, None, json!({"name": name, "scope": scope}));
+                crate::db::audit::audit_spawn(infra.db.clone(), scope.clone(), crate::db::audit::event_types::SECRET_REVEALED, None, json!({"name": name, "scope": scope}));
             }
             Json(obj).into_response()
         }
@@ -137,14 +141,15 @@ pub(crate) async fn get_secret(
 }
 
 pub(crate) async fn delete_secret(
-    State(state): State<AppState>,
+    State(auth): State<AuthServices>,
+    State(infra): State<InfraServices>,
     axum::extract::Path(name): axum::extract::Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let scope = params.get("scope").map_or("", std::string::String::as_str);
-    match state.secrets.delete_scoped(&name, scope).await {
+    match auth.secrets.delete_scoped(&name, scope).await {
         Ok(true) => {
-            crate::db::audit::audit_spawn(state.db.clone(), scope.to_string(), crate::db::audit::event_types::SECRET_DELETED, None, json!({"name": name, "scope": scope}));
+            crate::db::audit::audit_spawn(infra.db.clone(), scope.to_string(), crate::db::audit::event_types::SECRET_DELETED, None, json!({"name": name, "scope": scope}));
             Json(json!({"ok": true})).into_response()
         }
         Ok(false) => (
