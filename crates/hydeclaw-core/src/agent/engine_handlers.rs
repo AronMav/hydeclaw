@@ -670,7 +670,7 @@ impl AgentEngine {
 
     /// Handle browser automation actions via browser-renderer /automation endpoint.
     pub(super) async fn handle_browser_action(&self, args: &serde_json::Value) -> String {
-        let br_url = Self::browser_renderer_url();
+        let br_url = crate::agent::pipeline::canvas::browser_renderer_url();
         ph::handle_browser_action(
             self.http_client(),
             &br_url,

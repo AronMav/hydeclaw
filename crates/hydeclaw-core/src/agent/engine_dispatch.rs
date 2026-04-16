@@ -4,6 +4,9 @@
 
 use super::*;
 
+use crate::agent::pipeline::handlers as ph;
+use crate::agent::pipeline::sandbox as ps;
+
 impl AgentEngine {
     /// Execute a tool call — routes to internal tools, MCP servers, or ToolRegistry.
     /// Returns a boxed future to allow recursive calls (approval re-injection → execute_tool_call).
@@ -152,15 +155,15 @@ impl AgentEngine {
                     arguments,
                 ).await),
                 "web_fetch" => Some(self.handle_web_fetch(arguments).await),
-                "tool_create" => Some(self.handle_tool_create(arguments).await),
-                "tool_list" => Some(self.handle_tool_list(arguments).await),
-                "tool_test" => Some(self.handle_tool_test(arguments).await),
-                "tool_verify" => Some(self.handle_tool_verify(arguments).await),
-                "tool_disable" => Some(self.handle_tool_disable(arguments).await),
+                "tool_create" => Some(ph::handle_tool_create(&self.cfg().workspace_dir, arguments).await),
+                "tool_list" => Some(ph::handle_tool_list(&self.cfg().workspace_dir, arguments).await),
+                "tool_test" => Some(ph::handle_tool_test(&self.cfg().workspace_dir, self.http_client(), self.ssrf_http_client(), self.secrets(), &self.cfg().agent.name, self.oauth().as_ref(), arguments).await),
+                "tool_verify" => Some(ph::handle_tool_verify(&self.cfg().workspace_dir, arguments).await),
+                "tool_disable" => Some(ph::handle_tool_disable(&self.cfg().workspace_dir, arguments).await),
                 "skill" => Some(self.dispatch_skill_tool(arguments).await),
-                "skill_use" => Some(self.handle_skill_use(arguments).await),
-                "tool_discover" => Some(self.handle_tool_discover(arguments).await),
-                "secret_set" => Some(self.handle_secret_set(arguments).await),
+                "skill_use" => Some(ph::handle_skill_use(&self.cfg().workspace_dir, self.cfg().agent.base, arguments).await),
+                "tool_discover" => Some(ph::handle_tool_discover(&self.cfg().workspace_dir, self.ssrf_http_client(), arguments).await),
+                "secret_set" => Some(ph::handle_secret_set(self.secrets(), &self.cfg().agent.name, self.cfg().agent.base, arguments).await),
                 "session" => Some(self.dispatch_session_tool(arguments).await),
                 "agents_list" => Some(crate::agent::pipeline::sessions::handle_agents_list(
                     self.cfg().agent_map.as_ref(),
@@ -169,10 +172,10 @@ impl AgentEngine {
                     arguments,
                 ).await),
                 "browser_action" => Some(self.handle_browser_action(arguments).await),
-                "code_exec" => Some(self.handle_code_exec(arguments).await),
+                "code_exec" => Some(ps::handle_code_exec(arguments, &self.cfg().agent.name, self.cfg().agent.base, self.sandbox(), &self.cfg().workspace_dir).await),
                 "git" => Some(self.dispatch_git_tool(arguments).await),
-                "canvas" => Some(self.handle_canvas(arguments).await),
-                "rich_card" => Some(self.handle_rich_card(arguments)),
+                "canvas" => Some(crate::agent::pipeline::canvas::handle_canvas(&self.tex().canvas_state, &self.cfg().agent.name, self.state().ui_event_tx.as_ref(), self.http_client(), arguments).await),
+                "rich_card" => Some(ph::handle_rich_card(arguments)),
                 "process" => Some(self.dispatch_process_tool(arguments).await),
                 _ => None,
             } {
@@ -354,9 +357,9 @@ impl AgentEngine {
     async fn dispatch_skill_tool(&self, arguments: &serde_json::Value) -> String {
         let action = arguments.get("action").and_then(|v| v.as_str()).unwrap_or("");
         match action {
-            "create" => self.handle_skill_create(arguments).await,
-            "update" => self.handle_skill_update(arguments).await,
-            "list" => self.handle_skill_list(arguments).await,
+            "create" => ph::handle_skill_create(&self.cfg().workspace_dir, arguments).await,
+            "update" => ph::handle_skill_create(&self.cfg().workspace_dir, arguments).await,
+            "list" => ph::handle_skill_list(&self.cfg().workspace_dir, self.cfg().agent.base, arguments).await,
             _ => format!("Error: unknown skill action '{}'. Use: create, update, list.", action),
         }
     }
@@ -378,10 +381,10 @@ impl AgentEngine {
     async fn dispatch_process_tool(&self, arguments: &serde_json::Value) -> String {
         let action = arguments.get("action").and_then(|v| v.as_str()).unwrap_or("");
         match action {
-            "start" => self.handle_process_start(arguments).await,
-            "status" => self.handle_process_status(arguments).await,
-            "logs" => self.handle_process_logs(arguments).await,
-            "kill" => self.handle_process_kill(arguments).await,
+            "start" => ps::handle_process_start(arguments, &self.cfg().agent.name, &self.tex().bg_processes).await,
+            "status" => ps::handle_process_status(arguments, &self.tex().bg_processes).await,
+            "logs" => ps::handle_process_logs(arguments, &self.tex().bg_processes).await,
+            "kill" => ps::handle_process_kill(arguments, &self.tex().bg_processes).await,
             _ => format!("Error: unknown process action '{}'. Use: start, status, logs, kill.", action),
         }
     }
