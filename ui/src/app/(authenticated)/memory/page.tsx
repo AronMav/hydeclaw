@@ -23,10 +23,12 @@ function DocumentFullView({ id, onBack }: { id: string; onBack: () => void }) {
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     apiGet<{ content: string }>(`/api/memory/documents/${id}`)
       .then((res) => setContent(res.content))
+      .catch((err) => setError(err.message || "Failed to load document"))
       .finally(() => setLoading(false));
   }, [id]);
 
@@ -58,6 +60,7 @@ function DocumentFullView({ id, onBack }: { id: string; onBack: () => void }) {
           {copied ? t("common.copied") : t("common.copy")}
         </Button>
       </div>
+      {error && <p className="text-red-500 text-center py-4">{error}</p>}
       <div className="flex-1 min-h-0 overflow-y-auto">
         <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-headings:my-3 prose-ul:my-2 prose-li:my-0.5 prose-pre:my-3">
           <Markdown>{content || ""}</Markdown>
