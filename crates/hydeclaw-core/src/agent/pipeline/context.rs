@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use hydeclaw_types::{Message, MessageRole};
 use crate::agent::context_builder::{ContextBuilder, ContextSnapshot};
-use crate::agent::engine::{row_to_message, AgentEngine};
+use crate::agent::engine::row_to_message;
 use crate::agent::history;
 use crate::agent::providers::LlmProvider;
 use crate::agent::session_manager::SessionManager;
@@ -69,7 +69,7 @@ pub fn truncate_preview(s: &str, max: usize) -> String {
 /// Preserves head + tail (tail may contain errors/JSON closing).
 /// Budget: 50% of remaining context, floor 2000 chars.
 pub fn truncate_tool_result(model: &str, result: &str, current_context_chars: usize) -> String {
-    let model_max_chars = AgentEngine::default_context_for_model(model) * 4;
+    let model_max_chars = super::llm_call::default_context_for_model(model) * 4;
     let remaining = model_max_chars.saturating_sub(current_context_chars);
     let limit = (remaining * 50 / 100).max(2000);
     if result.len() <= limit {
@@ -101,7 +101,7 @@ pub fn compact_tool_results(
     messages: &mut [Message],
     context_chars: &mut usize,
 ) {
-    let context_window = AgentEngine::default_context_for_model(model) * 4;
+    let context_window = super::llm_call::default_context_for_model(model) * 4;
     let threshold = context_window * 70 / 100;
     if *context_chars <= threshold {
         return;
@@ -148,7 +148,7 @@ pub fn compaction_params(
     let max_tokens = compaction_config
         .and_then(|c| c.max_context_tokens)
         .map(|t| t as usize)
-        .unwrap_or_else(|| AgentEngine::default_context_for_model(model));
+        .unwrap_or_else(|| super::llm_call::default_context_for_model(model));
     let preserve_last_n = compaction_config
         .map(|c| c.preserve_last_n as usize)
         .unwrap_or(10);

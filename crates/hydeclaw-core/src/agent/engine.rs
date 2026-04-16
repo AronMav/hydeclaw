@@ -1530,11 +1530,6 @@ impl AgentEngine {
         .await
     }
 
-    /// Default context window size based on model name.
-    pub(crate) fn default_context_for_model(model: &str) -> usize {
-        crate::agent::pipeline::llm_call::default_context_for_model(model)
-    }
-
     /// Fire-and-forget audit event recording.
     pub(super) fn audit(&self, event_type: &'static str, actor: Option<&str>, details: serde_json::Value) {
         crate::agent::pipeline::llm_call::audit(

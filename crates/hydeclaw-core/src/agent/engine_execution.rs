@@ -117,6 +117,14 @@ impl AgentEngine {
         let mut fallback_provider: Option<Arc<dyn crate::agent::providers::LlmProvider>> = None;
 
         for iteration in 0..loop_config.effective_max_iterations() {
+            // Check cancellation (graceful shutdown / SIGHUP drain)
+            if let Some((_, ref token)) = cancel_guard
+                && token.is_cancelled()
+            {
+                tracing::info!(session = %session_id, "request cancelled — breaking tool loop for graceful shutdown");
+                break;
+            }
+
             if let Some(ref tx) = status_tx {
                 tx.send(ProcessingPhase::Thinking).ok();
             }
