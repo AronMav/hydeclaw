@@ -14,7 +14,6 @@ use crate::mcp::McpRegistry;
 use crate::tools::ToolRegistry;
 
 use super::error_classify;
-use super::openapi::{discover_base_url, extract_openapi_tools};
 use super::thinking::{looks_incomplete, maybe_strip_thinking, strip_thinking};
 use super::tool_loop::LoopDetector;
 use super::url_tools::{enrich_with_attachments, extract_readable_text, extract_urls};
@@ -197,7 +196,7 @@ pub struct CanvasContent {
 const CANVAS_MAX_BYTES: usize = 5 * 1024 * 1024;
 
 /// In-band marker prefix for rich card tool results.
-const RICH_CARD_PREFIX: &str = "__rich_card__:";
+pub(crate) const RICH_CARD_PREFIX: &str = "__rich_card__:";
 
 /// In-band marker prefix for file/media tool results (image, audio, etc.).
 /// Format: `__file__:{"url":"...","mediaType":"image/png"}`
