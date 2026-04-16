@@ -122,7 +122,7 @@ export default function MemoryPage() {
     if (!deleteTarget) return;
     try {
       await apiDelete(`/api/memory/documents/${deleteTarget}`);
-      setChunks(chunks.filter((c) => c.id !== deleteTarget));
+      setChunks(prev => prev.filter((c) => c.id !== deleteTarget));
       setDeleteTarget(null);
       qc.invalidateQueries({ queryKey: qk.memoryStats });
     } catch (err: any) {
