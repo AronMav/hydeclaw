@@ -603,7 +603,25 @@ pub(crate) async fn api_restore(
     tracing::info!(agents = ?restarted, "agents restarted after restore");
 
     tracing::warn!("AUDIT: system restored from backup: {:?}", restored);
-    Json(json!({ "ok": true, "restored": restored, "restarted_agents": restarted, "failed_agents": failed })).into_response()
+    if failed.is_empty() {
+        Json(json!({ "ok": true, "restored": restored, "restarted_agents": restarted, "failed_agents": failed })).into_response()
+    } else {
+        let failed_names: Vec<&str> = failed.iter()
+            .filter_map(|v| v.get("agent").and_then(|a| a.as_str()))
+            .collect();
+        let warning = format!(
+            "restored but {} agent(s) failed to restart: {}",
+            failed.len(),
+            failed_names.join(", ")
+        );
+        Json(json!({
+            "ok": true,
+            "warning": warning,
+            "restored": restored,
+            "restarted_agents": restarted,
+            "failed_agents": failed,
+        })).into_response()
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
