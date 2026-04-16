@@ -267,6 +267,7 @@ export default function ConfigPage() {
                           <TooltipTrigger asChild>
                             <Input
                               type="number"
+                              min={1}
                               value={editMaxReqPerMin}
                               onChange={(e) => setEditMaxReqPerMin(e.target.value)}
                               placeholder="60"
@@ -282,6 +283,7 @@ export default function ConfigPage() {
                           <TooltipTrigger asChild>
                             <Input
                               type="number"
+                              min={1}
                               value={editMaxToolConcurrency}
                               onChange={(e) => setEditMaxToolConcurrency(e.target.value)}
                               placeholder="4"
