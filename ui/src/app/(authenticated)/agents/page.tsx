@@ -168,7 +168,7 @@ function formToPayload(f: FormState) {
     provider: f.provider,
     model: f.model,
     provider_connection: f.providerConnection || null,
-    temperature: parseFloat(f.temperature) || 1.0,
+    temperature: Number.isFinite(parseFloat(f.temperature)) ? parseFloat(f.temperature) : 1.0,
     max_tokens: f.maxTokens ? parseInt(f.maxTokens) : null,
     access: f.accessEnabled
       ? {
