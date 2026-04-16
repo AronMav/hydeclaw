@@ -100,6 +100,7 @@ pub fn ssrf_safe_client(timeout: std::time::Duration) -> reqwest::Client {
         .timeout(timeout)
         .connect_timeout(std::time::Duration::from_secs(10))
         .dns_resolver(Arc::new(SsrfSafeResolver))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("failed to build SSRF-safe HTTP client")
 }
