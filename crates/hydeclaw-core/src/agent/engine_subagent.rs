@@ -79,7 +79,7 @@ impl AgentEngine {
             has_message_actions: self.state().channel_router.is_some(),
             has_cron: self.cfg().scheduler.is_some(),
             has_yaml_tools: true,
-            has_browser: Self::browser_renderer_url() != "disabled",
+            has_browser: crate::agent::pipeline::canvas::browser_renderer_url() != "disabled",
             has_host_exec: self.cfg().agent.base && self.sandbox().is_none(),
             is_base: self.cfg().agent.base,
         };

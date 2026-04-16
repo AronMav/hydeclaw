@@ -172,7 +172,7 @@ impl AgentEngine {
                     arguments,
                 ).await),
                 "browser_action" => Some(self.handle_browser_action(arguments).await),
-                "code_exec" => Some(self.handle_code_exec(arguments).await),
+                "code_exec" => Some(ps::handle_code_exec(arguments, &self.cfg().agent.name, self.cfg().agent.base, self.sandbox(), &self.cfg().workspace_dir).await),
                 "git" => Some(self.dispatch_git_tool(arguments).await),
                 "canvas" => Some(crate::agent::pipeline::canvas::handle_canvas(&self.tex().canvas_state, &self.cfg().agent.name, self.state().ui_event_tx.as_ref(), self.http_client(), arguments).await),
                 "rich_card" => Some(ph::handle_rich_card(arguments)),
