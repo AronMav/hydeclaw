@@ -168,6 +168,11 @@ pub struct AgentEngine {
     /// Per-agent mutable state (cancel/drain for shutdown and SIGHUP).
     /// `None` for subagent engines — they are lightweight copies without lifecycle tracking.
     pub state: Option<Arc<crate::agent::agent_state::AgentState>>,
+    /// Immutable agent configuration snapshot (Step A of thin-wrapper conversion).
+    /// Temporarily duplicates fields already on `AgentEngine` — will be the single
+    /// source of truth once accessor migration (Step B) is complete.
+    #[allow(dead_code)]
+    pub cfg: Option<Arc<crate::agent::agent_config::AgentConfig>>,
 }
 
 /// Snapshot of what's currently displayed on the canvas.
@@ -290,6 +295,16 @@ pub(crate) fn row_to_message(row: &crate::db::sessions::MessageRow) -> Message {
 
 impl AgentEngine {
     // ── Public accessors (sealed API) ──────────────────────────────
+
+    /// Access the immutable config snapshot.
+    /// Panics if called on an engine that was not constructed with a config
+    /// (should not happen for top-level engines).
+    #[allow(dead_code)]
+    pub fn cfg(&self) -> &crate::agent::agent_config::AgentConfig {
+        self.cfg
+            .as_ref()
+            .expect("cfg not set — engine was not constructed with AgentConfig")
+    }
 
     /// Agent name (from config).
     pub fn name(&self) -> &str {

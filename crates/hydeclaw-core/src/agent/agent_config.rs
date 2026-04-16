@@ -1,21 +1,20 @@
 // ── AgentConfig — immutable snapshot of agent configuration ─────────────────
 //
-// Phase 1 of the AgentEngine decomposition. This struct captures the 16
+// Phase 1 of the AgentEngine decomposition. This struct captures the 15
 // immutable fields that today live directly on `AgentEngine`.  It is created
 // once per engine instantiation and never mutated afterwards.
 //
-// Created alongside the existing `AgentEngine` — not yet wired in.
+// Note: `tool_executor` and `context_builder` are NOT included here because
+// they have circular dependencies via OnceLock.  They stay on AgentEngine.
 
 use std::sync::Arc;
 
 use sqlx::PgPool;
 
 use crate::agent::approval_manager::ApprovalManager;
-use crate::agent::context_builder::ContextBuilder;
 use crate::agent::memory_service::MemoryService;
 use crate::agent::providers::LlmProvider;
 use crate::agent::session_agent_pool::SessionPoolsMap;
-use crate::agent::tool_executor::DefaultToolExecutor;
 use crate::config::{AgentSettings, AppConfig};
 use crate::db::audit_queue::AuditQueue;
 use crate::gateway::state::AgentMap;
@@ -28,8 +27,8 @@ use crate::tools::ToolRegistry;
 /// Grouped into five concern areas: identity, LLM, data, tools, and infra.
 /// All fields are either `Clone`-cheap (`Arc`, `PgPool`) or small value types.
 ///
-/// Phase 1: defined but not yet wired into `AgentEngine`. The allow(dead_code)
-/// is removed once the struct is consumed in later phases.
+/// Step A: wired into `AgentEngine.cfg` but not yet consumed — fields become
+/// live once accessor migration (Step B) redirects reads here.
 #[allow(dead_code)]
 pub struct AgentConfig {
     // ── Identity ────────────────────────────────────────────────────────
@@ -49,8 +48,6 @@ pub struct AgentConfig {
 
     // ── Tools ───────────────────────────────────────────────────────────
     pub tools: ToolRegistry,
-    pub tool_executor: Arc<DefaultToolExecutor>,
-    pub context_builder: Arc<dyn ContextBuilder>,
     pub approval_manager: Arc<ApprovalManager>,
 
     // ── Infra ───────────────────────────────────────────────────────────

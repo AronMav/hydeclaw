@@ -116,6 +116,25 @@ pub async fn start_agent_from_config(
         Some(bus.ui_event_tx.clone()),
     ));
 
+    // Build the immutable AgentConfig snapshot (Step A of thin-wrapper conversion).
+    let agent_config = Arc::new(crate::agent::agent_config::AgentConfig {
+        agent: agent_cfg.agent.clone(),
+        workspace_dir: deps.workspace_dir.clone(),
+        default_timezone: default_timezone.clone(),
+        app_config: std::sync::Arc::new(cfg.config.clone()),
+        provider: provider.clone(),
+        compaction_provider: compaction_provider.clone(),
+        db: infra.db.clone(),
+        memory_store: infra.memory_store.clone() as Arc<dyn crate::agent::memory_service::MemoryService>,
+        embedder: infra.embedder.clone(),
+        tools: agents.tools.clone(),
+        approval_manager: approval_manager.clone(),
+        scheduler: Some(agents.scheduler.clone()),
+        agent_map: Some(agents.map.clone()),
+        session_pools: Some(agents.session_pools.clone()),
+        audit_queue: deps.audit_queue.clone(),
+    });
+
     let engine = Arc::new(AgentEngine {
         provider,
         agent: agent_cfg.agent.clone(),
@@ -142,6 +161,7 @@ pub async fn start_agent_from_config(
         audit_queue: deps.audit_queue.clone(),
         approval_manager,
         state: Some(agent_state),
+        cfg: Some(agent_config),
     });
     engine.set_self_ref(&engine);
     engine.set_context_builder(&engine);
