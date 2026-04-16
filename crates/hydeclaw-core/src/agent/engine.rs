@@ -6,11 +6,9 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use super::channel_actions::{ChannelAction, ChannelActionRouter};
-use super::history;
 use super::providers::LlmProvider;
 use super::workspace;
 use crate::config::AgentSettings;
-use crate::db::sessions;
 use crate::scheduler::{compute_next_run, Scheduler};
 use crate::mcp::McpRegistry;
 use crate::tools::ToolRegistry;
