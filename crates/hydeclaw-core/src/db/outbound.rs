@@ -17,7 +17,8 @@ pub async fn enqueue_action(
     action_name: &str,
     payload: &Value,
 ) -> Result<Uuid> {
-    let dup: Option<(Uuid,)> = sqlx::query_as(
+    // First try to find an existing duplicate atomically.
+    let existing: Option<(Uuid,)> = sqlx::query_as(
         "SELECT id FROM outbound_queue
          WHERE agent_id = $1 AND channel = $2 AND action_name = $3
            AND payload = $4 AND created_at > NOW() - INTERVAL '30 seconds'
@@ -30,15 +31,40 @@ pub async fn enqueue_action(
     .fetch_optional(db)
     .await?;
 
-    if let Some((existing_id,)) = dup {
+    if let Some((existing_id,)) = existing {
         tracing::debug!(id = %existing_id, action = %action_name, "dedup: skipping duplicate outbound action");
         return Ok(existing_id);
     }
 
-    let row: (Uuid,) = sqlx::query_as(
+    // Atomic insert: only inserts if no duplicate arrived between the SELECT above and now.
+    let row: Option<(Uuid,)> = sqlx::query_as(
         "INSERT INTO outbound_queue (agent_id, channel, action_name, payload)
-         VALUES ($1, $2, $3, $4)
+         SELECT $1, $2, $3, $4
+         WHERE NOT EXISTS (
+             SELECT 1 FROM outbound_queue
+             WHERE agent_id = $1 AND channel = $2 AND action_name = $3
+               AND payload = $4 AND created_at > NOW() - INTERVAL '30 seconds'
+         )
          RETURNING id",
+    )
+    .bind(agent_id)
+    .bind(channel)
+    .bind(action_name)
+    .bind(payload)
+    .fetch_optional(db)
+    .await?;
+
+    if let Some((id,)) = row {
+        return Ok(id);
+    }
+
+    // A concurrent insert won the race — fetch the winner.
+    let (winner_id,): (Uuid,) = sqlx::query_as(
+        "SELECT id FROM outbound_queue
+         WHERE agent_id = $1 AND channel = $2 AND action_name = $3
+           AND payload = $4 AND created_at > NOW() - INTERVAL '30 seconds'
+         ORDER BY created_at ASC
+         LIMIT 1",
     )
     .bind(agent_id)
     .bind(channel)
@@ -46,7 +72,8 @@ pub async fn enqueue_action(
     .bind(payload)
     .fetch_one(db)
     .await?;
-    Ok(row.0)
+    tracing::debug!(id = %winner_id, action = %action_name, "dedup: concurrent insert, returning winner");
+    Ok(winner_id)
 }
 
 /// Mark an action as sent (WebSocket send succeeded).
