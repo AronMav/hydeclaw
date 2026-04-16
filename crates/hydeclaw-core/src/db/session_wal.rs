@@ -40,3 +40,38 @@ pub async fn prune_old_events(db: &PgPool, days: u32) -> Result<u64> {
     .await?;
     Ok(result.rows_affected())
 }
+
+/// WAL event row for LoopDetector warm-up.
+#[derive(Debug)]
+pub struct WalToolEvent {
+    pub tool_name: String,
+    pub success: bool,
+}
+
+/// Load tool_end events for a session to replay into LoopDetector (BUG-026).
+/// The WAL payload for tool_end events contains: {"tool_call_id": "...", "tool_name": "...", "success": true/false}
+pub async fn load_tool_events(db: &PgPool, session_id: Uuid) -> Result<Vec<WalToolEvent>> {
+    let rows = sqlx::query_as::<_, (String, Option<bool>)>(
+        r#"
+        SELECT
+            payload->>'tool_name' AS tool_name,
+            (payload->>'success')::bool AS success
+        FROM session_events
+        WHERE session_id = $1
+          AND event_type = 'tool_end'
+          AND payload->>'tool_name' IS NOT NULL
+        ORDER BY created_at ASC
+        "#,
+    )
+    .bind(session_id)
+    .fetch_all(db)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(name, success)| WalToolEvent {
+            tool_name: name,
+            success: success.unwrap_or(true),
+        })
+        .collect())
+}

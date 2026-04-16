@@ -109,8 +109,6 @@ pub struct DefaultToolExecutor {
     /// In-memory waiters for pending tool-call approvals (shared with ApprovalManager).
     #[allow(clippy::type_complexity, dead_code)]
     pub(crate) approval_waiters: Arc<tokio::sync::RwLock<std::collections::HashMap<uuid::Uuid, (tokio::sync::oneshot::Sender<crate::agent::engine::ApprovalResult>, std::time::Instant)>>>,
-    /// Current session ID being processed — set/cleared by execution loop.
-    pub(crate) processing_session_id: Arc<tokio::sync::Mutex<Option<uuid::Uuid>>>,
     /// SSE event sender for current streaming session — set/cleared by SSE loop.
     pub(crate) sse_event_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<crate::agent::engine::StreamEvent>>>>,
 }
@@ -136,7 +134,6 @@ pub struct DefaultToolExecutorFields {
     pub hooks: Arc<crate::agent::hooks::HookRegistry>,
     #[allow(clippy::type_complexity)]
     pub approval_waiters: Arc<tokio::sync::RwLock<std::collections::HashMap<uuid::Uuid, (tokio::sync::oneshot::Sender<crate::agent::engine::ApprovalResult>, std::time::Instant)>>>,
-    pub processing_session_id: Arc<tokio::sync::Mutex<Option<uuid::Uuid>>>,
     pub sse_event_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<crate::agent::engine::StreamEvent>>>>,
 }
 
@@ -162,7 +159,6 @@ impl DefaultToolExecutor {
             http_client: fields.http_client,
             hooks: fields.hooks,
             approval_waiters: fields.approval_waiters,
-            processing_session_id: fields.processing_session_id,
             sse_event_tx: fields.sse_event_tx,
         }
     }

@@ -1,138 +1,73 @@
 //! Workspace, message, shell, channel-action, and cron handlers —
 //! extracted from engine.rs for readability.
+//! Workspace + browser handlers delegate to `pipeline::handlers` free functions.
 
 use super::*;
+use crate::agent::pipeline::handlers as ph;
 use crate::scheduler::ScheduledJob;
 
 impl AgentEngine {
     /// Internal tool: write a workspace file.
     pub(super) async fn handle_workspace_write(&self, args: &serde_json::Value) -> String {
-        let filename = args.get("filename").and_then(|v| v.as_str()).unwrap_or("");
-        // Accept content as string or convert other JSON types to string
-        let content = match args.get("content") {
-            Some(serde_json::Value::String(s)) => s.clone(),
-            Some(other) => other.to_string(),
-            None => String::new(),
-        };
-
-        if filename.is_empty() {
-            return "Error: 'filename' is required".to_string();
-        }
-
-        match workspace::write_workspace_file(
-            &self.workspace_dir,
-            &self.agent.name,
-            filename,
-            &content,
-            self.agent.base,
+        ph::handle_workspace_write(
+            &self.cfg().workspace_dir,
+            &self.cfg().agent.name,
+            self.cfg().agent.base,
+            args,
         )
         .await
-        {
-            Ok(()) => format!("Successfully updated {} ({}B)", filename, content.len()),
-            Err(e) => {
-                tracing::error!(
-                    filename = %filename,
-                    workspace = %self.workspace_dir,
-                    agent = %self.agent.name,
-                    error = %e,
-                    "workspace_write failed"
-                );
-                format!("Error writing {}: {}", filename, e)
-            }
-        }
     }
 
     /// Internal tool: read a file from workspace.
     pub(super) async fn handle_workspace_read(&self, args: &serde_json::Value) -> String {
-        let filename = args.get("filename").and_then(|v| v.as_str()).unwrap_or("");
-
-        if filename.is_empty() {
-            return "Error: 'filename' is required".to_string();
-        }
-
-        match workspace::read_workspace_file(&self.workspace_dir, &self.agent.name, filename).await
-        {
-            Ok(content) => content,
-            Err(e) => format!("Error reading '{}': {}", filename, e),
-        }
+        ph::handle_workspace_read(
+            &self.cfg().workspace_dir,
+            &self.cfg().agent.name,
+            args,
+        )
+        .await
     }
 
     /// Internal tool: list files in workspace directory.
     pub(super) async fn handle_workspace_list(&self, args: &serde_json::Value) -> String {
-        let directory = args
-            .get("directory")
-            .and_then(|v| v.as_str())
-            .unwrap_or(".");
-
-        match workspace::list_workspace_files(&self.workspace_dir, &self.agent.name, directory)
-            .await
-        {
-            Ok(listing) => listing,
-            Err(e) => format!("Error listing '{}': {}", directory, e),
-        }
+        ph::handle_workspace_list(
+            &self.cfg().workspace_dir,
+            &self.cfg().agent.name,
+            args,
+        )
+        .await
     }
 
     /// Internal tool: edit a file by replacing a text substring.
     pub(super) async fn handle_workspace_edit(&self, args: &serde_json::Value) -> String {
-        let filename = args.get("filename").and_then(|v| v.as_str()).unwrap_or("");
-        let old_text = args.get("old_text").and_then(|v| v.as_str()).unwrap_or("");
-        let new_text = args.get("new_text").and_then(|v| v.as_str()).unwrap_or("");
-
-        if filename.is_empty() || old_text.is_empty() {
-            return "Error: 'filename' and 'old_text' are required".to_string();
-        }
-
-        match workspace::edit_workspace_file(
-            &self.workspace_dir,
-            &self.agent.name,
-            filename,
-            old_text,
-            new_text,
-            self.agent.base,
+        ph::handle_workspace_edit(
+            &self.cfg().workspace_dir,
+            &self.cfg().agent.name,
+            self.cfg().agent.base,
+            args,
         )
         .await
-        {
-            Ok(()) => format!("Successfully edited '{}'", filename),
-            Err(e) => format!("Error editing '{}': {}", filename, e),
-        }
     }
 
     pub(super) async fn handle_workspace_delete(&self, args: &serde_json::Value) -> String {
-        let filename = args.get("filename").and_then(|v| v.as_str()).unwrap_or("");
-        if filename.is_empty() {
-            return "Error: 'filename' is required".to_string();
-        }
-        match workspace::delete_workspace_file(
-            &self.workspace_dir,
-            &self.agent.name,
-            filename,
+        ph::handle_workspace_delete(
+            &self.cfg().workspace_dir,
+            &self.cfg().agent.name,
+            args,
         )
         .await
-        {
-            Ok(()) => format!("Deleted '{}'", filename),
-            Err(e) => format!("Error deleting '{}': {}", filename, e),
-        }
     }
 
     pub(super) async fn handle_workspace_rename(&self, args: &serde_json::Value) -> String {
-        let old_path = args.get("old_path").and_then(|v| v.as_str()).unwrap_or("");
-        let new_path = args.get("new_path").and_then(|v| v.as_str()).unwrap_or("");
-        if old_path.is_empty() || new_path.is_empty() {
-            return "Error: 'old_path' and 'new_path' are required".to_string();
-        }
-        match workspace::rename_workspace_file(
-            &self.workspace_dir,
-            &self.agent.name,
-            old_path,
-            new_path,
+        ph::handle_workspace_rename(
+            &self.cfg().workspace_dir,
+            &self.cfg().agent.name,
+            args,
         )
         .await
-        {
-            Ok(()) => format!("Moved '{}' → '{}'", old_path, new_path),
-            Err(e) => format!("Error moving '{}': {}", old_path, e),
-        }
     }
 
+    // TODO: extract handle_message_action to pipeline::handlers — depends on self.channel_router (ChannelAction, oneshot, timeout)
     /// Internal tool: perform message actions via channel router.
     pub(super) async fn handle_message_action(&self, args: &serde_json::Value) -> String {
         let router = match &self.channel_router {
@@ -205,6 +140,8 @@ impl AgentEngine {
         Ok(())
     }
 
+    // TODO: extract execute_yaml_channel_action to pipeline::handlers — depends on self.channel_router,
+    //       self.make_resolver(), self.make_oauth_context(), self.http_client(), self.ssrf_http_client()
     /// Execute a system YAML tool that has a channel_action (e.g. TTS → send_voice, screenshot → send_photo).
     /// Calls the tool HTTP endpoint for binary data, then sends it via channel router.
     /// For image actions (send_photo), also saves to uploads/ and returns a FILE_PREFIX marker
@@ -232,7 +169,7 @@ impl AgentEngine {
 
         // --- Save image/media to uploads/ for UI display ---
         let file_marker = if ca.action == "send_photo" {
-            match self.save_binary_to_uploads(&data_bytes, "image").await {
+            match ph::save_binary_to_uploads(&self.cfg().workspace_dir, &data_bytes, "image").await {
                 Ok((url, media_type)) => {
                     let meta = serde_json::json!({"url": url, "mediaType": media_type});
                     Some(format!("{}{}", super::FILE_PREFIX, meta))
@@ -302,24 +239,8 @@ impl AgentEngine {
         }
     }
 
-    /// Save binary data to workspace/uploads/ and return (public_url, media_type).
-    async fn save_binary_to_uploads(&self, data: &[u8], hint: &str) -> Result<(String, String)> {
-        let uploads_dir = std::path::PathBuf::from(&self.workspace_dir).join("uploads");
-        tokio::fs::create_dir_all(&uploads_dir).await?;
-
-        // Detect image type from magic bytes
-        let (ext, media_type) = detect_media_type(data, hint);
-        let uuid = uuid::Uuid::new_v4();
-        let filename = format!("{}.{}", uuid, ext);
-        let path = uploads_dir.join(&filename);
-
-        tokio::fs::write(&path, data).await?;
-
-        let url = format!("/uploads/{}", filename);
-        tracing::info!(url = %url, media_type = %media_type, bytes = data.len(), "saved media to uploads");
-        Ok((url, media_type))
-    }
-
+    // TODO: extract handle_cron to pipeline::handlers — depends on self.cfg().scheduler, self.self_ref,
+    //       self.cfg().db, self.cfg().agent, self.cfg().default_timezone, self.run_subagent()
     /// Internal tool: manage scheduled cron jobs.
     /// Mutating actions (create/delete/run) require base agent.
     pub(super) async fn handle_cron(&self, args: &serde_json::Value) -> String {
@@ -330,19 +251,19 @@ impl AgentEngine {
 
         // Only base agents can add/update/remove/run cron jobs.
         // list and history are read-only, allowed for all agents.
-        if !self.agent.base && !matches!(action, "list" | "history" | "runs") {
+        if !self.cfg().agent.base && !matches!(action, "list" | "history" | "runs") {
             return format!("Error: cron '{}' requires a base agent. Only base agents can manage cron jobs.", action);
         }
 
-        let scheduler = match &self.scheduler {
+        let scheduler = match &self.cfg().scheduler {
             Some(s) => s,
             None => return "Error: scheduler not available".to_string(),
         };
 
         match action {
             "list" => {
-                let agent_filter = if self.agent.base { None } else { Some(self.agent.name.as_str()) };
-                let jobs_result = Scheduler::list_jobs(&self.db, agent_filter).await;
+                let agent_filter = if self.cfg().agent.base { None } else { Some(self.cfg().agent.name.as_str()) };
+                let jobs_result = Scheduler::list_jobs(&self.cfg().db, agent_filter).await;
                 match jobs_result {
                     Ok(jobs) => {
                         if jobs.is_empty() {
@@ -359,7 +280,7 @@ impl AgentEngine {
                             let announce = job.announce_to.as_ref()
                                 .map(|v| format!("  announce_to: {}\n", v))
                                 .unwrap_or_default();
-                            let agent_label = if self.agent.base && job.agent_id != self.agent.name {
+                            let agent_label = if self.cfg().agent.base && job.agent_id != self.cfg().agent.name {
                                 format!("  agent: {}\n", job.agent_id)
                             } else {
                                 String::new()
@@ -391,13 +312,13 @@ impl AgentEngine {
                 let timezone = args
                     .get("timezone")
                     .and_then(|v| v.as_str())
-                    .unwrap_or(self.default_timezone.as_str());
+                    .unwrap_or(self.cfg().default_timezone.as_str());
                 let task = args.get("task").and_then(|v| v.as_str()).unwrap_or("");
                 let announce_to = args.get("announce_to").cloned();
-                let target_agent = if self.agent.base {
-                    args.get("agent").and_then(|v| v.as_str()).unwrap_or(&self.agent.name).to_string()
+                let target_agent = if self.cfg().agent.base {
+                    args.get("agent").and_then(|v| v.as_str()).unwrap_or(&self.cfg().agent.name).to_string()
                 } else {
-                    self.agent.name.clone()
+                    self.cfg().agent.name.clone()
                 };
 
                 if name.is_empty() || cron_expr.is_empty() || task.is_empty() {
@@ -421,7 +342,7 @@ impl AgentEngine {
                 .bind(timezone)
                 .bind(task)
                 .bind(&announce_to)
-                .fetch_one(&self.db)
+                .fetch_one(&self.cfg().db)
                 .await
                 {
                     Ok(id) => id,
@@ -429,13 +350,13 @@ impl AgentEngine {
                 };
 
                 // Hot-schedule the job immediately (only for self — other agents activate on restart)
-                let is_self = target_agent == self.agent.name;
+                let is_self = target_agent == self.cfg().agent.name;
                 let activated = if is_self {
                     if let Some(arc) = self.self_ref.get().and_then(Weak::upgrade) {
                         match scheduler.add_dynamic_job(
                             row, cron_expr, timezone,
                             task.to_string(), target_agent.clone(),
-                            arc, self.db.clone(), announce_to, false, 0, false, None, None,
+                            arc, self.cfg().db.clone(), announce_to, false, 0, false, None, None,
                         ).await {
                             Ok(()) => true,
                             Err(e) => {
@@ -475,13 +396,13 @@ impl AgentEngine {
                 };
 
                 // Fetch current job (base can update any)
-                let current = if self.agent.base {
+                let current = if self.cfg().agent.base {
                     sqlx::query_as::<_, ScheduledJob>(
                         "SELECT id, agent_id, name, cron_expr, timezone, task_message, enabled, created_at, last_run_at, silent, announce_to, jitter_secs, run_once, run_at \
                          FROM scheduled_jobs WHERE id = $1",
                     )
                     .bind(uuid)
-                    .fetch_optional(&self.db)
+                    .fetch_optional(&self.cfg().db)
                     .await
                 } else {
                     sqlx::query_as::<_, ScheduledJob>(
@@ -489,8 +410,8 @@ impl AgentEngine {
                          FROM scheduled_jobs WHERE id = $1 AND agent_id = $2",
                     )
                     .bind(uuid)
-                    .bind(&self.agent.name)
-                    .fetch_optional(&self.db)
+                    .bind(&self.cfg().agent.name)
+                    .fetch_optional(&self.cfg().db)
                     .await
                 };
 
@@ -527,7 +448,7 @@ impl AgentEngine {
                 .bind(task)
                 .bind(enabled)
                 .bind(&announce_to)
-                .execute(&self.db)
+                .execute(&self.cfg().db)
                 .await
                 {
                     Ok(_) => {
@@ -535,11 +456,11 @@ impl AgentEngine {
                         scheduler.remove_dynamic_job(uuid).await.ok();
                         if enabled
                             && let Some(arc) = self.self_ref.get().and_then(Weak::upgrade)
-                                && current.agent_id == self.agent.name {
+                                && current.agent_id == self.cfg().agent.name {
                                     scheduler.add_dynamic_job(
                                         uuid, cron_expr, timezone,
                                         task.to_string(), current.agent_id.clone(),
-                                        arc, self.db.clone(), announce_to, current.silent,
+                                        arc, self.cfg().db.clone(), announce_to, current.silent,
                                         current.jitter_secs, current.run_once, current.run_at,
                                         current.tool_policy.clone(),
                                     ).await.ok();
@@ -566,16 +487,16 @@ impl AgentEngine {
                 }
 
                 // Remove from DB (base can remove any job)
-                let delete_result = if self.agent.base {
+                let delete_result = if self.cfg().agent.base {
                     sqlx::query("DELETE FROM scheduled_jobs WHERE id = $1")
                         .bind(uuid)
-                        .execute(&self.db)
+                        .execute(&self.cfg().db)
                         .await
                 } else {
                     sqlx::query("DELETE FROM scheduled_jobs WHERE id = $1 AND agent_id = $2")
                         .bind(uuid)
-                        .bind(&self.agent.name)
-                        .execute(&self.db)
+                        .bind(&self.cfg().agent.name)
+                        .execute(&self.cfg().db)
                         .await
                 };
                 match delete_result {
@@ -595,14 +516,14 @@ impl AgentEngine {
 
                 if job_id.is_empty() {
                     // Show recent runs (base: all agents, regular: own only)
-                    let rows = if self.agent.base {
+                    let rows = if self.cfg().agent.base {
                         sqlx::query_as::<_, (String, chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>, String, Option<String>, Option<String>)>(
                             "SELECT COALESCE(j.name, 'unknown'), r.started_at, r.finished_at, r.status, r.error, r.response_preview \
                              FROM cron_runs r LEFT JOIN scheduled_jobs j ON r.job_id = j.id \
                              ORDER BY r.started_at DESC LIMIT $1",
                         )
                         .bind(limit)
-                        .fetch_all(&self.db)
+                        .fetch_all(&self.cfg().db)
                         .await
                     } else {
                         sqlx::query_as::<_, (String, chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>, String, Option<String>, Option<String>)>(
@@ -610,9 +531,9 @@ impl AgentEngine {
                              FROM cron_runs r LEFT JOIN scheduled_jobs j ON r.job_id = j.id \
                              WHERE r.agent_id = $1 ORDER BY r.started_at DESC LIMIT $2",
                         )
-                        .bind(&self.agent.name)
+                        .bind(&self.cfg().agent.name)
                         .bind(limit)
-                        .fetch_all(&self.db)
+                        .fetch_all(&self.cfg().db)
                         .await
                     };
 
@@ -646,14 +567,14 @@ impl AgentEngine {
                         Err(_) => return "Error: invalid job_id format (expected UUID)".to_string(),
                     };
 
-                    let rows = if self.agent.base {
+                    let rows = if self.cfg().agent.base {
                         sqlx::query_as::<_, (chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>, String, Option<String>, Option<String>)>(
                             "SELECT started_at, finished_at, status, error, response_preview \
                              FROM cron_runs WHERE job_id = $1 ORDER BY started_at DESC LIMIT $2",
                         )
                         .bind(uuid)
                         .bind(limit)
-                        .fetch_all(&self.db)
+                        .fetch_all(&self.cfg().db)
                         .await
                     } else {
                         sqlx::query_as::<_, (chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>, String, Option<String>, Option<String>)>(
@@ -661,9 +582,9 @@ impl AgentEngine {
                              FROM cron_runs WHERE job_id = $1 AND agent_id = $2 ORDER BY started_at DESC LIMIT $3",
                         )
                         .bind(uuid)
-                        .bind(&self.agent.name)
+                        .bind(&self.cfg().agent.name)
                         .bind(limit)
-                        .fetch_all(&self.db)
+                        .fetch_all(&self.cfg().db)
                         .await
                     };
 
@@ -703,20 +624,20 @@ impl AgentEngine {
                         Ok(u) => u,
                         Err(_) => return "Error: invalid job_id format (expected UUID)".to_string(),
                     };
-                    let row = if self.agent.base {
+                    let row = if self.cfg().agent.base {
                         sqlx::query_scalar::<_, String>(
                             "SELECT task_message FROM scheduled_jobs WHERE id = $1",
                         )
                         .bind(uuid)
-                        .fetch_optional(&self.db)
+                        .fetch_optional(&self.cfg().db)
                         .await
                     } else {
                         sqlx::query_scalar::<_, String>(
                             "SELECT task_message FROM scheduled_jobs WHERE id = $1 AND agent_id = $2",
                         )
                         .bind(uuid)
-                        .bind(&self.agent.name)
-                        .fetch_optional(&self.db)
+                        .bind(&self.cfg().agent.name)
+                        .fetch_optional(&self.cfg().db)
                         .await
                     };
                     match row {
@@ -749,47 +670,15 @@ impl AgentEngine {
 
     /// Handle browser automation actions via browser-renderer /automation endpoint.
     pub(super) async fn handle_browser_action(&self, args: &serde_json::Value) -> String {
-        // SSRF protection: validate URL in navigate actions to block internal services
-        let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        if (action == "navigate" || action == "create_session")
-            && let Some(url) = args.get("url").and_then(|v| v.as_str())
-                && let Err(e) = crate::tools::ssrf::validate_url_scheme(url) {
-                    return format!("Error: {e}");
-                }
-        match self.br_post("/automation", args.clone()).await {
-            Ok(result) => serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()),
-            Err(e) => format!("Error: {e}"),
-        }
+        let br_url = Self::browser_renderer_url();
+        ph::handle_browser_action(
+            self.http_client(),
+            &br_url,
+            args,
+        )
+        .await
     }
 
     // service_manage, service_exec, call_services_api removed —
     // base agent uses code_exec on host directly
-}
-
-/// Detect media type from magic bytes, returning (extension, mime_type).
-fn detect_media_type(data: &[u8], hint: &str) -> (&'static str, String) {
-    // Check magic bytes
-    if data.len() >= 8 {
-        if data.starts_with(b"\x89PNG") {
-            return ("png", "image/png".into());
-        }
-        if data.starts_with(b"\xFF\xD8\xFF") {
-            return ("jpg", "image/jpeg".into());
-        }
-        if data.starts_with(b"GIF8") {
-            return ("gif", "image/gif".into());
-        }
-        if data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP" {
-            return ("webp", "image/webp".into());
-        }
-        if data.starts_with(b"OggS") {
-            return ("ogg", "audio/ogg".into());
-        }
-    }
-    // Fallback based on hint
-    match hint {
-        "image" => ("png", "image/png".into()),
-        "audio" => ("ogg", "audio/ogg".into()),
-        _ => ("bin", "application/octet-stream".into()),
-    }
 }

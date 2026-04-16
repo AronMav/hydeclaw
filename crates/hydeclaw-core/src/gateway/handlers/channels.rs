@@ -559,7 +559,7 @@ pub(crate) async fn api_channel_notify(
     };
 
     // Get owner_id for context (channel adapter uses it to determine recipient)
-    let owner_id = engine.agent.access.as_ref()
+    let owner_id = engine.cfg().agent.access.as_ref()
         .and_then(|a| a.owner_id.clone())
         .unwrap_or_default();
 

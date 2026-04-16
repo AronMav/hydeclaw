@@ -36,7 +36,7 @@ pub(crate) async fn api_agents(State(agents): State<AgentCore>) -> Json<Value> {
 
         let is_running = agents_map.contains_key(name);
         let config_dirty = if let Some(handle) = agents_map.get(name) {
-            let running = AgentConfig { agent: handle.engine.agent.clone() };
+            let running = AgentConfig { agent: handle.engine.cfg().agent.clone() };
             &running != cfg
         } else {
             false
@@ -73,7 +73,7 @@ pub(crate) async fn api_agents(State(agents): State<AgentCore>) -> Json<Value> {
         if seen_names.contains(name) {
             continue;
         }
-        let agent = &handle.engine.agent;
+        let agent = &handle.engine.cfg().agent;
         agents.push(json!({
             "name": name,
             "language": agent.language,
@@ -118,7 +118,7 @@ pub(crate) async fn api_get_agent(
     let agents_map = agents.map.read().await;
     let is_running = agents_map.contains_key(&name);
     let config_dirty = if let Some(handle) = agents_map.get(&name) {
-        let running = AgentConfig { agent: handle.engine.agent.clone() };
+        let running = AgentConfig { agent: handle.engine.cfg().agent.clone() };
         running != cfg
     } else {
         false

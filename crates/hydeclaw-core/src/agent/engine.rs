@@ -6,40 +6,24 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use super::channel_actions::{ChannelAction, ChannelActionRouter};
-use super::history;
 use super::providers::LlmProvider;
 use super::workspace;
-use crate::config::AgentSettings;
-use crate::db::sessions;
 use crate::scheduler::{compute_next_run, Scheduler};
 use crate::mcp::McpRegistry;
-use crate::tools::ToolRegistry;
 
 use super::error_classify;
-use super::openapi::{discover_base_url, extract_openapi_tools};
 use super::thinking::{looks_incomplete, maybe_strip_thinking, strip_thinking};
 use super::tool_loop::LoopDetector;
-use super::url_tools::{enrich_with_attachments, extract_readable_text, extract_urls};
+
 
 // Extracted impl AgentEngine blocks (submodules of engine for full super:: access)
-#[path = "engine_commands.rs"]
-mod commands_impl;
-#[path = "engine_sessions.rs"]
-mod sessions_impl;
-#[path = "engine_memory.rs"]
-mod memory_impl;
 #[path = "engine_tools.rs"]
 mod tools_impl;
 #[path = "engine_handlers.rs"]
 mod handlers_impl;
-#[path = "engine_tool_defs.rs"]
-mod tool_defs_impl;
-pub use tool_defs_impl::all_system_tool_names;
 #[path = "engine_subagent.rs"]
 mod subagent_impl;
-#[path = "engine_parallel.rs"]
-mod parallel_impl;
-pub use parallel_impl::LoopBreak;
+pub use crate::agent::pipeline::parallel::LoopBreak;
 pub(crate) use subagent_impl::parse_subagent_timeout;
 #[path = "engine_sandbox.rs"]
 mod sandbox_impl;
@@ -47,13 +31,11 @@ mod sandbox_impl;
 mod execution_impl;
 #[path = "engine_sse.rs"]
 mod sse_impl;
-#[path = "engine_agent_tool.rs"]
-mod agent_tool_impl;
 
 /// Resolves env var names through `SecretsManager` (scoped to agent).
-struct SecretsEnvResolver {
-    secrets: Arc<crate::secrets::SecretsManager>,
-    agent_name: String,
+pub(crate) struct SecretsEnvResolver {
+    pub(crate) secrets: Arc<crate::secrets::SecretsManager>,
+    pub(crate) agent_name: String,
 }
 
 #[async_trait::async_trait]
@@ -131,31 +113,16 @@ pub struct BgProcess {
     pub started_at: std::time::Instant,
 }
 
+// Step B complete: engine code reads via `self.cfg()`.
 pub struct AgentEngine {
-    pub provider: Arc<dyn LlmProvider>,
-    pub agent: AgentSettings,
-    pub db: PgPool,
-    pub tools: ToolRegistry,
-    pub workspace_dir: String,
-    /// Memory service abstraction (pgvector queries + external embedding endpoint).
-    /// Held as a trait object so unit tests can inject a `MockMemoryService`.
-    pub memory_store: Arc<dyn crate::agent::memory_service::MemoryService>,
-    /// Embedding service for vector generation (shared with MemoryStore).
-    pub embedder: Arc<dyn crate::memory::EmbeddingService>,
     /// Multi-channel router for sending actions to channel adapters.
     pub channel_router: Option<ChannelActionRouter>,
-    /// Scheduler for dynamic cron jobs.
-    pub scheduler: Option<Arc<Scheduler>>,
-    /// Map of all running agents for inter-agent communication (None for subagents).
-    pub agent_map: Option<crate::gateway::AgentMap>,
     /// Weak self-reference for hot-scheduling cron jobs. Set once after Arc creation.
     pub self_ref: OnceLock<Weak<AgentEngine>>,
     /// Broadcast channel for UI events (`agent_processing` start/end).
     pub ui_event_tx: Option<tokio::sync::broadcast::Sender<String>>,
     /// Shared tracker for currently processing agents (for WS reconnection).
     pub processing_tracker: Option<crate::gateway::ProcessingTracker>,
-    /// Default timezone parsed from USER.md at startup (fallback: Europe/Samara).
-    pub default_timezone: String,
     /// Last formatting prompt received from a connected channel adapter (e.g. Telegram).
     /// Used by cron/heartbeat to format output correctly for the channel.
     pub channel_formatting_prompt: tokio::sync::RwLock<Option<String>>,
@@ -163,10 +130,6 @@ pub struct AgentEngine {
     pub channel_info_cache: tokio::sync::RwLock<Option<Vec<workspace::ChannelInfo>>>,
     /// Thinking display level (0=off, 1=minimal, 2=low, 3=medium, 4=high, 5=max).
     pub thinking_level: std::sync::atomic::AtomicU8,
-    /// Global app config for reading [agent.defaults] and other system-level settings.
-    pub app_config: std::sync::Arc<crate::config::AppConfig>,
-    /// Dedicated LLM provider for context compaction (cheap model). None = use primary provider.
-    pub compaction_provider: Option<Arc<dyn LlmProvider>>,
     /// Context builder — builds session/messages/tools for each LLM call.
     /// Initialized via `set_context_builder` after engine Arc creation (mirrors `self_ref` pattern).
     /// Holds `Arc<dyn ContextBuilder>` for testability (`MockContextBuilder` in plan 02).
@@ -175,12 +138,12 @@ pub struct AgentEngine {
     /// Stored as concrete `Arc<DefaultToolExecutor>` for direct field access in engine methods.
     /// Initialized via `set_tool_executor` after engine Arc creation.
     pub tool_executor: OnceLock<Arc<crate::agent::tool_executor::DefaultToolExecutor>>,
-    /// Bounded audit event queue (tool execution + quality recording).
-    pub audit_queue: std::sync::Arc<crate::db::audit_queue::AuditQueue>,
-    /// Approval workflow manager (DB records, channel notifications, waiter map).
-    pub approval_manager: Arc<super::approval_manager::ApprovalManager>,
-    /// Session-scoped agent pools (None for subagents / isolated engines).
-    pub session_pools: Option<crate::agent::session_agent_pool::SessionPoolsMap>,
+    /// Per-agent mutable state (cancel/drain for shutdown and SIGHUP).
+    /// `None` for subagent engines — they are lightweight copies without lifecycle tracking.
+    pub state: Option<Arc<crate::agent::agent_state::AgentState>>,
+    /// Immutable agent configuration snapshot — sole source for agent settings,
+    /// DB pool, provider, tools, memory, etc.
+    pub cfg: Option<Arc<crate::agent::agent_config::AgentConfig>>,
 }
 
 /// Snapshot of what's currently displayed on the canvas.
@@ -196,11 +159,11 @@ pub struct CanvasContent {
 const CANVAS_MAX_BYTES: usize = 5 * 1024 * 1024;
 
 /// In-band marker prefix for rich card tool results.
-const RICH_CARD_PREFIX: &str = "__rich_card__:";
+pub(crate) const RICH_CARD_PREFIX: &str = "__rich_card__:";
 
 /// In-band marker prefix for file/media tool results (image, audio, etc.).
 /// Format: `__file__:{"url":"...","mediaType":"image/png"}`
-const FILE_PREFIX: &str = "__file__:";
+pub(crate) const FILE_PREFIX: &str = "__file__:";
 
 /// Nudge message injected when auto-continue detects incomplete LLM response.
 const AUTO_CONTINUE_NUDGE: &str = "[system] You described remaining steps but didn't execute them. Continue and complete the task using tools.";
@@ -304,24 +267,33 @@ pub(crate) fn row_to_message(row: &crate::db::sessions::MessageRow) -> Message {
 impl AgentEngine {
     // ── Public accessors (sealed API) ──────────────────────────────
 
+    /// Access the immutable config snapshot.
+    /// Panics if called on an engine that was not constructed with a config
+    /// (should not happen for top-level engines).
+    pub fn cfg(&self) -> &crate::agent::agent_config::AgentConfig {
+        self.cfg
+            .as_ref()
+            .expect("cfg not set — engine was not constructed with AgentConfig")
+    }
+
     /// Agent name (from config).
     pub fn name(&self) -> &str {
-        &self.agent.name
+        &self.cfg().agent.name
     }
 
     /// Primary model name (from config).
     pub fn model_name(&self) -> String {
-        self.agent.model.clone()
+        self.cfg().agent.model.clone()
     }
 
     /// Borrow the database pool.
     pub fn db_pool(&self) -> &PgPool {
-        &self.db
+        &self.cfg().db
     }
 
     /// Clone the LLM provider Arc for use outside the engine.
     pub fn provider_arc(&self) -> Arc<dyn LlmProvider> {
-        self.provider.clone()
+        self.cfg().provider.clone()
     }
 
     /// Read the current channel formatting prompt.
@@ -336,17 +308,17 @@ impl AgentEngine {
 
     /// Borrow the agent access config, if set.
     pub fn agent_access(&self) -> Option<&crate::config::AgentAccessConfig> {
-        self.agent.access.as_ref()
+        self.cfg().agent.access.as_ref()
     }
 
     /// Delegate model override to the underlying provider.
     pub fn set_model_override(&self, model: Option<String>) {
-        self.provider.set_model_override(model);
+        self.cfg().provider.set_model_override(model);
     }
 
     /// Return the current active model name from the provider.
     pub fn current_model(&self) -> String {
-        self.provider.current_model()
+        self.cfg().provider.current_model()
     }
 
     // ── Lifecycle ──────────────────────────────────────────────────
@@ -439,12 +411,6 @@ impl AgentEngine {
         &self.tex().hooks
     }
 
-    /// Current processing session ID accessor — delegates to `DefaultToolExecutor`.
-    #[inline]
-    pub(crate) fn processing_session_id(&self) -> &Arc<tokio::sync::Mutex<Option<Uuid>>> {
-        &self.tex().processing_session_id
-    }
-
     /// SSE event TX accessor — delegates to `DefaultToolExecutor`.
     #[inline]
     pub(crate) fn sse_event_tx(&self) -> &Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<StreamEvent>>>> {
@@ -491,31 +457,13 @@ impl AgentEngine {
 
     /// Check if a tool requires approval before execution.
     fn needs_approval(&self, tool_name: &str) -> bool {
-        let approval = match &self.agent.approval {
-            Some(a) if a.enabled => a,
-            _ => return false,
-        };
-
-        // Check explicit tool names
-        if approval.require_for.iter().any(|t| t == tool_name) {
-            return true;
-        }
-
-        // Check categories
-        if !approval.require_for_categories.is_empty() {
-            let category = super::channel_kind::ToolCategory::classify(tool_name);
-            if approval.require_for_categories.iter().any(|c| c == category.as_str()) {
-                return true;
-            }
-        }
-
-        false
+        super::pipeline::dispatch::needs_approval(self.cfg().agent.approval.as_ref(), tool_name)
     }
 
     /// Resolve a pending approval (called from API/callback handler).
     pub async fn resolve_approval(&self, approval_id: Uuid, approved: bool, resolved_by: &str, modified_input: Option<serde_json::Value>) -> anyhow::Result<()> {
         let status = if approved { "approved" } else { "rejected" };
-        let updated = crate::db::approvals::resolve_approval(&self.db, approval_id, status, resolved_by).await?;
+        let updated = crate::db::approvals::resolve_approval(&self.cfg().db, approval_id, status, resolved_by).await?;
         if !updated {
             anyhow::bail!("approval {approval_id} not found or already resolved");
         }
@@ -527,7 +475,7 @@ impl AgentEngine {
         self.broadcast_ui_event(serde_json::json!({
             "type": "approval_resolved",
             "approval_id": approval_id.to_string(),
-            "agent": self.agent.name,
+            "agent": self.cfg().agent.name,
             "status": status,
         }));
 
@@ -542,7 +490,7 @@ impl AgentEngine {
         }
 
         // Wake up the waiting tool execution
-        let mut waiters = self.approval_manager.waiters().write().await;
+        let mut waiters = self.cfg().approval_manager.waiters().write().await;
         if let Some((tx, _created_at)) = waiters.remove(&approval_id) {
             let result = if approved {
                 match modified_input {
@@ -568,30 +516,10 @@ impl AgentEngine {
         Ok(())
     }
 
-    /// Enrich tool arguments with `_context` (message context + `session_id`).
-    /// Uses `insert` (not `or_insert`) intentionally — LLM must not be able to
-    /// forge `_context` (e.g., spoofing `chat_id` for channel actions).
-    fn enrich_tool_args(args: &serde_json::Value, context: &serde_json::Value, session_id: Uuid, channel: &str) -> serde_json::Value {
-        let mut args = args.clone();
-        if let Some(obj) = args.as_object_mut() {
-            // If context is Null, create an empty object so session_id can be injected.
-            let mut ctx = if context.is_null() {
-                serde_json::json!({})
-            } else {
-                context.clone()
-            };
-            if let Some(ctx_obj) = ctx.as_object_mut() {
-                ctx_obj.insert("session_id".to_string(), serde_json::json!(session_id.to_string()));
-                ctx_obj.insert("_channel".to_string(), serde_json::json!(channel));
-            }
-            obj.insert("_context".to_string(), ctx);
-        }
-        args
-    }
 
     /// Check if an enabled YAML tool exists in workspace/tools/ (shared tools).
     async fn has_tool(&self, name: &str) -> bool {
-        let dir = std::path::Path::new(&self.workspace_dir).join("tools");
+        let dir = std::path::Path::new(&self.cfg().workspace_dir).join("tools");
         let path = dir.join(format!("{name}.yaml"));
         let path = if tokio::fs::try_exists(&path).await.unwrap_or(false) {
             path
@@ -611,10 +539,10 @@ impl AgentEngine {
 
     /// Trim session messages if `max_messages` is configured.
     async fn maybe_trim_session(&self, session_id: Uuid) {
-        if let Some(max) = self.agent.session.as_ref().and_then(|s| {
+        if let Some(max) = self.cfg().agent.session.as_ref().and_then(|s| {
             if s.max_messages > 0 { Some(s.max_messages) } else { None }
         }) {
-            let sm = SessionManager::new(self.db.clone());
+            let sm = SessionManager::new(self.cfg().db.clone());
             if let Err(e) = sm.trim_messages(session_id, max).await {
                 tracing::warn!(error = %e, "failed to trim session messages");
             }
@@ -634,8 +562,8 @@ impl AgentEngine {
             anyhow::bail!("blocked by hook: {reason}");
         }
 
-        let sm = SessionManager::new(self.db.clone());
-        let session_id = sm.create_isolated(&self.agent.name, &msg.user_id, &msg.channel).await?;
+        let sm = SessionManager::new(self.cfg().db.clone());
+        let session_id = sm.create_isolated(&self.cfg().agent.name, &msg.user_id, &msg.channel).await?;
 
         let ctx = self.build_context(msg, true, Some(session_id), false).await?;
         let mut messages = ctx.messages;
@@ -649,7 +577,7 @@ impl AgentEngine {
                 available_tools = self.apply_tool_policy_override(available_tools, &override_policy);
                 if available_tools.len() != before {
                     tracing::info!(
-                        agent = %self.agent.name,
+                        agent = %self.cfg().agent.name,
                         before,
                         after = available_tools.len(),
                         "cron tool policy override applied"
@@ -720,7 +648,7 @@ impl AgentEngine {
                             using_fallback = true;
                             consecutive_failures = 0;
                             tracing::warn!(
-                                agent = %self.agent.name,
+                                agent = %self.cfg().agent.name,
                                 iteration,
                                 "switching to fallback provider after consecutive failures"
                             );
@@ -743,8 +671,8 @@ impl AgentEngine {
                     auto_continue_count += 1;
                     tracing::info!(iteration, count = auto_continue_count, max = loop_config.max_auto_continues, "auto-continue: response looks incomplete, nudging LLM");
                     {
-                        let db = self.db.clone();
-                        let agent_name = self.agent.name.clone();
+                        let db = self.cfg().db.clone();
+                        let agent_name = self.cfg().agent.name.clone();
                         let cnt = auto_continue_count;
                         let max = loop_config.max_auto_continues;
                         if let Some(ref ui_tx) = self.ui_event_tx {
@@ -831,7 +759,7 @@ impl AgentEngine {
                     }
                     false
                 }
-                Err(parallel_impl::LoopBreak(reason)) => {
+                Err(LoopBreak(reason)) => {
                     if loop_nudge_count < loop_config.max_loop_nudges {
                         let nudge_desc = reason.as_deref().unwrap_or("repeating pattern");
                         let nudge_msg = format!(
@@ -849,7 +777,7 @@ impl AgentEngine {
                         loop_nudge_count += 1;
                         detector.reset();
                         tracing::warn!(
-                            agent = %self.agent.name,
+                            agent = %self.cfg().agent.name,
                             nudge_count = loop_nudge_count,
                             reason = ?reason,
                             "loop nudge injected, giving model another chance"
@@ -857,7 +785,7 @@ impl AgentEngine {
                         false // continue loop
                     } else {
                         tracing::error!(
-                            agent = %self.agent.name,
+                            agent = %self.cfg().agent.name,
                             nudge_count = loop_nudge_count,
                             "max loop nudges reached, force-stopping agent"
                         );
@@ -870,14 +798,14 @@ impl AgentEngine {
                 // Notify if hitting iteration limit (not loop break)
                 if !loop_broken && iteration == loop_config.effective_max_iterations() - 1 {
                     tracing::warn!(
-                        agent = %self.agent.name,
+                        agent = %self.cfg().agent.name,
                         max_iterations = loop_config.effective_max_iterations(),
                         "agent reached iteration limit"
                     );
                     if let Some(ref ui_tx) = self.ui_event_tx {
-                        let db = self.db.clone();
+                        let db = self.cfg().db.clone();
                         let tx = ui_tx.clone();
-                        let agent_name = self.agent.name.clone();
+                        let agent_name = self.cfg().agent.name.clone();
                         let max_iter = loop_config.effective_max_iterations();
                         tokio::spawn(async move {
                             crate::gateway::notify(
@@ -892,9 +820,9 @@ impl AgentEngine {
                 // Notify if loop was broken after max nudges
                 if loop_broken && loop_nudge_count >= loop_config.max_loop_nudges
                     && let Some(ref ui_tx) = self.ui_event_tx {
-                        let db = self.db.clone();
+                        let db = self.cfg().db.clone();
                         let tx = ui_tx.clone();
-                        let agent_name = self.agent.name.clone();
+                        let agent_name = self.cfg().agent.name.clone();
                         let sid = session_id;
                         tokio::spawn(async move {
                             crate::gateway::notify(
@@ -905,7 +833,7 @@ impl AgentEngine {
                             ).await.ok();
                         });
                     }
-                match self.provider.chat(&messages, &[]).await {
+                match self.cfg().provider.chat(&messages, &[]).await {
                     Ok(forced) => {
                         final_response = strip_thinking(&forced.content);
                     }
@@ -918,15 +846,15 @@ impl AgentEngine {
             }
         }
 
-        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), None, None)
+        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.cfg().agent.name), None, None)
             .await?;
 
         // Post-session knowledge extraction (background, non-blocking)
         if messages.len() >= 5 {
-            let db = self.db.clone();
-            let provider = self.provider.clone();
-            let memory = self.memory_store.clone();
-            let agent_name = self.agent.name.clone();
+            let db = self.cfg().db.clone();
+            let provider = self.cfg().provider.clone();
+            let memory = self.cfg().memory_store.clone();
+            let agent_name = self.cfg().agent.name.clone();
             tokio::spawn(async move {
                 crate::agent::knowledge_extractor::extract_and_save(
                     db, session_id, agent_name, provider, memory,
@@ -943,11 +871,11 @@ impl AgentEngine {
     /// Build runtime context for system prompt injection.
     fn runtime_context(&self, msg: &IncomingMessage) -> workspace::RuntimeContext {
         workspace::RuntimeContext {
-            agent_name: self.agent.name.clone(),
-            owner_id: self.agent.access.as_ref().and_then(|a| a.owner_id.clone()),
+            agent_name: self.cfg().agent.name.clone(),
+            owner_id: self.cfg().agent.access.as_ref().and_then(|a| a.owner_id.clone()),
             channel: msg.channel.clone(),
-            model: self.provider.current_model(),
-            datetime_display: workspace::format_local_datetime(&self.default_timezone),
+            model: self.cfg().provider.current_model(),
+            datetime_display: workspace::format_local_datetime(&self.cfg().default_timezone),
             formatting_prompt: msg.formatting_prompt.clone(),
             channels: vec![], // populated async in build_context
         }
@@ -982,8 +910,8 @@ impl AgentEngine {
         let rows = sqlx::query_as::<_, (sqlx::types::Uuid, String, String, String)>(
             "SELECT id, channel_type, display_name, status FROM agent_channels WHERE agent_name = $1",
         )
-        .bind(&self.agent.name)
-        .fetch_all(&self.db)
+        .bind(&self.cfg().agent.name)
+        .fetch_all(&self.cfg().db)
         .await
         .unwrap_or_default();
 
@@ -996,13 +924,185 @@ impl AgentEngine {
             }
         }).collect()
     }
+
+    // ── Memory helpers (from engine_memory.rs) ──────────────────────────────
+
+    /// Build L0 memory context: load pinned chunks for this agent.
+    pub(super) async fn build_memory_context(&self, budget_tokens: u32) -> crate::agent::pipeline::memory::MemoryContext {
+        crate::agent::pipeline::memory::build_memory_context(
+            self.cfg().memory_store.as_ref(),
+            &self.cfg().agent.name,
+            budget_tokens,
+        ).await
+    }
+
+    /// Index extracted facts into memory (called after session compaction via /compact).
+    pub(super) async fn index_facts_to_memory(&self, facts: &[String]) {
+        crate::agent::pipeline::memory::index_facts_to_memory(
+            self.cfg().memory_store.as_ref(),
+            &self.cfg().agent.name,
+            facts,
+        ).await
+    }
+
+    // ── Context helpers (from engine_context.rs) ─────────────────────────────
+
+    /// Build common context: session, messages, system prompt.
+    pub(super) async fn build_context(
+        &self,
+        msg: &IncomingMessage,
+        include_tools: bool,
+        resume_session_id: Option<Uuid>,
+        force_new_session: bool,
+    ) -> Result<crate::agent::context_builder::ContextSnapshot> {
+        let cb = self.context_builder.get()
+            .expect("context_builder not initialized — call set_context_builder after engine Arc creation");
+        crate::agent::pipeline::context::build_context(cb.as_ref(), msg, include_tools, resume_session_id, force_new_session).await
+    }
+
+    /// Build a SecretsEnvResolver for YAML tool env resolution.
+    pub(super) fn make_resolver(&self) -> SecretsEnvResolver {
+        crate::agent::pipeline::context::make_resolver(self.secrets(), &self.cfg().agent.name)
+    }
+
+    /// Build OAuthContext for provider-based YAML tool auth (e.g. `oauth_provider: github`).
+    pub(super) fn make_oauth_context(&self) -> Option<crate::tools::yaml_tools::OAuthContext> {
+        crate::agent::pipeline::context::make_oauth_context(self.oauth().as_ref(), &self.cfg().agent.name)
+    }
+
+    /// Format a tool error as structured JSON for better LLM parsing.
+    pub(super) fn format_tool_error(tool_name: &str, error: &str) -> String {
+        crate::agent::pipeline::context::format_tool_error(tool_name, error)
+    }
+
+    /// Truncate a string to `max` chars with "..." suffix, preserving char boundaries.
+    pub(super) fn truncate_preview(s: &str, max: usize) -> String {
+        crate::agent::pipeline::context::truncate_preview(s, max)
+    }
+
+    /// Replace old tool results with "[compacted]" when context exceeds 70% of model window.
+    pub(super) fn compact_tool_results(&self, messages: &mut [Message], context_chars: &mut usize) {
+        crate::agent::pipeline::context::compact_tool_results(
+            &self.cfg().agent.model,
+            self.cfg().agent.compaction.as_ref(),
+            messages,
+            context_chars,
+        )
+    }
+
+    /// Get compaction parameters from agent config.
+    #[allow(dead_code)]
+    pub(super) fn compaction_params(&self) -> (usize, usize) {
+        crate::agent::pipeline::context::compaction_params(&self.cfg().agent.model, self.cfg().agent.compaction.as_ref())
+    }
+
+    /// Run compaction on messages if token budget exceeded, indexing extracted facts to memory.
+    pub(super) async fn compact_messages(&self, messages: &mut Vec<Message>, detector: Option<&LoopDetector>) {
+        let engine = self;
+        let cfg = engine.cfg();
+        crate::agent::pipeline::context::compact_messages(
+            &cfg.agent.model,
+            cfg.agent.compaction.as_ref(),
+            &cfg.agent.language,
+            cfg.provider.as_ref(),
+            cfg.compaction_provider.as_deref(),
+            &cfg.db,
+            engine.ui_event_tx.as_ref(),
+            &cfg.agent.name,
+            &cfg.audit_queue,
+            messages,
+            detector,
+            |facts| async move { engine.index_facts_to_memory(&facts).await },
+        )
+        .await
+    }
+
+    /// Compact a specific session's messages via API.
+    pub async fn compact_session(&self, session_id: uuid::Uuid) -> Result<(usize, usize)> {
+        let engine = self;
+        let cfg = engine.cfg();
+        crate::agent::pipeline::context::compact_session(
+            &cfg.db,
+            cfg.provider.as_ref(),
+            cfg.compaction_provider.as_deref(),
+            &cfg.agent.language,
+            &cfg.agent.name,
+            session_id,
+            &cfg.audit_queue,
+            |facts| async move { engine.index_facts_to_memory(&facts).await },
+        )
+        .await
+    }
+
+    // ── Command handler (from engine_commands.rs) ────────────────────────────
+
+    /// Handle /slash commands. Returns Some(result) if a command matched, None otherwise.
+    pub(super) async fn handle_command(&self, text: &str, msg: &IncomingMessage) -> Option<Result<String>> {
+        let dm_scope = self.cfg().agent.session.as_ref()
+            .map(|s| s.dm_scope.as_str())
+            .unwrap_or("per-channel-peer");
+
+        let ctx = crate::agent::pipeline::commands::CommandContext {
+            agent_name: &self.cfg().agent.name,
+            agent_language: &self.cfg().agent.language,
+            agent_model: &self.cfg().agent.model,
+            dm_scope,
+            max_history_messages: self.cfg().agent.max_history_messages,
+            compaction_config: self.cfg().agent.compaction.as_ref(),
+            db: &self.cfg().db,
+            provider: self.cfg().provider.as_ref(),
+            compaction_provider: self.cfg().compaction_provider.as_deref(),
+            thinking_level: &self.thinking_level,
+            memory_store: self.cfg().memory_store.as_ref(),
+        };
+
+        crate::agent::pipeline::commands::handle_command(
+            &ctx,
+            text,
+            msg,
+            || async { self.invalidate_yaml_tools_cache().await },
+        ).await
+    }
+
+    // ── Tool definitions (from engine_tool_defs.rs) ──────────────────────────
+
+    /// Resolve tool group settings (from agent config or defaults).
+    pub(super) fn tool_groups(&self) -> &crate::config::ToolGroups {
+        crate::agent::pipeline::tool_defs::resolve_tool_groups(self.cfg().agent.tools.as_ref())
+    }
+
+    /// Return tool definitions for internal tools available to the LLM.
+    pub(super) fn internal_tool_definitions(&self) -> Vec<ToolDefinition> {
+        let browser_url = Self::browser_renderer_url();
+        let ctx = crate::agent::pipeline::tool_defs::ToolDefsContext {
+            is_base: self.cfg().agent.base,
+            groups: self.tool_groups(),
+            default_timezone: &self.cfg().default_timezone,
+            has_sandbox: self.sandbox().is_some(),
+            browser_renderer_url: &browser_url,
+        };
+        crate::agent::pipeline::tool_defs::build_internal_tool_definitions(&ctx)
+    }
+
+    /// Internal tool definitions filtered for subagent use.
+    pub(super) fn internal_tool_definitions_for_subagent(
+        &self,
+        allowed_tools: Option<&[String]>,
+    ) -> Vec<hydeclaw_types::ToolDefinition> {
+        crate::agent::pipeline::tool_defs::filter_for_subagent(
+            self.internal_tool_definitions(),
+            subagent_impl::SUBAGENT_DENIED_TOOLS,
+            allowed_tools,
+        )
+    }
+}
+
+/// All system (internal) tool names — single source of truth.
+pub fn all_system_tool_names() -> &'static [&'static str] {
+    crate::agent::pipeline::tool_defs::all_system_tool_names()
 }
 
 // ── Extracted submodules ─────────────────────────────────────────────────────
-#[path = "engine_context.rs"]
-mod context_impl;
-#[path = "engine_provider.rs"]
-mod provider_impl;
 #[path = "engine_dispatch.rs"]
 mod dispatch_impl;
 
@@ -1011,12 +1111,12 @@ mod dispatch_impl;
 #[async_trait::async_trait]
 impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
     async fn session_resume(&self, sid: Uuid) -> Result<Uuid> {
-        SessionManager::new(self.db.clone()).resume(sid).await
+        SessionManager::new(self.cfg().db.clone()).resume(sid).await
     }
 
     async fn session_create_new(&self, user_id: &str, channel: &str) -> Result<Uuid> {
-        SessionManager::new(self.db.clone())
-            .create_new(&self.agent.name, user_id, channel)
+        SessionManager::new(self.cfg().db.clone())
+            .create_new(&self.cfg().agent.name, user_id, channel)
             .await
     }
 
@@ -1026,8 +1126,8 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
         channel: &str,
         dm_scope: &str,
     ) -> Result<Uuid> {
-        SessionManager::new(self.db.clone())
-            .get_or_create(&self.agent.name, user_id, channel, dm_scope)
+        SessionManager::new(self.cfg().db.clone())
+            .get_or_create(&self.cfg().agent.name, user_id, channel, dm_scope)
             .await
     }
 
@@ -1036,7 +1136,7 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
         session_id: Uuid,
         limit: i64,
     ) -> Result<Vec<crate::db::sessions::MessageRow>> {
-        SessionManager::new(self.db.clone())
+        SessionManager::new(self.cfg().db.clone())
             .load_messages(session_id, Some(limit))
             .await
     }
@@ -1046,7 +1146,7 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
         session_id: Uuid,
         leaf_message_id: Uuid,
     ) -> Result<Vec<crate::db::sessions::MessageRow>> {
-        crate::db::sessions::load_branch_messages(&self.db, session_id, leaf_message_id).await
+        crate::db::sessions::load_branch_messages(&self.cfg().db, session_id, leaf_message_id).await
     }
 
     async fn session_insert_missing_tool_results(
@@ -1054,47 +1154,47 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
         session_id: Uuid,
         call_ids: &[String],
     ) -> Result<()> {
-        SessionManager::new(self.db.clone())
+        SessionManager::new(self.cfg().db.clone())
             .insert_missing_tool_results(session_id, call_ids)
             .await
     }
 
     async fn session_get_participants(&self, session_id: Uuid) -> Result<Vec<String>> {
-        crate::db::sessions::get_participants(&self.db, session_id).await
+        crate::db::sessions::get_participants(&self.cfg().db, session_id).await
     }
 
     fn agent_name(&self) -> &str {
-        &self.agent.name
+        &self.cfg().agent.name
     }
 
     fn agent_base(&self) -> bool {
-        self.agent.base
+        self.cfg().agent.base
     }
 
     fn agent_language(&self) -> &str {
-        &self.agent.language
+        &self.cfg().agent.language
     }
 
     fn agent_max_history_messages(&self) -> i64 {
-        self.agent.max_history_messages.unwrap_or(50) as i64
+        self.cfg().agent.max_history_messages.unwrap_or(50) as i64
     }
 
     fn agent_dm_scope(&self) -> &str {
-        self.agent.session.as_ref()
+        self.cfg().agent.session.as_ref()
             .map_or("per-channel-peer", |s| s.dm_scope.as_str())
     }
 
     fn agent_prune_tool_output_after_turns(&self) -> Option<usize> {
-        self.agent.session.as_ref()
+        self.cfg().agent.session.as_ref()
             .and_then(|s| s.prune_tool_output_after_turns)
     }
 
     fn agent_max_tools_in_context(&self) -> Option<usize> {
-        self.agent.max_tools_in_context
+        self.cfg().agent.max_tools_in_context
     }
 
     async fn load_workspace_prompt(&self) -> Result<String> {
-        workspace::load_workspace_prompt(&self.workspace_dir, &self.agent.name).await
+        workspace::load_workspace_prompt(&self.cfg().workspace_dir, &self.cfg().agent.name).await
     }
 
     async fn mcp_tool_definitions(&self) -> Vec<hydeclaw_types::ToolDefinition> {
@@ -1110,7 +1210,7 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
     }
 
     fn memory_is_available(&self) -> bool {
-        self.memory_store.is_available()
+        self.cfg().memory_store.is_available()
     }
 
     fn channel_router_present(&self) -> bool {
@@ -1118,7 +1218,7 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
     }
 
     fn scheduler_present(&self) -> bool {
-        self.scheduler.is_some()
+        self.cfg().scheduler.is_some()
     }
 
     fn sandbox_absent(&self) -> bool {
@@ -1134,7 +1234,7 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
     }
 
     fn pinned_budget_tokens(&self) -> u32 {
-        self.app_config.memory.pinned_budget_tokens
+        self.cfg().app_config.memory.pinned_budget_tokens
     }
 
     async fn build_memory_context(&self, budget_tokens: u32) -> (String, Vec<String>) {
@@ -1156,7 +1256,7 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
             return cache.1.values().cloned().collect();
         }
         drop(cache);
-        let loaded = crate::tools::yaml_tools::load_yaml_tools(&self.workspace_dir, false).await;
+        let loaded = crate::tools::yaml_tools::load_yaml_tools(&self.cfg().workspace_dir, false).await;
         let map: std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef> =
             loaded.iter().cloned().map(|t| (t.name.clone(), t)).collect();
         *self.tex().yaml_tools_cache.write().await = (std::time::Instant::now(), std::sync::Arc::new(map));
@@ -1194,7 +1294,7 @@ impl crate::agent::tool_executor::ToolExecutorDeps for AgentEngine {
         current_context_chars: usize,
         detector: &mut crate::agent::tool_loop::LoopDetector,
         detect_loops: bool,
-    ) -> Result<Vec<(String, String)>, parallel_impl::LoopBreak> {
+    ) -> Result<Vec<(String, String)>, LoopBreak> {
         self.execute_tool_calls_partitioned(
             tool_calls,
             context,
@@ -1205,6 +1305,245 @@ impl crate::agent::tool_executor::ToolExecutorDeps for AgentEngine {
             detect_loops,
         )
         .await
+    }
+}
+
+// ── Inlined from engine_parallel.rs ──────────────────────────────────────────
+
+impl crate::agent::pipeline::parallel::ToolExecutor for AgentEngine {
+    fn execute_tool_call<'a>(
+        &'a self,
+        name: &'a str,
+        arguments: &'a serde_json::Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
+        self.execute_tool_call(name, arguments)
+    }
+
+    fn needs_approval(&self, tool_name: &str) -> bool {
+        self.needs_approval(tool_name)
+    }
+}
+
+impl AgentEngine {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn execute_tool_calls_partitioned(
+        &self,
+        tool_calls: &[hydeclaw_types::ToolCall],
+        context: &serde_json::Value,
+        session_id: Uuid,
+        channel: &str,
+        current_context_chars: usize,
+        detector: &mut LoopDetector,
+        detect_loops: bool,
+    ) -> Result<Vec<(String, String)>, LoopBreak> {
+        // Load YAML tools (cached for 30s)
+        let yaml_tools: std::sync::Arc<std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef>> = {
+            let cache = self.tex().yaml_tools_cache.read().await;
+            if cache.0.elapsed() < std::time::Duration::from_secs(30) && !cache.1.is_empty() {
+                std::sync::Arc::clone(&cache.1)
+            } else {
+                drop(cache);
+                let tools = std::sync::Arc::new(
+                    crate::tools::yaml_tools::load_yaml_tools(&self.cfg().workspace_dir, false)
+                        .await
+                        .into_iter()
+                        .map(|t| (t.name.clone(), t))
+                        .collect::<std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef>>(),
+                );
+                *self.tex().yaml_tools_cache.write().await =
+                    (std::time::Instant::now(), std::sync::Arc::clone(&tools));
+                tools
+            }
+        };
+
+        let subagent_timeout =
+            subagent_impl::parse_subagent_timeout(&self.cfg().app_config.subagents.in_process_timeout)
+                + std::time::Duration::from_secs(10);
+
+        crate::agent::pipeline::parallel::execute_tool_calls_partitioned(
+            tool_calls,
+            context,
+            session_id,
+            channel,
+            &self.cfg().agent.model,
+            current_context_chars,
+            detector,
+            detect_loops,
+            &self.cfg().db,
+            &self.cfg().embedder,
+            &yaml_tools,
+            subagent_timeout,
+            self,
+        )
+        .await
+    }
+}
+
+// ── Inlined from engine_provider.rs ──────────────────────────────────────────
+
+/// `AgentEngine` acts as its own compactor — delegates to `compact_messages`.
+#[async_trait::async_trait]
+impl crate::agent::pipeline::llm_call::Compactor for AgentEngine {
+    async fn compact(&self, messages: &mut Vec<Message>) {
+        self.compact_messages(messages, None).await;
+    }
+}
+
+impl AgentEngine {
+    /// Build tool loop config from agent TOML settings (or defaults).
+    pub(crate) fn tool_loop_config(&self) -> crate::agent::tool_loop::ToolLoopConfig {
+        self.cfg().agent
+            .tool_loop
+            .as_ref()
+            .map(crate::agent::tool_loop::ToolLoopConfig::from)
+            .unwrap_or_default()
+    }
+
+    /// Create fallback LLM provider from agent config.
+    pub(super) async fn create_fallback_provider(&self) -> Option<Arc<dyn crate::agent::providers::LlmProvider>> {
+        crate::agent::pipeline::llm_call::create_fallback_provider(
+            &self.cfg().db,
+            self.cfg().agent.fallback_provider.as_deref(),
+            &self.cfg().agent.name,
+            self.cfg().agent.temperature,
+            self.cfg().agent.max_tokens,
+            self.secrets().clone(),
+            self.sandbox().clone(),
+            &self.cfg().workspace_dir,
+            self.cfg().agent.base,
+        )
+        .await
+    }
+
+    /// Check daily token budget before LLM call.
+    pub(super) async fn check_budget(&self) -> Result<()> {
+        crate::agent::pipeline::llm_call::check_budget(
+            &self.cfg().db,
+            &self.cfg().agent.name,
+            self.cfg().agent.daily_budget_tokens,
+        )
+        .await
+    }
+
+    /// Call LLM with automatic context overflow recovery.
+    pub(super) async fn chat_with_overflow_recovery(
+        &self,
+        messages: &mut Vec<Message>,
+        tools: &[ToolDefinition],
+    ) -> Result<hydeclaw_types::LlmResponse> {
+        self.check_budget().await?;
+        crate::agent::pipeline::llm_call::chat_with_overflow_recovery(
+            self.cfg().provider.as_ref(),
+            messages,
+            tools,
+            self,
+        )
+        .await
+    }
+
+    /// Call LLM with exponential backoff retry.
+    pub(super) async fn chat_with_transient_retry(
+        &self,
+        messages: &mut Vec<Message>,
+        tools: &[ToolDefinition],
+    ) -> Result<hydeclaw_types::LlmResponse> {
+        self.check_budget().await?;
+        crate::agent::pipeline::llm_call::chat_with_transient_retry(
+            self.cfg().provider.as_ref(),
+            messages,
+            tools,
+            self,
+        )
+        .await
+    }
+
+    /// Streaming variant of chat_with_overflow_recovery.
+    #[allow(dead_code)]
+    pub(super) async fn chat_stream_with_overflow_recovery(
+        &self,
+        messages: &mut Vec<Message>,
+        tools: &[ToolDefinition],
+        chunk_tx: mpsc::UnboundedSender<String>,
+    ) -> Result<hydeclaw_types::LlmResponse> {
+        self.check_budget().await?;
+        crate::agent::pipeline::llm_call::chat_stream_with_overflow_recovery(
+            self.cfg().provider.as_ref(),
+            messages,
+            tools,
+            chunk_tx,
+            self,
+        )
+        .await
+    }
+
+    /// Streaming variant of chat_with_transient_retry.
+    pub(super) async fn chat_stream_with_transient_retry(
+        &self,
+        messages: &mut Vec<Message>,
+        tools: &[ToolDefinition],
+        chunk_tx: mpsc::UnboundedSender<String>,
+    ) -> Result<hydeclaw_types::LlmResponse> {
+        self.check_budget().await?;
+        crate::agent::pipeline::llm_call::chat_stream_with_transient_retry(
+            self.cfg().provider.as_ref(),
+            messages,
+            tools,
+            chunk_tx,
+            self,
+        )
+        .await
+    }
+
+    /// Variant that uses an explicit provider (for fallback switching).
+    pub(super) async fn chat_with_transient_retry_using(
+        &self,
+        provider: &Arc<dyn crate::agent::providers::LlmProvider>,
+        messages: &mut Vec<Message>,
+        tools: &[ToolDefinition],
+    ) -> Result<hydeclaw_types::LlmResponse> {
+        self.check_budget().await?;
+        crate::agent::pipeline::llm_call::chat_with_transient_retry_using(
+            provider,
+            messages,
+            tools,
+            self,
+        )
+        .await
+    }
+
+    /// Streaming variant of chat_with_transient_retry_using.
+    pub(super) async fn chat_stream_with_transient_retry_using(
+        &self,
+        provider: &Arc<dyn crate::agent::providers::LlmProvider>,
+        messages: &mut Vec<Message>,
+        tools: &[ToolDefinition],
+        chunk_tx: mpsc::UnboundedSender<String>,
+    ) -> Result<hydeclaw_types::LlmResponse> {
+        self.check_budget().await?;
+        crate::agent::pipeline::llm_call::chat_stream_with_transient_retry_using(
+            provider,
+            messages,
+            tools,
+            chunk_tx,
+            self,
+        )
+        .await
+    }
+
+    /// Default context window size based on model name.
+    pub(crate) fn default_context_for_model(model: &str) -> usize {
+        crate::agent::pipeline::llm_call::default_context_for_model(model)
+    }
+
+    /// Fire-and-forget audit event recording.
+    pub(super) fn audit(&self, event_type: &'static str, actor: Option<&str>, details: serde_json::Value) {
+        crate::agent::pipeline::llm_call::audit(
+            self.cfg().db.clone(),
+            self.cfg().agent.name.clone(),
+            event_type,
+            actor,
+            details,
+        );
     }
 }
 
@@ -1235,6 +1574,14 @@ mod tests {
         assert!(CACHEABLE_SEARCH_TOOLS.contains(&"searxng_search"));
         assert!(CACHEABLE_SEARCH_TOOLS.contains(&"brave_search"));
         assert!(!CACHEABLE_SEARCH_TOOLS.contains(&"memory_search"));
+    }
+
+    #[test]
+    fn agent_in_system_tool_names() {
+        let names = all_system_tool_names();
+        assert!(names.contains(&"agent"), "agent must be in all_system_tool_names()");
+        assert!(!names.contains(&"handoff"), "handoff should be removed");
+        assert!(!names.contains(&"subagent"), "subagent should be removed");
     }
 }
 

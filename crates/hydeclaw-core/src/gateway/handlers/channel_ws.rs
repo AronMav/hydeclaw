@@ -242,7 +242,7 @@ async fn channel_ws_loop(
 
                         // Send Config with language and owner_id for access UI.
                         // Channel secrets (bot_token, api_url) are read by the adapter from its own env.
-                        let owner_id = engine.agent.access.as_ref()
+                        let owner_id = engine.cfg().agent.access.as_ref()
                             .and_then(|a| a.owner_id.clone());
 
                         let typing_mode = ch_config.get("typing_mode")
@@ -251,7 +251,7 @@ async fn channel_ws_loop(
                             .to_string();
 
                         let config_msg = ChannelOutbound::Config {
-                            language: engine.agent.language.clone(),
+                            language: engine.cfg().agent.language.clone(),
                             owner_id,
                             typing_mode,
                         };
@@ -408,7 +408,7 @@ async fn channel_ws_loop(
                             }
                         }
 
-                        let incoming = msg.into_incoming(engine.agent.name.clone(), channel_type.clone(), formatting_prompt.clone());
+                        let incoming = msg.into_incoming(engine.cfg().agent.name.clone(), channel_type.clone(), formatting_prompt.clone());
                         let engine_clone = engine.clone();
                         let req_id = request_id.clone();
 
@@ -997,7 +997,7 @@ async fn handle_ws(socket: WebSocket, agents: AgentCore, bus: ChannelBus, status
                             user_id: crate::agent::channel_kind::channel::UI.to_string(),
                             text: Some(text),
                             attachments: vec![],
-                            agent_id: engine.agent.name.clone(),
+                            agent_id: engine.cfg().agent.name.clone(),
                             channel: crate::agent::channel_kind::channel::UI.to_string(),
                             context: serde_json::Value::Null,
                             timestamp: chrono::Utc::now(),

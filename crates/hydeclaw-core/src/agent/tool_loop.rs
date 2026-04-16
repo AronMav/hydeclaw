@@ -104,6 +104,13 @@ impl LoopDetector {
         self.record_result(tool_name, success)
     }
 
+    /// Replay a WAL event into the detector (warm-up after crash/resume).
+    /// Unlike `record_execution`, this only tracks error streaks — no hash tracking
+    /// since WAL doesn't store full args.
+    pub fn record_result_from_wal(&mut self, tool_name: &str, success: bool) {
+        let _ = self.record_result(tool_name, success);
+    }
+
     /// Record only the result (used for WAL warm-up and after execution).
     pub fn record_result(&mut self, tool_name: &str, success: bool) -> LoopStatus {
         if success {

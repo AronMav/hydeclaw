@@ -254,7 +254,7 @@ async fn agent_processing_loop(
 ) {
     let max_iterations = engine.tool_loop_config().effective_max_iterations();
     let timeout = crate::agent::engine::parse_subagent_timeout(
-        &engine.app_config.subagents.in_process_timeout,
+        &engine.cfg().app_config.subagents.in_process_timeout,
     );
 
     while let Some(msg) = rx.recv().await {
@@ -265,8 +265,7 @@ async fn agent_processing_loop(
         let deadline = Some(Instant::now() + timeout);
 
         // Pass session_id via run_subagent_with_session so the `agent` tool can find the
-        // correct SessionAgentPool through enriched `_context`. We do NOT mutate the shared
-        // processing_session_id — that would race with SSE on the same engine.
+        // correct SessionAgentPool through enriched `_context`.
 
         let result = engine
             .run_subagent_with_session(

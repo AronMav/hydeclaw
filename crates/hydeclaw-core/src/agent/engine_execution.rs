@@ -2,6 +2,7 @@
 //! Extracted from engine.rs for readability.
 
 use super::*;
+use crate::agent::pipeline::execution as exec_helpers;
 use crate::agent::tool_executor::ToolExecutor;
 
 impl AgentEngine {
@@ -14,39 +15,35 @@ impl AgentEngine {
         chunk_tx: Option<mpsc::UnboundedSender<String>>,
     ) -> Result<String> {
         // Sweep stale approval waiters (older than 10 minutes)
-        self.approval_manager.prune_stale().await;
+        self.cfg().approval_manager.prune_stale().await;
+
+        // Track active request for graceful shutdown/SIGHUP drain
+        let cancel_guard = self.state.as_ref().map(|s| s.register_request());
 
         // Hook: BeforeMessage
         if let crate::agent::hooks::HookAction::Block(reason) = self.hooks().fire(&crate::agent::hooks::HookEvent::BeforeMessage) {
+            if let (Some(state), Some((id, _))) = (&self.state, &cancel_guard) {
+                state.unregister_request(id);
+            }
             anyhow::bail!("blocked by hook: {}", reason);
         }
 
         let crate::agent::context_builder::ContextSnapshot { session_id, mut messages, tools: available_tools } =
             self.build_context(msg, true, None, false).await?;
 
-        // Store session_id for tool handlers that need session context (e.g., agent tool)
-        *self.processing_session_id().lock().await = Some(session_id);
-
         // Mark session as running — watchdog and startup cleanup use this
-        let sm = SessionManager::new(self.db.clone());
+        let sm = SessionManager::new(self.cfg().db.clone());
         if let Err(e) = sm.set_run_status(session_id, "running").await {
             tracing::warn!(session_id = %session_id, error = %e, "failed to mark session as running");
         }
-        if let Err(e) = sm.log_wal_event(session_id, "running", None).await {
-            tracing::warn!(session_id = %session_id, error = %e, "failed to log WAL running event, retrying");
-            // One retry after a short delay — WAL consistency is important for crash recovery
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            if let Err(e2) = sm.log_wal_event(session_id, "running", None).await {
-                tracing::error!(session_id = %session_id, error = %e2, "WAL running event retry also failed");
-            }
-        }
+        exec_helpers::log_wal_running_with_retry(&sm, session_id).await;
         // RAII guard: if we exit early via `?` (error path), mark session as 'failed'.
-        let mut lifecycle_guard = SessionLifecycleGuard::new(self.db.clone(), session_id);
+        let mut lifecycle_guard = SessionLifecycleGuard::new(self.cfg().db.clone(), session_id);
 
         // Broadcast processing start to UI (typing indicator) + guard broadcasts end on drop
         let start_event = serde_json::json!({
             "type": "agent_processing",
-            "agent": self.agent.name,
+            "agent": self.cfg().agent.name,
             "session_id": session_id.to_string(),
             "status": "start",
             "channel": msg.channel,
@@ -55,7 +52,7 @@ impl AgentEngine {
         let _processing_guard = ProcessingGuard::new(
             self.ui_event_tx.clone(),
             self.processing_tracker.clone(),
-            self.agent.name.clone(),
+            self.cfg().agent.name.clone(),
             &start_event,
         );
 
@@ -67,6 +64,9 @@ impl AgentEngine {
         // Slash commands — handle without LLM
         if let Some(result) = self.handle_command(&user_text, msg).await {
             lifecycle_guard.done().await;
+            if let (Some(state), Some((id, _))) = (&self.state, &cancel_guard) {
+                state.unregister_request(id);
+            }
             return result;
         }
 
@@ -91,8 +91,7 @@ impl AgentEngine {
         });
 
         // Save user message (original, not enriched)
-        // For inter-agent messages (user_id starts with "agent:"), save the sender agent_id
-        let sender_agent_id = if msg.user_id.starts_with("agent:") { Some(msg.user_id.trim_start_matches("agent:")) } else { None };
+        let sender_agent_id = exec_helpers::extract_sender_agent_id(&msg.user_id);
         let user_msg_id = sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None, msg.leaf_message_id).await?;
         let mut last_msg_id = user_msg_id;
 
@@ -168,7 +167,7 @@ impl AgentEngine {
                             using_fallback = true;
                             consecutive_failures = 0;
                             tracing::warn!(
-                                agent = %self.agent.name,
+                                agent = %self.cfg().agent.name,
                                 iteration,
                                 "switching to fallback provider after consecutive failures"
                             );
@@ -208,23 +207,13 @@ impl AgentEngine {
                     auto_continue_count += 1;
                     let reason = if is_length_limit { "response truncated by length limit" } else { "response looks incomplete" };
                     tracing::info!(iteration, count = auto_continue_count, max = loop_config.max_auto_continues, reason, "auto-continue: nudging LLM");
-                    {
-                        let db = self.db.clone();
-                        let agent_name = self.agent.name.clone();
-                        let cnt = auto_continue_count;
-                        let max = loop_config.max_auto_continues;
-                        if let Some(ref ui_tx) = self.ui_event_tx {
-                            let tx = ui_tx.clone();
-                            tokio::spawn(async move {
-                                crate::gateway::notify(
-                                    &db, &tx, "auto_continue",
-                                    &format!("Auto-continue: {}", agent_name),
-                                    &format!("Agent continued unfinished task (attempt {}/{})", cnt, max),
-                                    serde_json::json!({"agent": agent_name}),
-                                ).await.ok();
-                            });
-                        }
-                    }
+                    exec_helpers::notify_auto_continue(
+                        self.cfg().db.clone(),
+                        self.ui_event_tx.as_ref(),
+                        &self.cfg().agent.name,
+                        auto_continue_count,
+                        loop_config.max_auto_continues,
+                    );
                     if let Some(ref tx) = chunk_tx {
                         tx.send("\n\n...".to_string()).ok();
                     }
@@ -277,7 +266,7 @@ impl AgentEngine {
                 &cleaned_content,
                 tc_json.as_ref(),
                 None,
-                Some(&self.agent.name),
+                Some(&self.cfg().agent.name),
                 None,
                 Some(last_msg_id),
             )
@@ -318,18 +307,11 @@ impl AgentEngine {
                     }
                     false
                 }
-                Err(parallel_impl::LoopBreak(reason)) => {
+                Err(LoopBreak(reason)) => {
                     if loop_nudge_count < loop_config.max_loop_nudges {
-                        let nudge_desc = reason.as_deref().unwrap_or("repeating pattern");
-                        let nudge_msg = format!(
-                            "LOOP DETECTED: You have repeated the same sequence of actions ({desc}). \
-                             Change your approach entirely. If the task is too large for a single session, \
-                             tell the user and suggest breaking it into smaller steps. Do NOT retry the same approach.",
-                            desc = nudge_desc
-                        );
                         messages.push(Message {
                             role: MessageRole::System,
-                            content: nudge_msg,
+                            content: exec_helpers::build_loop_nudge_message(reason.as_deref()),
                             tool_calls: None,
                             tool_call_id: None,
                             thinking_blocks: vec![],
@@ -337,7 +319,7 @@ impl AgentEngine {
                         loop_nudge_count += 1;
                         detector.reset();
                         tracing::warn!(
-                            agent = %self.agent.name,
+                            agent = %self.cfg().agent.name,
                             nudge_count = loop_nudge_count,
                             reason = ?reason,
                             "loop nudge injected (channel/session path)"
@@ -345,7 +327,7 @@ impl AgentEngine {
                         false // continue loop
                     } else {
                         tracing::error!(
-                            agent = %self.agent.name,
+                            agent = %self.cfg().agent.name,
                             nudge_count = loop_nudge_count,
                             "max loop nudges reached, force-stopping agent (channel/session path)"
                         );
@@ -357,47 +339,27 @@ impl AgentEngine {
             if loop_broken || iteration == loop_config.effective_max_iterations() - 1 {
                 // Notify if hitting iteration limit (not loop break)
                 if !loop_broken && iteration == loop_config.effective_max_iterations() - 1 {
-                    tracing::warn!(
-                        agent = %self.agent.name,
-                        max_iterations = loop_config.effective_max_iterations(),
-                        "agent reached iteration limit"
+                    exec_helpers::notify_iteration_limit(
+                        self.cfg().db.clone(),
+                        self.ui_event_tx.as_ref(),
+                        &self.cfg().agent.name,
+                        loop_config.effective_max_iterations(),
                     );
-                    if let Some(ref ui_tx) = self.ui_event_tx {
-                        let db = self.db.clone();
-                        let tx = ui_tx.clone();
-                        let agent_name = self.agent.name.clone();
-                        let max_iter = loop_config.effective_max_iterations();
-                        tokio::spawn(async move {
-                            crate::gateway::notify(
-                                &db, &tx, "iteration_limit",
-                                &format!("Iteration limit: {}", agent_name),
-                                &format!("Agent {} reached its iteration limit ({} iterations). The task may be incomplete.", agent_name, max_iter),
-                                serde_json::json!({"agent": agent_name, "max_iterations": max_iter}),
-                            ).await.ok();
-                        });
-                    }
                 }
                 // Notify if loop was broken after max nudges
-                if loop_broken && loop_nudge_count >= loop_config.max_loop_nudges
-                    && let Some(ref ui_tx) = self.ui_event_tx {
-                    let db = self.db.clone();
-                    let tx = ui_tx.clone();
-                    let agent_name = self.agent.name.clone();
-                    let sid = session_id;
-                    tokio::spawn(async move {
-                        crate::gateway::notify(
-                            &db, &tx, "agent_loop_detected",
-                            &format!("Agent stuck in loop: {}", agent_name),
-                            &format!("Agent {} was stopped after detecting a repeating pattern. Session: {}", agent_name, sid),
-                            serde_json::json!({"agent": agent_name, "session_id": sid.to_string()}),
-                        ).await.ok();
-                    });
+                if loop_broken && loop_nudge_count >= loop_config.max_loop_nudges {
+                    exec_helpers::notify_loop_detected(
+                        self.cfg().db.clone(),
+                        self.ui_event_tx.as_ref(),
+                        &self.cfg().agent.name,
+                        session_id,
+                    );
                 }
                 // Forced final call — use streaming if chunk_tx is available
                 let forced_result = if let Some(ref tx) = chunk_tx {
-                    self.provider.chat_stream(&messages, &[], tx.clone()).await
+                    self.cfg().provider.chat_stream(&messages, &[], tx.clone()).await
                 } else {
-                    self.provider.chat(&messages, &[]).await
+                    self.cfg().provider.chat(&messages, &[]).await
                 };
                 match forced_result {
                     Ok(forced) => {
@@ -442,7 +404,7 @@ impl AgentEngine {
         } else {
             serde_json::to_value(&final_thinking_blocks).ok()
         };
-        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), thinking_json.as_ref(), Some(last_msg_id))
+        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.cfg().agent.name), thinking_json.as_ref(), Some(last_msg_id))
             .await?;
 
         self.maybe_trim_session(session_id).await;
@@ -457,21 +419,15 @@ impl AgentEngine {
         lifecycle_guard.done().await;
 
         // Post-session knowledge extraction (background, non-blocking)
-        if messages.len() >= 5 {
-            let db = self.db.clone();
-            let provider = self.provider.clone();
-            let memory = self.memory_store.clone();
-            let agent = self.agent.name.clone();
-            let sid = session_id;
-            tokio::spawn(async move {
-                crate::agent::knowledge_extractor::extract_and_save(
-                    db, sid, agent, provider, memory,
-                ).await;
-            });
-        }
+        exec_helpers::spawn_knowledge_extraction(
+            self.cfg().db.clone(), session_id, self.cfg().agent.name.clone(),
+            self.cfg().provider.clone(), self.cfg().memory_store.clone(), messages.len(),
+        );
 
-        // Clear processing session context
-        *self.processing_session_id().lock().await = None;
+        // Unregister active request (cancel/drain tracking)
+        if let (Some(state), Some((id, _))) = (&self.state, &cancel_guard) {
+            state.unregister_request(id);
+        }
 
         Ok(with_footer)
     }
@@ -487,11 +443,11 @@ impl AgentEngine {
             self.build_context(msg, false, None, false).await?;
 
         // Lifecycle tracking
-        let sm = SessionManager::new(self.db.clone());
+        let sm = SessionManager::new(self.cfg().db.clone());
         if let Err(e) = sm.set_run_status(session_id, "running").await {
             tracing::warn!(session_id = %session_id, error = %e, "failed to mark streaming session as running");
         }
-        let mut lifecycle_guard = SessionLifecycleGuard::new(self.db.clone(), session_id);
+        let mut lifecycle_guard = SessionLifecycleGuard::new(self.cfg().db.clone(), session_id);
 
         let user_text = msg.text.clone().unwrap_or_default();
         messages.push(Message {
@@ -502,12 +458,11 @@ impl AgentEngine {
             thinking_blocks: vec![],
         });
 
-        // For inter-agent messages (user_id starts with "agent:"), save the sender agent_id
-        let sender_agent_id = if msg.user_id.starts_with("agent:") { Some(msg.user_id.trim_start_matches("agent:")) } else { None };
+        let sender_agent_id = exec_helpers::extract_sender_agent_id(&msg.user_id);
         sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None, None).await?;
 
         // Stream LLM response (no tools for streaming — simple text response)
-        let (final_response, stream_thinking_json) = match self.provider.chat_stream(&messages, &[], chunk_tx).await {
+        let (final_response, stream_thinking_json) = match self.cfg().provider.chat_stream(&messages, &[], chunk_tx).await {
             Ok(response) => {
                 let tb_json = if response.thinking_blocks.is_empty() {
                     None
@@ -520,45 +475,27 @@ impl AgentEngine {
                 tracing::error!(error = %e, "streaming LLM call failed, returning fallback");
                 let reason_str = format!("streaming LLM call failed: {e}");
                 lifecycle_guard.fail(&reason_str).await;
-                {
-                    let db = self.db.clone();
-                    let agent_name = self.agent.name.clone();
-                    let rs = reason_str.clone();
-                    if let Some(ref ui_tx) = self.ui_event_tx {
-                        let tx = ui_tx.clone();
-                        tokio::spawn(async move {
-                            crate::gateway::notify(
-                                &db, &tx, "agent_error",
-                                "Agent Error",
-                                &format!("Agent {} run failed: {}", agent_name, rs),
-                                serde_json::json!({"agent": agent_name, "reason": rs}),
-                            ).await.ok();
-                        });
-                    }
-                }
+                exec_helpers::notify_agent_error(
+                    self.cfg().db.clone(),
+                    self.ui_event_tx.as_ref(),
+                    &self.cfg().agent.name,
+                    &reason_str,
+                );
                 (error_classify::format_user_error(&e), None)
             }
         };
 
-        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), stream_thinking_json.as_ref(), None)
+        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.cfg().agent.name), stream_thinking_json.as_ref(), None)
             .await?;
         self.maybe_trim_session(session_id).await;
 
         lifecycle_guard.done().await;
 
         // Post-session knowledge extraction (background, non-blocking)
-        if messages.len() >= 5 {
-            let db = self.db.clone();
-            let provider = self.provider.clone();
-            let memory = self.memory_store.clone();
-            let agent = self.agent.name.clone();
-            let sid = session_id;
-            tokio::spawn(async move {
-                crate::agent::knowledge_extractor::extract_and_save(
-                    db, sid, agent, provider, memory,
-                ).await;
-            });
-        }
+        exec_helpers::spawn_knowledge_extraction(
+            self.cfg().db.clone(), session_id, self.cfg().agent.name.clone(),
+            self.cfg().provider.clone(), self.cfg().memory_store.clone(), messages.len(),
+        );
 
         Ok(final_response)
     }

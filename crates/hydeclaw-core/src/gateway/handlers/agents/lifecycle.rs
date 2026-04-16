@@ -110,31 +110,43 @@ pub async fn start_agent_from_config(
         approval_waiters.clone(),
     ));
 
-    let engine = Arc::new(AgentEngine {
-        provider,
+    let agent_state = Arc::new(crate::agent::agent_state::AgentState::new(
+        Some(status.processing_tracker.clone()),
+        Some(channel_router.clone()),
+        Some(bus.ui_event_tx.clone()),
+    ));
+
+    // Build the immutable AgentConfig snapshot (Step A of thin-wrapper conversion).
+    let agent_config = Arc::new(crate::agent::agent_config::AgentConfig {
         agent: agent_cfg.agent.clone(),
-        db: infra.db.clone(),
-        tools: agents.tools.clone(),
         workspace_dir: deps.workspace_dir.clone(),
+        default_timezone: default_timezone.clone(),
+        app_config: std::sync::Arc::new(cfg.config.clone()),
+        provider: provider.clone(),
+        compaction_provider: compaction_provider.clone(),
+        db: infra.db.clone(),
         memory_store: infra.memory_store.clone() as Arc<dyn crate::agent::memory_service::MemoryService>,
         embedder: infra.embedder.clone(),
-        channel_router: Some(channel_router.clone()),
+        tools: agents.tools.clone(),
+        approval_manager: approval_manager.clone(),
         scheduler: Some(agents.scheduler.clone()),
         agent_map: Some(agents.map.clone()),
+        session_pools: Some(agents.session_pools.clone()),
+        audit_queue: deps.audit_queue.clone(),
+    });
+
+    let engine = Arc::new(AgentEngine {
+        channel_router: Some(channel_router.clone()),
         self_ref: std::sync::OnceLock::new(),
         ui_event_tx: Some(bus.ui_event_tx.clone()),
         processing_tracker: Some(status.processing_tracker.clone()),
-        default_timezone,
         channel_formatting_prompt: tokio::sync::RwLock::new(None),
         channel_info_cache: tokio::sync::RwLock::new(None),
         thinking_level: std::sync::atomic::AtomicU8::new(0),
-        app_config: std::sync::Arc::new(cfg.config.clone()),
-        compaction_provider,
         context_builder: std::sync::OnceLock::new(),
         tool_executor: std::sync::OnceLock::new(),
-        session_pools: Some(agents.session_pools.clone()),
-        audit_queue: deps.audit_queue.clone(),
-        approval_manager,
+        state: Some(agent_state),
+        cfg: Some(agent_config),
     });
     engine.set_self_ref(&engine);
     engine.set_context_builder(&engine);
@@ -172,7 +184,6 @@ pub async fn start_agent_from_config(
                     .unwrap_or_default(),
                 hooks: hooks_registry,
                 approval_waiters: approval_waiters.clone(),
-                processing_session_id: Arc::new(tokio::sync::Mutex::new(None)),
                 sse_event_tx: Arc::new(tokio::sync::Mutex::new(None)),
             },
         ));

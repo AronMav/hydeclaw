@@ -1,3 +1,5 @@
+#[allow(dead_code)] // Scaffolding for AgentEngine decomposition — wired in by later tasks.
+pub mod agent_state;
 pub mod memory_service;
 pub mod context_builder;
 pub mod tool_executor;
@@ -22,10 +24,13 @@ pub(crate) mod thinking;
 pub mod subagent_state;
 pub mod session_agent_pool;
 pub mod tool_loop;
+pub mod request_context;
 pub(crate) mod url_tools;
 pub mod mention_parser;
 pub mod workspace;
 pub mod knowledge_extractor;
+pub mod agent_config;
+pub mod pipeline;
 
 /// Delete upload files older than `max_age` from workspace/uploads/.
 pub async fn cleanup_stale_uploads(workspace_dir: &str, max_age: std::time::Duration) -> usize {
