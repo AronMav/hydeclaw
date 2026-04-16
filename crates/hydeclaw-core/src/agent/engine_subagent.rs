@@ -76,7 +76,7 @@ impl AgentEngine {
         let capabilities = workspace::CapabilityFlags {
             has_search: self.has_tool("search_web").await || self.has_tool("search_web_fresh").await,
             has_memory: self.cfg().memory_store.is_available(),
-            has_message_actions: self.channel_router.is_some(),
+            has_message_actions: self.state().channel_router.is_some(),
             has_cron: self.cfg().scheduler.is_some(),
             has_yaml_tools: true,
             has_browser: Self::browser_renderer_url() != "disabled",

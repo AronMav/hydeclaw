@@ -553,7 +553,7 @@ pub(crate) async fn api_channel_notify(
         None => return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("agent '{}' not running", agent_name)}))).into_response(),
     };
 
-    let router = match &engine.channel_router {
+    let router = match &engine.state().channel_router {
         Some(r) => r,
         None => return (StatusCode::BAD_REQUEST, Json(json!({"error": "no channel router"}))).into_response(),
     };
