@@ -765,13 +765,23 @@ async fn collect_channels(db: &sqlx::PgPool) -> sqlx::Result<Vec<BackupChannel>>
     let rows = sqlx::query(
         "SELECT id, agent_name, channel_type, display_name, config, status FROM agent_channels WHERE status != 'deleted'"
     ).fetch_all(db).await?;
-    Ok(rows.iter().map(|r| BackupChannel {
-        id: r.get::<uuid::Uuid, _>("id").to_string(),
-        agent_name: r.get("agent_name"),
-        channel_type: r.get("channel_type"),
-        display_name: r.get("display_name"),
-        config: r.get("config"),
-        status: r.get("status"),
+    let credential_keys = ["bot_token", "access_token", "password", "app_token"];
+    Ok(rows.iter().map(|r| {
+        let mut config: Value = r.get("config");
+        // Redact any legacy credentials that might still be in the config JSONB
+        if let Some(cfg) = config.as_object_mut() {
+            for key in &credential_keys {
+                cfg.remove(*key);
+            }
+        }
+        BackupChannel {
+            id: r.get::<uuid::Uuid, _>("id").to_string(),
+            agent_name: r.get("agent_name"),
+            channel_type: r.get("channel_type"),
+            display_name: r.get("display_name"),
+            config,
+            status: r.get("status"),
+        }
     }).collect())
 }
 
