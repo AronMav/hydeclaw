@@ -140,6 +140,8 @@ pub struct AgentEngine {
     /// Memory service abstraction (pgvector queries + external embedding endpoint).
     /// Held as a trait object so unit tests can inject a `MockMemoryService`.
     pub memory_store: Arc<dyn crate::agent::memory_service::MemoryService>,
+    /// Embedding service for vector generation (shared with MemoryStore).
+    pub embedder: Arc<dyn crate::memory::EmbeddingService>,
     /// Multi-channel router for sending actions to channel adapters.
     pub channel_router: Option<ChannelActionRouter>,
     /// Scheduler for dynamic cron jobs.

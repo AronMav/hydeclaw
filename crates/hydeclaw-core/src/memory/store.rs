@@ -68,16 +68,19 @@ impl MemoryStore {
     }
 
     /// Returns the detected embedding dimension (delegates to embedder).
+    #[allow(dead_code)]
     pub fn embed_dim(&self) -> u32 {
         self.embedder.embed_dim()
     }
 
     /// Returns the configured embedding model name (delegates to embedder).
+    #[allow(dead_code)]
     pub fn embed_model_name(&self) -> String {
         self.embedder.embed_model_name().unwrap_or_default()
     }
 
     /// Returns a reference to the database pool.
+    #[allow(dead_code)]
     pub fn db(&self) -> &PgPool {
         &self.db
     }

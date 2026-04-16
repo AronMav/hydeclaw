@@ -2,19 +2,19 @@ use sqlx::{PgPool, Row};
 use anyhow::Result;
 use serde_json::Value;
 use std::sync::Arc;
-use crate::agent::memory_service::MemoryService;
+use crate::memory::EmbeddingService;
 
 pub struct SemanticCache;
 
 impl SemanticCache {
     pub async fn check(
         db: &PgPool,
-        memory_service: &Arc<dyn MemoryService>,
+        embedder: &Arc<dyn EmbeddingService>,
         tool_name: &str,
         query_text: &str,
         similarity_threshold: f32,
     ) -> Result<Option<String>> {
-        let embedding = memory_service.embed(query_text).await?;
+        let embedding = embedder.embed(query_text).await?;
         let embedding_vec: Vec<f32> = embedding.to_vec();
 
         // Search for similar queries in the cache that haven't expired
@@ -22,7 +22,7 @@ impl SemanticCache {
             r#"
             SELECT result_json
             FROM tool_execution_cache
-            WHERE tool_name = $1 
+            WHERE tool_name = $1
               AND expires_at > now()
               AND (1 - (query_embedding <=> $2::vector)) > $3
             ORDER BY query_embedding <=> $2::vector ASC
@@ -43,13 +43,13 @@ impl SemanticCache {
 
     pub async fn store(
         db: &PgPool,
-        memory_service: &Arc<dyn MemoryService>,
+        embedder: &Arc<dyn EmbeddingService>,
         tool_name: &str,
         query_text: &str,
         result: &str,
         ttl_secs: i64,
     ) -> Result<()> {
-        let embedding = memory_service.embed(query_text).await?;
+        let embedding = embedder.embed(query_text).await?;
         let embedding_vec: Vec<f32> = embedding.to_vec();
         let result_json: Value = serde_json::from_str(result).unwrap_or_else(|_| Value::String(result.to_string()));
 
@@ -73,18 +73,19 @@ impl SemanticCache {
 
 #[cfg(test)]
 mod tests {
-    use crate::agent::memory_service::{MemoryService, mock::MockMemoryService};
+    use crate::memory::EmbeddingService;
+    use crate::memory::embedding::FakeEmbedder;
     use std::sync::Arc;
 
     #[tokio::test]
     async fn test_semantic_cache_embedding_flow() {
-        let mock_memory = Arc::new(MockMemoryService::available()) as Arc<dyn MemoryService>;
-        
-        // Real DB testing requires a running Postgres, but we can verify the 
+        let embedder = Arc::new(FakeEmbedder { available: true }) as Arc<dyn EmbeddingService>;
+
+        // Real DB testing requires a running Postgres, but we can verify the
         // embedding extraction flow which is used by SemanticCache.
         let query = "what is the weather in Samara?";
-        let embedding = mock_memory.embed(query).await.unwrap();
-        
-        assert_eq!(embedding.len(), 4); // MockMemoryService returns fixed 4-dim stub vector
+        let embedding = embedder.embed(query).await.unwrap();
+
+        assert_eq!(embedding.len(), 4); // FakeEmbedder returns fixed 4-dim stub vector
     }
 }

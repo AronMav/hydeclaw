@@ -159,7 +159,7 @@ pub(crate) async fn api_get_config(
     State(cfg_svc): State<ConfigServices>,
 ) -> Json<Value> {
     let config = cfg_svc.shared_config.read().await;
-    let embed_dim = infra.memory_store.embed_dim();
+    let embed_dim = infra.embedder.embed_dim();
     let embed_dim_val: Option<u32> = if embed_dim > 0 { Some(embed_dim) } else { None };
 
     // Return config structure without sensitive values
@@ -199,7 +199,7 @@ pub(crate) async fn api_get_config(
             "enabled": config.memory.enabled,
             "embed_dim": embed_dim_val,
             "embed_dimensions": config.memory.embed_dimensions,
-            "available": infra.memory_store.is_available(),
+            "available": infra.embedder.is_available(),
         },
         "toolgate_url": agents.deps.read().await.toolgate_url,
         "sandbox": {

@@ -523,7 +523,7 @@ impl AgentEngine {
         query: &str,
         k: usize,
     ) -> anyhow::Result<Vec<hydeclaw_types::ToolDefinition>> {
-        let query_vec = self.memory_store.embed(query).await?;
+        let query_vec = self.embedder.embed(query).await?;
 
         let mut scored: Vec<(f32, usize)> = Vec::with_capacity(tools.len());
         for (idx, tool) in tools.iter().enumerate() {
@@ -531,7 +531,7 @@ impl AgentEngine {
             let cache_key = format!("tool::{}", tool.name);
             let tool_vec = self
                 .tool_embed_cache()
-                .get_or_embed(&cache_key, &tool_text, self.memory_store.as_ref())
+                .get_or_embed(&cache_key, &tool_text, self.embedder.as_ref())
                 .await?;
             let sim = crate::tools::embedding::cosine_similarity(&query_vec, &tool_vec);
             scored.push((sim, idx));

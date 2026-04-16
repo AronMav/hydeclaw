@@ -158,8 +158,8 @@ pub(crate) async fn api_memory_stats(State(state): State<InfraServices>) -> Json
          FROM memory_tasks"
     ).fetch_one(&state.db).await.unwrap_or((0, 0, 0, 0));
 
-    let embed_dim = state.memory_store.embed_dim();
-    let embed_model = state.memory_store.embed_model_name();
+    let embed_dim = state.embedder.embed_dim();
+    let embed_model = state.embedder.embed_model_name().unwrap_or_default();
 
     Json(json!({
         "total": documents,
@@ -521,7 +521,7 @@ pub(crate) async fn api_patch_memory(
 
     // Update content if provided — re-embed and rebuild tsvector
     if let Some(ref content) = req.content {
-        let embedding = match state.memory_store.embed(content).await {
+        let embedding = match state.embedder.embed(content).await {
             Ok(e) => e,
             Err(e) => {
                 return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("embedding failed: {e}")}))).into_response();

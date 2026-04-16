@@ -22,12 +22,12 @@ impl ToolEmbeddingCache {
         &self,
         key: &str,
         text: &str,
-        store: &dyn crate::agent::memory_service::MemoryService,
+        embedder: &dyn crate::memory::EmbeddingService,
     ) -> anyhow::Result<Vec<f32>> {
         if let Some(v) = self.embeddings.read().await.get(key) {
             return Ok(v.clone());
         }
-        let v = store.embed(text).await?;
+        let v = embedder.embed(text).await?;
         let mut cache = self.embeddings.write().await;
         cache.insert(key.to_string(), v.clone());
         if cache.len() > 200 {

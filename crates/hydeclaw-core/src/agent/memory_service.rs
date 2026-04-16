@@ -2,6 +2,9 @@
 ///
 /// Engine holds `Arc<dyn MemoryService>` instead of `Arc<MemoryStore>` so unit
 /// tests can inject a `MockMemoryService` without needing a live `PostgreSQL` + pgvector stack.
+///
+/// Embedding operations (`embed`, `embed_batch`, `embed_dim`, `embed_model_name`)
+/// are on the separate `EmbeddingService` trait (`crate::memory::EmbeddingService`).
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -10,13 +13,13 @@ use async_trait::async_trait;
 /// All async methods mirror the public API of `crate::memory::MemoryStore`.
 /// The `search` method uses `String` for the mode (instead of `&'static str`) to
 /// allow object-safe trait dispatch via `Arc<dyn MemoryService>`.
+///
+/// Embedding operations live on [`crate::memory::EmbeddingService`]; this trait
+/// only covers storage, retrieval, and FTS.
 #[async_trait]
 pub trait MemoryService: Send + Sync {
     /// Returns true when embedding is enabled and endpoint is configured.
     fn is_available(&self) -> bool;
-
-    /// Generate an embedding vector for `text`.
-    async fn embed(&self, text: &str) -> Result<Vec<f32>>;
 
     /// Hybrid search (semantic + FTS). Returns results and search mode string.
     /// `agent_id`: filter to this agent's chunks plus shared chunks. Pass `""` to search all.
@@ -80,13 +83,7 @@ pub trait MemoryService: Send + Sync {
     /// Returns the task UUID.
     async fn enqueue_reindex_task(&self, params: serde_json::Value) -> Result<uuid::Uuid>;
 
-    // ── Concrete-store helpers exposed via trait for gateway handlers ────────
-
-    /// Embedding vector dimensionality (0 if unavailable).
-    fn embed_dim(&self) -> u32 { 0 }
-
-    /// Name of the active embedding model (empty string if unavailable).
-    fn embed_model_name(&self) -> String { String::new() }
+    // ── FTS helpers ─────────────────────────────────────────────────────────
 
     /// Current FTS language setting (e.g. "english").
     fn fts_language(&self) -> String { "english".to_string() }
@@ -99,15 +96,6 @@ pub trait MemoryService: Send + Sync {
 
     /// Rebuild the FTS column for all existing memory chunks.
     async fn rebuild_fts(&self) -> anyhow::Result<u64> { Ok(0) }
-
-    /// Batch-embed multiple texts in a single Toolgate call.
-    async fn embed_batch(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
-        let mut result = Vec::with_capacity(texts.len());
-        for t in texts {
-            result.push(self.embed(t).await?);
-        }
-        Ok(result)
-    }
 }
 
 // ── MemoryStore impl ─────────────────────────────────────────────────────────
@@ -116,10 +104,6 @@ pub trait MemoryService: Send + Sync {
 impl MemoryService for crate::memory::MemoryStore {
     fn is_available(&self) -> bool {
         self.embedder().is_available()
-    }
-
-    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        self.embedder().embed(text).await
     }
 
     async fn search(
@@ -185,14 +169,6 @@ impl MemoryService for crate::memory::MemoryStore {
         crate::memory::MemoryStore::enqueue_reindex_task(self, params).await
     }
 
-    fn embed_dim(&self) -> u32 {
-        self.embedder().embed_dim()
-    }
-
-    fn embed_model_name(&self) -> String {
-        self.embedder().embed_model_name().unwrap_or_default()
-    }
-
     fn fts_language(&self) -> String {
         crate::memory::MemoryStore::fts_language(self)
     }
@@ -207,10 +183,6 @@ impl MemoryService for crate::memory::MemoryStore {
 
     async fn rebuild_fts(&self) -> anyhow::Result<u64> {
         crate::memory::MemoryStore::rebuild_fts(self).await
-    }
-
-    async fn embed_batch(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
-        self.embedder().embed_batch(texts).await
     }
 }
 
@@ -239,11 +211,6 @@ pub mod mock {
     impl MemoryService for MockMemoryService {
         fn is_available(&self) -> bool {
             self.available
-        }
-
-        async fn embed(&self, _text: &str) -> Result<Vec<f32>> {
-            // Fixed-dimension stub vector (dim=4)
-            Ok(vec![0.1, 0.2, 0.3, 0.4])
         }
 
         async fn search(
@@ -343,14 +310,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mock_embed_returns_fixed_vector_without_db() {
-        let mock = MockMemoryService::available();
-        let v = mock.embed("some text").await.unwrap();
-        assert_eq!(v.len(), 4);
-        assert!((v[0] - 0.1).abs() < 1e-6);
-    }
-
-    #[tokio::test]
     async fn mock_recent_returns_empty_without_db() {
         let mock = MockMemoryService::available();
         let results = mock.recent(10).await.unwrap();
@@ -362,8 +321,9 @@ mod tests {
     async fn trait_object_dispatch_works() {
         let svc: Arc<dyn MemoryService> = Arc::new(MockMemoryService::available());
         assert!(svc.is_available());
-        let v = svc.embed("hello").await.unwrap();
-        assert!(!v.is_empty());
+        let (results, mode) = svc.search("hello", 5, &[], None, None, "agent1").await.unwrap();
+        assert!(results.is_empty());
+        assert_eq!(mode, "mock");
     }
 
     // ── Scope tests ─────────────────────────────────────────────────
@@ -435,14 +395,6 @@ mod tests {
         let (text, ids) = mock.load_pinned("Agent1", 2000).await.unwrap();
         assert!(text.is_empty()); // Mock returns empty
         assert!(ids.is_empty());
-    }
-
-    #[tokio::test]
-    async fn embed_returns_vector() {
-        let mock = MockMemoryService::available();
-        let vec = mock.embed("test text for embedding").await.unwrap();
-        assert_eq!(vec.len(), 4); // Mock returns 4-dim
-        assert!((vec[0] - 0.1).abs() < 1e-6);
     }
 
     #[tokio::test]

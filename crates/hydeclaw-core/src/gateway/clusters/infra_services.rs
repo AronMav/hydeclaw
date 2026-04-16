@@ -3,18 +3,21 @@ use std::sync::Arc;
 use sqlx::PgPool;
 
 use crate::agent::memory_service::MemoryService;
+use crate::memory::EmbeddingService;
 
 // ── InfraServices cluster ─────────────────────────────────────────────────────
 
 /// Cluster holding infrastructure-level services:
-/// the database pool, memory store, container/sandbox managers, and
-/// the native process manager.
+/// the database pool, memory store, embedding service, container/sandbox managers,
+/// and the native process manager.
 #[derive(Clone)]
 pub struct InfraServices {
     /// sqlx PostgreSQL connection pool.
     pub db: PgPool,
     /// Pluggable memory backend (real pgvector store or test stub).
     pub memory_store: Arc<dyn MemoryService>,
+    /// Embedding service for vector generation (shared with MemoryStore).
+    pub embedder: Arc<dyn EmbeddingService>,
     /// Docker-based MCP container lifecycle manager.
     pub container_manager: Option<Arc<crate::containers::ContainerManager>>,
     /// Per-agent code-execution sandbox (Docker).
@@ -27,20 +30,23 @@ impl InfraServices {
     pub fn new(
         db: PgPool,
         memory_store: Arc<dyn MemoryService>,
+        embedder: Arc<dyn EmbeddingService>,
         container_manager: Option<Arc<crate::containers::ContainerManager>>,
         sandbox: Option<Arc<crate::containers::sandbox::CodeSandbox>>,
         process_manager: Option<Arc<crate::process_manager::ProcessManager>>,
     ) -> Self {
-        Self { db, memory_store, container_manager, sandbox, process_manager }
+        Self { db, memory_store, embedder, container_manager, sandbox, process_manager }
     }
 
     /// Construct a minimal `InfraServices` for unit tests.
     /// Accepts any `MemoryService` impl (e.g. `NullMemory` or `MockMemoryService`).
     #[cfg(test)]
     pub fn test_with_memory(memory: impl MemoryService + 'static) -> Self {
+        use crate::memory::embedding::FakeEmbedder;
         Self {
             db: PgPool::connect_lazy("postgres://invalid").expect("lazy pool"),
             memory_store: Arc::new(memory),
+            embedder: Arc::new(FakeEmbedder { available: false }),
             container_manager: None,
             sandbox: None,
             process_manager: None,
@@ -63,10 +69,6 @@ mod tests {
     impl MemoryService for NullMemory {
         fn is_available(&self) -> bool {
             false
-        }
-
-        async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
-            Ok(vec![])
         }
 
         async fn search(

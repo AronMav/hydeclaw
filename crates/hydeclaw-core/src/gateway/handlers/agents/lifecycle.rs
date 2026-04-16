@@ -117,6 +117,7 @@ pub async fn start_agent_from_config(
         tools: agents.tools.clone(),
         workspace_dir: deps.workspace_dir.clone(),
         memory_store: infra.memory_store.clone() as Arc<dyn crate::agent::memory_service::MemoryService>,
+        embedder: infra.embedder.clone(),
         channel_router: Some(channel_router.clone()),
         scheduler: Some(agents.scheduler.clone()),
         agent_map: Some(agents.map.clone()),

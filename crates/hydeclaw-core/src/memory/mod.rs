@@ -1,9 +1,9 @@
-/// Native pgvector memory store.
-///
-/// pgvector queries run directly against the local `PostgreSQL` pool.
-/// Embedding generation is delegated to Toolgate (`POST /v1/embeddings`), which
-/// proxies to the configured embedding backend (Ollama, `OpenAI`, or any other
-/// OpenAI-compatible provider). Core never calls Ollama or `OpenAI` directly.
+//! Native pgvector memory store.
+//!
+//! pgvector queries run directly against the local `PostgreSQL` pool.
+//! Embedding generation is delegated to Toolgate (`POST /v1/embeddings`), which
+//! proxies to the configured embedding backend (Ollama, `OpenAI`, or any other
+//! OpenAI-compatible provider). Core never calls Ollama or `OpenAI` directly.
 
 pub mod admin;
 pub mod embedding;
