@@ -52,8 +52,6 @@ impl AgentEngine {
         let crate::agent::context_builder::ContextSnapshot { session_id, mut messages, tools: available_tools } =
             self.build_context(msg, true, resume_session_id, force_new_session).await?;
 
-        // Store session_id for tool handlers that need session context (e.g., agent tool)
-        *self.processing_session_id().lock().await = Some(session_id);
         // Store event_tx so subagent handlers can emit SSE events (e.g., subagent-complete RichCard)
         *self.sse_event_tx().lock().await = Some(event_tx.clone());
 
@@ -622,8 +620,7 @@ impl AgentEngine {
             });
         }
 
-        // Clear processing session context
-        *self.processing_session_id().lock().await = None;
+        // Clear SSE event sender
         *self.sse_event_tx().lock().await = None;
 
         Ok(assistant_msg_id)

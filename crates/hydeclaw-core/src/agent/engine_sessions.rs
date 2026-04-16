@@ -91,11 +91,7 @@ impl AgentEngine {
         };
 
         // Collect active pool agents for the current session
-        let session_id = super::agent_tool_impl::extract_session_id(args)
-            .or_else(|| {
-                // Fallback: try processing_session_id (only safe for read here)
-                self.processing_session_id().try_lock().ok().and_then(|g| *g)
-            });
+        let session_id = super::agent_tool_impl::extract_session_id(args);
         let mut active_in_session: std::collections::HashSet<String> = std::collections::HashSet::new();
         if let (Some(sid), Some(pools)) = (session_id, &self.session_pools) {
             let pools_read = pools.read().await;

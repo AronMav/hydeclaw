@@ -4,8 +4,7 @@
 use super::*;
 use crate::agent::session_agent_pool::{self, SessionAgentPool};
 
-/// Extract session_id from enriched `_context` (per-invocation, race-free) with
-/// fallback to the shared `processing_session_id` (for host agent SSE path).
+/// Extract session_id from enriched `_context` (per-invocation, race-free).
 pub(crate) fn extract_session_id(args: &serde_json::Value) -> Option<uuid::Uuid> {
     args.get("_context")
         .and_then(|ctx| ctx.get("session_id"))
@@ -182,10 +181,7 @@ impl AgentEngine {
 
         let session_id = match extract_session_id(args) {
             Some(id) if id != uuid::Uuid::nil() => id,
-            _ => match self.processing_session_id().lock().await.as_ref().copied() {
-                Some(id) => id,
-                None => return "Error: no active session — agent tool requires a session context".to_string(),
-            },
+            _ => return "Error: no active session — session_id missing from _context".to_string(),
         };
 
         let pools = match &self.session_pools {
@@ -236,10 +232,7 @@ impl AgentEngine {
     async fn handle_agent_status(&self, args: &serde_json::Value) -> String {
         let session_id = match extract_session_id(args) {
             Some(id) if id != uuid::Uuid::nil() => id,
-            _ => match self.processing_session_id().lock().await.as_ref().copied() {
-                Some(id) => id,
-                None => return "Error: no active session — agent tool requires a session context".to_string(),
-            },
+            _ => return "Error: no active session — session_id missing from _context".to_string(),
         };
 
         let pools = match &self.session_pools {
@@ -292,10 +285,7 @@ impl AgentEngine {
 
         let session_id = match extract_session_id(args) {
             Some(id) if id != uuid::Uuid::nil() => id,
-            _ => match self.processing_session_id().lock().await.as_ref().copied() {
-                Some(id) => id,
-                None => return "Error: no active session — agent tool requires a session context".to_string(),
-            },
+            _ => return "Error: no active session — session_id missing from _context".to_string(),
         };
 
         let pools = match &self.session_pools {

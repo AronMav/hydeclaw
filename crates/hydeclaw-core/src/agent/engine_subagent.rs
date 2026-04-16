@@ -637,7 +637,7 @@ mod tests {
     fn denied_tools_list_contains_critical_entries() {
         // Safety: subagent, workspace_delete, workspace_rename, cron must always be denied
         // "agent" is NOT denied — pool agents need it for peer-to-peer communication.
-        // Session context is provided via enriched _context, not shared processing_session_id.
+        // Session context is provided via enriched _context.
         assert!(!SUBAGENT_DENIED_TOOLS.contains(&"agent"));
         assert!(SUBAGENT_DENIED_TOOLS.contains(&"workspace_delete"));
         assert!(SUBAGENT_DENIED_TOOLS.contains(&"workspace_rename"));

@@ -172,7 +172,6 @@ pub async fn start_agent_from_config(
                     .unwrap_or_default(),
                 hooks: hooks_registry,
                 approval_waiters: approval_waiters.clone(),
-                processing_session_id: Arc::new(tokio::sync::Mutex::new(None)),
                 sse_event_tx: Arc::new(tokio::sync::Mutex::new(None)),
             },
         ));

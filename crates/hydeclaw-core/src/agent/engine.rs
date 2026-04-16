@@ -439,12 +439,6 @@ impl AgentEngine {
         &self.tex().hooks
     }
 
-    /// Current processing session ID accessor — delegates to `DefaultToolExecutor`.
-    #[inline]
-    pub(crate) fn processing_session_id(&self) -> &Arc<tokio::sync::Mutex<Option<Uuid>>> {
-        &self.tex().processing_session_id
-    }
-
     /// SSE event TX accessor — delegates to `DefaultToolExecutor`.
     #[inline]
     pub(crate) fn sse_event_tx(&self) -> &Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<StreamEvent>>>> {
