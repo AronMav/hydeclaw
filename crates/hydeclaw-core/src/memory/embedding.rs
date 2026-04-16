@@ -119,7 +119,10 @@ impl ToolgateEmbedder {
     /// `OnceCell` deadlock (since `embed()` calls `ensure_initialized()`).
     async fn probe_dimension(&self) -> Result<u32> {
         let url = format!("{}/embeddings", self.embed_url.trim_end_matches('/'));
-        let body = serde_json::json!({ "input": "dimension probe" });
+        let mut body = serde_json::json!({ "input": "dimension probe" });
+        if self.embed_dimensions > 0 {
+            body["dimensions"] = serde_json::json!(self.embed_dimensions);
+        }
         let resp = self.http
             .post(&url)
             .json(&body)
