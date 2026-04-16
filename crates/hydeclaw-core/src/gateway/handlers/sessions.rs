@@ -295,8 +295,35 @@ async fn verify_session_agent(db: &sqlx::PgPool, session_id: uuid::Uuid, expecte
 /// Deletes all sessions (and their messages) for a specific agent or channel(s).
 pub(crate) async fn api_delete_all_sessions(
     State(infra): State<InfraServices>,
+    State(agents): State<AgentCore>,
     Query(q): Query<SessionsQuery>,
 ) -> impl IntoResponse {
+    use sqlx::Row;
+
+    // Collect matching session IDs before deletion so we can clean up session_pools
+    let session_ids: Vec<uuid::Uuid> = if let Some(ref channel) = q.channel {
+        let channels: Vec<&str> = channel.split(',').collect();
+        sqlx::query("SELECT id FROM sessions WHERE channel = ANY($1)")
+            .bind(&channels)
+            .fetch_all(&infra.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| r.get::<uuid::Uuid, _>("id"))
+            .collect()
+    } else if let Some(ref agent) = q.agent {
+        sqlx::query("SELECT id FROM sessions WHERE agent_id = $1")
+            .bind(agent)
+            .fetch_all(&infra.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| r.get::<uuid::Uuid, _>("id"))
+            .collect()
+    } else {
+        return ApiError::BadRequest("agent or channel parameter required".into()).into_response();
+    };
+
     // Support either agent or channel filter
     let result = if let Some(ref channel) = q.channel {
         let channels: Vec<&str> = channel.split(',').collect();
@@ -327,6 +354,11 @@ pub(crate) async fn api_delete_all_sessions(
 
     match result {
         Ok(r) => {
+            // Clean up session agent pools for the deleted sessions
+            {
+                let mut pools = agents.session_pools.write().await;
+                pools.retain(|sid, _| !session_ids.contains(sid));
+            }
             let filter = q.agent.as_deref().or(q.channel.as_deref()).unwrap_or("?");
             tracing::info!(filter = %filter, deleted = r.rows_affected(), "sessions deleted via API");
             Json(json!({"ok": true, "deleted": r.rows_affected()})).into_response()
