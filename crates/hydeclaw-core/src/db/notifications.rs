@@ -93,3 +93,13 @@ pub async fn unread_count(db: &PgPool) -> Result<i64> {
         .await?;
     Ok(count)
 }
+
+/// Delete notifications older than 30 days.
+pub async fn cleanup_old_notifications(db: &PgPool) -> anyhow::Result<u64> {
+    let result = sqlx::query(
+        "DELETE FROM notifications WHERE created_at < NOW() - INTERVAL '30 days'"
+    )
+    .execute(db)
+    .await?;
+    Ok(result.rows_affected())
+}

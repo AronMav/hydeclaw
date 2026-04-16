@@ -398,6 +398,28 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Add notifications cleanup job (daily at 08:30 UTC — delete entries older than 30 days).
+    pub async fn add_notifications_cleanup(&self, db: PgPool) -> Result<()> {
+        tracing::info!("scheduling notifications cleanup (daily 08:30 UTC)");
+
+        let job = Job::new_async("0 30 8 * * *", move |_uuid, _lock| {
+            let db = db.clone();
+            Box::pin(async move {
+                match crate::db::notifications::cleanup_old_notifications(&db).await {
+                    Ok(deleted) => {
+                        if deleted > 0 {
+                            tracing::info!(deleted, "notifications cleanup completed");
+                        }
+                    }
+                    Err(e) => tracing::error!(error = %e, "notifications cleanup failed"),
+                }
+            })
+        })?;
+
+        self.scheduler.add(job).await?;
+        Ok(())
+    }
+
     /// Register a cron job that creates a backup on a configurable schedule.
     pub async fn add_backup(
         &self,

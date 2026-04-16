@@ -227,8 +227,8 @@ async fn main() -> Result<()> {
         cfg.memory.embed_dimensions.unwrap_or(0),
     ));
     let fts_lang = cfg.memory.fts_language.clone().unwrap_or_else(|| "simple".to_string());
-    let memory_store = Arc::new(memory::MemoryStore::new(db_pool.clone(), embedder, fts_lang));
-    if memory_store.is_available() {
+    let memory_store = Arc::new(memory::MemoryStore::new(db_pool.clone(), embedder.clone(), fts_lang));
+    if embedder.is_available() {
         tracing::info!("embedding configured — will initialize on first memory operation");
         // Watch workspace files for auto-reindexing
         memory::spawn_workspace_watcher(
@@ -373,6 +373,7 @@ async fn main() -> Result<()> {
         infra: gateway::clusters::InfraServices::new(
             db_pool.clone(),
             memory_store,
+            embedder.clone(),
             container_manager.clone(),
             sandbox.clone(),
             process_manager.clone(),
@@ -820,6 +821,7 @@ async fn schedule_periodic_jobs(state: &gateway::AppState, agent_configs: &[conf
     sched.add_outbound_queue_cleanup(db.clone()).await.ok();
     sched.add_usage_log_cleanup(db.clone()).await.ok();
     sched.add_memory_decay_cleanup(db.clone()).await.ok();
+    sched.add_notifications_cleanup(db.clone()).await.ok();
 
     // Session cleanup (based on max TTL in agent configs)
     let ttl_days = agent_configs.iter().filter_map(|c| c.agent.session.as_ref()).map(|s| s.ttl_days).max().unwrap_or(30);
