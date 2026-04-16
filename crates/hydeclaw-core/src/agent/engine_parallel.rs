@@ -170,11 +170,11 @@ impl super::AgentEngine {
         // 5b. Sequential
         for &i in &sequential_indices {
             // Check limits per-tool before execution
-            if detect_loops {
-                if let LoopStatus::Break(reason) = detector.check_limits(&tool_calls[i].name, &tool_calls[i].arguments) {
-                    tracing::error!(tool = %tool_calls[i].name, reason = %reason, "tool loop broken (pre-check)");
-                    return Err(LoopBreak(Some(reason)));
-                }
+            if detect_loops
+                && let LoopStatus::Break(reason) = detector.check_limits(&tool_calls[i].name, &tool_calls[i].arguments)
+            {
+                tracing::error!(tool = %tool_calls[i].name, reason = %reason, "tool loop broken (pre-check)");
+                return Err(LoopBreak(Some(reason)));
             }
             let _ = crate::db::session_wal::log_event(&self.db, session_id, "tool_start", Some(&start_payload(&tool_calls[i]))).await;
             let res = match tokio::time::timeout(std::time::Duration::from_secs(120), self.execute_tool_call(&tool_calls[i].name, &enriched[i])).await {

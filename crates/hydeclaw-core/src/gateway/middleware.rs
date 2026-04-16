@@ -126,12 +126,16 @@ impl RequestRateLimiter {
 
 /// Per-IP budget for concurrent WebSocket upgrades (pre-auth).
 /// Prevents `DoS` via mass WS upgrade requests before auth is checked.
+/// NOTE: currently bypassed because the budget is released on 101 response, not on WS close.
+/// Kept for future use when proper connection-lifetime tracking is implemented.
+#[allow(dead_code)]
 pub(crate) struct WsConnectionBudget {
     max_per_ip: u32,
     /// IP → active connection count
     counts: Mutex<HashMap<String, u32>>,
 }
 
+#[allow(dead_code)]
 impl WsConnectionBudget {
     pub(crate) fn new(max_per_ip: u32) -> Self {
         Self { max_per_ip, counts: Mutex::new(HashMap::new()) }
@@ -162,7 +166,7 @@ pub(crate) async fn request_rate_limit_middleware(
     req: Request<Body>,
     next: Next,
     limiter: &'static RequestRateLimiter,
-    ws_budget: &'static WsConnectionBudget,
+    _ws_budget: &'static WsConnectionBudget,
 ) -> impl IntoResponse {
     let path = req.uri().path();
     // Exempt health from rate limiting

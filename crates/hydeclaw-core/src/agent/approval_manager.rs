@@ -256,15 +256,15 @@ impl ApprovalManager {
                 // If timeout raced with approval (DB already resolved), check actual DB status.
                 // The webhook may have approved it just before our timeout fired.
                 if !was_pending {
-                    if let Ok(Some(approval)) = crate::db::approvals::get_approval(&self.db, approval_id).await {
-                        if approval.status == "approved" {
-                            tracing::info!(
-                                tool = %tool_name,
-                                approval_id = %approval_id,
-                                "approval timeout raced with webhook — webhook won, honoring approval"
-                            );
-                            return ApprovalOutcome::Approved;
-                        }
+                    if let Ok(Some(approval)) = crate::db::approvals::get_approval(&self.db, approval_id).await
+                        && approval.status == "approved"
+                    {
+                        tracing::info!(
+                            tool = %tool_name,
+                            approval_id = %approval_id,
+                            "approval timeout raced with webhook — webhook won, honoring approval"
+                        );
+                        return ApprovalOutcome::Approved;
                     }
                     tracing::warn!(
                         tool = %tool_name,
