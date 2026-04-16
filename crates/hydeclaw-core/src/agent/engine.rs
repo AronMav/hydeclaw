@@ -120,8 +120,7 @@ pub struct AgentEngine {
     /// Initialized via `set_tool_executor` after engine Arc creation.
     pub tool_executor: OnceLock<Arc<crate::agent::tool_executor::DefaultToolExecutor>>,
     /// Per-agent mutable state (cancel/drain for shutdown, runtime fields).
-    /// `None` for subagent engines — they are lightweight copies without lifecycle tracking.
-    pub state: Option<Arc<crate::agent::agent_state::AgentState>>,
+    pub state: Arc<crate::agent::agent_state::AgentState>,
     /// Immutable agent configuration snapshot — sole source for agent settings,
     /// DB pool, provider, tools, memory, etc.
     pub cfg: Option<Arc<crate::agent::agent_config::AgentConfig>>,
@@ -258,11 +257,8 @@ impl AgentEngine {
     }
 
     /// Access the mutable per-agent state (cancel/drain, runtime fields).
-    /// Panics if called on an engine without AgentState (subagent lightweight copies).
     pub fn state(&self) -> &crate::agent::agent_state::AgentState {
-        self.state
-            .as_ref()
-            .expect("state not set — engine was not constructed with AgentState")
+        &self.state
     }
 
     /// Agent name (from config).

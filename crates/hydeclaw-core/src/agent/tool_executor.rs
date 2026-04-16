@@ -187,9 +187,11 @@ impl ToolExecutor for DefaultToolExecutor {
         detector: &mut LoopDetector,
         detect_loops: bool,
     ) -> Result<Vec<(String, String)>, LoopBreak> {
-        let deps = self.deps.upgrade().ok_or_else(|| LoopBreak(
-            Some("engine dropped during tool execution".into()),
-        ))?;
+        // Weak upgrade is structurally safe: active requests hold a strong Arc<AgentEngine>
+        // from the spawned task in chat.rs, so the engine cannot be dropped mid-request.
+        let deps = self.deps.upgrade().expect(
+            "BUG: engine dropped while tool executor is active — this should be unreachable"
+        );
         deps
             .execute_tool_calls_partitioned_raw(
                 tool_calls,

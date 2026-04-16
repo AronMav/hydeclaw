@@ -458,10 +458,8 @@ async fn main() -> Result<()> {
     {
         let agents = agents_map.read().await;
         for (name, handle) in agents.iter() {
-            if let Some(ref state) = handle.engine.state {
-                tracing::info!(agent = %name, "cancelling active requests");
-                state.cancel_all_requests();
-            }
+            tracing::info!(agent = %name, "cancelling active requests");
+            handle.engine.state.cancel_all_requests();
         }
     }
 
@@ -469,8 +467,7 @@ async fn main() -> Result<()> {
     {
         let agents = agents_map.read().await;
         let drain_futures: Vec<_> = agents.values()
-            .filter_map(|h| h.engine.state.as_ref())
-            .map(|s| s.wait_drain(std::time::Duration::from_secs(10)))
+            .map(|h| h.engine.state.wait_drain(std::time::Duration::from_secs(10)))
             .collect();
         futures_util::future::join_all(drain_futures).await;
     }
@@ -915,18 +912,14 @@ fn setup_sighup_handler(state: gateway::AppState) {
 
                     // 1. Cancel old agent's active requests
                     if let Some(old_handle) = state.agents.map.read().await.get(&name) {
-                        if let Some(ref old_state) = old_handle.engine.state {
-                            tracing::info!(agent = %name, "SIGHUP: cancelling old agent requests");
-                            old_state.cancel_all_requests();
-                        }
+                        tracing::info!(agent = %name, "SIGHUP: cancelling old agent requests");
+                        old_handle.engine.state.cancel_all_requests();
                     }
 
                     // 2. Wait for drain (10s timeout)
                     if let Some(old_handle) = state.agents.map.read().await.get(&name) {
-                        if let Some(ref old_state) = old_handle.engine.state {
-                            tracing::info!(agent = %name, "SIGHUP: waiting for drain");
-                            old_state.wait_drain(std::time::Duration::from_secs(10)).await;
-                        }
+                        tracing::info!(agent = %name, "SIGHUP: waiting for drain");
+                        old_handle.engine.state.wait_drain(std::time::Duration::from_secs(10)).await;
                     }
 
                     // 3. Create new engine and replace

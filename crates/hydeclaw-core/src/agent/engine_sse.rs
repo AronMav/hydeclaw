@@ -22,7 +22,7 @@ impl AgentEngine {
         }
 
         // Track active request for graceful shutdown/SIGHUP drain
-        let cancel_guard = self.state.as_ref().map(|s| s.register_request());
+        let cancel_guard = Some(self.state.register_request());
 
         // Handle slash commands (no LLM needed)
         let user_text = msg.text.clone().unwrap_or_default();
@@ -50,8 +50,8 @@ impl AgentEngine {
             let a_msg_id = sm.save_message_ex(sid, "assistant", &text, None, None, Some(&self.cfg().agent.name), None, Some(u_msg_id)).await?;
             // Mark slash-command sessions as done (they skip the LLM lifecycle guard)
             let _ = sm.set_run_status(sid, "done").await;
-            if let (Some(state), Some((id, _))) = (&self.state, &cancel_guard) {
-                state.unregister_request(id);
+            if let Some((ref id, _)) = cancel_guard {
+                self.state.unregister_request(id);
             }
             return Ok(a_msg_id);
         }
@@ -559,8 +559,8 @@ impl AgentEngine {
         *self.sse_event_tx().lock().await = None;
 
         // Unregister active request (cancel/drain tracking)
-        if let (Some(state), Some((id, _))) = (&self.state, &cancel_guard) {
-            state.unregister_request(id);
+        if let Some((ref id, _)) = cancel_guard {
+            self.state.unregister_request(id);
         }
 
         Ok(assistant_msg_id)

@@ -138,7 +138,7 @@ pub async fn start_agent_from_config(
     let engine = Arc::new(AgentEngine {
         context_builder: std::sync::OnceLock::new(),
         tool_executor: std::sync::OnceLock::new(),
-        state: Some(agent_state),
+        state: agent_state,
         cfg: Some(agent_config),
     });
     engine.set_context_builder(&engine);
