@@ -22,7 +22,11 @@ export function saveLastSession(agent: string, sessionId?: string) {
   try {
     const data = loadLastSession();
     data.agent = agent;
-    if (sessionId) data.sessions = { ...data.sessions, [agent]: sessionId };
+    if (sessionId) {
+      data.sessions = { ...data.sessions, [agent]: sessionId };
+    } else {
+      delete data.sessions?.[agent];
+    }
     localStorage.setItem(LAST_SESSION_KEY, JSON.stringify(data));
   } catch { /* ignore */ }
 }
