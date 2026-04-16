@@ -684,9 +684,9 @@ pub async fn search_messages(
     // Try FTS first (migration 017 adds tsv column)
     let rows = sqlx::query_as::<_, SearchResult>(
         "SELECT m.content, s.id as session_id, s.user_id, s.channel, m.role, m.created_at, \
-                ts_rank_cd(m.tsv, plainto_tsquery('russian', $2))::float8 AS rank \
+                ts_rank_cd(m.tsv, plainto_tsquery('simple', $2))::float8 AS rank \
          FROM messages m JOIN sessions s ON m.session_id = s.id \
-         WHERE s.agent_id = $1 AND m.tsv @@ plainto_tsquery('russian', $2) \
+         WHERE s.agent_id = $1 AND m.tsv @@ plainto_tsquery('simple', $2) \
          ORDER BY rank DESC, m.created_at DESC LIMIT $3",
     )
     .bind(agent_id)
