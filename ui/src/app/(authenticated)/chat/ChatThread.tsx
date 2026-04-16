@@ -901,10 +901,18 @@ export function ChatThread({
     for (const m of messageSource.messages) {
       if (m.role === "assistant" && m.parts.length === 0) continue;
 
-      // User message: keep only if still "sending" (not yet confirmed/in DB)
+      // User message: keep only if still "sending" AND not already in history.
+      // During streaming, React Query may refetch and the DB already has the user
+      // message while the optimistic copy is still "sending" — causing a duplicate flash.
       if (m.role === "user") {
         if (m.status === "sending") {
-          overlay.push(m);
+          const firstText = m.parts?.[0]?.type === "text" ? (m.parts[0] as { text: string }).text : "";
+          const isDuplicate = historyMessages.some(
+            hm => hm.role === "user" && hm.parts?.[0]?.type === "text" && (hm.parts[0] as { text: string }).text === firstText
+          );
+          if (!isDuplicate) {
+            overlay.push(m);
+          }
         }
         continue;
       }
