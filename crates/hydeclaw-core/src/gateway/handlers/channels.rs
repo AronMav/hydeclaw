@@ -443,8 +443,8 @@ fn mask_config(cfg: &Value) -> Value {
             for key in CREDENTIAL_KEYS {
                 if let Some(val) = masked.get(*key)
                     && let Some(s) = val.as_str() {
-                        if s.len() > 8 {
-                            masked.insert((*key).to_string(), Value::String(format!("{}...{}", &s[..s.floor_char_boundary(4)], &s[s.floor_char_boundary(s.len().saturating_sub(4))..])));
+                        if s.len() > 4 {
+                            masked.insert((*key).to_string(), Value::String(format!("****{}", &s[s.floor_char_boundary(s.len().saturating_sub(4))..])));
                         } else {
                             masked.insert((*key).to_string(), Value::String("****".to_string()));
                         }
