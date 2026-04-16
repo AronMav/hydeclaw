@@ -3,6 +3,14 @@
 //! Each function takes explicit `(&AgentConfig, &AgentState, &mut RequestContext)`
 //! dependencies instead of `&self` on `AgentEngine`.
 
+/// Parameter object bundling the three decomposed AgentEngine pieces.
+/// Three fields, zero methods, never grows.
+pub struct CommandContext<'a> {
+    pub cfg: &'a super::agent_config::AgentConfig,
+    pub state: &'a super::agent_state::AgentState,
+    pub tex: &'a super::tool_executor::DefaultToolExecutor,
+}
+
 pub mod entry;
 pub mod execution;
 pub mod context;
@@ -18,3 +26,8 @@ pub mod subagent;
 pub mod agent_tool;
 pub mod sessions;
 pub mod canvas;
+pub mod approval;
+pub mod channel_actions;
+pub mod subagent_runner;
+pub mod openai_compat;
+pub mod cron;
