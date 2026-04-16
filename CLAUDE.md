@@ -79,7 +79,7 @@ HydeClaw is a Rust-based AI gateway. The core binary (`crates/hydeclaw-core`) ha
 - `engine_handlers.rs: execute_yaml_channel_action()` — YAML tool with post-call channel action (e.g. send_photo)
 - `workspace.rs: is_read_only()` — path protection; `base` agents can write to service dirs and tools but have SOUL.md/IDENTITY.md read-only
 
-**Loop detection (`tool_loop.rs`):** Two-phase `LoopDetector` — `check_limits()` (pre-execution, read-only) + `record_execution()` (post-execution, tracks success/failure). Error-aware: 3 consecutive errors on same tool → break. WAL warm-up via `session_wal::warm_up_detector()` on crash recovery.
+**Loop detection (`tool_loop.rs`):** Two-phase `LoopDetector` — `check_limits()` (pre-execution, read-only) + `record_execution()` (post-execution, tracks success/failure). Error-aware: 3 consecutive errors on same tool → break. WAL records lifecycle events for diagnostics. LoopDetector resets on each session entry (crash recovery via WAL replay is not yet implemented).
 
 **Session-scoped agents (`session_agent_pool.rs` + `engine_agent_tool.rs`):** Unified `agent` tool (run/message/status/kill) replaces old `subagent` + `handoff` tools. Agents are always-alive peers bound to a session via `SessionAgentPool` in `AppState.session_pools`. Each `LiveAgent` holds its own LLM dialog context in memory, receives messages via mpsc channel, and processes them in a background tokio task using `run_subagent()`. Polling-based — no automatic routing or turn loop. Peer-to-peer: any agent in a session can spawn, message, or kill any other.
 
@@ -231,7 +231,7 @@ Key tables: `sessions`, `messages`, `session_events` (WAL journal), `memory_chun
 
 **Message branching (m012):** `parent_message_id` links to predecessor, `branch_from_message_id` marks fork points. Both nullable — NULL = trunk. Enables conversation tree navigation.
 
-**Session WAL (m013):** `session_events` logs lifecycle transitions (running, tool_start, tool_end, done, failed). Used by `session_wal::warm_up_detector()` to restore LoopDetector state on crash recovery instead of injecting synthetic messages.
+**Session WAL (m013):** `session_events` logs lifecycle transitions (running, tool_start, tool_end, done, failed). WAL records lifecycle events for diagnostics. LoopDetector resets on each session entry (crash recovery via WAL replay is not yet implemented).
 
 **Active providers:** `provider_active` maps capabilities (stt, tts, vision, imagegen, embedding) to providers. UI configures active providers via the Active Providers page.
 
