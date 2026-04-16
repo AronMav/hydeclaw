@@ -24,21 +24,15 @@ pub async fn save_version(
 ) -> sqlx::Result<Uuid> {
     let content_hash = sha256_hex(content);
 
-    let generation: i32 = sqlx::query_scalar(
-        "SELECT COALESCE(MAX(generation), -1) + 1 FROM skill_versions WHERE skill_name = $1",
-    )
-    .bind(skill_name)
-    .fetch_one(db)
-    .await?;
-
     let row = sqlx::query(
         "INSERT INTO skill_versions \
          (skill_name, generation, parent_id, evolution_type, content, content_hash, trigger_reason) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+         VALUES ($1, \
+             (SELECT COALESCE(MAX(generation), -1) + 1 FROM skill_versions WHERE skill_name = $1), \
+             $2, $3, $4, $5, $6) \
          RETURNING id",
     )
     .bind(skill_name)
-    .bind(generation)
     .bind(parent_id)
     .bind(evolution_type)
     .bind(content)
