@@ -214,7 +214,7 @@ pub(crate) async fn chat_completions(
 
     if req.stream {
         let (sse_tx, sse_rx) =
-            tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(256);
+            tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(1024);
 
         let messages = req.messages.clone();
         tokio::spawn(async move {
@@ -318,7 +318,7 @@ pub(crate) async fn embeddings_proxy(
     State(infra): State<InfraServices>,
     Json(req): Json<Value>,
 ) -> impl IntoResponse {
-    if !infra.memory_store.is_available() {
+    if !infra.embedder.is_available() {
         return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({
             "error": {"message": "embeddings not configured", "type": "server_error"}
         }))).into_response();
@@ -342,7 +342,7 @@ pub(crate) async fn embeddings_proxy(
     }
 
     let refs: Vec<&str> = texts.iter().map(std::string::String::as_str).collect();
-    match infra.memory_store.embed_batch(&refs).await {
+    match infra.embedder.embed_batch(&refs).await {
         Ok(embeddings) => {
             let data: Vec<Value> = embeddings.iter().enumerate().map(|(i, emb)| {
                 json!({"object": "embedding", "index": i, "embedding": emb})
@@ -350,7 +350,7 @@ pub(crate) async fn embeddings_proxy(
             Json(json!({
                 "object": "list",
                 "data": data,
-                "model": infra.memory_store.embed_model_name(),
+                "model": infra.embedder.embed_model_name().unwrap_or_default(),
                 "usage": {"prompt_tokens": 0, "total_tokens": 0}
             })).into_response()
         }
@@ -500,7 +500,7 @@ pub(crate) async fn api_chat_sse(
     let (event_tx, mut event_rx) =
         tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
     let (sse_tx, sse_rx) =
-        tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(256);
+        tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(1024);
 
     // Engine task: process message and emit StreamEvents.
     // Inter-agent communication now happens via the `agent` tool (polling model),
