@@ -276,6 +276,14 @@ impl AgentEngine {
             .expect("cfg not set — engine was not constructed with AgentConfig")
     }
 
+    /// Access the mutable per-agent state (cancel/drain, runtime fields).
+    /// Panics if called on an engine without AgentState (subagent lightweight copies).
+    pub fn state(&self) -> &crate::agent::agent_state::AgentState {
+        self.state
+            .as_ref()
+            .expect("state not set — engine was not constructed with AgentState")
+    }
+
     /// Agent name (from config).
     pub fn name(&self) -> &str {
         &self.cfg().agent.name
@@ -298,12 +306,12 @@ impl AgentEngine {
 
     /// Read the current channel formatting prompt.
     pub async fn formatting_prompt(&self) -> Option<String> {
-        self.channel_formatting_prompt.read().await.clone()
+        self.state().channel_formatting_prompt.read().await.clone()
     }
 
     /// Borrow the channel action router, if configured.
     pub fn channel_router_ref(&self) -> Option<&ChannelActionRouter> {
-        self.channel_router.as_ref()
+        self.state().channel_router.as_ref()
     }
 
     /// Borrow the agent access config, if set.
@@ -450,7 +458,7 @@ impl AgentEngine {
 
     /// Broadcast a UI event to connected WebSocket clients.
     fn broadcast_ui_event(&self, event: serde_json::Value) {
-        if let Some(ref tx) = self.ui_event_tx {
+        if let Some(ref tx) = self.state().ui_event_tx {
             tx.send(event.to_string()).ok();
         }
     }
@@ -675,7 +683,7 @@ impl AgentEngine {
                         let agent_name = self.cfg().agent.name.clone();
                         let cnt = auto_continue_count;
                         let max = loop_config.max_auto_continues;
-                        if let Some(ref ui_tx) = self.ui_event_tx {
+                        if let Some(ref ui_tx) = self.state().ui_event_tx {
                             let tx = ui_tx.clone();
                             tokio::spawn(async move {
                                 crate::gateway::notify(
@@ -802,7 +810,7 @@ impl AgentEngine {
                         max_iterations = loop_config.effective_max_iterations(),
                         "agent reached iteration limit"
                     );
-                    if let Some(ref ui_tx) = self.ui_event_tx {
+                    if let Some(ref ui_tx) = self.state().ui_event_tx {
                         let db = self.cfg().db.clone();
                         let tx = ui_tx.clone();
                         let agent_name = self.cfg().agent.name.clone();
@@ -819,7 +827,7 @@ impl AgentEngine {
                 }
                 // Notify if loop was broken after max nudges
                 if loop_broken && loop_nudge_count >= loop_config.max_loop_nudges
-                    && let Some(ref ui_tx) = self.ui_event_tx {
+                    && let Some(ref ui_tx) = self.state().ui_event_tx {
                         let db = self.cfg().db.clone();
                         let tx = ui_tx.clone();
                         let agent_name = self.cfg().agent.name.clone();
@@ -885,7 +893,7 @@ impl AgentEngine {
     async fn get_channel_info(&self) -> Vec<workspace::ChannelInfo> {
         // Check cache first
         {
-            let cache = self.channel_info_cache.read().await;
+            let cache = self.state().channel_info_cache.read().await;
             if let Some(ref cached) = *cache {
                 return cached.clone();
             }
@@ -893,7 +901,7 @@ impl AgentEngine {
         // Cache miss — load from DB
         let info = self.load_channel_info_from_db().await;
         {
-            let mut cache = self.channel_info_cache.write().await;
+            let mut cache = self.state().channel_info_cache.write().await;
             *cache = Some(info.clone());
         }
         info
@@ -901,12 +909,12 @@ impl AgentEngine {
 
     /// Invalidate channel info cache (called on channel CRUD).
     pub async fn invalidate_channel_cache(&self) {
-        let mut cache = self.channel_info_cache.write().await;
+        let mut cache = self.state().channel_info_cache.write().await;
         *cache = None;
     }
 
     async fn load_channel_info_from_db(&self) -> Vec<workspace::ChannelInfo> {
-        let has_connected_channel = self.channel_router.is_some();
+        let has_connected_channel = self.state().channel_router.is_some();
         let rows = sqlx::query_as::<_, (sqlx::types::Uuid, String, String, String)>(
             "SELECT id, channel_type, display_name, status FROM agent_channels WHERE agent_name = $1",
         )
@@ -1007,7 +1015,7 @@ impl AgentEngine {
             cfg.provider.as_ref(),
             cfg.compaction_provider.as_deref(),
             &cfg.db,
-            engine.ui_event_tx.as_ref(),
+            engine.state().ui_event_tx.as_ref(),
             &cfg.agent.name,
             &cfg.audit_queue,
             messages,
@@ -1052,7 +1060,7 @@ impl AgentEngine {
             db: &self.cfg().db,
             provider: self.cfg().provider.as_ref(),
             compaction_provider: self.cfg().compaction_provider.as_deref(),
-            thinking_level: &self.thinking_level,
+            thinking_level: &self.state().thinking_level,
             memory_store: self.cfg().memory_store.as_ref(),
         };
 
@@ -1214,7 +1222,7 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
     }
 
     fn channel_router_present(&self) -> bool {
-        self.channel_router.is_some()
+        self.state().channel_router.is_some()
     }
 
     fn scheduler_present(&self) -> bool {
