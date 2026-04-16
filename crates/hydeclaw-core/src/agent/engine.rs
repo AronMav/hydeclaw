@@ -562,26 +562,6 @@ impl AgentEngine {
         Ok(())
     }
 
-    /// Enrich tool arguments with `_context` (message context + `session_id`).
-    /// Uses `insert` (not `or_insert`) intentionally — LLM must not be able to
-    /// forge `_context` (e.g., spoofing `chat_id` for channel actions).
-    fn enrich_tool_args(args: &serde_json::Value, context: &serde_json::Value, session_id: Uuid, channel: &str) -> serde_json::Value {
-        let mut args = args.clone();
-        if let Some(obj) = args.as_object_mut() {
-            // If context is Null, create an empty object so session_id can be injected.
-            let mut ctx = if context.is_null() {
-                serde_json::json!({})
-            } else {
-                context.clone()
-            };
-            if let Some(ctx_obj) = ctx.as_object_mut() {
-                ctx_obj.insert("session_id".to_string(), serde_json::json!(session_id.to_string()));
-                ctx_obj.insert("_channel".to_string(), serde_json::json!(channel));
-            }
-            obj.insert("_context".to_string(), ctx);
-        }
-        args
-    }
 
     /// Check if an enabled YAML tool exists in workspace/tools/ (shared tools).
     async fn has_tool(&self, name: &str) -> bool {

@@ -39,11 +39,6 @@ impl AgentEngine {
         crate::agent::pipeline::context::truncate_preview(s, max)
     }
 
-    /// Truncate a tool result to fit within remaining context budget.
-    pub(super) fn truncate_tool_result(&self, result: &str, current_context_chars: usize) -> String {
-        crate::agent::pipeline::context::truncate_tool_result(&self.agent.model, result, current_context_chars)
-    }
-
     /// Replace old tool results with "[compacted]" when context exceeds 70% of model window.
     pub(super) fn compact_tool_results(&self, messages: &mut [Message], context_chars: &mut usize) {
         crate::agent::pipeline::context::compact_tool_results(
