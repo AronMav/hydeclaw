@@ -846,6 +846,9 @@ async fn collect_github_repos(db: &sqlx::PgPool) -> sqlx::Result<Vec<BackupGithu
 // ── V2 restore helpers ────────────────────────────────────────────────────────
 
 async fn restore_providers(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, providers: &[BackupProvider], active: &[BackupProviderActive]) -> sqlx::Result<usize> {
+    if providers.is_empty() && active.is_empty() {
+        return Ok(0);
+    }
     sqlx::query("DELETE FROM provider_active").execute(&mut **tx).await?;
     sqlx::query("DELETE FROM providers").execute(&mut **tx).await?;
 
