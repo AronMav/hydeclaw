@@ -453,7 +453,29 @@ async fn main() -> Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
-    // Stop all agents gracefully
+    // ── Graceful shutdown: cancel → drain → stop ──────────────────────────
+    tracing::info!("graceful shutdown: cancelling all active requests");
+    {
+        let agents = agents_map.read().await;
+        for (name, handle) in agents.iter() {
+            if let Some(ref state) = handle.engine.state {
+                tracing::info!(agent = %name, "cancelling active requests");
+                state.cancel_all_requests();
+            }
+        }
+    }
+
+    tracing::info!("graceful shutdown: waiting for agents to drain (10s)");
+    {
+        let agents = agents_map.read().await;
+        let drain_futures: Vec<_> = agents.values()
+            .filter_map(|h| h.engine.state.as_ref())
+            .map(|s| s.wait_drain(std::time::Duration::from_secs(10)))
+            .collect();
+        futures_util::future::join_all(drain_futures).await;
+    }
+
+    tracing::info!("graceful shutdown: stopping agents");
     {
         let mut agents = agents_map.write().await;
         for (name, handle) in agents.drain() {
@@ -462,6 +484,7 @@ async fn main() -> Result<()> {
         }
     }
 
+    tracing::info!("graceful shutdown: stopping managed processes");
     if let Some(pm) = &process_manager { pm.stop_all().await; }
 
     #[cfg(target_os = "linux")]
@@ -877,6 +900,7 @@ fn setup_linux_service_notify() {
 }
 
 /// Setup SIGHUP handler for hot-reloading agent configs (Unix only).
+/// Uses cancel → drain → replace pattern to avoid disrupting in-flight requests.
 #[cfg(unix)]
 fn setup_sighup_handler(state: gateway::AppState) {
     tokio::spawn(async move {
@@ -884,10 +908,28 @@ fn setup_sighup_handler(state: gateway::AppState) {
         let mut sighup = signal(SignalKind::hangup()).expect("failed to register SIGHUP");
         loop {
             sighup.recv().await;
-            tracing::info!("SIGHUP received — reloading agent configs");
+            tracing::info!("SIGHUP received — reloading agent configs with graceful drain");
             if let Ok(configs) = crate::config::load_agent_configs("config/agents") {
                 for cfg in configs {
                     let name = cfg.agent.name.clone();
+
+                    // 1. Cancel old agent's active requests
+                    if let Some(old_handle) = state.agents.map.read().await.get(&name) {
+                        if let Some(ref old_state) = old_handle.engine.state {
+                            tracing::info!(agent = %name, "SIGHUP: cancelling old agent requests");
+                            old_state.cancel_all_requests();
+                        }
+                    }
+
+                    // 2. Wait for drain (10s timeout)
+                    if let Some(old_handle) = state.agents.map.read().await.get(&name) {
+                        if let Some(ref old_state) = old_handle.engine.state {
+                            tracing::info!(agent = %name, "SIGHUP: waiting for drain");
+                            old_state.wait_drain(std::time::Duration::from_secs(10)).await;
+                        }
+                    }
+
+                    // 3. Create new engine and replace
                     if let Ok((handle, guard)) = crate::gateway::start_agent_from_config(
                         &cfg,
                         &state.agents,
@@ -901,7 +943,10 @@ fn setup_sighup_handler(state: gateway::AppState) {
                             old.shutdown(&state.agents.scheduler).await;
                         }
                         state.agents.map.write().await.insert(name.clone(), handle);
-                        if let Some(g) = guard { state.auth.access_guards.write().await.insert(name.clone(), g); }
+                        if let Some(g) = guard {
+                            state.auth.access_guards.write().await.insert(name.clone(), g);
+                        }
+                        tracing::info!(agent = %name, "SIGHUP: agent reloaded");
                     }
                 }
             }
