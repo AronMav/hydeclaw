@@ -181,6 +181,9 @@ pub struct AgentEngine {
     pub approval_manager: Arc<super::approval_manager::ApprovalManager>,
     /// Session-scoped agent pools (None for subagents / isolated engines).
     pub session_pools: Option<crate::agent::session_agent_pool::SessionPoolsMap>,
+    /// Per-agent mutable state (cancel/drain for shutdown and SIGHUP).
+    /// `None` for subagent engines — they are lightweight copies without lifecycle tracking.
+    pub state: Option<Arc<crate::agent::agent_state::AgentState>>,
 }
 
 /// Snapshot of what's currently displayed on the canvas.

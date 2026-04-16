@@ -16,8 +16,14 @@ impl AgentEngine {
         // Sweep stale approval waiters (older than 10 minutes)
         self.approval_manager.prune_stale().await;
 
+        // Track active request for graceful shutdown/SIGHUP drain
+        let cancel_guard = self.state.as_ref().map(|s| s.register_request());
+
         // Hook: BeforeMessage
         if let crate::agent::hooks::HookAction::Block(reason) = self.hooks().fire(&crate::agent::hooks::HookEvent::BeforeMessage) {
+            if let (Some(state), Some((id, _))) = (&self.state, &cancel_guard) {
+                state.unregister_request(id);
+            }
             anyhow::bail!("blocked by hook: {}", reason);
         }
 
@@ -64,6 +70,9 @@ impl AgentEngine {
         // Slash commands — handle without LLM
         if let Some(result) = self.handle_command(&user_text, msg).await {
             lifecycle_guard.done().await;
+            if let (Some(state), Some((id, _))) = (&self.state, &cancel_guard) {
+                state.unregister_request(id);
+            }
             return result;
         }
 
@@ -465,6 +474,11 @@ impl AgentEngine {
                     db, sid, agent, provider, memory,
                 ).await;
             });
+        }
+
+        // Unregister active request (cancel/drain tracking)
+        if let (Some(state), Some((id, _))) = (&self.state, &cancel_guard) {
+            state.unregister_request(id);
         }
 
         Ok(with_footer)

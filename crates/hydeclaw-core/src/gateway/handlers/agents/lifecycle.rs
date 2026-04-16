@@ -110,6 +110,12 @@ pub async fn start_agent_from_config(
         approval_waiters.clone(),
     ));
 
+    let agent_state = Arc::new(crate::agent::agent_state::AgentState::new(
+        Some(status.processing_tracker.clone()),
+        Some(channel_router.clone()),
+        Some(bus.ui_event_tx.clone()),
+    ));
+
     let engine = Arc::new(AgentEngine {
         provider,
         agent: agent_cfg.agent.clone(),
@@ -135,6 +141,7 @@ pub async fn start_agent_from_config(
         session_pools: Some(agents.session_pools.clone()),
         audit_queue: deps.audit_queue.clone(),
         approval_manager,
+        state: Some(agent_state),
     });
     engine.set_self_ref(&engine);
     engine.set_context_builder(&engine);

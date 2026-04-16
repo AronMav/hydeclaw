@@ -19,6 +19,9 @@ impl AgentEngine {
             anyhow::bail!("blocked by hook: {}", reason);
         }
 
+        // Track active request for graceful shutdown/SIGHUP drain
+        let cancel_guard = self.state.as_ref().map(|s| s.register_request());
+
         // Handle slash commands (no LLM needed)
         let user_text = msg.text.clone().unwrap_or_default();
         if let Some(result) = self.handle_command(&user_text, msg).await {
@@ -42,6 +45,9 @@ impl AgentEngine {
             };
             let u_msg_id = SessionManager::new(self.db.clone()).save_message_ex(sid, "user", &user_text, None, None, None, None, msg.leaf_message_id).await?;
             let a_msg_id = SessionManager::new(self.db.clone()).save_message_ex(sid, "assistant", &text, None, None, Some(&self.agent.name), None, Some(u_msg_id)).await?;
+            if let (Some(state), Some((id, _))) = (&self.state, &cancel_guard) {
+                state.unregister_request(id);
+            }
             return Ok(a_msg_id);
         }
 
@@ -622,6 +628,11 @@ impl AgentEngine {
 
         // Clear SSE event sender
         *self.sse_event_tx().lock().await = None;
+
+        // Unregister active request (cancel/drain tracking)
+        if let (Some(state), Some((id, _))) = (&self.state, &cancel_guard) {
+            state.unregister_request(id);
+        }
 
         Ok(assistant_msg_id)
     }

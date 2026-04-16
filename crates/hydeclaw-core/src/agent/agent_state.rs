@@ -37,6 +37,24 @@ pub struct AgentState {
 }
 
 impl AgentState {
+    /// Production constructor with all optional infrastructure fields.
+    pub fn new(
+        processing_tracker: Option<ProcessingTracker>,
+        channel_router: Option<ChannelActionRouter>,
+        ui_event_tx: Option<tokio::sync::broadcast::Sender<String>>,
+    ) -> Self {
+        Self {
+            thinking_level: AtomicU8::new(0),
+            channel_formatting_prompt: tokio::sync::RwLock::new(None),
+            channel_info_cache: tokio::sync::RwLock::new(None),
+            processing_tracker,
+            channel_router,
+            ui_event_tx,
+            active_requests: Mutex::new(Vec::new()),
+            next_request_id: AtomicU64::new(0),
+        }
+    }
+
     /// Register a new in-flight request.
     ///
     /// Returns an id (for later unregistration) and a `CancellationToken`
