@@ -307,7 +307,7 @@ impl AgentEngine {
                     }
                     false
                 }
-                Err(parallel_impl::LoopBreak(reason)) => {
+                Err(LoopBreak(reason)) => {
                     if loop_nudge_count < loop_config.max_loop_nudges {
                         messages.push(Message {
                             role: MessageRole::System,

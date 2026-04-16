@@ -200,7 +200,7 @@ impl AgentEngine {
                     }
                     false
                 }
-                Err(super::parallel_impl::LoopBreak(reason)) => {
+                Err(LoopBreak(reason)) => {
                     if loop_nudge_count < loop_config.max_loop_nudges {
                         let nudge_desc = reason.as_deref().unwrap_or("repeating pattern");
                         let nudge_msg = format!(

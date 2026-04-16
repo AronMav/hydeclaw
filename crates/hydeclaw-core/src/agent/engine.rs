@@ -25,9 +25,7 @@ mod tools_impl;
 mod handlers_impl;
 #[path = "engine_subagent.rs"]
 mod subagent_impl;
-#[path = "engine_parallel.rs"]
-mod parallel_impl;
-pub use parallel_impl::LoopBreak;
+pub use crate::agent::pipeline::parallel::LoopBreak;
 pub(crate) use subagent_impl::parse_subagent_timeout;
 #[path = "engine_sandbox.rs"]
 mod sandbox_impl;
@@ -776,7 +774,7 @@ impl AgentEngine {
                     }
                     false
                 }
-                Err(parallel_impl::LoopBreak(reason)) => {
+                Err(LoopBreak(reason)) => {
                     if loop_nudge_count < loop_config.max_loop_nudges {
                         let nudge_desc = reason.as_deref().unwrap_or("repeating pattern");
                         let nudge_msg = format!(
@@ -1118,8 +1116,6 @@ pub fn all_system_tool_names() -> &'static [&'static str] {
 }
 
 // ── Extracted submodules ─────────────────────────────────────────────────────
-#[path = "engine_provider.rs"]
-mod provider_impl;
 #[path = "engine_dispatch.rs"]
 mod dispatch_impl;
 
@@ -1311,7 +1307,7 @@ impl crate::agent::tool_executor::ToolExecutorDeps for AgentEngine {
         current_context_chars: usize,
         detector: &mut crate::agent::tool_loop::LoopDetector,
         detect_loops: bool,
-    ) -> Result<Vec<(String, String)>, parallel_impl::LoopBreak> {
+    ) -> Result<Vec<(String, String)>, LoopBreak> {
         self.execute_tool_calls_partitioned(
             tool_calls,
             context,
@@ -1322,6 +1318,245 @@ impl crate::agent::tool_executor::ToolExecutorDeps for AgentEngine {
             detect_loops,
         )
         .await
+    }
+}
+
+// ── Inlined from engine_parallel.rs ──────────────────────────────────────────
+
+impl crate::agent::pipeline::parallel::ToolExecutor for AgentEngine {
+    fn execute_tool_call<'a>(
+        &'a self,
+        name: &'a str,
+        arguments: &'a serde_json::Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
+        self.execute_tool_call(name, arguments)
+    }
+
+    fn needs_approval(&self, tool_name: &str) -> bool {
+        self.needs_approval(tool_name)
+    }
+}
+
+impl AgentEngine {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn execute_tool_calls_partitioned(
+        &self,
+        tool_calls: &[hydeclaw_types::ToolCall],
+        context: &serde_json::Value,
+        session_id: Uuid,
+        channel: &str,
+        current_context_chars: usize,
+        detector: &mut LoopDetector,
+        detect_loops: bool,
+    ) -> Result<Vec<(String, String)>, LoopBreak> {
+        // Load YAML tools (cached for 30s)
+        let yaml_tools: std::sync::Arc<std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef>> = {
+            let cache = self.tex().yaml_tools_cache.read().await;
+            if cache.0.elapsed() < std::time::Duration::from_secs(30) && !cache.1.is_empty() {
+                std::sync::Arc::clone(&cache.1)
+            } else {
+                drop(cache);
+                let tools = std::sync::Arc::new(
+                    crate::tools::yaml_tools::load_yaml_tools(&self.workspace_dir, false)
+                        .await
+                        .into_iter()
+                        .map(|t| (t.name.clone(), t))
+                        .collect::<std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef>>(),
+                );
+                *self.tex().yaml_tools_cache.write().await =
+                    (std::time::Instant::now(), std::sync::Arc::clone(&tools));
+                tools
+            }
+        };
+
+        let subagent_timeout =
+            subagent_impl::parse_subagent_timeout(&self.app_config.subagents.in_process_timeout)
+                + std::time::Duration::from_secs(10);
+
+        crate::agent::pipeline::parallel::execute_tool_calls_partitioned(
+            tool_calls,
+            context,
+            session_id,
+            channel,
+            &self.agent.model,
+            current_context_chars,
+            detector,
+            detect_loops,
+            &self.db,
+            &self.embedder,
+            &yaml_tools,
+            subagent_timeout,
+            self,
+        )
+        .await
+    }
+}
+
+// ── Inlined from engine_provider.rs ──────────────────────────────────────────
+
+/// `AgentEngine` acts as its own compactor — delegates to `compact_messages`.
+#[async_trait::async_trait]
+impl crate::agent::pipeline::llm_call::Compactor for AgentEngine {
+    async fn compact(&self, messages: &mut Vec<Message>) {
+        self.compact_messages(messages, None).await;
+    }
+}
+
+impl AgentEngine {
+    /// Build tool loop config from agent TOML settings (or defaults).
+    pub(crate) fn tool_loop_config(&self) -> crate::agent::tool_loop::ToolLoopConfig {
+        self.agent
+            .tool_loop
+            .as_ref()
+            .map(crate::agent::tool_loop::ToolLoopConfig::from)
+            .unwrap_or_default()
+    }
+
+    /// Create fallback LLM provider from agent config.
+    pub(super) async fn create_fallback_provider(&self) -> Option<Arc<dyn crate::agent::providers::LlmProvider>> {
+        crate::agent::pipeline::llm_call::create_fallback_provider(
+            &self.db,
+            self.agent.fallback_provider.as_deref(),
+            &self.agent.name,
+            self.agent.temperature,
+            self.agent.max_tokens,
+            self.secrets().clone(),
+            self.sandbox().clone(),
+            &self.workspace_dir,
+            self.agent.base,
+        )
+        .await
+    }
+
+    /// Check daily token budget before LLM call.
+    pub(super) async fn check_budget(&self) -> Result<()> {
+        crate::agent::pipeline::llm_call::check_budget(
+            &self.db,
+            &self.agent.name,
+            self.agent.daily_budget_tokens,
+        )
+        .await
+    }
+
+    /// Call LLM with automatic context overflow recovery.
+    pub(super) async fn chat_with_overflow_recovery(
+        &self,
+        messages: &mut Vec<Message>,
+        tools: &[ToolDefinition],
+    ) -> Result<hydeclaw_types::LlmResponse> {
+        self.check_budget().await?;
+        crate::agent::pipeline::llm_call::chat_with_overflow_recovery(
+            self.provider.as_ref(),
+            messages,
+            tools,
+            self,
+        )
+        .await
+    }
+
+    /// Call LLM with exponential backoff retry.
+    pub(super) async fn chat_with_transient_retry(
+        &self,
+        messages: &mut Vec<Message>,
+        tools: &[ToolDefinition],
+    ) -> Result<hydeclaw_types::LlmResponse> {
+        self.check_budget().await?;
+        crate::agent::pipeline::llm_call::chat_with_transient_retry(
+            self.provider.as_ref(),
+            messages,
+            tools,
+            self,
+        )
+        .await
+    }
+
+    /// Streaming variant of chat_with_overflow_recovery.
+    #[allow(dead_code)]
+    pub(super) async fn chat_stream_with_overflow_recovery(
+        &self,
+        messages: &mut Vec<Message>,
+        tools: &[ToolDefinition],
+        chunk_tx: mpsc::UnboundedSender<String>,
+    ) -> Result<hydeclaw_types::LlmResponse> {
+        self.check_budget().await?;
+        crate::agent::pipeline::llm_call::chat_stream_with_overflow_recovery(
+            self.provider.as_ref(),
+            messages,
+            tools,
+            chunk_tx,
+            self,
+        )
+        .await
+    }
+
+    /// Streaming variant of chat_with_transient_retry.
+    pub(super) async fn chat_stream_with_transient_retry(
+        &self,
+        messages: &mut Vec<Message>,
+        tools: &[ToolDefinition],
+        chunk_tx: mpsc::UnboundedSender<String>,
+    ) -> Result<hydeclaw_types::LlmResponse> {
+        self.check_budget().await?;
+        crate::agent::pipeline::llm_call::chat_stream_with_transient_retry(
+            self.provider.as_ref(),
+            messages,
+            tools,
+            chunk_tx,
+            self,
+        )
+        .await
+    }
+
+    /// Variant that uses an explicit provider (for fallback switching).
+    pub(super) async fn chat_with_transient_retry_using(
+        &self,
+        provider: &Arc<dyn crate::agent::providers::LlmProvider>,
+        messages: &mut Vec<Message>,
+        tools: &[ToolDefinition],
+    ) -> Result<hydeclaw_types::LlmResponse> {
+        self.check_budget().await?;
+        crate::agent::pipeline::llm_call::chat_with_transient_retry_using(
+            provider,
+            messages,
+            tools,
+            self,
+        )
+        .await
+    }
+
+    /// Streaming variant of chat_with_transient_retry_using.
+    pub(super) async fn chat_stream_with_transient_retry_using(
+        &self,
+        provider: &Arc<dyn crate::agent::providers::LlmProvider>,
+        messages: &mut Vec<Message>,
+        tools: &[ToolDefinition],
+        chunk_tx: mpsc::UnboundedSender<String>,
+    ) -> Result<hydeclaw_types::LlmResponse> {
+        self.check_budget().await?;
+        crate::agent::pipeline::llm_call::chat_stream_with_transient_retry_using(
+            provider,
+            messages,
+            tools,
+            chunk_tx,
+            self,
+        )
+        .await
+    }
+
+    /// Default context window size based on model name.
+    pub(crate) fn default_context_for_model(model: &str) -> usize {
+        crate::agent::pipeline::llm_call::default_context_for_model(model)
+    }
+
+    /// Fire-and-forget audit event recording.
+    pub(super) fn audit(&self, event_type: &'static str, actor: Option<&str>, details: serde_json::Value) {
+        crate::agent::pipeline::llm_call::audit(
+            self.db.clone(),
+            self.agent.name.clone(),
+            event_type,
+            actor,
+            details,
+        );
     }
 }
 
