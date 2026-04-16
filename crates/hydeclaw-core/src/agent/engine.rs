@@ -115,10 +115,8 @@ pub struct BgProcess {
 
 // Step C complete: 6 runtime fields removed — accessed via self.state().
 pub struct AgentEngine {
-    /// Weak self-reference for hot-scheduling cron jobs. Set once after Arc creation.
-    pub self_ref: OnceLock<Weak<AgentEngine>>,
     /// Context builder — builds session/messages/tools for each LLM call.
-    /// Initialized via `set_context_builder` after engine Arc creation (mirrors `self_ref` pattern).
+    /// Initialized via `set_context_builder` after engine Arc creation.
     /// Holds `Arc<dyn ContextBuilder>` for testability (`MockContextBuilder` in plan 02).
     pub context_builder: OnceLock<Arc<dyn crate::agent::context_builder::ContextBuilder>>,
     /// Tool executor — owns tool-only state (sandbox, caches, subagent registry, etc.).
@@ -318,18 +316,14 @@ impl AgentEngine {
 
     // ── Lifecycle ──────────────────────────────────────────────────
 
-    /// Store a weak self-reference after the engine is wrapped in Arc.
-    /// Used by cron tool to hot-schedule jobs without restart.
-    pub fn set_self_ref(&self, arc: &Arc<AgentEngine>) {
-        let _ = self.self_ref.set(Arc::downgrade(arc));
-    }
-
     /// Initialize the context builder after engine Arc creation.
-    /// Must be called once, mirrors `set_self_ref` pattern.
+    /// Must be called once after engine Arc creation.
+    /// Uses `Weak<dyn ContextBuilderDeps>` to break Arc reference cycle.
     pub fn set_context_builder(&self, arc: &Arc<AgentEngine>) {
         use crate::agent::context_builder::{ContextBuilderDeps, DefaultContextBuilder};
-        let deps = arc.clone() as Arc<dyn ContextBuilderDeps>;
-        let builder = Arc::new(DefaultContextBuilder::new(deps))
+        let deps_strong = arc.clone() as Arc<dyn ContextBuilderDeps>;
+        let deps_weak = Arc::downgrade(&deps_strong);
+        let builder = Arc::new(DefaultContextBuilder::new(deps_weak))
             as Arc<dyn crate::agent::context_builder::ContextBuilder>;
         let _ = self.context_builder.set(builder);
     }

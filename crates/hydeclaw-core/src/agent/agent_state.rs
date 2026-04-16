@@ -1,10 +1,11 @@
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::channel_actions::ChannelActionRouter;
+use crate::agent::engine::AgentEngine;
 use crate::agent::workspace::ChannelInfo;
 use crate::gateway::state::ProcessingTracker;
 
@@ -31,6 +32,9 @@ pub struct AgentState {
     pub channel_router: Option<ChannelActionRouter>,
     pub ui_event_tx: Option<tokio::sync::broadcast::Sender<String>>,
 
+    /// Weak self-reference for hot-scheduling cron jobs. Set once after Arc<AgentEngine> creation.
+    pub self_ref: OnceLock<Weak<AgentEngine>>,
+
     /// Active request cancellation tokens — used for SIGHUP drain and shutdown.
     active_requests: Mutex<Vec<(u64, CancellationToken)>>,
     next_request_id: AtomicU64,
@@ -50,9 +54,16 @@ impl AgentState {
             processing_tracker,
             channel_router,
             ui_event_tx,
+            self_ref: OnceLock::new(),
             active_requests: Mutex::new(Vec::new()),
             next_request_id: AtomicU64::new(0),
         }
+    }
+
+    /// Store a weak self-reference after the engine is wrapped in `Arc<AgentEngine>`.
+    /// Used by cron tool to hot-schedule jobs without restart.
+    pub fn set_self_ref(&self, arc: &Arc<AgentEngine>) {
+        let _ = self.self_ref.set(Arc::downgrade(arc));
     }
 
     /// Register a new in-flight request.
@@ -116,6 +127,7 @@ impl AgentState {
             processing_tracker: None,
             channel_router: None,
             ui_event_tx: None,
+            self_ref: OnceLock::new(),
             active_requests: Mutex::new(Vec::new()),
             next_request_id: AtomicU64::new(0),
         })

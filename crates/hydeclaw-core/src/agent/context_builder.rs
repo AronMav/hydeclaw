@@ -4,10 +4,10 @@
 //! from the engine god object (CTX-01) and replace the fragile unnamed tuple with a
 //! self-documenting struct (CTX-02). Enables `MockContextBuilder` injection in tests (CTX-03).
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use hydeclaw_types::{IncomingMessage, Message, ToolDefinition};
-use std::sync::Arc;
+use std::sync::Weak;
 use uuid::Uuid;
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -117,11 +117,11 @@ pub(crate) trait ContextBuilderDeps: Send + Sync {
 /// Concrete implementation of `ContextBuilder` that delegates all engine access
 /// through the `ContextBuilderDeps` trait.
 pub struct DefaultContextBuilder {
-    deps: Arc<dyn ContextBuilderDeps>,
+    deps: Weak<dyn ContextBuilderDeps>,
 }
 
 impl DefaultContextBuilder {
-    pub fn new(deps: Arc<dyn ContextBuilderDeps>) -> Self {
+    pub fn new(deps: Weak<dyn ContextBuilderDeps>) -> Self {
         Self { deps }
     }
 }
@@ -141,7 +141,7 @@ impl ContextBuilder for DefaultContextBuilder {
         resume_session_id: Option<Uuid>,
         force_new_session: bool,
     ) -> Result<ContextSnapshot> {
-        let deps = &self.deps;
+        let deps = self.deps.upgrade().context("engine dropped during context build")?;
 
         // 1. Get or create session (or resume existing)
         let session_id = if let Some(sid) = resume_session_id {

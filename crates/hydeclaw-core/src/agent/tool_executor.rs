@@ -11,7 +11,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use hydeclaw_types::ToolCall;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 use uuid::Uuid;
 
 pub use crate::agent::engine::LoopBreak;
@@ -64,7 +64,7 @@ pub(crate) trait ToolExecutorDeps: Send + Sync {
 /// through the `ToolExecutorDeps` trait and owns the tool-only state fields
 /// migrated from `AgentEngine` (Phase 39-02, TOOL-04).
 pub struct DefaultToolExecutor {
-    deps: Arc<dyn ToolExecutorDeps>,
+    deps: Weak<dyn ToolExecutorDeps>,
     /// Self-reference for recursive subagent calls (Arc<dyn ToolExecutor>).
     /// Initialized via `set_self_ref` after the executor is wrapped in Arc.
     self_ref: OnceLock<Arc<dyn ToolExecutor>>,
@@ -138,7 +138,7 @@ pub struct DefaultToolExecutorFields {
 }
 
 impl DefaultToolExecutor {
-    pub fn new(deps: Arc<dyn ToolExecutorDeps>, fields: DefaultToolExecutorFields) -> Self {
+    pub fn new(deps: Weak<dyn ToolExecutorDeps>, fields: DefaultToolExecutorFields) -> Self {
         Self {
             deps,
             self_ref: OnceLock::new(),
@@ -187,7 +187,10 @@ impl ToolExecutor for DefaultToolExecutor {
         detector: &mut LoopDetector,
         detect_loops: bool,
     ) -> Result<Vec<(String, String)>, LoopBreak> {
-        self.deps
+        let deps = self.deps.upgrade().ok_or_else(|| LoopBreak(
+            Some("engine dropped during tool execution".into()),
+        ))?;
+        deps
             .execute_tool_calls_partitioned_raw(
                 tool_calls,
                 context,

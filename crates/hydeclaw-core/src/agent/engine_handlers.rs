@@ -239,7 +239,7 @@ impl AgentEngine {
         }
     }
 
-    // TODO: extract handle_cron to pipeline::handlers — depends on self.cfg().scheduler, self.self_ref,
+    // TODO: extract handle_cron to pipeline::handlers — depends on self.cfg().scheduler, self.state().self_ref,
     //       self.cfg().db, self.cfg().agent, self.cfg().default_timezone, self.run_subagent()
     /// Internal tool: manage scheduled cron jobs.
     /// Mutating actions (create/delete/run) require base agent.
@@ -352,7 +352,7 @@ impl AgentEngine {
                 // Hot-schedule the job immediately (only for self — other agents activate on restart)
                 let is_self = target_agent == self.cfg().agent.name;
                 let activated = if is_self {
-                    if let Some(arc) = self.self_ref.get().and_then(Weak::upgrade) {
+                    if let Some(arc) = self.state().self_ref.get().and_then(Weak::upgrade) {
                         match scheduler.add_dynamic_job(
                             row, cron_expr, timezone,
                             task.to_string(), target_agent.clone(),
@@ -455,7 +455,7 @@ impl AgentEngine {
                         // Reschedule
                         scheduler.remove_dynamic_job(uuid).await.ok();
                         if enabled
-                            && let Some(arc) = self.self_ref.get().and_then(Weak::upgrade)
+                            && let Some(arc) = self.state().self_ref.get().and_then(Weak::upgrade)
                                 && current.agent_id == self.cfg().agent.name {
                                     scheduler.add_dynamic_job(
                                         uuid, cron_expr, timezone,

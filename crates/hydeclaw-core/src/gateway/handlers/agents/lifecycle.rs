@@ -136,23 +136,23 @@ pub async fn start_agent_from_config(
     });
 
     let engine = Arc::new(AgentEngine {
-        self_ref: std::sync::OnceLock::new(),
         context_builder: std::sync::OnceLock::new(),
         tool_executor: std::sync::OnceLock::new(),
         state: Some(agent_state),
         cfg: Some(agent_config),
     });
-    engine.set_self_ref(&engine);
     engine.set_context_builder(&engine);
+    engine.state().set_self_ref(&engine);
 
     // Build DefaultToolExecutor with its own fields (Phase 39-02: TOOL-04).
     // These 20 fields are owned by the executor; engine accesses them via proxy methods (engine.tex()).
     {
         use crate::agent::tool_executor::{DefaultToolExecutor, DefaultToolExecutorFields, ToolExecutorDeps};
 
-        let deps_arc = engine.clone() as Arc<dyn ToolExecutorDeps>;
+        let deps_strong = engine.clone() as Arc<dyn ToolExecutorDeps>;
+        let deps_weak = Arc::downgrade(&deps_strong);
         let executor = Arc::new(DefaultToolExecutor::new(
-            deps_arc,
+            deps_weak,
             DefaultToolExecutorFields {
                 // Privileged agents run code directly on host (no Docker sandbox)
                 sandbox: if agent_cfg.agent.base { None } else { deps.sandbox.clone() },
