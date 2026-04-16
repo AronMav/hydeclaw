@@ -46,15 +46,8 @@ impl super::AgentEngine {
         let n = tool_calls.len();
         let mut results: Vec<Option<String>> = vec![None; n];
 
-        // 1. Loop detection PHASE 1 (Check limits BEFORE execution)
-        if detect_loops {
-            for tc in tool_calls {
-                if let LoopStatus::Break(reason) = detector.check_limits(&tc.name, &tc.arguments) {
-                    tracing::error!(tool = %tc.name, reason = %reason, "tool loop broken (pre-check)");
-                    return Err(LoopBreak(Some(reason)));
-                }
-            }
-        }
+        // 1. Loop detection for sequential tools checked pre-batch;
+        //    parallel tools check per-tool inside the async closure (see step 5a).
 
         // 2. Enrich args
         let enriched: Vec<Value> = tool_calls
@@ -64,10 +57,10 @@ impl super::AgentEngine {
 
         // 3. Semantic Cache Check
         for (i, tc) in tool_calls.iter().enumerate() {
-            if is_tool_cacheable(&tc.name) && self.memory_store.is_available() {
+            if is_tool_cacheable(&tc.name) && self.embedder.is_available() {
                 let query_text = tc.arguments.get("query").or_else(|| tc.arguments.get("url")).and_then(|v| v.as_str()).unwrap_or("");
                 if !query_text.is_empty()
-                    && let Ok(Some(cached_res)) = SemanticCache::check(&self.db, &self.memory_store, &tc.name, query_text, 0.95).await {
+                    && let Ok(Some(cached_res)) = SemanticCache::check(&self.db, &self.embedder, &tc.name, query_text, 0.95).await {
                     tracing::info!(tool = %tc.name, query = %query_text, "semantic cache hit");
                     results[i] = Some(cached_res);
                 }
@@ -151,6 +144,12 @@ impl super::AgentEngine {
 
             for (i, result) in futures_util::future::join_all(futs).await {
                 if detect_loops {
+                    // Check limits per-tool so that multiple identical failures within
+                    // one parallel batch are detected incrementally (not all seeing pre-batch state).
+                    if let LoopStatus::Break(reason) = detector.check_limits(&tool_calls[i].name, &tool_calls[i].arguments) {
+                        tracing::error!(tool = %tool_calls[i].name, reason = %reason, "tool loop broken (parallel post-check)");
+                        return Err(LoopBreak(Some(reason)));
+                    }
                     let success = !result.starts_with("Error:") && !result.starts_with("tool error:") && !result.contains("timed out");
                     detector.record_execution(&tool_calls[i].name, &tool_calls[i].arguments, success);
                 }
@@ -159,7 +158,7 @@ impl super::AgentEngine {
                 if is_tool_cacheable(&tool_calls[i].name) && !result.starts_with("Error:") && !result.starts_with("tool error:") {
                     let query_text = tool_calls[i].arguments.get("query").or_else(|| tool_calls[i].arguments.get("url")).and_then(|v| v.as_str()).unwrap_or("");
                     if !query_text.is_empty() {
-                        let _ = SemanticCache::store(&self.db, &self.memory_store, &tool_calls[i].name, query_text, &result, 3600).await;
+                        let _ = SemanticCache::store(&self.db, &self.embedder, &tool_calls[i].name, query_text, &result, 3600).await;
                     }
                 }
 
@@ -170,6 +169,13 @@ impl super::AgentEngine {
 
         // 5b. Sequential
         for &i in &sequential_indices {
+            // Check limits per-tool before execution
+            if detect_loops {
+                if let LoopStatus::Break(reason) = detector.check_limits(&tool_calls[i].name, &tool_calls[i].arguments) {
+                    tracing::error!(tool = %tool_calls[i].name, reason = %reason, "tool loop broken (pre-check)");
+                    return Err(LoopBreak(Some(reason)));
+                }
+            }
             let _ = crate::db::session_wal::log_event(&self.db, session_id, "tool_start", Some(&start_payload(&tool_calls[i]))).await;
             let res = match tokio::time::timeout(std::time::Duration::from_secs(120), self.execute_tool_call(&tool_calls[i].name, &enriched[i])).await {
                 Ok(r) => self.truncate_tool_result(&r, current_context_chars),
@@ -184,7 +190,7 @@ impl super::AgentEngine {
             if is_tool_cacheable(&tool_calls[i].name) && !res.starts_with("Error:") && !res.starts_with("tool error:") {
                 let query_text = tool_calls[i].arguments.get("query").or_else(|| tool_calls[i].arguments.get("url")).and_then(|v| v.as_str()).unwrap_or("");
                 if !query_text.is_empty() {
-                    let _ = SemanticCache::store(&self.db, &self.memory_store, &tool_calls[i].name, query_text, &res, 3600).await;
+                    let _ = SemanticCache::store(&self.db, &self.embedder, &tool_calls[i].name, query_text, &res, 3600).await;
                 }
             }
 
