@@ -1,5 +1,6 @@
 //! Subagent, inter-agent, web-fetch, code-exec, tool-selection, and OpenAI handlers —
 //! extracted from engine.rs for readability.
+//! Easy helpers moved to `pipeline::subagent`; this file retains `run_subagent*` (heavy engine deps).
 
 use super::*;
 use crate::agent::subagent_state;
@@ -7,226 +8,40 @@ use crate::agent::subagent_state;
 /// Sentinel prefix for subagent cancellation errors — matched in spawned task.
 const SUBAGENT_CANCELLED: &str = "subagent cancelled";
 
-/// Parse a duration string like "2m", "30s" for subagent timeout.
-/// Defaults to 2m (120s) on invalid input — matches the config default.
-pub(crate) fn parse_subagent_timeout(s: &str) -> std::time::Duration {
-    let s = s.trim();
-    if let Some(mins) = s.strip_suffix('m')
-        && let Ok(n) = mins.parse::<u64>() {
-        return std::time::Duration::from_secs(n * 60);
-    }
-    if let Some(secs) = s.strip_suffix('s')
-        && let Ok(n) = secs.parse::<u64>() {
-        return std::time::Duration::from_secs(n);
-    }
-    std::time::Duration::from_secs(120) // default 2m
-}
-
-/// Tools denied to subagents by default (prevent recursive spawning, destructive operations, and dangerous ops).
-/// workspace_write and workspace_edit are allowed so subagents can write shared state files (SUB-01).
-pub(super) const SUBAGENT_DENIED_TOOLS: &[&str] = &[
-    "workspace_delete",
-    "workspace_rename", "cron", "secret_set", "process",
-];
+// Re-export pipeline free functions for use within the engine module.
+pub(crate) use crate::agent::pipeline::subagent::parse_subagent_timeout;
+pub(super) use crate::agent::pipeline::subagent::SUBAGENT_DENIED_TOOLS;
 
 impl AgentEngine {
-    /// Fetch URL content, extract readable text, truncate for LLM context.
-    /// Uses 10s timeout to avoid blocking message processing on slow URLs.
-    pub(super) async fn fetch_url_content(&self, url: &str) -> Result<String> {
-        // Only allow localhost on Core API port — block access to internal services.
-        // Parse port from gateway listen address (e.g. "0.0.0.0:18789" → 18789)
-        let core_port = self.app_config.gateway.listen.rsplit(':').next()
-            .and_then(|p| p.parse::<u16>().ok()).unwrap_or(18789);
-        let is_core_api = url.starts_with(&format!("http://localhost:{}", core_port))
-            || url.starts_with(&format!("http://127.0.0.1:{}", core_port));
-
-        if !is_core_api {
-            // SSRF protection: scheme + internal blocklist check (sync),
-            // private IP blocking is handled by ssrf_http_client's DNS resolver.
-            crate::tools::ssrf::validate_url_scheme(url)?;
-        }
-
-        let client = if is_core_api { self.http_client() } else { self.ssrf_http_client() };
-        let resp = client
-            .get(url)
-            .header("User-Agent", "HydeClaw/0.1 (link-preview)")
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            anyhow::bail!("HTTP {}", resp.status());
-        }
-
-        // Skip non-HTML content (PDFs, images, etc.)
-        let ct = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if !ct.contains("text/html") && !ct.contains("text/plain") {
-            anyhow::bail!("non-HTML content: {}", ct);
-        }
-
-        // OOM guard: reject responses larger than 512KB before reading into memory
-        const BODY_LIMIT: u64 = 512 * 1024;
-        if let Some(cl) = resp.content_length()
-            && cl > BODY_LIMIT {
-                anyhow::bail!("response too large ({} bytes, limit {})", cl, BODY_LIMIT);
-            }
-
-        let body = resp.text().await?;
-        // Truncate body if Content-Length was missing/inaccurate
-        let body = if body.len() > BODY_LIMIT as usize {
-            let boundary = body.floor_char_boundary(BODY_LIMIT as usize);
-            body[..boundary].to_string()
-        } else {
-            body
-        };
-
-        // Extract readable content (removes nav, header, footer, ads, etc.)
-        let text = extract_readable_text(&body);
-
-        // Truncate to ~4000 bytes for LLM context (safe UTF-8 boundary)
-        let truncated = if text.len() > 4000 {
-            let boundary = text.floor_char_boundary(4000);
-            format!("{}...\n[truncated, {} characters total]", &text[..boundary], text.chars().count())
-        } else {
-            text
-        };
-
-        Ok(crate::tools::content_security::wrap_external_content(&truncated, &format!("web_fetch:{}", url)))
-    }
-
     /// Enrich user text: auto-fetch URLs (max 2), add attachment descriptions.
+    /// Delegates to the pipeline free function.
     pub(super) async fn enrich_message_text(
         &self,
         user_text: &str,
         attachments: &[hydeclaw_types::MediaAttachment],
     ) -> String {
-        let mut enriched = user_text.to_string();
-
-        // PII redaction before sending to external LLM
-        let (redacted, pii_count) = crate::agent::pii::redact(&enriched);
-        if pii_count > 0 {
-            tracing::info!(count = pii_count, "redacted PII from user message");
-            enriched = redacted;
-        }
-
-        let urls: Vec<String> = extract_urls(user_text);
-        for url in urls.iter().take(2) {
-            match self.fetch_url_content(url).await {
-                Ok(content) => {
-                    tracing::info!(url = %url, len = content.len(), "fetched URL content");
-                    enriched.push_str(&format!("\n\n[Content of URL {}]:\n{}", url, content));
-                }
-                Err(e) => {
-                    tracing::warn!(url = %url, error = %e, "failed to fetch URL");
-                }
-            }
-        }
-        enrich_with_attachments(&mut enriched, attachments);
-
-        // Auto-transcribe voice messages via toolgate STT
         let toolgate_url = self.app_config.toolgate_url.clone()
             .unwrap_or_else(|| "http://localhost:9011".to_string());
-        crate::agent::url_tools::auto_transcribe_audio(
-            &mut enriched, attachments, &toolgate_url, &self.agent.language, self.http_client(),
-        ).await;
-
-        enriched
+        crate::agent::pipeline::subagent::enrich_message_text(
+            self.http_client(),
+            self.ssrf_http_client(),
+            &self.app_config.gateway.listen,
+            &toolgate_url,
+            &self.agent.language,
+            user_text,
+            attachments,
+        ).await
     }
 
-    // handle_spawn_subagent, handle_subagent_status, handle_subagent_logs, handle_subagent_kill
-    // were removed — the old `subagent` tool dispatch no longer calls them.
-    // run_subagent() below is still used by spawn_live_agent() in session_agent_pool.rs.
-
     /// Fetch a URL and return text content.
+    /// Delegates to the pipeline free function.
     pub(super) async fn handle_web_fetch(&self, args: &serde_json::Value) -> String {
-        let url = match args.get("url").and_then(|v| v.as_str()) {
-            Some(u) => u,
-            None => return "Error: 'url' parameter is required.".to_string(),
-        };
-        let max_length = args
-            .get("max_length")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(50000) as usize;
-
-        tracing::info!(url = %url, "web_fetch: fetching URL");
-
-        // Determine if this is a local Core API call (e.g., /api/doctor).
-        // Only allow localhost on Core API port (18789) — block access to internal services
-        // like toolgate (9011), postgres, redis, etc.
-        // Parse port from gateway listen address (e.g. "0.0.0.0:18789" → 18789)
-        let core_port = self.app_config.gateway.listen.rsplit(':').next()
-            .and_then(|p| p.parse::<u16>().ok()).unwrap_or(18789);
-        let is_core_api = url.starts_with(&format!("http://localhost:{}", core_port))
-            || url.starts_with(&format!("http://127.0.0.1:{}", core_port));
-
-        if !is_core_api {
-            // SSRF protection: scheme + internal blocklist (sync);
-            // private IP blocking via ssrf_http_client's DNS resolver.
-            if let Err(e) = crate::tools::ssrf::validate_url_scheme(url) {
-                return format!("Error: {}", e);
-            }
-        }
-
-        let client = if is_core_api { self.http_client() } else { self.ssrf_http_client() };
-        let resp = match client.get(url)
-            .header("User-Agent", "HydeClaw/1.0")
-            .timeout(std::time::Duration::from_secs(30))
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => return format!("Error fetching URL: {}", e),
-        };
-
-        if !resp.status().is_success() {
-            return format!("HTTP error {}", resp.status());
-        }
-
-        let ct = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-
-        // Guard against unbounded response bodies (OOM protection).
-        // Allow 2x max_length to account for HTML tags stripped during extraction.
-        let body_limit = max_length * 2;
-        if let Some(cl) = resp.content_length()
-            && cl as usize > body_limit {
-                return format!("Error: response too large ({} bytes, limit {})", cl, body_limit);
-            }
-
-        let body = match resp.text().await {
-            Ok(t) if t.len() > body_limit => {
-                let boundary = t.floor_char_boundary(body_limit);
-                t[..boundary].to_string()
-            }
-            Ok(t) => t,
-            Err(e) => return format!("Error reading response: {}", e),
-        };
-
-        // Extract readable text from HTML; pass through JSON/plain text as-is
-        let text = if ct.contains("text/html") {
-            extract_readable_text(&body)
-        } else {
-            body
-        };
-
-        // Truncate if too long (safe UTF-8 boundary)
-        let trimmed = if text.len() > max_length {
-            let boundary = text.floor_char_boundary(max_length);
-            format!("{}...\n\n[Truncated at {} chars, total {}]", &text[..boundary], max_length, text.len())
-        } else {
-            text
-        };
-
-        // Wrap in content-security boundary to mitigate prompt injection
-        crate::tools::content_security::wrap_external_content(&trimmed, &format!("web_fetch:{}", url))
+        crate::agent::pipeline::subagent::handle_web_fetch(
+            self.http_client(),
+            self.ssrf_http_client(),
+            &self.app_config.gateway.listen,
+            args,
+        ).await
     }
 
     /// Run an in-process subagent with isolated LLM context.
@@ -442,241 +257,25 @@ impl AgentEngine {
     }
 }
 
-// -- tool selection and OpenAI handler --
+// -- tool selection --
 
 impl AgentEngine {
-    // ── git handlers ──────────────────────────────────────────────────────────
-
     /// Select top-K tools using embedding-based cosine similarity.
-    /// Falls back to keyword scoring when the embedding service is unavailable.
+    /// Delegates to the pipeline free function.
     pub(super) async fn select_top_k_tools_semantic(
         &self,
         tools: Vec<hydeclaw_types::ToolDefinition>,
         query: &str,
         k: usize,
     ) -> Vec<hydeclaw_types::ToolDefinition> {
-        // Always include core tools
-        const ALWAYS_INCLUDE: &[&str] = &[
-            "workspace_read", "workspace_write", "workspace_edit", "workspace_list", "workspace_delete", "workspace_rename",
-            "memory", "code_exec", "agent",
-            "tool_create", "tool_list", "tool_test", "tool_verify", "tool_disable",
-            "skill", "git",
-            // UI-critical tools: must never be filtered out by top-K selection
-            "canvas", "rich_card", "web_fetch",
-            // Agent interaction & system tools
-            "message", "cron", "session", "agents_list", "browser_action",
-            "process", "secret_set", "skill_use", "tool_discover",
-        ];
-
-        let mut always = Vec::new();
-        let mut candidates: Vec<hydeclaw_types::ToolDefinition> = Vec::new();
-        for tool in tools {
-            if ALWAYS_INCLUDE.contains(&tool.name.as_str()) {
-                always.push(tool);
-            } else {
-                candidates.push(tool);
-            }
-        }
-
-        let remaining_slots = k.saturating_sub(always.len());
-        if remaining_slots == 0 || candidates.is_empty() {
-            return always;
-        }
-
-        // Try embedding-based selection if memory store is available
-        if self.memory_store.is_available() {
-            match self.select_by_embedding(&candidates, query, remaining_slots).await {
-                Ok(selected) => {
-                    tracing::debug!(
-                        total = always.len() + selected.len(),
-                        k,
-                        method = "embedding",
-                        "semantic top-K tool selection applied"
-                    );
-                    let mut result = always;
-                    result.extend(selected);
-                    return result;
-                }
-                Err(e) => {
-                    tracing::debug!(error = %e, "embedding unavailable, falling back to keyword scoring");
-                }
-            }
-        }
-
-        // Fallback: keyword scoring
-        let selected = select_top_k_by_keywords(candidates, query, remaining_slots);
-        tracing::debug!(
-            total = always.len() + selected.len(),
+        crate::agent::pipeline::subagent::select_top_k_tools_semantic(
+            self.embedder.as_ref(),
+            self.tool_embed_cache().as_ref(),
+            self.memory_store.is_available(),
+            tools,
+            query,
             k,
-            method = "keyword",
-            "keyword top-K tool selection applied"
-        );
-        let mut result = always;
-        result.extend(selected);
-        result
-    }
-
-    /// Score tools by cosine similarity against the query embedding.
-    pub(super) async fn select_by_embedding(
-        &self,
-        tools: &[hydeclaw_types::ToolDefinition],
-        query: &str,
-        k: usize,
-    ) -> anyhow::Result<Vec<hydeclaw_types::ToolDefinition>> {
-        let query_vec = self.embedder.embed(query).await?;
-
-        let mut scored: Vec<(f32, usize)> = Vec::with_capacity(tools.len());
-        for (idx, tool) in tools.iter().enumerate() {
-            let tool_text = format!("{} {}", tool.name, tool.description);
-            let cache_key = format!("tool::{}", tool.name);
-            let tool_vec = self
-                .tool_embed_cache()
-                .get_or_embed(&cache_key, &tool_text, self.embedder.as_ref())
-                .await?;
-            let sim = crate::tools::embedding::cosine_similarity(&query_vec, &tool_vec);
-            scored.push((sim, idx));
-        }
-
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(k);
-
-        let result = scored
-            .into_iter()
-            .map(|(_, idx)| tools[idx].clone())
-            .collect();
-        Ok(result)
+        ).await
     }
 
 }
-
-/// Keyword-based top-K fallback (original algorithm).
-fn select_top_k_by_keywords(
-    tools: Vec<hydeclaw_types::ToolDefinition>,
-    query: &str,
-    k: usize,
-) -> Vec<hydeclaw_types::ToolDefinition> {
-    let query_words: Vec<String> = query
-        .split_whitespace()
-        .filter(|w| w.len() >= 3)
-        .map(|w| w.to_lowercase())
-        .collect();
-
-    let mut scored: Vec<(usize, hydeclaw_types::ToolDefinition)> = tools
-        .into_iter()
-        .map(|t| {
-            let haystack = format!("{} {}", t.name, t.description).to_lowercase();
-            let score = query_words.iter().filter(|w| haystack.contains(w.as_str())).count();
-            (score, t)
-        })
-        .collect();
-
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
-    scored.truncate(k);
-    scored.into_iter().map(|(_, t)| t).collect()
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── select_top_k_by_keywords ─────────────────────────────────────────────
-
-    fn make_tool(name: &str, description: &str) -> hydeclaw_types::ToolDefinition {
-        hydeclaw_types::ToolDefinition {
-            name: name.to_string(),
-            description: description.to_string(),
-            input_schema: serde_json::json!({}),
-        }
-    }
-
-    #[test]
-    fn select_top_k_empty_tools_returns_empty() {
-        let result = select_top_k_by_keywords(vec![], "search web", 5);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn select_top_k_returns_top_two_by_keyword_match() {
-        let tools = vec![
-            make_tool("web_search", "search the web for information"),
-            make_tool("weather_get", "get current weather data"),
-            make_tool("calculator", "perform arithmetic calculations"),
-        ];
-        let result = select_top_k_by_keywords(tools, "search web information", 2);
-        assert_eq!(result.len(), 2);
-        // web_search matches 3 words; weather_get matches 0; calculator matches 0
-        assert_eq!(result[0].name, "web_search");
-    }
-
-    #[test]
-    fn select_top_k_short_words_ignored() {
-        let tools = vec![
-            make_tool("web_search", "search the web"),
-            make_tool("do_it", "do it now"),
-        ];
-        // "do" and "it" are <3 chars, should not contribute to score
-        let result = select_top_k_by_keywords(tools, "do it", 2);
-        // Neither tool matches; order is stable from sort, but both have score 0
-        assert_eq!(result.len(), 2);
-    }
-
-    #[test]
-    fn select_top_k_no_matches_returns_up_to_k_tools() {
-        let tools = vec![
-            make_tool("alpha", "does alpha things"),
-            make_tool("beta", "does beta things"),
-            make_tool("gamma", "does gamma things"),
-        ];
-        // Query matches nothing — all score 0, still returns up to k
-        let result = select_top_k_by_keywords(tools, "zzz yyy xxx", 2);
-        assert_eq!(result.len(), 2);
-    }
-
-    #[test]
-    fn denied_tools_list_contains_critical_entries() {
-        // Safety: subagent, workspace_delete, workspace_rename, cron must always be denied
-        // "agent" is NOT denied — pool agents need it for peer-to-peer communication.
-        // Session context is provided via enriched _context.
-        assert!(!SUBAGENT_DENIED_TOOLS.contains(&"agent"));
-        assert!(SUBAGENT_DENIED_TOOLS.contains(&"workspace_delete"));
-        assert!(SUBAGENT_DENIED_TOOLS.contains(&"workspace_rename"));
-        assert!(SUBAGENT_DENIED_TOOLS.contains(&"cron"));
-        assert!(SUBAGENT_DENIED_TOOLS.contains(&"secret_set"));
-        assert!(SUBAGENT_DENIED_TOOLS.contains(&"process"));
-    }
-
-    #[test]
-    fn denied_tools_do_not_block_safe_tools() {
-        assert!(!SUBAGENT_DENIED_TOOLS.contains(&"memory"));
-        assert!(!SUBAGENT_DENIED_TOOLS.contains(&"web_fetch"));
-        assert!(!SUBAGENT_DENIED_TOOLS.contains(&"workspace_read"));
-        assert!(!SUBAGENT_DENIED_TOOLS.contains(&"workspace_list"));
-        // SUB-01: workspace_write and workspace_edit unlocked for subagents
-        assert!(!SUBAGENT_DENIED_TOOLS.contains(&"workspace_write"));
-        assert!(!SUBAGENT_DENIED_TOOLS.contains(&"workspace_edit"));
-    }
-
-    // ── parse_subagent_timeout ───────────────────────────────────────────────
-
-    #[test]
-    fn parse_subagent_timeout_minutes() {
-        assert_eq!(parse_subagent_timeout("2m"), std::time::Duration::from_secs(120));
-    }
-
-    #[test]
-    fn parse_subagent_timeout_seconds() {
-        assert_eq!(parse_subagent_timeout("30s"), std::time::Duration::from_secs(30));
-    }
-
-    #[test]
-    fn parse_subagent_timeout_invalid_defaults() {
-        assert_eq!(parse_subagent_timeout("invalid"), std::time::Duration::from_secs(120));
-    }
-
-    #[test]
-    fn parse_subagent_timeout_whitespace() {
-        assert_eq!(parse_subagent_timeout(" 5m "), std::time::Duration::from_secs(300));
-    }
-}
-

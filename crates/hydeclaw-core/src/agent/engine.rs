@@ -16,7 +16,7 @@ use crate::tools::ToolRegistry;
 use super::error_classify;
 use super::thinking::{looks_incomplete, maybe_strip_thinking, strip_thinking};
 use super::tool_loop::LoopDetector;
-use super::url_tools::{enrich_with_attachments, extract_readable_text, extract_urls};
+
 
 // Extracted impl AgentEngine blocks (submodules of engine for full super:: access)
 #[path = "engine_commands.rs"]
