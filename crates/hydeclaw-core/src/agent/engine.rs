@@ -19,19 +19,10 @@ use super::tool_loop::LoopDetector;
 
 
 // Extracted impl AgentEngine blocks (submodules of engine for full super:: access)
-#[path = "engine_commands.rs"]
-mod commands_impl;
-#[path = "engine_sessions.rs"]
-mod sessions_impl;
-#[path = "engine_memory.rs"]
-mod memory_impl;
 #[path = "engine_tools.rs"]
 mod tools_impl;
 #[path = "engine_handlers.rs"]
 mod handlers_impl;
-#[path = "engine_tool_defs.rs"]
-mod tool_defs_impl;
-pub use tool_defs_impl::all_system_tool_names;
 #[path = "engine_subagent.rs"]
 mod subagent_impl;
 #[path = "engine_parallel.rs"]
@@ -44,8 +35,6 @@ mod sandbox_impl;
 mod execution_impl;
 #[path = "engine_sse.rs"]
 mod sse_impl;
-#[path = "engine_agent_tool.rs"]
-mod agent_tool_impl;
 
 /// Resolves env var names through `SecretsManager` (scoped to agent).
 pub(crate) struct SecretsEnvResolver {
@@ -952,11 +941,183 @@ impl AgentEngine {
             }
         }).collect()
     }
+
+    // ── Memory helpers (from engine_memory.rs) ──────────────────────────────
+
+    /// Build L0 memory context: load pinned chunks for this agent.
+    pub(super) async fn build_memory_context(&self, budget_tokens: u32) -> crate::agent::pipeline::memory::MemoryContext {
+        crate::agent::pipeline::memory::build_memory_context(
+            self.memory_store.as_ref(),
+            &self.agent.name,
+            budget_tokens,
+        ).await
+    }
+
+    /// Index extracted facts into memory (called after session compaction via /compact).
+    pub(super) async fn index_facts_to_memory(&self, facts: &[String]) {
+        crate::agent::pipeline::memory::index_facts_to_memory(
+            self.memory_store.as_ref(),
+            &self.agent.name,
+            facts,
+        ).await
+    }
+
+    // ── Context helpers (from engine_context.rs) ─────────────────────────────
+
+    /// Build common context: session, messages, system prompt.
+    pub(super) async fn build_context(
+        &self,
+        msg: &IncomingMessage,
+        include_tools: bool,
+        resume_session_id: Option<Uuid>,
+        force_new_session: bool,
+    ) -> Result<crate::agent::context_builder::ContextSnapshot> {
+        let cb = self.context_builder.get()
+            .expect("context_builder not initialized — call set_context_builder after engine Arc creation");
+        crate::agent::pipeline::context::build_context(cb.as_ref(), msg, include_tools, resume_session_id, force_new_session).await
+    }
+
+    /// Build a SecretsEnvResolver for YAML tool env resolution.
+    pub(super) fn make_resolver(&self) -> SecretsEnvResolver {
+        crate::agent::pipeline::context::make_resolver(self.secrets(), &self.agent.name)
+    }
+
+    /// Build OAuthContext for provider-based YAML tool auth (e.g. `oauth_provider: github`).
+    pub(super) fn make_oauth_context(&self) -> Option<crate::tools::yaml_tools::OAuthContext> {
+        crate::agent::pipeline::context::make_oauth_context(self.oauth().as_ref(), &self.agent.name)
+    }
+
+    /// Format a tool error as structured JSON for better LLM parsing.
+    pub(super) fn format_tool_error(tool_name: &str, error: &str) -> String {
+        crate::agent::pipeline::context::format_tool_error(tool_name, error)
+    }
+
+    /// Truncate a string to `max` chars with "..." suffix, preserving char boundaries.
+    pub(super) fn truncate_preview(s: &str, max: usize) -> String {
+        crate::agent::pipeline::context::truncate_preview(s, max)
+    }
+
+    /// Replace old tool results with "[compacted]" when context exceeds 70% of model window.
+    pub(super) fn compact_tool_results(&self, messages: &mut [Message], context_chars: &mut usize) {
+        crate::agent::pipeline::context::compact_tool_results(
+            &self.agent.model,
+            self.agent.compaction.as_ref(),
+            messages,
+            context_chars,
+        )
+    }
+
+    /// Get compaction parameters from agent config.
+    #[allow(dead_code)]
+    pub(super) fn compaction_params(&self) -> (usize, usize) {
+        crate::agent::pipeline::context::compaction_params(&self.agent.model, self.agent.compaction.as_ref())
+    }
+
+    /// Run compaction on messages if token budget exceeded, indexing extracted facts to memory.
+    pub(super) async fn compact_messages(&self, messages: &mut Vec<Message>, detector: Option<&LoopDetector>) {
+        let engine = self;
+        crate::agent::pipeline::context::compact_messages(
+            &engine.agent.model,
+            engine.agent.compaction.as_ref(),
+            &engine.agent.language,
+            engine.provider.as_ref(),
+            engine.compaction_provider.as_deref(),
+            &engine.db,
+            engine.ui_event_tx.as_ref(),
+            &engine.agent.name,
+            &engine.audit_queue,
+            messages,
+            detector,
+            |facts| async move { engine.index_facts_to_memory(&facts).await },
+        )
+        .await
+    }
+
+    /// Compact a specific session's messages via API.
+    pub async fn compact_session(&self, session_id: uuid::Uuid) -> Result<(usize, usize)> {
+        let engine = self;
+        crate::agent::pipeline::context::compact_session(
+            &engine.db,
+            engine.provider.as_ref(),
+            engine.compaction_provider.as_deref(),
+            &engine.agent.language,
+            &engine.agent.name,
+            session_id,
+            &engine.audit_queue,
+            |facts| async move { engine.index_facts_to_memory(&facts).await },
+        )
+        .await
+    }
+
+    // ── Command handler (from engine_commands.rs) ────────────────────────────
+
+    /// Handle /slash commands. Returns Some(result) if a command matched, None otherwise.
+    pub(super) async fn handle_command(&self, text: &str, msg: &IncomingMessage) -> Option<Result<String>> {
+        let dm_scope = self.agent.session.as_ref()
+            .map(|s| s.dm_scope.as_str())
+            .unwrap_or("per-channel-peer");
+
+        let ctx = crate::agent::pipeline::commands::CommandContext {
+            agent_name: &self.agent.name,
+            agent_language: &self.agent.language,
+            agent_model: &self.agent.model,
+            dm_scope,
+            max_history_messages: self.agent.max_history_messages,
+            compaction_config: self.agent.compaction.as_ref(),
+            db: &self.db,
+            provider: self.provider.as_ref(),
+            compaction_provider: self.compaction_provider.as_deref(),
+            thinking_level: &self.thinking_level,
+            memory_store: self.memory_store.as_ref(),
+        };
+
+        crate::agent::pipeline::commands::handle_command(
+            &ctx,
+            text,
+            msg,
+            || async { self.invalidate_yaml_tools_cache().await },
+        ).await
+    }
+
+    // ── Tool definitions (from engine_tool_defs.rs) ──────────────────────────
+
+    /// Resolve tool group settings (from agent config or defaults).
+    pub(super) fn tool_groups(&self) -> &crate::config::ToolGroups {
+        crate::agent::pipeline::tool_defs::resolve_tool_groups(self.agent.tools.as_ref())
+    }
+
+    /// Return tool definitions for internal tools available to the LLM.
+    pub(super) fn internal_tool_definitions(&self) -> Vec<ToolDefinition> {
+        let browser_url = Self::browser_renderer_url();
+        let ctx = crate::agent::pipeline::tool_defs::ToolDefsContext {
+            is_base: self.agent.base,
+            groups: self.tool_groups(),
+            default_timezone: &self.default_timezone,
+            has_sandbox: self.sandbox().is_some(),
+            browser_renderer_url: &browser_url,
+        };
+        crate::agent::pipeline::tool_defs::build_internal_tool_definitions(&ctx)
+    }
+
+    /// Internal tool definitions filtered for subagent use.
+    pub(super) fn internal_tool_definitions_for_subagent(
+        &self,
+        allowed_tools: Option<&[String]>,
+    ) -> Vec<hydeclaw_types::ToolDefinition> {
+        crate::agent::pipeline::tool_defs::filter_for_subagent(
+            self.internal_tool_definitions(),
+            subagent_impl::SUBAGENT_DENIED_TOOLS,
+            allowed_tools,
+        )
+    }
+}
+
+/// All system (internal) tool names — single source of truth.
+pub fn all_system_tool_names() -> &'static [&'static str] {
+    crate::agent::pipeline::tool_defs::all_system_tool_names()
 }
 
 // ── Extracted submodules ─────────────────────────────────────────────────────
-#[path = "engine_context.rs"]
-mod context_impl;
 #[path = "engine_provider.rs"]
 mod provider_impl;
 #[path = "engine_dispatch.rs"]
@@ -1191,6 +1352,14 @@ mod tests {
         assert!(CACHEABLE_SEARCH_TOOLS.contains(&"searxng_search"));
         assert!(CACHEABLE_SEARCH_TOOLS.contains(&"brave_search"));
         assert!(!CACHEABLE_SEARCH_TOOLS.contains(&"memory_search"));
+    }
+
+    #[test]
+    fn agent_in_system_tool_names() {
+        let names = all_system_tool_names();
+        assert!(names.contains(&"agent"), "agent must be in all_system_tool_names()");
+        assert!(!names.contains(&"handoff"), "handoff should be removed");
+        assert!(!names.contains(&"subagent"), "subagent should be removed");
     }
 }
 

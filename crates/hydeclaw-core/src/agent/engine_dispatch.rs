@@ -53,7 +53,7 @@ impl AgentEngine {
             });
 
             // Record tool quality (non-system tools only)
-            if !tool_defs_impl::all_system_tool_names().contains(&name) {
+            if !super::all_system_tool_names().contains(&name) {
                 self.audit_queue.send(crate::db::audit_queue::AuditEvent::ToolQuality {
                     tool_name: name.to_string(),
                     success: !is_error,
@@ -144,7 +144,13 @@ impl AgentEngine {
                 "memory" => Some(self.dispatch_memory_tool(arguments).await),
                 "message" => Some(self.handle_message_action(arguments).await),
                 "cron" => Some(self.handle_cron(arguments).await),
-                "agent" => Some(self.handle_agent_tool(arguments).await),
+                "agent" => Some(crate::agent::pipeline::agent_tool::handle_agent_tool(
+                    self.session_pools.as_ref(),
+                    self.agent_map.as_ref(),
+                    &self.db,
+                    &self.agent.name,
+                    arguments,
+                ).await),
                 "web_fetch" => Some(self.handle_web_fetch(arguments).await),
                 "tool_create" => Some(self.handle_tool_create(arguments).await),
                 "tool_list" => Some(self.handle_tool_list(arguments).await),
@@ -156,7 +162,12 @@ impl AgentEngine {
                 "tool_discover" => Some(self.handle_tool_discover(arguments).await),
                 "secret_set" => Some(self.handle_secret_set(arguments).await),
                 "session" => Some(self.dispatch_session_tool(arguments).await),
-                "agents_list" => Some(self.handle_agents_list(arguments).await),
+                "agents_list" => Some(crate::agent::pipeline::sessions::handle_agents_list(
+                    self.agent_map.as_ref(),
+                    self.session_pools.as_ref(),
+                    &self.agent.name,
+                    arguments,
+                ).await),
                 "browser_action" => Some(self.handle_browser_action(arguments).await),
                 "code_exec" => Some(self.handle_code_exec(arguments).await),
                 "git" => Some(self.dispatch_git_tool(arguments).await),
@@ -308,13 +319,23 @@ impl AgentEngine {
     // ── Dispatch helpers for tools with sub-action routing ──────────────
 
     async fn dispatch_memory_tool(&self, arguments: &serde_json::Value) -> String {
+        use crate::agent::pipeline::memory as pipeline_memory;
         let action = arguments.get("action").and_then(|v| v.as_str()).unwrap_or("");
         match action {
-            "search" => self.handle_memory_search(arguments).await,
-            "index" => self.handle_memory_index(arguments).await,
-            "reindex" => self.handle_memory_reindex(arguments).await,
-            "get" => self.handle_memory_get(arguments).await,
-            "delete" => self.handle_memory_delete(arguments).await,
+            "search" => {
+                let pinned_ids = self.tex().pinned_chunk_ids.lock().await.clone();
+                pipeline_memory::handle_memory_search(
+                    self.memory_store.as_ref(), &self.agent.name, &pinned_ids, arguments,
+                ).await
+            }
+            "index" => pipeline_memory::handle_memory_index(
+                self.memory_store.as_ref(), &self.agent.name, arguments,
+            ).await,
+            "reindex" => pipeline_memory::handle_memory_reindex(
+                self.memory_store.as_ref(), &self.agent.name, &self.workspace_dir, arguments,
+            ).await,
+            "get" => pipeline_memory::handle_memory_get(self.memory_store.as_ref(), arguments).await,
+            "delete" => pipeline_memory::handle_memory_delete(self.memory_store.as_ref(), arguments).await,
             "update" => {
                 // Remap sub_action -> action for handle_memory_update compatibility
                 let mut args = arguments.clone();
@@ -322,7 +343,9 @@ impl AgentEngine {
                     && let Some(obj) = args.as_object_mut() {
                         obj.insert("action".to_string(), sa);
                     }
-                self.handle_memory_update(&args).await
+                pipeline_memory::handle_memory_update(
+                    &self.tex().memory_md_lock, &self.workspace_dir, &self.agent.name, &args,
+                ).await
             }
             _ => format!("Error: unknown memory action '{}'. Use: search, index, reindex, get, delete, update.", action),
         }
@@ -339,14 +362,15 @@ impl AgentEngine {
     }
 
     async fn dispatch_session_tool(&self, arguments: &serde_json::Value) -> String {
+        use crate::agent::pipeline::sessions;
         let action = arguments.get("action").and_then(|v| v.as_str()).unwrap_or("");
         match action {
-            "list" => self.handle_sessions_list(arguments).await,
-            "history" => self.handle_sessions_history(arguments).await,
-            "search" => self.handle_session_search(arguments).await,
-            "context" => self.handle_session_context(arguments).await,
-            "send" => self.handle_session_send(arguments).await,
-            "export" => self.handle_session_export(arguments).await,
+            "list" => sessions::handle_sessions_list(&self.db, &self.agent.name, arguments).await,
+            "history" => sessions::handle_sessions_history(&self.db, &self.agent.name, arguments).await,
+            "search" => sessions::handle_session_search(&self.db, &self.agent.name, arguments).await,
+            "context" => sessions::handle_session_context(&self.db, arguments).await,
+            "send" => sessions::handle_session_send(self.channel_router.as_ref(), arguments).await,
+            "export" => sessions::handle_session_export(&self.db, arguments).await,
             _ => format!("Error: unknown session action '{}'. Use: list, history, search, context, send, export.", action),
         }
     }
