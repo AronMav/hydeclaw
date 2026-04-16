@@ -30,6 +30,7 @@ pub mod mention_parser;
 pub mod workspace;
 pub mod knowledge_extractor;
 pub mod agent_config;
+pub mod pipeline;
 
 /// Delete upload files older than `max_age` from workspace/uploads/.
 pub async fn cleanup_stale_uploads(workspace_dir: &str, max_age: std::time::Duration) -> usize {
