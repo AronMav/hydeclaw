@@ -171,10 +171,10 @@ pub(crate) async fn gmail_push_handler(
     let expected_token = std::env::var("HYDECLAW_AUTH_TOKEN").unwrap_or_default();
     let provided_token = params.get("token").map_or("", std::string::String::as_str);
     use subtle::ConstantTimeEq;
-    if !expected_token.is_empty()
-        && !bool::from(provided_token.as_bytes().ct_eq(expected_token.as_bytes()))
+    if expected_token.is_empty()
+        || !bool::from(provided_token.as_bytes().ct_eq(expected_token.as_bytes()))
     {
-        tracing::warn!("gmail push: rejected request with invalid token");
+        tracing::warn!("gmail push: rejected request (missing or invalid token)");
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
