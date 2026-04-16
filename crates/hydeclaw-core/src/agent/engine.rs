@@ -485,25 +485,7 @@ impl AgentEngine {
 
     /// Check if a tool requires approval before execution.
     fn needs_approval(&self, tool_name: &str) -> bool {
-        let approval = match &self.agent.approval {
-            Some(a) if a.enabled => a,
-            _ => return false,
-        };
-
-        // Check explicit tool names
-        if approval.require_for.iter().any(|t| t == tool_name) {
-            return true;
-        }
-
-        // Check categories
-        if !approval.require_for_categories.is_empty() {
-            let category = super::channel_kind::ToolCategory::classify(tool_name);
-            if approval.require_for_categories.iter().any(|c| c == category.as_str()) {
-                return true;
-            }
-        }
-
-        false
+        super::pipeline::dispatch::needs_approval(self.agent.approval.as_ref(), tool_name)
     }
 
     /// Resolve a pending approval (called from API/callback handler).

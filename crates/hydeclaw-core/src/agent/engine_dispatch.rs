@@ -18,9 +18,7 @@ impl AgentEngine {
 
             // Audit record (dispatched via bounded queue)
             let duration_ms = audit_start.elapsed().as_millis() as i32;
-            let is_error = result.contains("\"status\":\"error\"")
-                || result.starts_with("Error:")
-                || result.starts_with("Tool '") && result.contains("timed out");
+            let is_error = crate::agent::pipeline::dispatch::classify_tool_result(&result);
             let (status, error_msg) = if is_error {
                 ("error", Some(result.clone()))
             } else {
@@ -35,13 +33,7 @@ impl AgentEngine {
                 .and_then(|s| Uuid::parse_str(s).ok());
 
             // Strip _context from parameters before storing (contains internal routing data)
-            let clean_params = {
-                let mut p = arguments.clone();
-                if let Some(obj) = p.as_object_mut() {
-                    obj.remove("_context");
-                }
-                p
-            };
+            let clean_params = crate::agent::pipeline::dispatch::clean_tool_params(arguments);
 
             // Hook: AfterToolResult (fire-and-forget, non-blocking)
             self.hooks().fire(&crate::agent::hooks::HookEvent::AfterToolResult {
@@ -301,89 +293,16 @@ impl AgentEngine {
         tools: Vec<ToolDefinition>,
         override_policy: &crate::config::AgentToolPolicy,
     ) -> Vec<ToolDefinition> {
-        let base_deny = self.agent.tools.as_ref().map(|p| &p.deny);
-
-        tools.into_iter().filter(|t| {
-            // Union of deny lists
-            if override_policy.deny.iter().any(|d| d == &t.name) {
-                return false;
-            }
-            if let Some(bd) = base_deny
-                && bd.iter().any(|d| d == &t.name) {
-                    return false;
-                }
-            // If override has a non-empty allow list, restrict to those tools only
-            if !override_policy.allow.is_empty() {
-                return override_policy.allow.iter().any(|a| a == &t.name);
-            }
-            true
-        }).collect()
+        let base_deny = self.agent.tools.as_ref().map(|p| p.deny.as_slice());
+        crate::agent::pipeline::dispatch::apply_tool_policy_override(tools, base_deny, override_policy)
     }
 
     pub(super) fn filter_tools_by_policy(&self, tools: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
-        let policy = match &self.agent.tools {
-            Some(p) => p,
-            None => return tools,
-        };
-
-        let before = tools.len();
-        let filtered: Vec<ToolDefinition> = tools
-            .into_iter()
-            .filter(|t| {
-                let name = t.name.as_str();
-
-                // Check deny list first (applies to ALL tools including core)
-                if policy.deny.iter().any(|d| d == name) {
-                    return false;
-                }
-
-                // Core internal tools (workspace, memory, system) always allowed unless denied above
-                if matches!(
-                    name,
-                    "workspace_write" | "workspace_read" | "workspace_list" | "workspace_edit" | "workspace_delete" | "workspace_rename" |
-                    "web_fetch" | "agent" |
-                    "message" | "cron" | "code_exec" | "browser_action" |
-                    "git" | "session" | "skill" | "skill_use" |
-                    "canvas" | "rich_card" | "agents_list" | "secret_set" |
-                    "process"
-                ) {
-                    return true;
-                }
-
-                // Memory tool requires memory_store to be available
-                if name == "memory" {
-                    return self.memory_store.is_available();
-                }
-
-                // Tool management tools
-                if name.starts_with("tool_") {
-                    return true;
-                }
-                // allow_all = everything not denied
-                if policy.allow_all {
-                    return true;
-                }
-                // deny_all_others = only explicitly allowed
-                if policy.deny_all_others {
-                    return policy.allow.iter().any(|a| a == &t.name);
-                }
-                // Non-empty allow list = only those
-                if !policy.allow.is_empty() {
-                    return policy.allow.iter().any(|a| a == &t.name);
-                }
-                true
-            })
-            .collect();
-
-        if filtered.len() != before {
-            tracing::info!(
-                agent = %self.agent.name,
-                before,
-                after = filtered.len(),
-                "tool policy applied"
-            );
-        }
-        filtered
+        crate::agent::pipeline::dispatch::filter_tools_by_policy(
+            tools,
+            self.agent.tools.as_ref(),
+            self.memory_store.is_available(),
+        )
     }
 
     // ── Dispatch helpers for tools with sub-action routing ──────────────
