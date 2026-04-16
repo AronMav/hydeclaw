@@ -53,7 +53,7 @@ impl AgentEngine {
             return Ok(a_msg_id);
         }
 
-        let thinking_level = self.thinking_level.load(std::sync::atomic::Ordering::Relaxed);
+        let thinking_level = self.state().thinking_level.load(std::sync::atomic::Ordering::Relaxed);
 
         // Branch-aware context: when leaf_message_id is set (from frontend),
         // build_context uses load_branch_messages instead of flat load_messages.
@@ -86,8 +86,8 @@ impl AgentEngine {
         });
         self.broadcast_ui_event(start_event.clone());
         let _processing_guard = ProcessingGuard::new(
-            self.ui_event_tx.clone(),
-            self.processing_tracker.clone(),
+            self.state().ui_event_tx.clone(),
+            self.state().processing_tracker.clone(),
             self.cfg().agent.name.clone(),
             &start_event,
         );
@@ -215,7 +215,7 @@ impl AgentEngine {
                     lifecycle_guard.fail(&reason_str).await;
                     exec_helpers::notify_agent_error(
                         self.cfg().db.clone(),
-                        self.ui_event_tx.as_ref(),
+                        self.state().ui_event_tx.as_ref(),
                         &self.cfg().agent.name,
                         &reason_str,
                     );
@@ -237,7 +237,7 @@ impl AgentEngine {
                     tracing::info!(iteration, count = auto_continue_count, max = loop_config.max_auto_continues, "auto-continue: response looks incomplete, nudging LLM");
                     exec_helpers::notify_auto_continue(
                         self.cfg().db.clone(),
-                        self.ui_event_tx.as_ref(),
+                        self.state().ui_event_tx.as_ref(),
                         &self.cfg().agent.name,
                         auto_continue_count,
                         loop_config.max_auto_continues,
@@ -430,7 +430,7 @@ impl AgentEngine {
                 if !loop_broken && iteration == loop_config.effective_max_iterations() - 1 {
                     exec_helpers::notify_iteration_limit(
                         self.cfg().db.clone(),
-                        self.ui_event_tx.as_ref(),
+                        self.state().ui_event_tx.as_ref(),
                         &self.cfg().agent.name,
                         loop_config.effective_max_iterations(),
                     );
@@ -439,7 +439,7 @@ impl AgentEngine {
                 if loop_broken && loop_nudge_count >= loop_config.max_loop_nudges {
                     exec_helpers::notify_loop_detected(
                         self.cfg().db.clone(),
-                        self.ui_event_tx.as_ref(),
+                        self.state().ui_event_tx.as_ref(),
                         &self.cfg().agent.name,
                         session_id,
                     );
@@ -475,7 +475,7 @@ impl AgentEngine {
                         lifecycle_guard.fail(&reason_str).await;
                         exec_helpers::notify_agent_error(
                             self.cfg().db.clone(),
-                            self.ui_event_tx.as_ref(),
+                            self.state().ui_event_tx.as_ref(),
                             &self.cfg().agent.name,
                             &reason_str,
                         );

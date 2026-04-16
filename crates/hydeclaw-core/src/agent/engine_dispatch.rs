@@ -97,8 +97,8 @@ impl AgentEngine {
                         arguments,
                         &context,
                         timeout_secs,
-                        self.channel_router.as_ref(),
-                        self.ui_event_tx.as_ref(),
+                        self.state().channel_router.as_ref(),
+                        self.state().ui_event_tx.as_ref(),
                         self.sse_event_tx(),
                     ).await;
 
@@ -369,7 +369,7 @@ impl AgentEngine {
             "history" => sessions::handle_sessions_history(&self.cfg().db, &self.cfg().agent.name, arguments).await,
             "search" => sessions::handle_session_search(&self.cfg().db, &self.cfg().agent.name, arguments).await,
             "context" => sessions::handle_session_context(&self.cfg().db, arguments).await,
-            "send" => sessions::handle_session_send(self.channel_router.as_ref(), arguments).await,
+            "send" => sessions::handle_session_send(self.state().channel_router.as_ref(), arguments).await,
             "export" => sessions::handle_session_export(&self.cfg().db, arguments).await,
             _ => format!("Error: unknown session action '{}'. Use: list, history, search, context, send, export.", action),
         }

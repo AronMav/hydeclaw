@@ -70,7 +70,7 @@ impl AgentEngine {
     // TODO: extract handle_message_action to pipeline::handlers — depends on self.channel_router (ChannelAction, oneshot, timeout)
     /// Internal tool: perform message actions via channel router.
     pub(super) async fn handle_message_action(&self, args: &serde_json::Value) -> String {
-        let router = match &self.channel_router {
+        let router = match &self.state().channel_router {
             Some(r) => r,
             None => return "Error: message actions not available (no channel connection)".to_string(),
         };
@@ -126,7 +126,7 @@ impl AgentEngine {
         chat_id: i64,
         text: &str,
     ) -> anyhow::Result<()> {
-        let router = self.channel_router.as_ref()
+        let router = self.state().channel_router.as_ref()
             .ok_or_else(|| anyhow::anyhow!("no channel connection available"))?;
         let (reply_tx, _) = tokio::sync::oneshot::channel();
         let action = ChannelAction {
@@ -191,7 +191,7 @@ impl AgentEngine {
         let channel_result = if !has_channel_context {
             tracing::info!(tool = %tool.name, "skipping channel action: no chat_id in context (UI session)");
             None
-        } else if let Some(ref router) = self.channel_router {
+        } else if let Some(ref router) = self.state().channel_router {
             use base64::Engine as _;
             let data_base64 = base64::engine::general_purpose::STANDARD.encode(&data_bytes);
             tracing::info!(tool = %tool.name, context = %context, "channel action: sending to adapter");
