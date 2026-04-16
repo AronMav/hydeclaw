@@ -194,7 +194,7 @@ async fn channel_ws_loop(
 
                         // Cache formatting prompt on engine for cron/heartbeat use
                         {
-                            let mut cached = engine.channel_formatting_prompt.write().await;
+                            let mut cached = engine.state().channel_formatting_prompt.write().await;
                             *cached = fp;
                         }
 
@@ -234,7 +234,7 @@ async fn channel_ws_loop(
                         ).ok();
 
                         // Subscribe to channel action router (non-exclusive, multi-channel)
-                        if let Some(ref router) = engine.channel_router {
+                        if let Some(ref router) = engine.state().channel_router {
                             let (id, rx) = router.subscribe(&channel_type).await;
                             channel_action_rx = rx;
                             channel_conn_id = Some(id);
@@ -854,7 +854,7 @@ async fn channel_ws_loop(
     }
 
     // Unsubscribe from channel router on disconnect (by connection ID, not type)
-    if let Some(router) = &engine.channel_router
+    if let Some(router) = &engine.state().channel_router
         && let Some(conn_id) = &channel_conn_id {
             router.unsubscribe(conn_id).await;
         }

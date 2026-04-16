@@ -113,23 +113,10 @@ pub struct BgProcess {
     pub started_at: std::time::Instant,
 }
 
-// Step B complete: engine code reads via `self.cfg()`.
+// Step C complete: 6 runtime fields removed — accessed via self.state().
 pub struct AgentEngine {
-    /// Multi-channel router for sending actions to channel adapters.
-    pub channel_router: Option<ChannelActionRouter>,
     /// Weak self-reference for hot-scheduling cron jobs. Set once after Arc creation.
     pub self_ref: OnceLock<Weak<AgentEngine>>,
-    /// Broadcast channel for UI events (`agent_processing` start/end).
-    pub ui_event_tx: Option<tokio::sync::broadcast::Sender<String>>,
-    /// Shared tracker for currently processing agents (for WS reconnection).
-    pub processing_tracker: Option<crate::gateway::ProcessingTracker>,
-    /// Last formatting prompt received from a connected channel adapter (e.g. Telegram).
-    /// Used by cron/heartbeat to format output correctly for the channel.
-    pub channel_formatting_prompt: tokio::sync::RwLock<Option<String>>,
-    /// Cached channel info for system prompt injection (invalidated on channel CRUD).
-    pub channel_info_cache: tokio::sync::RwLock<Option<Vec<workspace::ChannelInfo>>>,
-    /// Thinking display level (0=off, 1=minimal, 2=low, 3=medium, 4=high, 5=max).
-    pub thinking_level: std::sync::atomic::AtomicU8,
     /// Context builder — builds session/messages/tools for each LLM call.
     /// Initialized via `set_context_builder` after engine Arc creation (mirrors `self_ref` pattern).
     /// Holds `Arc<dyn ContextBuilder>` for testability (`MockContextBuilder` in plan 02).
@@ -138,7 +125,7 @@ pub struct AgentEngine {
     /// Stored as concrete `Arc<DefaultToolExecutor>` for direct field access in engine methods.
     /// Initialized via `set_tool_executor` after engine Arc creation.
     pub tool_executor: OnceLock<Arc<crate::agent::tool_executor::DefaultToolExecutor>>,
-    /// Per-agent mutable state (cancel/drain for shutdown and SIGHUP).
+    /// Per-agent mutable state (cancel/drain for shutdown, runtime fields).
     /// `None` for subagent engines — they are lightweight copies without lifecycle tracking.
     pub state: Option<Arc<crate::agent::agent_state::AgentState>>,
     /// Immutable agent configuration snapshot — sole source for agent settings,

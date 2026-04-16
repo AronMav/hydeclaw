@@ -136,13 +136,7 @@ pub async fn start_agent_from_config(
     });
 
     let engine = Arc::new(AgentEngine {
-        channel_router: Some(channel_router.clone()),
         self_ref: std::sync::OnceLock::new(),
-        ui_event_tx: Some(bus.ui_event_tx.clone()),
-        processing_tracker: Some(status.processing_tracker.clone()),
-        channel_formatting_prompt: tokio::sync::RwLock::new(None),
-        channel_info_cache: tokio::sync::RwLock::new(None),
-        thinking_level: std::sync::atomic::AtomicU8::new(0),
         context_builder: std::sync::OnceLock::new(),
         tool_executor: std::sync::OnceLock::new(),
         state: Some(agent_state),
