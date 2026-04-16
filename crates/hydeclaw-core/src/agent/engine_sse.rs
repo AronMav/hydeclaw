@@ -126,6 +126,15 @@ impl AgentEngine {
         let mut final_thinking_blocks: Vec<hydeclaw_types::ThinkingBlock> = vec![];
         let loop_config = self.tool_loop_config();
         let mut detector = LoopDetector::new(&loop_config);
+        // WAL warm-up: replay tool events from previous runs into LoopDetector (BUG-026)
+        if let Ok(events) = crate::db::session_wal::load_tool_events(&self.cfg().db, session_id).await {
+            for ev in &events {
+                detector.record_result_from_wal(&ev.tool_name, ev.success);
+            }
+            if !events.is_empty() {
+                tracing::debug!(session_id = %session_id, count = events.len(), "WAL warm-up: replayed tool events into LoopDetector");
+            }
+        }
         let mut loop_nudge_count: usize = 0;
         let mut did_reset_session = false;
         let mut empty_retry_count: u8 = 0;
