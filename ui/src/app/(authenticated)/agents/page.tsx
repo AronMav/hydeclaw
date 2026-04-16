@@ -503,8 +503,9 @@ export default function AgentsPage() {
     setSaving(false);
   }, [deleteTarget, load]);
 
+  const isValidName = /^[a-zA-Z0-9_-]+$/.test(form.name.trim());
   const canSave =
-    form.name.trim().length > 0 &&
+    isValidName &&
     form.provider.trim().length > 0 &&
     form.model.trim().length > 0 &&
     (!form.hbEnabled || form.hbCron.trim().length > 0);

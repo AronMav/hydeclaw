@@ -166,6 +166,7 @@ export function AgentEditDialog({
   onDeleteChannelRequest,
 }: AgentEditDialogProps) {
   const { t } = useTranslation();
+  const isValidAgentName = form.name.trim().length === 0 || /^[a-zA-Z0-9_-]+$/.test(form.name.trim());
   const { data: allProviders = [] } = useProviders();
   const llmProviders = allProviders.filter((p) => p.type === "text");
   const selectedProvider = llmProviders.find((p) => p.name === form.providerConnection);
@@ -238,6 +239,9 @@ export function AgentEditDialog({
                     className="bg-background border-border font-mono text-sm h-8"
                     onChange={(e) => upd({ name: e.target.value })}
                   />
+                  {!isValidAgentName && (
+                    <p className="text-sm text-red-500 mt-1">Only letters, numbers, hyphens and underscores allowed</p>
+                  )}
                 </Field>
                 <Field label={t("agents.field_language")} className="w-full sm:w-36 sm:shrink-0">
                   <Select value={form.language} onValueChange={(v) => upd({ language: v })}>
