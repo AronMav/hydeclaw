@@ -170,17 +170,10 @@ pub(crate) async fn request_rate_limit_middleware(
         return next.run(req).await;
     }
 
-    // WebSocket: enforce connection budget instead of request rate
+    // Skip WS budget for upgrade requests — the budget is released on 101 response,
+    // not when the WS connection actually closes. The auth middleware provides sufficient protection.
     if path.starts_with("/ws") {
-        let client_ip = extract_client_ip(&req);
-        if !ws_budget.acquire(&client_ip).await {
-            tracing::warn!(ip = %client_ip, "WS connection budget exceeded");
-            return StatusCode::TOO_MANY_REQUESTS.into_response();
-        }
-        let resp = next.run(req).await;
-        // Release on response (upgrade failures and normal responses)
-        ws_budget.release(&client_ip).await;
-        return resp;
+        return next.run(req).await;
     }
 
     let client_ip = extract_client_ip(&req);
