@@ -45,8 +45,11 @@ impl AgentEngine {
             } else {
                 crate::db::sessions::get_or_create_session(&self.cfg().db, &self.cfg().agent.name, &msg.user_id, &msg.channel, self.cfg().agent.session.as_ref().map(|s| s.dm_scope.as_str()).unwrap_or("default")).await?
             };
-            let u_msg_id = SessionManager::new(self.cfg().db.clone()).save_message_ex(sid, "user", &user_text, None, None, None, None, msg.leaf_message_id).await?;
-            let a_msg_id = SessionManager::new(self.cfg().db.clone()).save_message_ex(sid, "assistant", &text, None, None, Some(&self.cfg().agent.name), None, Some(u_msg_id)).await?;
+            let sm = SessionManager::new(self.cfg().db.clone());
+            let u_msg_id = sm.save_message_ex(sid, "user", &user_text, None, None, None, None, msg.leaf_message_id).await?;
+            let a_msg_id = sm.save_message_ex(sid, "assistant", &text, None, None, Some(&self.cfg().agent.name), None, Some(u_msg_id)).await?;
+            // Mark slash-command sessions as done (they skip the LLM lifecycle guard)
+            let _ = sm.set_run_status(sid, "done").await;
             if let (Some(state), Some((id, _))) = (&self.state, &cancel_guard) {
                 state.unregister_request(id);
             }
