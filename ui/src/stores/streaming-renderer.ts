@@ -686,6 +686,14 @@ export function createStreamingRenderer(store: StoreAccess) {
               assistantId = uuid();
               assistantCreatedAt = new Date().toISOString();
               parts = [];
+
+              // Mark session as no longer running (don't rely solely on WS agent_processing event)
+              if (receivedSessionId) {
+                const sid = receivedSessionId;
+                store.set((draft: any) => {
+                  draft.activeSessionIds = (draft.activeSessionIds || []).filter((id: string) => id !== sid);
+                });
+              }
               break;
             }
 
