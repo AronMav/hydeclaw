@@ -115,6 +115,9 @@ pub struct BgProcess {
     pub started_at: std::time::Instant,
 }
 
+// Step B complete: engine code reads via `self.cfg()`.
+// Old fields kept for external code (handle.rs, gateway/); removed in Step C.
+#[allow(dead_code)]
 pub struct AgentEngine {
     pub provider: Arc<dyn LlmProvider>,
     pub agent: AgentSettings,
@@ -168,10 +171,9 @@ pub struct AgentEngine {
     /// Per-agent mutable state (cancel/drain for shutdown and SIGHUP).
     /// `None` for subagent engines — they are lightweight copies without lifecycle tracking.
     pub state: Option<Arc<crate::agent::agent_state::AgentState>>,
-    /// Immutable agent configuration snapshot (Step A of thin-wrapper conversion).
-    /// Temporarily duplicates fields already on `AgentEngine` — will be the single
-    /// source of truth once accessor migration (Step B) is complete.
-    #[allow(dead_code)]
+    /// Immutable agent configuration snapshot.
+    /// Accessor migration (Step B) redirects all reads here; old fields are
+    /// still present for external code but will be removed in Step C.
     pub cfg: Option<Arc<crate::agent::agent_config::AgentConfig>>,
 }
 
@@ -299,7 +301,6 @@ impl AgentEngine {
     /// Access the immutable config snapshot.
     /// Panics if called on an engine that was not constructed with a config
     /// (should not happen for top-level engines).
-    #[allow(dead_code)]
     pub fn cfg(&self) -> &crate::agent::agent_config::AgentConfig {
         self.cfg
             .as_ref()
@@ -308,22 +309,22 @@ impl AgentEngine {
 
     /// Agent name (from config).
     pub fn name(&self) -> &str {
-        &self.agent.name
+        &self.cfg().agent.name
     }
 
     /// Primary model name (from config).
     pub fn model_name(&self) -> String {
-        self.agent.model.clone()
+        self.cfg().agent.model.clone()
     }
 
     /// Borrow the database pool.
     pub fn db_pool(&self) -> &PgPool {
-        &self.db
+        &self.cfg().db
     }
 
     /// Clone the LLM provider Arc for use outside the engine.
     pub fn provider_arc(&self) -> Arc<dyn LlmProvider> {
-        self.provider.clone()
+        self.cfg().provider.clone()
     }
 
     /// Read the current channel formatting prompt.
@@ -338,17 +339,17 @@ impl AgentEngine {
 
     /// Borrow the agent access config, if set.
     pub fn agent_access(&self) -> Option<&crate::config::AgentAccessConfig> {
-        self.agent.access.as_ref()
+        self.cfg().agent.access.as_ref()
     }
 
     /// Delegate model override to the underlying provider.
     pub fn set_model_override(&self, model: Option<String>) {
-        self.provider.set_model_override(model);
+        self.cfg().provider.set_model_override(model);
     }
 
     /// Return the current active model name from the provider.
     pub fn current_model(&self) -> String {
-        self.provider.current_model()
+        self.cfg().provider.current_model()
     }
 
     // ── Lifecycle ──────────────────────────────────────────────────
@@ -487,13 +488,13 @@ impl AgentEngine {
 
     /// Check if a tool requires approval before execution.
     fn needs_approval(&self, tool_name: &str) -> bool {
-        super::pipeline::dispatch::needs_approval(self.agent.approval.as_ref(), tool_name)
+        super::pipeline::dispatch::needs_approval(self.cfg().agent.approval.as_ref(), tool_name)
     }
 
     /// Resolve a pending approval (called from API/callback handler).
     pub async fn resolve_approval(&self, approval_id: Uuid, approved: bool, resolved_by: &str, modified_input: Option<serde_json::Value>) -> anyhow::Result<()> {
         let status = if approved { "approved" } else { "rejected" };
-        let updated = crate::db::approvals::resolve_approval(&self.db, approval_id, status, resolved_by).await?;
+        let updated = crate::db::approvals::resolve_approval(&self.cfg().db, approval_id, status, resolved_by).await?;
         if !updated {
             anyhow::bail!("approval {approval_id} not found or already resolved");
         }
@@ -505,7 +506,7 @@ impl AgentEngine {
         self.broadcast_ui_event(serde_json::json!({
             "type": "approval_resolved",
             "approval_id": approval_id.to_string(),
-            "agent": self.agent.name,
+            "agent": self.cfg().agent.name,
             "status": status,
         }));
 
@@ -520,7 +521,7 @@ impl AgentEngine {
         }
 
         // Wake up the waiting tool execution
-        let mut waiters = self.approval_manager.waiters().write().await;
+        let mut waiters = self.cfg().approval_manager.waiters().write().await;
         if let Some((tx, _created_at)) = waiters.remove(&approval_id) {
             let result = if approved {
                 match modified_input {
@@ -549,7 +550,7 @@ impl AgentEngine {
 
     /// Check if an enabled YAML tool exists in workspace/tools/ (shared tools).
     async fn has_tool(&self, name: &str) -> bool {
-        let dir = std::path::Path::new(&self.workspace_dir).join("tools");
+        let dir = std::path::Path::new(&self.cfg().workspace_dir).join("tools");
         let path = dir.join(format!("{name}.yaml"));
         let path = if tokio::fs::try_exists(&path).await.unwrap_or(false) {
             path
@@ -569,10 +570,10 @@ impl AgentEngine {
 
     /// Trim session messages if `max_messages` is configured.
     async fn maybe_trim_session(&self, session_id: Uuid) {
-        if let Some(max) = self.agent.session.as_ref().and_then(|s| {
+        if let Some(max) = self.cfg().agent.session.as_ref().and_then(|s| {
             if s.max_messages > 0 { Some(s.max_messages) } else { None }
         }) {
-            let sm = SessionManager::new(self.db.clone());
+            let sm = SessionManager::new(self.cfg().db.clone());
             if let Err(e) = sm.trim_messages(session_id, max).await {
                 tracing::warn!(error = %e, "failed to trim session messages");
             }
@@ -592,8 +593,8 @@ impl AgentEngine {
             anyhow::bail!("blocked by hook: {reason}");
         }
 
-        let sm = SessionManager::new(self.db.clone());
-        let session_id = sm.create_isolated(&self.agent.name, &msg.user_id, &msg.channel).await?;
+        let sm = SessionManager::new(self.cfg().db.clone());
+        let session_id = sm.create_isolated(&self.cfg().agent.name, &msg.user_id, &msg.channel).await?;
 
         let ctx = self.build_context(msg, true, Some(session_id), false).await?;
         let mut messages = ctx.messages;
@@ -607,7 +608,7 @@ impl AgentEngine {
                 available_tools = self.apply_tool_policy_override(available_tools, &override_policy);
                 if available_tools.len() != before {
                     tracing::info!(
-                        agent = %self.agent.name,
+                        agent = %self.cfg().agent.name,
                         before,
                         after = available_tools.len(),
                         "cron tool policy override applied"
@@ -678,7 +679,7 @@ impl AgentEngine {
                             using_fallback = true;
                             consecutive_failures = 0;
                             tracing::warn!(
-                                agent = %self.agent.name,
+                                agent = %self.cfg().agent.name,
                                 iteration,
                                 "switching to fallback provider after consecutive failures"
                             );
@@ -701,8 +702,8 @@ impl AgentEngine {
                     auto_continue_count += 1;
                     tracing::info!(iteration, count = auto_continue_count, max = loop_config.max_auto_continues, "auto-continue: response looks incomplete, nudging LLM");
                     {
-                        let db = self.db.clone();
-                        let agent_name = self.agent.name.clone();
+                        let db = self.cfg().db.clone();
+                        let agent_name = self.cfg().agent.name.clone();
                         let cnt = auto_continue_count;
                         let max = loop_config.max_auto_continues;
                         if let Some(ref ui_tx) = self.ui_event_tx {
@@ -807,7 +808,7 @@ impl AgentEngine {
                         loop_nudge_count += 1;
                         detector.reset();
                         tracing::warn!(
-                            agent = %self.agent.name,
+                            agent = %self.cfg().agent.name,
                             nudge_count = loop_nudge_count,
                             reason = ?reason,
                             "loop nudge injected, giving model another chance"
@@ -815,7 +816,7 @@ impl AgentEngine {
                         false // continue loop
                     } else {
                         tracing::error!(
-                            agent = %self.agent.name,
+                            agent = %self.cfg().agent.name,
                             nudge_count = loop_nudge_count,
                             "max loop nudges reached, force-stopping agent"
                         );
@@ -828,14 +829,14 @@ impl AgentEngine {
                 // Notify if hitting iteration limit (not loop break)
                 if !loop_broken && iteration == loop_config.effective_max_iterations() - 1 {
                     tracing::warn!(
-                        agent = %self.agent.name,
+                        agent = %self.cfg().agent.name,
                         max_iterations = loop_config.effective_max_iterations(),
                         "agent reached iteration limit"
                     );
                     if let Some(ref ui_tx) = self.ui_event_tx {
-                        let db = self.db.clone();
+                        let db = self.cfg().db.clone();
                         let tx = ui_tx.clone();
-                        let agent_name = self.agent.name.clone();
+                        let agent_name = self.cfg().agent.name.clone();
                         let max_iter = loop_config.effective_max_iterations();
                         tokio::spawn(async move {
                             crate::gateway::notify(
@@ -850,9 +851,9 @@ impl AgentEngine {
                 // Notify if loop was broken after max nudges
                 if loop_broken && loop_nudge_count >= loop_config.max_loop_nudges
                     && let Some(ref ui_tx) = self.ui_event_tx {
-                        let db = self.db.clone();
+                        let db = self.cfg().db.clone();
                         let tx = ui_tx.clone();
-                        let agent_name = self.agent.name.clone();
+                        let agent_name = self.cfg().agent.name.clone();
                         let sid = session_id;
                         tokio::spawn(async move {
                             crate::gateway::notify(
@@ -863,7 +864,7 @@ impl AgentEngine {
                             ).await.ok();
                         });
                     }
-                match self.provider.chat(&messages, &[]).await {
+                match self.cfg().provider.chat(&messages, &[]).await {
                     Ok(forced) => {
                         final_response = strip_thinking(&forced.content);
                     }
@@ -876,15 +877,15 @@ impl AgentEngine {
             }
         }
 
-        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), None, None)
+        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.cfg().agent.name), None, None)
             .await?;
 
         // Post-session knowledge extraction (background, non-blocking)
         if messages.len() >= 5 {
-            let db = self.db.clone();
-            let provider = self.provider.clone();
-            let memory = self.memory_store.clone();
-            let agent_name = self.agent.name.clone();
+            let db = self.cfg().db.clone();
+            let provider = self.cfg().provider.clone();
+            let memory = self.cfg().memory_store.clone();
+            let agent_name = self.cfg().agent.name.clone();
             tokio::spawn(async move {
                 crate::agent::knowledge_extractor::extract_and_save(
                     db, session_id, agent_name, provider, memory,
@@ -901,11 +902,11 @@ impl AgentEngine {
     /// Build runtime context for system prompt injection.
     fn runtime_context(&self, msg: &IncomingMessage) -> workspace::RuntimeContext {
         workspace::RuntimeContext {
-            agent_name: self.agent.name.clone(),
-            owner_id: self.agent.access.as_ref().and_then(|a| a.owner_id.clone()),
+            agent_name: self.cfg().agent.name.clone(),
+            owner_id: self.cfg().agent.access.as_ref().and_then(|a| a.owner_id.clone()),
             channel: msg.channel.clone(),
-            model: self.provider.current_model(),
-            datetime_display: workspace::format_local_datetime(&self.default_timezone),
+            model: self.cfg().provider.current_model(),
+            datetime_display: workspace::format_local_datetime(&self.cfg().default_timezone),
             formatting_prompt: msg.formatting_prompt.clone(),
             channels: vec![], // populated async in build_context
         }
@@ -940,8 +941,8 @@ impl AgentEngine {
         let rows = sqlx::query_as::<_, (sqlx::types::Uuid, String, String, String)>(
             "SELECT id, channel_type, display_name, status FROM agent_channels WHERE agent_name = $1",
         )
-        .bind(&self.agent.name)
-        .fetch_all(&self.db)
+        .bind(&self.cfg().agent.name)
+        .fetch_all(&self.cfg().db)
         .await
         .unwrap_or_default();
 
@@ -960,8 +961,8 @@ impl AgentEngine {
     /// Build L0 memory context: load pinned chunks for this agent.
     pub(super) async fn build_memory_context(&self, budget_tokens: u32) -> crate::agent::pipeline::memory::MemoryContext {
         crate::agent::pipeline::memory::build_memory_context(
-            self.memory_store.as_ref(),
-            &self.agent.name,
+            self.cfg().memory_store.as_ref(),
+            &self.cfg().agent.name,
             budget_tokens,
         ).await
     }
@@ -969,8 +970,8 @@ impl AgentEngine {
     /// Index extracted facts into memory (called after session compaction via /compact).
     pub(super) async fn index_facts_to_memory(&self, facts: &[String]) {
         crate::agent::pipeline::memory::index_facts_to_memory(
-            self.memory_store.as_ref(),
-            &self.agent.name,
+            self.cfg().memory_store.as_ref(),
+            &self.cfg().agent.name,
             facts,
         ).await
     }
@@ -992,12 +993,12 @@ impl AgentEngine {
 
     /// Build a SecretsEnvResolver for YAML tool env resolution.
     pub(super) fn make_resolver(&self) -> SecretsEnvResolver {
-        crate::agent::pipeline::context::make_resolver(self.secrets(), &self.agent.name)
+        crate::agent::pipeline::context::make_resolver(self.secrets(), &self.cfg().agent.name)
     }
 
     /// Build OAuthContext for provider-based YAML tool auth (e.g. `oauth_provider: github`).
     pub(super) fn make_oauth_context(&self) -> Option<crate::tools::yaml_tools::OAuthContext> {
-        crate::agent::pipeline::context::make_oauth_context(self.oauth().as_ref(), &self.agent.name)
+        crate::agent::pipeline::context::make_oauth_context(self.oauth().as_ref(), &self.cfg().agent.name)
     }
 
     /// Format a tool error as structured JSON for better LLM parsing.
@@ -1013,8 +1014,8 @@ impl AgentEngine {
     /// Replace old tool results with "[compacted]" when context exceeds 70% of model window.
     pub(super) fn compact_tool_results(&self, messages: &mut [Message], context_chars: &mut usize) {
         crate::agent::pipeline::context::compact_tool_results(
-            &self.agent.model,
-            self.agent.compaction.as_ref(),
+            &self.cfg().agent.model,
+            self.cfg().agent.compaction.as_ref(),
             messages,
             context_chars,
         )
@@ -1023,7 +1024,7 @@ impl AgentEngine {
     /// Get compaction parameters from agent config.
     #[allow(dead_code)]
     pub(super) fn compaction_params(&self) -> (usize, usize) {
-        crate::agent::pipeline::context::compaction_params(&self.agent.model, self.agent.compaction.as_ref())
+        crate::agent::pipeline::context::compaction_params(&self.cfg().agent.model, self.cfg().agent.compaction.as_ref())
     }
 
     /// Run compaction on messages if token budget exceeded, indexing extracted facts to memory.
@@ -1066,22 +1067,22 @@ impl AgentEngine {
 
     /// Handle /slash commands. Returns Some(result) if a command matched, None otherwise.
     pub(super) async fn handle_command(&self, text: &str, msg: &IncomingMessage) -> Option<Result<String>> {
-        let dm_scope = self.agent.session.as_ref()
+        let dm_scope = self.cfg().agent.session.as_ref()
             .map(|s| s.dm_scope.as_str())
             .unwrap_or("per-channel-peer");
 
         let ctx = crate::agent::pipeline::commands::CommandContext {
-            agent_name: &self.agent.name,
-            agent_language: &self.agent.language,
-            agent_model: &self.agent.model,
+            agent_name: &self.cfg().agent.name,
+            agent_language: &self.cfg().agent.language,
+            agent_model: &self.cfg().agent.model,
             dm_scope,
-            max_history_messages: self.agent.max_history_messages,
-            compaction_config: self.agent.compaction.as_ref(),
-            db: &self.db,
-            provider: self.provider.as_ref(),
-            compaction_provider: self.compaction_provider.as_deref(),
+            max_history_messages: self.cfg().agent.max_history_messages,
+            compaction_config: self.cfg().agent.compaction.as_ref(),
+            db: &self.cfg().db,
+            provider: self.cfg().provider.as_ref(),
+            compaction_provider: self.cfg().compaction_provider.as_deref(),
             thinking_level: &self.thinking_level,
-            memory_store: self.memory_store.as_ref(),
+            memory_store: self.cfg().memory_store.as_ref(),
         };
 
         crate::agent::pipeline::commands::handle_command(
@@ -1096,16 +1097,16 @@ impl AgentEngine {
 
     /// Resolve tool group settings (from agent config or defaults).
     pub(super) fn tool_groups(&self) -> &crate::config::ToolGroups {
-        crate::agent::pipeline::tool_defs::resolve_tool_groups(self.agent.tools.as_ref())
+        crate::agent::pipeline::tool_defs::resolve_tool_groups(self.cfg().agent.tools.as_ref())
     }
 
     /// Return tool definitions for internal tools available to the LLM.
     pub(super) fn internal_tool_definitions(&self) -> Vec<ToolDefinition> {
         let browser_url = Self::browser_renderer_url();
         let ctx = crate::agent::pipeline::tool_defs::ToolDefsContext {
-            is_base: self.agent.base,
+            is_base: self.cfg().agent.base,
             groups: self.tool_groups(),
-            default_timezone: &self.default_timezone,
+            default_timezone: &self.cfg().default_timezone,
             has_sandbox: self.sandbox().is_some(),
             browser_renderer_url: &browser_url,
         };
@@ -1139,12 +1140,12 @@ mod dispatch_impl;
 #[async_trait::async_trait]
 impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
     async fn session_resume(&self, sid: Uuid) -> Result<Uuid> {
-        SessionManager::new(self.db.clone()).resume(sid).await
+        SessionManager::new(self.cfg().db.clone()).resume(sid).await
     }
 
     async fn session_create_new(&self, user_id: &str, channel: &str) -> Result<Uuid> {
-        SessionManager::new(self.db.clone())
-            .create_new(&self.agent.name, user_id, channel)
+        SessionManager::new(self.cfg().db.clone())
+            .create_new(&self.cfg().agent.name, user_id, channel)
             .await
     }
 
@@ -1154,8 +1155,8 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
         channel: &str,
         dm_scope: &str,
     ) -> Result<Uuid> {
-        SessionManager::new(self.db.clone())
-            .get_or_create(&self.agent.name, user_id, channel, dm_scope)
+        SessionManager::new(self.cfg().db.clone())
+            .get_or_create(&self.cfg().agent.name, user_id, channel, dm_scope)
             .await
     }
 
@@ -1164,7 +1165,7 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
         session_id: Uuid,
         limit: i64,
     ) -> Result<Vec<crate::db::sessions::MessageRow>> {
-        SessionManager::new(self.db.clone())
+        SessionManager::new(self.cfg().db.clone())
             .load_messages(session_id, Some(limit))
             .await
     }
@@ -1174,7 +1175,7 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
         session_id: Uuid,
         leaf_message_id: Uuid,
     ) -> Result<Vec<crate::db::sessions::MessageRow>> {
-        crate::db::sessions::load_branch_messages(&self.db, session_id, leaf_message_id).await
+        crate::db::sessions::load_branch_messages(&self.cfg().db, session_id, leaf_message_id).await
     }
 
     async fn session_insert_missing_tool_results(
@@ -1182,47 +1183,47 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
         session_id: Uuid,
         call_ids: &[String],
     ) -> Result<()> {
-        SessionManager::new(self.db.clone())
+        SessionManager::new(self.cfg().db.clone())
             .insert_missing_tool_results(session_id, call_ids)
             .await
     }
 
     async fn session_get_participants(&self, session_id: Uuid) -> Result<Vec<String>> {
-        crate::db::sessions::get_participants(&self.db, session_id).await
+        crate::db::sessions::get_participants(&self.cfg().db, session_id).await
     }
 
     fn agent_name(&self) -> &str {
-        &self.agent.name
+        &self.cfg().agent.name
     }
 
     fn agent_base(&self) -> bool {
-        self.agent.base
+        self.cfg().agent.base
     }
 
     fn agent_language(&self) -> &str {
-        &self.agent.language
+        &self.cfg().agent.language
     }
 
     fn agent_max_history_messages(&self) -> i64 {
-        self.agent.max_history_messages.unwrap_or(50) as i64
+        self.cfg().agent.max_history_messages.unwrap_or(50) as i64
     }
 
     fn agent_dm_scope(&self) -> &str {
-        self.agent.session.as_ref()
+        self.cfg().agent.session.as_ref()
             .map_or("per-channel-peer", |s| s.dm_scope.as_str())
     }
 
     fn agent_prune_tool_output_after_turns(&self) -> Option<usize> {
-        self.agent.session.as_ref()
+        self.cfg().agent.session.as_ref()
             .and_then(|s| s.prune_tool_output_after_turns)
     }
 
     fn agent_max_tools_in_context(&self) -> Option<usize> {
-        self.agent.max_tools_in_context
+        self.cfg().agent.max_tools_in_context
     }
 
     async fn load_workspace_prompt(&self) -> Result<String> {
-        workspace::load_workspace_prompt(&self.workspace_dir, &self.agent.name).await
+        workspace::load_workspace_prompt(&self.cfg().workspace_dir, &self.cfg().agent.name).await
     }
 
     async fn mcp_tool_definitions(&self) -> Vec<hydeclaw_types::ToolDefinition> {
@@ -1238,7 +1239,7 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
     }
 
     fn memory_is_available(&self) -> bool {
-        self.memory_store.is_available()
+        self.cfg().memory_store.is_available()
     }
 
     fn channel_router_present(&self) -> bool {
@@ -1246,7 +1247,7 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
     }
 
     fn scheduler_present(&self) -> bool {
-        self.scheduler.is_some()
+        self.cfg().scheduler.is_some()
     }
 
     fn sandbox_absent(&self) -> bool {
@@ -1262,7 +1263,7 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
     }
 
     fn pinned_budget_tokens(&self) -> u32 {
-        self.app_config.memory.pinned_budget_tokens
+        self.cfg().app_config.memory.pinned_budget_tokens
     }
 
     async fn build_memory_context(&self, budget_tokens: u32) -> (String, Vec<String>) {
@@ -1284,7 +1285,7 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
             return cache.1.values().cloned().collect();
         }
         drop(cache);
-        let loaded = crate::tools::yaml_tools::load_yaml_tools(&self.workspace_dir, false).await;
+        let loaded = crate::tools::yaml_tools::load_yaml_tools(&self.cfg().workspace_dir, false).await;
         let map: std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef> =
             loaded.iter().cloned().map(|t| (t.name.clone(), t)).collect();
         *self.tex().yaml_tools_cache.write().await = (std::time::Instant::now(), std::sync::Arc::new(map));
@@ -1372,7 +1373,7 @@ impl AgentEngine {
             } else {
                 drop(cache);
                 let tools = std::sync::Arc::new(
-                    crate::tools::yaml_tools::load_yaml_tools(&self.workspace_dir, false)
+                    crate::tools::yaml_tools::load_yaml_tools(&self.cfg().workspace_dir, false)
                         .await
                         .into_iter()
                         .map(|t| (t.name.clone(), t))
@@ -1385,7 +1386,7 @@ impl AgentEngine {
         };
 
         let subagent_timeout =
-            subagent_impl::parse_subagent_timeout(&self.app_config.subagents.in_process_timeout)
+            subagent_impl::parse_subagent_timeout(&self.cfg().app_config.subagents.in_process_timeout)
                 + std::time::Duration::from_secs(10);
 
         crate::agent::pipeline::parallel::execute_tool_calls_partitioned(
@@ -1393,12 +1394,12 @@ impl AgentEngine {
             context,
             session_id,
             channel,
-            &self.agent.model,
+            &self.cfg().agent.model,
             current_context_chars,
             detector,
             detect_loops,
-            &self.db,
-            &self.embedder,
+            &self.cfg().db,
+            &self.cfg().embedder,
             &yaml_tools,
             subagent_timeout,
             self,
@@ -1430,15 +1431,15 @@ impl AgentEngine {
     /// Create fallback LLM provider from agent config.
     pub(super) async fn create_fallback_provider(&self) -> Option<Arc<dyn crate::agent::providers::LlmProvider>> {
         crate::agent::pipeline::llm_call::create_fallback_provider(
-            &self.db,
-            self.agent.fallback_provider.as_deref(),
-            &self.agent.name,
-            self.agent.temperature,
-            self.agent.max_tokens,
+            &self.cfg().db,
+            self.cfg().agent.fallback_provider.as_deref(),
+            &self.cfg().agent.name,
+            self.cfg().agent.temperature,
+            self.cfg().agent.max_tokens,
             self.secrets().clone(),
             self.sandbox().clone(),
-            &self.workspace_dir,
-            self.agent.base,
+            &self.cfg().workspace_dir,
+            self.cfg().agent.base,
         )
         .await
     }
@@ -1446,9 +1447,9 @@ impl AgentEngine {
     /// Check daily token budget before LLM call.
     pub(super) async fn check_budget(&self) -> Result<()> {
         crate::agent::pipeline::llm_call::check_budget(
-            &self.db,
-            &self.agent.name,
-            self.agent.daily_budget_tokens,
+            &self.cfg().db,
+            &self.cfg().agent.name,
+            self.cfg().agent.daily_budget_tokens,
         )
         .await
     }
@@ -1461,7 +1462,7 @@ impl AgentEngine {
     ) -> Result<hydeclaw_types::LlmResponse> {
         self.check_budget().await?;
         crate::agent::pipeline::llm_call::chat_with_overflow_recovery(
-            self.provider.as_ref(),
+            self.cfg().provider.as_ref(),
             messages,
             tools,
             self,
@@ -1477,7 +1478,7 @@ impl AgentEngine {
     ) -> Result<hydeclaw_types::LlmResponse> {
         self.check_budget().await?;
         crate::agent::pipeline::llm_call::chat_with_transient_retry(
-            self.provider.as_ref(),
+            self.cfg().provider.as_ref(),
             messages,
             tools,
             self,
@@ -1495,7 +1496,7 @@ impl AgentEngine {
     ) -> Result<hydeclaw_types::LlmResponse> {
         self.check_budget().await?;
         crate::agent::pipeline::llm_call::chat_stream_with_overflow_recovery(
-            self.provider.as_ref(),
+            self.cfg().provider.as_ref(),
             messages,
             tools,
             chunk_tx,
@@ -1513,7 +1514,7 @@ impl AgentEngine {
     ) -> Result<hydeclaw_types::LlmResponse> {
         self.check_budget().await?;
         crate::agent::pipeline::llm_call::chat_stream_with_transient_retry(
-            self.provider.as_ref(),
+            self.cfg().provider.as_ref(),
             messages,
             tools,
             chunk_tx,
@@ -1566,8 +1567,8 @@ impl AgentEngine {
     /// Fire-and-forget audit event recording.
     pub(super) fn audit(&self, event_type: &'static str, actor: Option<&str>, details: serde_json::Value) {
         crate::agent::pipeline::llm_call::audit(
-            self.db.clone(),
-            self.agent.name.clone(),
+            self.cfg().db.clone(),
+            self.cfg().agent.name.clone(),
             event_type,
             actor,
             details,

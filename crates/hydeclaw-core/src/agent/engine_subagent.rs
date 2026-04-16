@@ -20,14 +20,14 @@ impl AgentEngine {
         user_text: &str,
         attachments: &[hydeclaw_types::MediaAttachment],
     ) -> String {
-        let toolgate_url = self.app_config.toolgate_url.clone()
+        let toolgate_url = self.cfg().app_config.toolgate_url.clone()
             .unwrap_or_else(|| "http://localhost:9011".to_string());
         crate::agent::pipeline::subagent::enrich_message_text(
             self.http_client(),
             self.ssrf_http_client(),
-            &self.app_config.gateway.listen,
+            &self.cfg().app_config.gateway.listen,
             &toolgate_url,
-            &self.agent.language,
+            &self.cfg().agent.language,
             user_text,
             attachments,
         ).await
@@ -39,7 +39,7 @@ impl AgentEngine {
         crate::agent::pipeline::subagent::handle_web_fetch(
             self.http_client(),
             self.ssrf_http_client(),
-            &self.app_config.gateway.listen,
+            &self.cfg().app_config.gateway.listen,
             args,
         ).await
     }
@@ -72,28 +72,28 @@ impl AgentEngine {
         session_id: Option<uuid::Uuid>,
     ) -> Result<String> {
         let ws_prompt =
-            workspace::load_workspace_prompt(&self.workspace_dir, &self.agent.name).await?;
+            workspace::load_workspace_prompt(&self.cfg().workspace_dir, &self.cfg().agent.name).await?;
         let capabilities = workspace::CapabilityFlags {
             has_search: self.has_tool("search_web").await || self.has_tool("search_web_fresh").await,
-            has_memory: self.memory_store.is_available(),
+            has_memory: self.cfg().memory_store.is_available(),
             has_message_actions: self.channel_router.is_some(),
-            has_cron: self.scheduler.is_some(),
+            has_cron: self.cfg().scheduler.is_some(),
             has_yaml_tools: true,
             has_browser: Self::browser_renderer_url() != "disabled",
-            has_host_exec: self.agent.base && self.sandbox().is_none(),
-            is_base: self.agent.base,
+            has_host_exec: self.cfg().agent.base && self.sandbox().is_none(),
+            is_base: self.cfg().agent.base,
         };
         let runtime = workspace::RuntimeContext {
-            agent_name: self.agent.name.clone(),
-            owner_id: self.agent.access.as_ref().and_then(|a| a.owner_id.clone()),
+            agent_name: self.cfg().agent.name.clone(),
+            owner_id: self.cfg().agent.access.as_ref().and_then(|a| a.owner_id.clone()),
             channel: "agent".to_string(),
-            model: self.provider.current_model(),
-            datetime_display: workspace::format_local_datetime(&self.default_timezone),
+            model: self.cfg().provider.current_model(),
+            datetime_display: workspace::format_local_datetime(&self.cfg().default_timezone),
             formatting_prompt: None,
             channels: vec![],
         };
         let system_prompt =
-            workspace::build_system_prompt(&ws_prompt, &[], &capabilities, &self.agent.language, &runtime);
+            workspace::build_system_prompt(&ws_prompt, &[], &capabilities, &self.cfg().agent.language, &runtime);
 
         let mut messages = vec![
             Message {
@@ -122,7 +122,7 @@ impl AgentEngine {
                 cache.1.values().cloned().collect()
             } else {
                 drop(cache);
-                let loaded = crate::tools::yaml_tools::load_yaml_tools(&self.workspace_dir, false).await;
+                let loaded = crate::tools::yaml_tools::load_yaml_tools(&self.cfg().workspace_dir, false).await;
                 let map: std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef> =
                     loaded.iter().cloned().map(|t| (t.name.clone(), t)).collect();
                 *self.tex().yaml_tools_cache.write().await = (std::time::Instant::now(), std::sync::Arc::new(map));
@@ -151,14 +151,14 @@ impl AgentEngine {
             if let Some(dl) = deadline
                 && std::time::Instant::now() > dl {
                     tracing::warn!(iteration, "subagent deadline reached, returning partial result");
-                    let forced = self.provider.chat(&messages, &[]).await?;
+                    let forced = self.cfg().provider.chat(&messages, &[]).await?;
                     return Ok(strip_thinking(&forced.content));
                 }
 
             let response = if loop_config.compact_on_overflow {
                 self.chat_with_overflow_recovery(&mut messages, &available_tools).await?
             } else {
-                self.provider.chat(&messages, &available_tools).await?
+                self.cfg().provider.chat(&messages, &available_tools).await?
             };
 
             if response.tool_calls.is_empty() {
@@ -248,7 +248,7 @@ impl AgentEngine {
             }
 
             if loop_broken || iteration == effective_max - 1 {
-                let forced = self.provider.chat(&messages, &[]).await?;
+                let forced = self.cfg().provider.chat(&messages, &[]).await?;
                 return Ok(strip_thinking(&forced.content));
             }
         }
@@ -269,9 +269,9 @@ impl AgentEngine {
         k: usize,
     ) -> Vec<hydeclaw_types::ToolDefinition> {
         crate::agent::pipeline::subagent::select_top_k_tools_semantic(
-            self.embedder.as_ref(),
+            self.cfg().embedder.as_ref(),
             self.tool_embed_cache().as_ref(),
-            self.memory_store.is_available(),
+            self.cfg().memory_store.is_available(),
             tools,
             query,
             k,

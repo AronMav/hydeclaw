@@ -12,31 +12,31 @@ impl AgentEngine {
     // ── YAML Tool Management delegators ──────────────────────────────────────
 
     pub(super) async fn handle_tool_create(&self, args: &serde_json::Value) -> String {
-        ph::handle_tool_create(&self.workspace_dir, args).await
+        ph::handle_tool_create(&self.cfg().workspace_dir, args).await
     }
 
     pub(super) async fn handle_tool_list(&self, args: &serde_json::Value) -> String {
-        ph::handle_tool_list(&self.workspace_dir, args).await
+        ph::handle_tool_list(&self.cfg().workspace_dir, args).await
     }
 
     pub(super) async fn handle_tool_test(&self, args: &serde_json::Value) -> String {
         ph::handle_tool_test(
-            &self.workspace_dir,
+            &self.cfg().workspace_dir,
             self.http_client(),
             self.ssrf_http_client(),
             self.secrets(),
-            &self.agent.name,
+            &self.cfg().agent.name,
             self.oauth().as_ref(),
             args,
         ).await
     }
 
     pub(super) async fn handle_tool_verify(&self, args: &serde_json::Value) -> String {
-        ph::handle_tool_verify(&self.workspace_dir, args).await
+        ph::handle_tool_verify(&self.cfg().workspace_dir, args).await
     }
 
     pub(super) async fn handle_tool_disable(&self, args: &serde_json::Value) -> String {
-        ph::handle_tool_disable(&self.workspace_dir, args).await
+        ph::handle_tool_disable(&self.cfg().workspace_dir, args).await
     }
 
     pub(super) fn handle_rich_card(&self, args: &serde_json::Value) -> String {
@@ -46,30 +46,30 @@ impl AgentEngine {
     pub(super) async fn handle_secret_set(&self, args: &serde_json::Value) -> String {
         ph::handle_secret_set(
             self.secrets(),
-            &self.agent.name,
-            self.agent.base,
+            &self.cfg().agent.name,
+            self.cfg().agent.base,
             args,
         ).await
     }
 
     pub(super) async fn handle_skill_create(&self, args: &serde_json::Value) -> String {
-        ph::handle_skill_create(&self.workspace_dir, args).await
+        ph::handle_skill_create(&self.cfg().workspace_dir, args).await
     }
 
     pub(super) async fn handle_skill_update(&self, args: &serde_json::Value) -> String {
-        ph::handle_skill_create(&self.workspace_dir, args).await
+        ph::handle_skill_create(&self.cfg().workspace_dir, args).await
     }
 
     pub(super) async fn handle_skill_use(&self, args: &serde_json::Value) -> String {
-        ph::handle_skill_use(&self.workspace_dir, self.agent.base, args).await
+        ph::handle_skill_use(&self.cfg().workspace_dir, self.cfg().agent.base, args).await
     }
 
     pub(super) async fn handle_skill_list(&self, args: &serde_json::Value) -> String {
-        ph::handle_skill_list(&self.workspace_dir, self.agent.base, args).await
+        ph::handle_skill_list(&self.cfg().workspace_dir, self.cfg().agent.base, args).await
     }
 
     pub(super) async fn handle_tool_discover(&self, args: &serde_json::Value) -> String {
-        ph::handle_tool_discover(&self.workspace_dir, self.ssrf_http_client(), args).await
+        ph::handle_tool_discover(&self.cfg().workspace_dir, self.ssrf_http_client(), args).await
     }
 
     // ── Canvas ───────────────────────────────────────────────────────────────
@@ -98,7 +98,7 @@ impl AgentEngine {
                 });
                 let event = serde_json::json!({
                     "type": "canvas_update",
-                    "agent": self.agent.name,
+                    "agent": self.cfg().agent.name,
                     "action": action,
                     "content_type": ct,
                     "content": content,
@@ -111,7 +111,7 @@ impl AgentEngine {
                 *self.tex().canvas_state.write().await = None;
                 self.broadcast_ui_event(serde_json::json!({
                     "type": "canvas_update",
-                    "agent": self.agent.name,
+                    "agent": self.cfg().agent.name,
                     "action": "clear",
                 }));
                 "Canvas cleared".to_string()

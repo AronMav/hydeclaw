@@ -9,10 +9,10 @@ impl AgentEngine {
     pub(super) async fn handle_code_exec(&self, args: &serde_json::Value) -> String {
         ps::handle_code_exec(
             args,
-            &self.agent.name,
-            self.agent.base,
+            &self.cfg().agent.name,
+            self.cfg().agent.base,
             self.sandbox(),
-            &self.workspace_dir,
+            &self.cfg().workspace_dir,
         )
         .await
     }
@@ -22,7 +22,7 @@ impl AgentEngine {
     pub(super) async fn handle_process_start(&self, args: &serde_json::Value) -> String {
         ps::handle_process_start(
             args,
-            &self.agent.name,
+            &self.cfg().agent.name,
             &self.tex().bg_processes,
         )
         .await
@@ -46,7 +46,7 @@ impl AgentEngine {
         chunk_tx: Option<mpsc::UnboundedSender<String>>,
     ) -> Result<hydeclaw_types::LlmResponse> {
         // 1. Build tool list (same as build_context but without session)
-        let yaml_tools = crate::tools::yaml_tools::load_yaml_tools(&self.workspace_dir, false).await;
+        let yaml_tools = crate::tools::yaml_tools::load_yaml_tools(&self.cfg().workspace_dir, false).await;
         let mut raw_tools = self.internal_tool_definitions();
         raw_tools.extend(yaml_tools.into_iter().map(|t| t.to_tool_definition()));
         if let Some(mcp) = self.mcp() {
@@ -69,7 +69,7 @@ impl AgentEngine {
 
         if !has_system {
             let ws_prompt =
-                workspace::load_workspace_prompt(&self.workspace_dir, &self.agent.name)
+                workspace::load_workspace_prompt(&self.cfg().workspace_dir, &self.cfg().agent.name)
                     .await
                     .unwrap_or_default();
 
@@ -91,21 +91,21 @@ impl AgentEngine {
 
             let capabilities = workspace::CapabilityFlags {
                 has_search: self.has_tool("search_web").await || self.has_tool("search_web_fresh").await,
-                has_memory: self.memory_store.is_available(),
+                has_memory: self.cfg().memory_store.is_available(),
                 has_message_actions: false, // no channel adapter in API mode
-                has_cron: self.scheduler.is_some(),
+                has_cron: self.cfg().scheduler.is_some(),
                 has_yaml_tools: true,
                 has_browser: Self::browser_renderer_url() != "disabled",
-                has_host_exec: self.agent.base && self.sandbox().is_none(),
-                is_base: self.agent.base,
+                has_host_exec: self.cfg().agent.base && self.sandbox().is_none(),
+                is_base: self.cfg().agent.base,
             };
 
             let runtime = workspace::RuntimeContext {
-                agent_name: self.agent.name.clone(),
-                owner_id: self.agent.access.as_ref().and_then(|a| a.owner_id.clone()),
+                agent_name: self.cfg().agent.name.clone(),
+                owner_id: self.cfg().agent.access.as_ref().and_then(|a| a.owner_id.clone()),
                 channel: "api".to_string(),
-                model: self.provider.current_model(),
-                datetime_display: workspace::format_local_datetime(&self.default_timezone),
+                model: self.cfg().provider.current_model(),
+                datetime_display: workspace::format_local_datetime(&self.cfg().default_timezone),
                 formatting_prompt: None,
                 channels: vec![],
             };
@@ -113,7 +113,7 @@ impl AgentEngine {
                 &ws_prompt,
                 &mcp_schemas,
                 &capabilities,
-                &self.agent.language,
+                &self.cfg().agent.language,
                 &runtime,
             );
 
@@ -155,7 +155,7 @@ impl AgentEngine {
             let response = if loop_config.compact_on_overflow {
                 self.chat_with_overflow_recovery(&mut messages, &available_tools).await?
             } else {
-                self.provider.chat(&messages, &available_tools).await?
+                self.cfg().provider.chat(&messages, &available_tools).await?
             };
             last_usage = response.usage.clone();
 
@@ -208,7 +208,7 @@ impl AgentEngine {
             };
 
             if loop_broken || iteration == loop_config.effective_max_iterations() - 1 {
-                let forced = self.provider.chat(&messages, &[]).await?;
+                let forced = self.cfg().provider.chat(&messages, &[]).await?;
                 last_usage = forced.usage.clone();
                 final_response = forced.content.clone();
                 break;

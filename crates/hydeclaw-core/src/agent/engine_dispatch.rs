@@ -37,13 +37,13 @@ impl AgentEngine {
 
             // Hook: AfterToolResult (fire-and-forget, non-blocking)
             self.hooks().fire(&crate::agent::hooks::HookEvent::AfterToolResult {
-                agent: self.agent.name.clone(),
+                agent: self.cfg().agent.name.clone(),
                 tool_name: name.to_string(),
                 duration_ms: duration_ms as u64,
             });
 
-            self.audit_queue.send(crate::db::audit_queue::AuditEvent::ToolExecution {
-                agent_name: self.agent.name.clone(),
+            self.cfg().audit_queue.send(crate::db::audit_queue::AuditEvent::ToolExecution {
+                agent_name: self.cfg().agent.name.clone(),
                 session_id,
                 tool_name: name.to_string(),
                 parameters: Some(clean_params),
@@ -54,7 +54,7 @@ impl AgentEngine {
 
             // Record tool quality (non-system tools only)
             if !super::all_system_tool_names().contains(&name) {
-                self.audit_queue.send(crate::db::audit_queue::AuditEvent::ToolQuality {
+                self.cfg().audit_queue.send(crate::db::audit_queue::AuditEvent::ToolQuality {
                     tool_name: name.to_string(),
                     success: !is_error,
                     duration_ms,
@@ -83,16 +83,16 @@ impl AgentEngine {
             let has_interactive_channel = context.get("chat_id").is_some() && !is_automated;
             if self.needs_approval(name) && has_interactive_channel {
                 // Skip if tool is in allowlist
-                if let Ok(true) = crate::db::approvals::check_allowlist(&self.db, &self.agent.name, name).await {
+                if let Ok(true) = crate::db::approvals::check_allowlist(&self.cfg().db, &self.cfg().agent.name, name).await {
                     // fall through to execution
                 } else {
-                    let timeout_secs = self.agent.approval
+                    let timeout_secs = self.cfg().agent.approval
                         .as_ref()
                         .map(|a| a.timeout_seconds)
                         .unwrap_or(300);
 
-                    let outcome = self.approval_manager.request_approval(
-                        &self.agent.name,
+                    let outcome = self.cfg().approval_manager.request_approval(
+                        &self.cfg().agent.name,
                         name,
                         arguments,
                         &context,
@@ -127,7 +127,7 @@ impl AgentEngine {
 
             // Hook: BeforeToolCall
             if let crate::agent::hooks::HookAction::Block(reason) = self.hooks().fire(&crate::agent::hooks::HookEvent::BeforeToolCall {
-                agent: self.agent.name.clone(),
+                agent: self.cfg().agent.name.clone(),
                 tool_name: name.to_string(),
             }) {
                 return format!("Tool blocked by hook: {}", reason);
@@ -145,10 +145,10 @@ impl AgentEngine {
                 "message" => Some(self.handle_message_action(arguments).await),
                 "cron" => Some(self.handle_cron(arguments).await),
                 "agent" => Some(crate::agent::pipeline::agent_tool::handle_agent_tool(
-                    self.session_pools.as_ref(),
-                    self.agent_map.as_ref(),
-                    &self.db,
-                    &self.agent.name,
+                    self.cfg().session_pools.as_ref(),
+                    self.cfg().agent_map.as_ref(),
+                    &self.cfg().db,
+                    &self.cfg().agent.name,
                     arguments,
                 ).await),
                 "web_fetch" => Some(self.handle_web_fetch(arguments).await),
@@ -163,9 +163,9 @@ impl AgentEngine {
                 "secret_set" => Some(self.handle_secret_set(arguments).await),
                 "session" => Some(self.dispatch_session_tool(arguments).await),
                 "agents_list" => Some(crate::agent::pipeline::sessions::handle_agents_list(
-                    self.agent_map.as_ref(),
-                    self.session_pools.as_ref(),
-                    &self.agent.name,
+                    self.cfg().agent_map.as_ref(),
+                    self.cfg().session_pools.as_ref(),
+                    &self.cfg().agent.name,
                     arguments,
                 ).await),
                 "browser_action" => Some(self.handle_browser_action(arguments).await),
@@ -181,7 +181,7 @@ impl AgentEngine {
             // 2. YAML-defined tools (workspace/tools/) — only VERIFIED may be called directly.
             // Draft tools are blocked here; they can only be invoked through tool_test.
             if let Some(yaml_tool) = crate::tools::yaml_tools::find_yaml_tool(
-                &self.workspace_dir,
+                &self.cfg().workspace_dir,
                 name,
             ).await {
                 if yaml_tool.status == crate::tools::yaml_tools::ToolStatus::Draft {
@@ -192,7 +192,7 @@ impl AgentEngine {
                         name, name, name
                     );
                 }
-                if yaml_tool.required_base && !self.agent.base {
+                if yaml_tool.required_base && !self.cfg().agent.base {
                     return format!("Tool '{}' requires base agent.", name);
                 }
                 // GitHub repo access enforcement: tools starting with "github_" require allowed repo
@@ -202,13 +202,13 @@ impl AgentEngine {
                     if owner.is_empty() || repo_name.is_empty() {
                         return "GitHub tools require 'owner' and 'repo' parameters.".to_string();
                     }
-                    match crate::db::github::check_repo_access(&self.db, &self.agent.name, owner, repo_name).await {
+                    match crate::db::github::check_repo_access(&self.cfg().db, &self.cfg().agent.name, owner, repo_name).await {
                         Ok(true) => {} // allowed
                         Ok(false) => {
                             return format!(
                                 "Repository {}/{} is not in the allowed list for agent '{}'. \
                                 Add it via POST /api/agents/{}/github/repos",
-                                owner, repo_name, self.agent.name, self.agent.name
+                                owner, repo_name, self.cfg().agent.name, self.cfg().agent.name
                             );
                         }
                         Err(e) => {
@@ -256,7 +256,7 @@ impl AgentEngine {
                 }
 
             // 5. External tools via ToolRegistry (fallback)
-            match self.tools.call(name, arguments).await {
+            match self.cfg().tools.call(name, arguments).await {
                 Ok(result) => serde_json::to_string(&result).unwrap_or_default(),
                 Err(e) => {
                     let msg = e.to_string();
@@ -275,10 +275,10 @@ impl AgentEngine {
     /// Record LLM token usage to the database (fire-and-forget).
     pub(super) fn record_usage(&self, response: &hydeclaw_types::LlmResponse, session_id: Option<uuid::Uuid>) {
         if let Some(ref usage) = response.usage {
-            let db = self.db.clone();
-            let agent = self.agent.name.clone();
+            let db = self.cfg().db.clone();
+            let agent = self.cfg().agent.name.clone();
             let provider = response.provider.clone()
-                .unwrap_or_else(|| self.provider.name().to_string());
+                .unwrap_or_else(|| self.cfg().provider.name().to_string());
             let model = response.model.clone().unwrap_or_default();
             let input = usage.input_tokens;
             let output = usage.output_tokens;
@@ -304,15 +304,15 @@ impl AgentEngine {
         tools: Vec<ToolDefinition>,
         override_policy: &crate::config::AgentToolPolicy,
     ) -> Vec<ToolDefinition> {
-        let base_deny = self.agent.tools.as_ref().map(|p| p.deny.as_slice());
+        let base_deny = self.cfg().agent.tools.as_ref().map(|p| p.deny.as_slice());
         crate::agent::pipeline::dispatch::apply_tool_policy_override(tools, base_deny, override_policy)
     }
 
     pub(super) fn filter_tools_by_policy(&self, tools: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
         crate::agent::pipeline::dispatch::filter_tools_by_policy(
             tools,
-            self.agent.tools.as_ref(),
-            self.memory_store.is_available(),
+            self.cfg().agent.tools.as_ref(),
+            self.cfg().memory_store.is_available(),
         )
     }
 
@@ -325,17 +325,17 @@ impl AgentEngine {
             "search" => {
                 let pinned_ids = self.tex().pinned_chunk_ids.lock().await.clone();
                 pipeline_memory::handle_memory_search(
-                    self.memory_store.as_ref(), &self.agent.name, &pinned_ids, arguments,
+                    self.cfg().memory_store.as_ref(), &self.cfg().agent.name, &pinned_ids, arguments,
                 ).await
             }
             "index" => pipeline_memory::handle_memory_index(
-                self.memory_store.as_ref(), &self.agent.name, arguments,
+                self.cfg().memory_store.as_ref(), &self.cfg().agent.name, arguments,
             ).await,
             "reindex" => pipeline_memory::handle_memory_reindex(
-                self.memory_store.as_ref(), &self.agent.name, &self.workspace_dir, arguments,
+                self.cfg().memory_store.as_ref(), &self.cfg().agent.name, &self.cfg().workspace_dir, arguments,
             ).await,
-            "get" => pipeline_memory::handle_memory_get(self.memory_store.as_ref(), arguments).await,
-            "delete" => pipeline_memory::handle_memory_delete(self.memory_store.as_ref(), arguments).await,
+            "get" => pipeline_memory::handle_memory_get(self.cfg().memory_store.as_ref(), arguments).await,
+            "delete" => pipeline_memory::handle_memory_delete(self.cfg().memory_store.as_ref(), arguments).await,
             "update" => {
                 // Remap sub_action -> action for handle_memory_update compatibility
                 let mut args = arguments.clone();
@@ -344,7 +344,7 @@ impl AgentEngine {
                         obj.insert("action".to_string(), sa);
                     }
                 pipeline_memory::handle_memory_update(
-                    &self.tex().memory_md_lock, &self.workspace_dir, &self.agent.name, &args,
+                    &self.tex().memory_md_lock, &self.cfg().workspace_dir, &self.cfg().agent.name, &args,
                 ).await
             }
             _ => format!("Error: unknown memory action '{}'. Use: search, index, reindex, get, delete, update.", action),
@@ -365,12 +365,12 @@ impl AgentEngine {
         use crate::agent::pipeline::sessions;
         let action = arguments.get("action").and_then(|v| v.as_str()).unwrap_or("");
         match action {
-            "list" => sessions::handle_sessions_list(&self.db, &self.agent.name, arguments).await,
-            "history" => sessions::handle_sessions_history(&self.db, &self.agent.name, arguments).await,
-            "search" => sessions::handle_session_search(&self.db, &self.agent.name, arguments).await,
-            "context" => sessions::handle_session_context(&self.db, arguments).await,
+            "list" => sessions::handle_sessions_list(&self.cfg().db, &self.cfg().agent.name, arguments).await,
+            "history" => sessions::handle_sessions_history(&self.cfg().db, &self.cfg().agent.name, arguments).await,
+            "search" => sessions::handle_session_search(&self.cfg().db, &self.cfg().agent.name, arguments).await,
+            "context" => sessions::handle_session_context(&self.cfg().db, arguments).await,
             "send" => sessions::handle_session_send(self.channel_router.as_ref(), arguments).await,
-            "export" => sessions::handle_session_export(&self.db, arguments).await,
+            "export" => sessions::handle_session_export(&self.cfg().db, arguments).await,
             _ => format!("Error: unknown session action '{}'. Use: list, history, search, context, send, export.", action),
         }
     }
@@ -408,7 +408,7 @@ impl AgentEngine {
                     url.rsplit('/').next().or_else(|| url.rsplit(':').next())
                         .unwrap_or("repo").trim_end_matches(".git").to_string()
                 });
-            let target = std::path::PathBuf::from(&self.workspace_dir).join(&dir_name);
+            let target = std::path::PathBuf::from(&self.cfg().workspace_dir).join(&dir_name);
             // No pre-existence check (TOCTOU race). Let git clone fail naturally
             // if the directory already exists — git reports a clear error message.
             let output = tokio::process::Command::new("git")
@@ -428,12 +428,12 @@ impl AgentEngine {
         // All other actions need a git working directory
         let git_dir = match arguments.get("directory").and_then(|v| v.as_str()).filter(|d| !d.is_empty()) {
             Some(sub) => {
-                let p = std::path::PathBuf::from(&self.workspace_dir).join(sub);
+                let p = std::path::PathBuf::from(&self.cfg().workspace_dir).join(sub);
                 if !p.exists() || !p.is_dir() { return format!("Error: directory '{}' not found in workspace.", sub); }
                 p.to_string_lossy().to_string()
             }
             None => {
-                let ws = std::path::PathBuf::from(&self.workspace_dir);
+                let ws = std::path::PathBuf::from(&self.cfg().workspace_dir);
                 if !ws.join(".git").exists() {
                     let mut git_dirs = Vec::new();
                     if let Ok(mut entries) = tokio::fs::read_dir(&ws).await {

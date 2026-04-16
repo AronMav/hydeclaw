@@ -15,7 +15,7 @@ impl AgentEngine {
         chunk_tx: Option<mpsc::UnboundedSender<String>>,
     ) -> Result<String> {
         // Sweep stale approval waiters (older than 10 minutes)
-        self.approval_manager.prune_stale().await;
+        self.cfg().approval_manager.prune_stale().await;
 
         // Track active request for graceful shutdown/SIGHUP drain
         let cancel_guard = self.state.as_ref().map(|s| s.register_request());
@@ -32,18 +32,18 @@ impl AgentEngine {
             self.build_context(msg, true, None, false).await?;
 
         // Mark session as running — watchdog and startup cleanup use this
-        let sm = SessionManager::new(self.db.clone());
+        let sm = SessionManager::new(self.cfg().db.clone());
         if let Err(e) = sm.set_run_status(session_id, "running").await {
             tracing::warn!(session_id = %session_id, error = %e, "failed to mark session as running");
         }
         exec_helpers::log_wal_running_with_retry(&sm, session_id).await;
         // RAII guard: if we exit early via `?` (error path), mark session as 'failed'.
-        let mut lifecycle_guard = SessionLifecycleGuard::new(self.db.clone(), session_id);
+        let mut lifecycle_guard = SessionLifecycleGuard::new(self.cfg().db.clone(), session_id);
 
         // Broadcast processing start to UI (typing indicator) + guard broadcasts end on drop
         let start_event = serde_json::json!({
             "type": "agent_processing",
-            "agent": self.agent.name,
+            "agent": self.cfg().agent.name,
             "session_id": session_id.to_string(),
             "status": "start",
             "channel": msg.channel,
@@ -52,7 +52,7 @@ impl AgentEngine {
         let _processing_guard = ProcessingGuard::new(
             self.ui_event_tx.clone(),
             self.processing_tracker.clone(),
-            self.agent.name.clone(),
+            self.cfg().agent.name.clone(),
             &start_event,
         );
 
@@ -167,7 +167,7 @@ impl AgentEngine {
                             using_fallback = true;
                             consecutive_failures = 0;
                             tracing::warn!(
-                                agent = %self.agent.name,
+                                agent = %self.cfg().agent.name,
                                 iteration,
                                 "switching to fallback provider after consecutive failures"
                             );
@@ -208,9 +208,9 @@ impl AgentEngine {
                     let reason = if is_length_limit { "response truncated by length limit" } else { "response looks incomplete" };
                     tracing::info!(iteration, count = auto_continue_count, max = loop_config.max_auto_continues, reason, "auto-continue: nudging LLM");
                     exec_helpers::notify_auto_continue(
-                        self.db.clone(),
+                        self.cfg().db.clone(),
                         self.ui_event_tx.as_ref(),
-                        &self.agent.name,
+                        &self.cfg().agent.name,
                         auto_continue_count,
                         loop_config.max_auto_continues,
                     );
@@ -266,7 +266,7 @@ impl AgentEngine {
                 &cleaned_content,
                 tc_json.as_ref(),
                 None,
-                Some(&self.agent.name),
+                Some(&self.cfg().agent.name),
                 None,
                 Some(last_msg_id),
             )
@@ -319,7 +319,7 @@ impl AgentEngine {
                         loop_nudge_count += 1;
                         detector.reset();
                         tracing::warn!(
-                            agent = %self.agent.name,
+                            agent = %self.cfg().agent.name,
                             nudge_count = loop_nudge_count,
                             reason = ?reason,
                             "loop nudge injected (channel/session path)"
@@ -327,7 +327,7 @@ impl AgentEngine {
                         false // continue loop
                     } else {
                         tracing::error!(
-                            agent = %self.agent.name,
+                            agent = %self.cfg().agent.name,
                             nudge_count = loop_nudge_count,
                             "max loop nudges reached, force-stopping agent (channel/session path)"
                         );
@@ -340,26 +340,26 @@ impl AgentEngine {
                 // Notify if hitting iteration limit (not loop break)
                 if !loop_broken && iteration == loop_config.effective_max_iterations() - 1 {
                     exec_helpers::notify_iteration_limit(
-                        self.db.clone(),
+                        self.cfg().db.clone(),
                         self.ui_event_tx.as_ref(),
-                        &self.agent.name,
+                        &self.cfg().agent.name,
                         loop_config.effective_max_iterations(),
                     );
                 }
                 // Notify if loop was broken after max nudges
                 if loop_broken && loop_nudge_count >= loop_config.max_loop_nudges {
                     exec_helpers::notify_loop_detected(
-                        self.db.clone(),
+                        self.cfg().db.clone(),
                         self.ui_event_tx.as_ref(),
-                        &self.agent.name,
+                        &self.cfg().agent.name,
                         session_id,
                     );
                 }
                 // Forced final call — use streaming if chunk_tx is available
                 let forced_result = if let Some(ref tx) = chunk_tx {
-                    self.provider.chat_stream(&messages, &[], tx.clone()).await
+                    self.cfg().provider.chat_stream(&messages, &[], tx.clone()).await
                 } else {
-                    self.provider.chat(&messages, &[]).await
+                    self.cfg().provider.chat(&messages, &[]).await
                 };
                 match forced_result {
                     Ok(forced) => {
@@ -404,7 +404,7 @@ impl AgentEngine {
         } else {
             serde_json::to_value(&final_thinking_blocks).ok()
         };
-        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), thinking_json.as_ref(), Some(last_msg_id))
+        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.cfg().agent.name), thinking_json.as_ref(), Some(last_msg_id))
             .await?;
 
         self.maybe_trim_session(session_id).await;
@@ -420,8 +420,8 @@ impl AgentEngine {
 
         // Post-session knowledge extraction (background, non-blocking)
         exec_helpers::spawn_knowledge_extraction(
-            self.db.clone(), session_id, self.agent.name.clone(),
-            self.provider.clone(), self.memory_store.clone(), messages.len(),
+            self.cfg().db.clone(), session_id, self.cfg().agent.name.clone(),
+            self.cfg().provider.clone(), self.cfg().memory_store.clone(), messages.len(),
         );
 
         // Unregister active request (cancel/drain tracking)
@@ -443,11 +443,11 @@ impl AgentEngine {
             self.build_context(msg, false, None, false).await?;
 
         // Lifecycle tracking
-        let sm = SessionManager::new(self.db.clone());
+        let sm = SessionManager::new(self.cfg().db.clone());
         if let Err(e) = sm.set_run_status(session_id, "running").await {
             tracing::warn!(session_id = %session_id, error = %e, "failed to mark streaming session as running");
         }
-        let mut lifecycle_guard = SessionLifecycleGuard::new(self.db.clone(), session_id);
+        let mut lifecycle_guard = SessionLifecycleGuard::new(self.cfg().db.clone(), session_id);
 
         let user_text = msg.text.clone().unwrap_or_default();
         messages.push(Message {
@@ -462,7 +462,7 @@ impl AgentEngine {
         sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None, None).await?;
 
         // Stream LLM response (no tools for streaming — simple text response)
-        let (final_response, stream_thinking_json) = match self.provider.chat_stream(&messages, &[], chunk_tx).await {
+        let (final_response, stream_thinking_json) = match self.cfg().provider.chat_stream(&messages, &[], chunk_tx).await {
             Ok(response) => {
                 let tb_json = if response.thinking_blocks.is_empty() {
                     None
@@ -476,16 +476,16 @@ impl AgentEngine {
                 let reason_str = format!("streaming LLM call failed: {e}");
                 lifecycle_guard.fail(&reason_str).await;
                 exec_helpers::notify_agent_error(
-                    self.db.clone(),
+                    self.cfg().db.clone(),
                     self.ui_event_tx.as_ref(),
-                    &self.agent.name,
+                    &self.cfg().agent.name,
                     &reason_str,
                 );
                 (error_classify::format_user_error(&e), None)
             }
         };
 
-        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), stream_thinking_json.as_ref(), None)
+        sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.cfg().agent.name), stream_thinking_json.as_ref(), None)
             .await?;
         self.maybe_trim_session(session_id).await;
 
@@ -493,8 +493,8 @@ impl AgentEngine {
 
         // Post-session knowledge extraction (background, non-blocking)
         exec_helpers::spawn_knowledge_extraction(
-            self.db.clone(), session_id, self.agent.name.clone(),
-            self.provider.clone(), self.memory_store.clone(), messages.len(),
+            self.cfg().db.clone(), session_id, self.cfg().agent.name.clone(),
+            self.cfg().provider.clone(), self.cfg().memory_store.clone(), messages.len(),
         );
 
         Ok(final_response)

@@ -43,10 +43,10 @@ impl AgentEngine {
             let sid = if let Some(sid) = resume_session_id {
                 sid
             } else {
-                crate::db::sessions::get_or_create_session(&self.db, &self.agent.name, &msg.user_id, &msg.channel, self.agent.session.as_ref().map(|s| s.dm_scope.as_str()).unwrap_or("default")).await?
+                crate::db::sessions::get_or_create_session(&self.cfg().db, &self.cfg().agent.name, &msg.user_id, &msg.channel, self.cfg().agent.session.as_ref().map(|s| s.dm_scope.as_str()).unwrap_or("default")).await?
             };
-            let u_msg_id = SessionManager::new(self.db.clone()).save_message_ex(sid, "user", &user_text, None, None, None, None, msg.leaf_message_id).await?;
-            let a_msg_id = SessionManager::new(self.db.clone()).save_message_ex(sid, "assistant", &text, None, None, Some(&self.agent.name), None, Some(u_msg_id)).await?;
+            let u_msg_id = SessionManager::new(self.cfg().db.clone()).save_message_ex(sid, "user", &user_text, None, None, None, None, msg.leaf_message_id).await?;
+            let a_msg_id = SessionManager::new(self.cfg().db.clone()).save_message_ex(sid, "assistant", &text, None, None, Some(&self.cfg().agent.name), None, Some(u_msg_id)).await?;
             if let (Some(state), Some((id, _))) = (&self.state, &cancel_guard) {
                 state.unregister_request(id);
             }
@@ -64,12 +64,12 @@ impl AgentEngine {
         *self.sse_event_tx().lock().await = Some(event_tx.clone());
 
         // Lifecycle tracking: mark running, RAII guard marks 'failed' on early exit
-        let sm = SessionManager::new(self.db.clone());
+        let sm = SessionManager::new(self.cfg().db.clone());
         if let Err(e) = sm.set_run_status(session_id, "running").await {
             tracing::warn!(session_id = %session_id, error = %e, "failed to mark SSE session as running");
         }
         exec_helpers::log_wal_running_with_retry(&sm, session_id).await;
-        let mut lifecycle_guard = SessionLifecycleGuard::new(self.db.clone(), session_id);
+        let mut lifecycle_guard = SessionLifecycleGuard::new(self.cfg().db.clone(), session_id);
 
         // Emit session ID so the UI can track which session is active
         if event_tx.send(StreamEvent::SessionId(session_id.to_string())).is_err() {
@@ -79,7 +79,7 @@ impl AgentEngine {
         // Broadcast processing start + guard broadcasts end on drop
         let start_event = serde_json::json!({
             "type": "agent_processing",
-            "agent": self.agent.name,
+            "agent": self.cfg().agent.name,
             "session_id": session_id.to_string(),
             "status": "start",
             "channel": msg.channel,
@@ -88,7 +88,7 @@ impl AgentEngine {
         let _processing_guard = ProcessingGuard::new(
             self.ui_event_tx.clone(),
             self.processing_tracker.clone(),
-            self.agent.name.clone(),
+            self.cfg().agent.name.clone(),
             &start_event,
         );
 
@@ -186,7 +186,7 @@ impl AgentEngine {
                             using_fallback = true;
                             consecutive_failures = 0;
                             tracing::warn!(
-                                agent = %self.agent.name,
+                                agent = %self.cfg().agent.name,
                                 iteration,
                                 "switching to fallback provider after consecutive failures (SSE)"
                             );
@@ -214,9 +214,9 @@ impl AgentEngine {
                     let reason_str = format!("SSE LLM call failed: {e}");
                     lifecycle_guard.fail(&reason_str).await;
                     exec_helpers::notify_agent_error(
-                        self.db.clone(),
+                        self.cfg().db.clone(),
                         self.ui_event_tx.as_ref(),
-                        &self.agent.name,
+                        &self.cfg().agent.name,
                         &reason_str,
                     );
                     break;
@@ -236,9 +236,9 @@ impl AgentEngine {
                     auto_continue_count += 1;
                     tracing::info!(iteration, count = auto_continue_count, max = loop_config.max_auto_continues, "auto-continue: response looks incomplete, nudging LLM");
                     exec_helpers::notify_auto_continue(
-                        self.db.clone(),
+                        self.cfg().db.clone(),
                         self.ui_event_tx.as_ref(),
-                        &self.agent.name,
+                        &self.cfg().agent.name,
                         auto_continue_count,
                         loop_config.max_auto_continues,
                     );
@@ -310,7 +310,7 @@ impl AgentEngine {
                 &cleaned_content,
                 tc_json.as_ref(),
                 None,
-                Some(&self.agent.name),
+                Some(&self.cfg().agent.name),
                 None,
                 Some(last_msg_id),
             )
@@ -397,7 +397,7 @@ impl AgentEngine {
                         loop_nudge_count += 1;
                         detector.reset();
                         tracing::warn!(
-                            agent = %self.agent.name,
+                            agent = %self.cfg().agent.name,
                             nudge_count = loop_nudge_count,
                             reason = ?reason,
                             "loop nudge injected (SSE path)"
@@ -405,7 +405,7 @@ impl AgentEngine {
                         false // continue loop
                     } else {
                         tracing::error!(
-                            agent = %self.agent.name,
+                            agent = %self.cfg().agent.name,
                             nudge_count = loop_nudge_count,
                             "max loop nudges reached, force-stopping agent (SSE path)"
                         );
@@ -429,18 +429,18 @@ impl AgentEngine {
                 // Notify if hitting iteration limit (not loop break)
                 if !loop_broken && iteration == loop_config.effective_max_iterations() - 1 {
                     exec_helpers::notify_iteration_limit(
-                        self.db.clone(),
+                        self.cfg().db.clone(),
                         self.ui_event_tx.as_ref(),
-                        &self.agent.name,
+                        &self.cfg().agent.name,
                         loop_config.effective_max_iterations(),
                     );
                 }
                 // Notify if loop was broken after max nudges
                 if loop_broken && loop_nudge_count >= loop_config.max_loop_nudges {
                     exec_helpers::notify_loop_detected(
-                        self.db.clone(),
+                        self.cfg().db.clone(),
                         self.ui_event_tx.as_ref(),
-                        &self.agent.name,
+                        &self.cfg().agent.name,
                         session_id,
                     );
                 }
@@ -454,7 +454,7 @@ impl AgentEngine {
                     tracing::debug!("SSE event channel closed, engine continues for DB save");
                 }
 
-                match self.provider.chat(&messages, &[]).await {
+                match self.cfg().provider.chat(&messages, &[]).await {
                     Ok(forced) => {
                         self.record_usage(&forced, Some(session_id));
                         let text = maybe_strip_thinking(&forced.content, msg, thinking_level);
@@ -474,9 +474,9 @@ impl AgentEngine {
                         let reason_str = format!("SSE forced final LLM call failed: {e}");
                         lifecycle_guard.fail(&reason_str).await;
                         exec_helpers::notify_agent_error(
-                            self.db.clone(),
+                            self.cfg().db.clone(),
                             self.ui_event_tx.as_ref(),
-                            &self.agent.name,
+                            &self.cfg().agent.name,
                             &reason_str,
                         );
                     }
@@ -500,7 +500,7 @@ impl AgentEngine {
         } else {
             serde_json::to_value(&final_thinking_blocks).ok()
         };
-        let assistant_msg_id = sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.agent.name), thinking_json.as_ref(), Some(last_msg_id))
+        let assistant_msg_id = sm.save_message_ex(session_id, "assistant", &final_response, None, None, Some(&self.cfg().agent.name), thinking_json.as_ref(), Some(last_msg_id))
             .await?;
 
         self.maybe_trim_session(session_id).await;
@@ -519,8 +519,8 @@ impl AgentEngine {
 
         // Post-session knowledge extraction (background, non-blocking)
         exec_helpers::spawn_knowledge_extraction(
-            self.db.clone(), session_id, self.agent.name.clone(),
-            self.provider.clone(), self.memory_store.clone(), messages.len(),
+            self.cfg().db.clone(), session_id, self.cfg().agent.name.clone(),
+            self.cfg().provider.clone(), self.cfg().memory_store.clone(), messages.len(),
         );
 
         // Clear SSE event sender

@@ -27,9 +27,8 @@ use crate::tools::ToolRegistry;
 /// Grouped into five concern areas: identity, LLM, data, tools, and infra.
 /// All fields are either `Clone`-cheap (`Arc`, `PgPool`) or small value types.
 ///
-/// Step A: wired into `AgentEngine.cfg` but not yet consumed — fields become
-/// live once accessor migration (Step B) redirects reads here.
-#[allow(dead_code)]
+/// All engine code now reads from this struct via `engine.cfg()`.
+/// Old fields on `AgentEngine` remain for external code (Step C removes them).
 pub struct AgentConfig {
     // ── Identity ────────────────────────────────────────────────────────
     pub agent: AgentSettings,
