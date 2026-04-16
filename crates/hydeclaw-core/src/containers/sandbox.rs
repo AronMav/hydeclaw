@@ -280,6 +280,11 @@ impl CodeSandbox {
             Some(git_env.to_vec())
         };
 
+        // Only base agents get network access to the hydeclaw Docker network.
+        // Non-base agents run fully network-isolated to prevent access to
+        // internal infrastructure (postgres, toolgate, searxng, etc.).
+        let network_mode = if base { Some("hydeclaw".to_string()) } else { None };
+
         self.docker.create_container(
             Some(CreateContainerOptions { name: name.to_string(), ..Default::default() }),
             Config {
@@ -287,12 +292,12 @@ impl CodeSandbox {
                 env,
                 attach_stdout: Some(true),
                 attach_stderr: Some(true),
-                network_disabled: Some(false),
+                network_disabled: Some(!base),
                 working_dir: Some("/workspace".to_string()),
                 user: Some("1000:1000".to_string()),
                 host_config: Some(HostConfig {
                     memory: Some(self.memory_bytes),
-                    network_mode: Some("hydeclaw".to_string()),
+                    network_mode,
                     binds: Some(binds),
                     restart_policy: Some(bollard::models::RestartPolicy {
                         name: Some(bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED),
