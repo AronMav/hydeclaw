@@ -185,7 +185,7 @@ export function createStreamingRenderer(store: StoreAccess) {
       });
       return;
     }
-    update(agent, { connectionPhase: "reconnecting", connectionError: null });
+    update(agent, { connectionPhase: "reconnecting", connectionError: null, reconnectAttempt: attempt + 1 });
     const baseDelay = RECONNECT_DELAY_BASE_MS * Math.pow(2, attempt);
     const jitter = baseDelay * 0.2 * (Math.random() * 2 - 1); // +/- 20% jitter
     const delay = Math.max(0, baseDelay + jitter);
