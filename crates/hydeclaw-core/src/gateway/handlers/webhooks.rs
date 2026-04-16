@@ -43,7 +43,7 @@ fn webhook_auth_check(name: &str) -> Result<(), (StatusCode, Json<Value>)> {
     if let Some(entry) = WEBHOOK_AUTH_THROTTLE.get(name)
         && let Some(locked_until) = entry.locked_until
             && Instant::now() < locked_until {
-                let remaining = locked_until.duration_since(Instant::now()).as_secs();
+                let remaining = locked_until.saturating_duration_since(Instant::now()).as_secs();
                 return Err((
                     StatusCode::TOO_MANY_REQUESTS,
                     Json(json!({"error": format!("webhook locked, retry after {}s", remaining)})),
