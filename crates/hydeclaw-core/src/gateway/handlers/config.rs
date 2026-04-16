@@ -509,8 +509,10 @@ pub(crate) async fn api_export_config(req: Request<Body>) -> impl IntoResponse {
 
 /// POST /api/config/import — import TOML configs (validates before writing, backs up current).
 pub(crate) async fn api_import_config(
+    State(cfg_svc): State<ConfigServices>,
     req: Request<Body>,
 ) -> impl IntoResponse {
+    let _lock = cfg_svc.config_write_lock.lock().await;
     let ip = crate::gateway::middleware::extract_client_ip(&req);
     tracing::warn!(ip = %ip, "AUDIT: config import requested");
     let body: Value = match axum::Json::<Value>::from_request(req, &()).await {
