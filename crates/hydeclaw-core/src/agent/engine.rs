@@ -51,9 +51,9 @@ mod sse_impl;
 mod agent_tool_impl;
 
 /// Resolves env var names through `SecretsManager` (scoped to agent).
-struct SecretsEnvResolver {
-    secrets: Arc<crate::secrets::SecretsManager>,
-    agent_name: String,
+pub(crate) struct SecretsEnvResolver {
+    pub(crate) secrets: Arc<crate::secrets::SecretsManager>,
+    pub(crate) agent_name: String,
 }
 
 #[async_trait::async_trait]

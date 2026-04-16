@@ -298,7 +298,7 @@ impl AgentEngine {
     }
 
     /// Default context window size based on model name.
-    pub(super) fn default_context_for_model(model: &str) -> usize {
+    pub(crate) fn default_context_for_model(model: &str) -> usize {
         if model.contains("claude") { 200_000 }
         else if model.contains("gpt-4") { 128_000 }
         else if model.contains("MiniMax") || model.contains("M2.5") || model.contains("gemini") { 1_000_000 }
