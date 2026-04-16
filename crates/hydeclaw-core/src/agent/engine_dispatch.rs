@@ -3,9 +3,9 @@
 //! Extracted from engine.rs for readability.
 
 use super::*;
-
 use crate::agent::pipeline::handlers as ph;
 use crate::agent::pipeline::sandbox as ps;
+use crate::agent::pipeline::subagent as psub;
 
 impl AgentEngine {
     /// Execute a tool call — routes to internal tools, MCP servers, or ToolRegistry.
@@ -138,12 +138,12 @@ impl AgentEngine {
 
             // 1. Internal tools — match dispatch table
             if let Some(result) = match name {
-                "workspace_write" => Some(self.handle_workspace_write(arguments).await),
-                "workspace_read" => Some(self.handle_workspace_read(arguments).await),
-                "workspace_list" => Some(self.handle_workspace_list(arguments).await),
-                "workspace_edit" => Some(self.handle_workspace_edit(arguments).await),
-                "workspace_delete" => Some(self.handle_workspace_delete(arguments).await),
-                "workspace_rename" => Some(self.handle_workspace_rename(arguments).await),
+                "workspace_write" => Some(ph::handle_workspace_write(&self.cfg().workspace_dir, &self.cfg().agent.name, self.cfg().agent.base, arguments).await),
+                "workspace_read" => Some(ph::handle_workspace_read(&self.cfg().workspace_dir, &self.cfg().agent.name, arguments).await),
+                "workspace_list" => Some(ph::handle_workspace_list(&self.cfg().workspace_dir, &self.cfg().agent.name, arguments).await),
+                "workspace_edit" => Some(ph::handle_workspace_edit(&self.cfg().workspace_dir, &self.cfg().agent.name, self.cfg().agent.base, arguments).await),
+                "workspace_delete" => Some(ph::handle_workspace_delete(&self.cfg().workspace_dir, &self.cfg().agent.name, arguments).await),
+                "workspace_rename" => Some(ph::handle_workspace_rename(&self.cfg().workspace_dir, &self.cfg().agent.name, arguments).await),
                 "memory" => Some(self.dispatch_memory_tool(arguments).await),
                 "message" => Some(self.handle_message_action(arguments).await),
                 "cron" => Some(self.handle_cron(arguments).await),
@@ -154,7 +154,7 @@ impl AgentEngine {
                     &self.cfg().agent.name,
                     arguments,
                 ).await),
-                "web_fetch" => Some(self.handle_web_fetch(arguments).await),
+                "web_fetch" => Some(psub::handle_web_fetch(self.http_client(), self.ssrf_http_client(), &self.cfg().app_config.gateway.listen, arguments).await),
                 "tool_create" => Some(ph::handle_tool_create(&self.cfg().workspace_dir, arguments).await),
                 "tool_list" => Some(ph::handle_tool_list(&self.cfg().workspace_dir, arguments).await),
                 "tool_test" => Some(ph::handle_tool_test(&self.cfg().workspace_dir, self.http_client(), self.ssrf_http_client(), self.secrets(), &self.cfg().agent.name, self.oauth().as_ref(), arguments).await),
@@ -171,7 +171,7 @@ impl AgentEngine {
                     &self.cfg().agent.name,
                     arguments,
                 ).await),
-                "browser_action" => Some(self.handle_browser_action(arguments).await),
+                "browser_action" => Some(ph::handle_browser_action(self.http_client(), &crate::agent::pipeline::canvas::browser_renderer_url(), arguments).await),
                 "code_exec" => Some(ps::handle_code_exec(arguments, &self.cfg().agent.name, self.cfg().agent.base, self.sandbox(), &self.cfg().workspace_dir).await),
                 "git" => Some(self.dispatch_git_tool(arguments).await),
                 "canvas" => Some(crate::agent::pipeline::canvas::handle_canvas(&self.tex().canvas_state, &self.cfg().agent.name, self.state().ui_event_tx.as_ref(), self.http_client(), arguments).await),

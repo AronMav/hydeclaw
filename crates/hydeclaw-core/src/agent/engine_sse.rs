@@ -96,7 +96,19 @@ impl AgentEngine {
         );
 
         // Add current message, auto-fetch URLs if present
-        let enriched_text = self.enrich_message_text(&user_text, &msg.attachments).await;
+        let enriched_text = {
+            let toolgate_url = self.cfg().app_config.toolgate_url.clone()
+                .unwrap_or_else(|| "http://localhost:9011".to_string());
+            crate::agent::pipeline::subagent::enrich_message_text(
+                self.http_client(),
+                self.ssrf_http_client(),
+                &self.cfg().app_config.gateway.listen,
+                &toolgate_url,
+                &self.cfg().agent.language,
+                &user_text,
+                &msg.attachments,
+            ).await
+        };
 
         messages.push(Message {
             role: MessageRole::User,
