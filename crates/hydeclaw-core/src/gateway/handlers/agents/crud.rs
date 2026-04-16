@@ -471,10 +471,11 @@ pub(crate) async fn api_update_agent(
     if is_rename {
         // Update agent_id in all DB tables (within a transaction for consistency)
         // SAFETY: table names are hardcoded literals — never user input. Do NOT add dynamic values.
-        // SAFETY: Rename transaction covers 20 tables total:
+        // SAFETY: Rename transaction covers 21 tables total:
         //   - 18 via tables_agent_id loop (agent_id column)
         //   - 1 messages (agent_id, nullable)
         //   - 1 agent_channels (agent_name column)
+        //   - 1 sessions.participants (TEXT[] array_replace)
         // All updates share a single sqlx::Transaction — failure at any point triggers
         // automatic rollback (via explicit rollback or Transaction::Drop).
         let tables_agent_id = [
@@ -523,6 +524,17 @@ pub(crate) async fn api_update_agent(
             tracing::warn!(error = %e, "failed to update agent_channels.agent_name on rename");
             tx.rollback().await.ok();
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("rename failed at table agent_channels: {}", e)}))).into_response();
+        }
+        // sessions.participants is a TEXT[] array — replace old name with new
+        if let Err(e) = sqlx::query("UPDATE sessions SET participants = array_replace(participants, $2, $1) WHERE $2 = ANY(participants)")
+            .bind(&new_name)
+            .bind(&name)
+            .execute(&mut *tx)
+            .await
+        {
+            tracing::warn!(error = %e, "failed to update sessions.participants on rename");
+            tx.rollback().await.ok();
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("rename failed at sessions.participants: {}", e)}))).into_response();
         }
         if let Err(e) = tx.commit().await {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("transaction commit failed: {}", e)}))).into_response();
