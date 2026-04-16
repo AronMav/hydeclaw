@@ -242,6 +242,11 @@ pub(crate) async fn api_channel_ack(
         .and_then(|s| s.as_str())
         .unwrap_or("running");
 
+    let valid_statuses = ["running", "stopped", "error", "pending_restart"];
+    if !valid_statuses.contains(&status) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid channel status"}))).into_response();
+    }
+
     if let Err(e) = sqlx::query(
         "UPDATE agent_channels SET status = $1, error_msg = NULL WHERE id = $2 AND agent_name = $3"
     )
