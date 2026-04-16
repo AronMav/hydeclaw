@@ -24,7 +24,7 @@ Engine разбивается на тройку типов. Execution перех
 
 ### Тройка типов
 
-**AgentConfig** — immutable snapshot, `Arc<AgentConfig>`. Пересоздаётся только при SIGHUP reload.
+**AgentConfig** — immutable snapshot, `Arc<AgentConfig>`. Пересоздаётся только при SIGHUP reload. `tool_executor` и `context_builder` создаются builder-ом ДО `AgentConfig` (resolves OnceLock post-init problem).
 
 ```rust
 pub struct AgentConfig {
@@ -45,7 +45,8 @@ pub struct AgentConfig {
 
     // Tools
     pub tools: ToolRegistry,
-    pub tool_executor: Arc<DefaultToolExecutor>,
+    pub tool_executor: Arc<DefaultToolExecutor>,   // created by builder BEFORE AgentConfig
+    pub context_builder: Arc<dyn ContextBuilder>,  // created by builder BEFORE AgentConfig
     pub approval_manager: Arc<ApprovalManager>,
 
     // Infra
@@ -53,6 +54,16 @@ pub struct AgentConfig {
     pub agent_map: Option<AgentMap>,
     pub session_pools: Option<SessionPoolsMap>,
     pub audit_queue: Arc<AuditQueue>,
+}
+
+impl AgentConfig {
+    /// Builder creates tool_executor and context_builder first, then constructs AgentConfig.
+    /// No OnceLock post-init needed — all fields are set at construction time.
+    pub fn build(agent: AgentSettings, db: PgPool, /* ... */) -> Arc<Self> {
+        let tool_executor = Arc::new(DefaultToolExecutor::new(/* deps */));
+        let context_builder = Arc::new(DefaultContextBuilder::new(/* deps */));
+        Arc::new(Self { agent, db, tool_executor, context_builder, /* ... */ })
+    }
 }
 ```
 
@@ -70,14 +81,14 @@ pub struct AgentState {
 }
 ```
 
-**RequestContext** — per-request owned state. Создаётся при входе в `handle_sse`/`handle`, умирает после завершения.
+**RequestContext** — per-request owned state. Создаётся при входе в `handle_sse`/`handle`, умирает после завершения. `cancel` is `Clone` (thread-safe). `loop_detector` wrapped in `Arc<Mutex>` for parallel tool execution safety.
 
 ```rust
 pub struct RequestContext {
     pub session_id: Uuid,
     pub message_id: String,
-    pub cancel: CancellationToken,
-    pub loop_detector: LoopDetector,
+    pub cancel: CancellationToken,                    // Clone, safe for concurrent tasks
+    pub loop_detector: Arc<Mutex<LoopDetector>>,      // shared across parallel tool calls
     pub sse_tx: Option<mpsc::UnboundedSender<StreamEvent>>,
     pub leaf_message_id: Option<String>,
 }
@@ -302,23 +313,20 @@ impl RequestContext {
 
 ## План миграции
 
-6 фаз, каждая компилируется и тестируется отдельно:
+5 фаз, каждая компилируется и тестируется отдельно:
 
-### Фаза 1: Создать типы (не ломает ничего)
+### Фаза 1: Создать типы + scaffold (не ломает ничего)
 
-Создать `config.rs`, `agent_state.rs`, `request_context.rs` с тестами. `pipeline/mod.rs` scaffold. Компиляция не ломается — новые типы пока не используются.
+Создать `config.rs` (AgentConfig + builder), `agent_state.rs`, `request_context.rs` с тестами. `pipeline/mod.rs` scaffold. Компиляция не ломается — новые типы пока не используются.
 
-### Фаза 2: AgentEngine → thin wrapper
+### Фаза 2: RequestContext + cancel + processing_session_id removal
 
-Заменить 24 поля AgentEngine на `cfg: Arc<AgentConfig>` + `state: Arc<AgentState>`. Все extension methods (`engine_*.rs`) обновляются: `self.field` → `self.cfg.field` или `self.state.field`. Accessor methods на engine делегируют в cfg/state.
+`handle_sse` создаёт RequestContext. `processing_session_id` удаляется — все 15 reference sites переписываются на `ctx.session_id`. Active request tracking в AgentState. Cancel token проверяется в tool loop. OnceLock fields (`self_ref`, `context_builder`, `tool_executor`) переводятся на builder pattern.
 
-### Фаза 3: RequestContext + cancel
+### Фаза 3: Pipeline extraction (файл за файлом, `self.` → free functions)
 
-`handle_sse` создаёт RequestContext. `processing_session_id` удаляется — все 15 reference sites переписываются на `ctx.session_id`. Active request tracking в AgentState. Cancel token проверяется в tool loop.
+Каждый `engine_*.rs` → `pipeline/*.rs`. Одновременно: `self.field` → `cfg.field`/`state.field`/`ctx.field` (без промежуточного шага через `self.cfg.field`). AgentEngine становится thin wrapper по ходу миграции. Порядок от наименее зависимого:
 
-### Фаза 4: Pipeline extraction (файл за файлом)
-
-Каждый `engine_*.rs` → `pipeline/*.rs`. Порядок от наименее зависимого:
 1. `context.rs` — build_context
 2. `memory.rs` — memory augmentation
 3. `commands.rs` — slash commands
@@ -333,13 +341,13 @@ impl RequestContext {
 12. `execution.rs` — main loop
 13. `entry.rs` — SSE entry point
 
-### Фаза 5: Shutdown + SIGHUP
+### Фаза 4: Shutdown + SIGHUP
 
 Ordered shutdown в main.rs. SIGHUP graceful drain.
 
-### Фаза 6: Cleanup + finalization
+### Фаза 5: Cleanup + finalization
 
-Удалить пустые `engine_*.rs`. Tests, clippy, deploy.
+Удалить пустые `engine_*.rs`. `self_ref` OnceLock удаляется. Tests, clippy, deploy.
 
 ---
 
