@@ -577,7 +577,19 @@ impl AgentEngine {
         // invite_agent removed (v3.0) — agent is the inter-agent tool
 
         let user_text = msg.text.clone().unwrap_or_default();
-        let enriched_text = self.enrich_message_text(&user_text, &msg.attachments).await;
+        let enriched_text = {
+            let toolgate_url = self.cfg().app_config.toolgate_url.clone()
+                .unwrap_or_else(|| "http://localhost:9011".to_string());
+            crate::agent::pipeline::subagent::enrich_message_text(
+                self.http_client(),
+                self.ssrf_http_client(),
+                &self.cfg().app_config.gateway.listen,
+                &toolgate_url,
+                &self.cfg().agent.language,
+                &user_text,
+                &msg.attachments,
+            ).await
+        };
 
         messages.push(Message {
             role: MessageRole::User,
@@ -1266,7 +1278,14 @@ impl crate::agent::context_builder::ContextBuilderDeps for AgentEngine {
         query: &str,
         k: usize,
     ) -> Vec<hydeclaw_types::ToolDefinition> {
-        AgentEngine::select_top_k_tools_semantic(self, tools, query, k).await
+        crate::agent::pipeline::subagent::select_top_k_tools_semantic(
+            self.cfg().embedder.as_ref(),
+            self.tool_embed_cache().as_ref(),
+            self.cfg().memory_store.is_available(),
+            tools,
+            query,
+            k,
+        ).await
     }
 }
 
