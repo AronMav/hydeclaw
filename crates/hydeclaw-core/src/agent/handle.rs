@@ -17,7 +17,7 @@ pub struct AgentHandle {
 impl AgentHandle {
     /// Gracefully stop all agent tasks: cancel subagents, remove scheduler jobs.
     pub async fn shutdown(mut self, scheduler: &Scheduler) {
-        let agent_name = &self.engine.agent.name;
+        let agent_name = &self.engine.cfg().agent.name;
 
         // Cancel all running subagents (REL-05)
         let all = self.engine.subagent_registry().list_summary().await;

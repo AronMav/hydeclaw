@@ -8,10 +8,8 @@ use uuid::Uuid;
 use super::channel_actions::{ChannelAction, ChannelActionRouter};
 use super::providers::LlmProvider;
 use super::workspace;
-use crate::config::AgentSettings;
 use crate::scheduler::{compute_next_run, Scheduler};
 use crate::mcp::McpRegistry;
-use crate::tools::ToolRegistry;
 
 use super::error_classify;
 use super::thinking::{looks_incomplete, maybe_strip_thinking, strip_thinking};
@@ -116,33 +114,15 @@ pub struct BgProcess {
 }
 
 // Step B complete: engine code reads via `self.cfg()`.
-// Old fields kept for external code (handle.rs, gateway/); removed in Step C.
-#[allow(dead_code)]
 pub struct AgentEngine {
-    pub provider: Arc<dyn LlmProvider>,
-    pub agent: AgentSettings,
-    pub db: PgPool,
-    pub tools: ToolRegistry,
-    pub workspace_dir: String,
-    /// Memory service abstraction (pgvector queries + external embedding endpoint).
-    /// Held as a trait object so unit tests can inject a `MockMemoryService`.
-    pub memory_store: Arc<dyn crate::agent::memory_service::MemoryService>,
-    /// Embedding service for vector generation (shared with MemoryStore).
-    pub embedder: Arc<dyn crate::memory::EmbeddingService>,
     /// Multi-channel router for sending actions to channel adapters.
     pub channel_router: Option<ChannelActionRouter>,
-    /// Scheduler for dynamic cron jobs.
-    pub scheduler: Option<Arc<Scheduler>>,
-    /// Map of all running agents for inter-agent communication (None for subagents).
-    pub agent_map: Option<crate::gateway::AgentMap>,
     /// Weak self-reference for hot-scheduling cron jobs. Set once after Arc creation.
     pub self_ref: OnceLock<Weak<AgentEngine>>,
     /// Broadcast channel for UI events (`agent_processing` start/end).
     pub ui_event_tx: Option<tokio::sync::broadcast::Sender<String>>,
     /// Shared tracker for currently processing agents (for WS reconnection).
     pub processing_tracker: Option<crate::gateway::ProcessingTracker>,
-    /// Default timezone parsed from USER.md at startup (fallback: Europe/Samara).
-    pub default_timezone: String,
     /// Last formatting prompt received from a connected channel adapter (e.g. Telegram).
     /// Used by cron/heartbeat to format output correctly for the channel.
     pub channel_formatting_prompt: tokio::sync::RwLock<Option<String>>,
@@ -150,10 +130,6 @@ pub struct AgentEngine {
     pub channel_info_cache: tokio::sync::RwLock<Option<Vec<workspace::ChannelInfo>>>,
     /// Thinking display level (0=off, 1=minimal, 2=low, 3=medium, 4=high, 5=max).
     pub thinking_level: std::sync::atomic::AtomicU8,
-    /// Global app config for reading [agent.defaults] and other system-level settings.
-    pub app_config: std::sync::Arc<crate::config::AppConfig>,
-    /// Dedicated LLM provider for context compaction (cheap model). None = use primary provider.
-    pub compaction_provider: Option<Arc<dyn LlmProvider>>,
     /// Context builder — builds session/messages/tools for each LLM call.
     /// Initialized via `set_context_builder` after engine Arc creation (mirrors `self_ref` pattern).
     /// Holds `Arc<dyn ContextBuilder>` for testability (`MockContextBuilder` in plan 02).
@@ -162,18 +138,11 @@ pub struct AgentEngine {
     /// Stored as concrete `Arc<DefaultToolExecutor>` for direct field access in engine methods.
     /// Initialized via `set_tool_executor` after engine Arc creation.
     pub tool_executor: OnceLock<Arc<crate::agent::tool_executor::DefaultToolExecutor>>,
-    /// Bounded audit event queue (tool execution + quality recording).
-    pub audit_queue: std::sync::Arc<crate::db::audit_queue::AuditQueue>,
-    /// Approval workflow manager (DB records, channel notifications, waiter map).
-    pub approval_manager: Arc<super::approval_manager::ApprovalManager>,
-    /// Session-scoped agent pools (None for subagents / isolated engines).
-    pub session_pools: Option<crate::agent::session_agent_pool::SessionPoolsMap>,
     /// Per-agent mutable state (cancel/drain for shutdown and SIGHUP).
     /// `None` for subagent engines — they are lightweight copies without lifecycle tracking.
     pub state: Option<Arc<crate::agent::agent_state::AgentState>>,
-    /// Immutable agent configuration snapshot.
-    /// Accessor migration (Step B) redirects all reads here; old fields are
-    /// still present for external code but will be removed in Step C.
+    /// Immutable agent configuration snapshot — sole source for agent settings,
+    /// DB pool, provider, tools, memory, etc.
     pub cfg: Option<Arc<crate::agent::agent_config::AgentConfig>>,
 }
 
@@ -1030,16 +999,17 @@ impl AgentEngine {
     /// Run compaction on messages if token budget exceeded, indexing extracted facts to memory.
     pub(super) async fn compact_messages(&self, messages: &mut Vec<Message>, detector: Option<&LoopDetector>) {
         let engine = self;
+        let cfg = engine.cfg();
         crate::agent::pipeline::context::compact_messages(
-            &engine.agent.model,
-            engine.agent.compaction.as_ref(),
-            &engine.agent.language,
-            engine.provider.as_ref(),
-            engine.compaction_provider.as_deref(),
-            &engine.db,
+            &cfg.agent.model,
+            cfg.agent.compaction.as_ref(),
+            &cfg.agent.language,
+            cfg.provider.as_ref(),
+            cfg.compaction_provider.as_deref(),
+            &cfg.db,
             engine.ui_event_tx.as_ref(),
-            &engine.agent.name,
-            &engine.audit_queue,
+            &cfg.agent.name,
+            &cfg.audit_queue,
             messages,
             detector,
             |facts| async move { engine.index_facts_to_memory(&facts).await },
@@ -1050,14 +1020,15 @@ impl AgentEngine {
     /// Compact a specific session's messages via API.
     pub async fn compact_session(&self, session_id: uuid::Uuid) -> Result<(usize, usize)> {
         let engine = self;
+        let cfg = engine.cfg();
         crate::agent::pipeline::context::compact_session(
-            &engine.db,
-            engine.provider.as_ref(),
-            engine.compaction_provider.as_deref(),
-            &engine.agent.language,
-            &engine.agent.name,
+            &cfg.db,
+            cfg.provider.as_ref(),
+            cfg.compaction_provider.as_deref(),
+            &cfg.agent.language,
+            &cfg.agent.name,
             session_id,
-            &engine.audit_queue,
+            &cfg.audit_queue,
             |facts| async move { engine.index_facts_to_memory(&facts).await },
         )
         .await
@@ -1421,7 +1392,7 @@ impl crate::agent::pipeline::llm_call::Compactor for AgentEngine {
 impl AgentEngine {
     /// Build tool loop config from agent TOML settings (or defaults).
     pub(crate) fn tool_loop_config(&self) -> crate::agent::tool_loop::ToolLoopConfig {
-        self.agent
+        self.cfg().agent
             .tool_loop
             .as_ref()
             .map(crate::agent::tool_loop::ToolLoopConfig::from)

@@ -254,7 +254,7 @@ async fn agent_processing_loop(
 ) {
     let max_iterations = engine.tool_loop_config().effective_max_iterations();
     let timeout = crate::agent::engine::parse_subagent_timeout(
-        &engine.app_config.subagents.in_process_timeout,
+        &engine.cfg().app_config.subagents.in_process_timeout,
     );
 
     while let Some(msg) = rx.recv().await {

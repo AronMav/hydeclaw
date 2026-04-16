@@ -161,7 +161,7 @@ pub async fn handle_agents_list(
     }
     let mut out = format!("Agents ({}):\n", map.len());
     for (name, handle) in map.iter() {
-        let a = &handle.engine.agent;
+        let a = &handle.engine.cfg().agent;
         let is_self = name == self_agent_name;
         let base_tag = if a.base { " [BASE]" } else { "" };
         let active_tag = if active_in_session.contains(name.as_str()) {

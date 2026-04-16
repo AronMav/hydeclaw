@@ -61,7 +61,7 @@ impl AgentCore {
     /// Get list of running agent names (base agents first, then alphabetical).
     pub async fn agent_names(&self) -> Vec<String> {
         let mut names: Vec<(bool, String)> = self.map.read().await.values()
-            .map(|h| (h.engine.agent.base, h.engine.agent.name.clone()))
+            .map(|h| (h.engine.cfg().agent.base, h.engine.cfg().agent.name.clone()))
             .collect();
         names.sort_by(|a, b| {
             b.0.cmp(&a.0)
@@ -76,11 +76,11 @@ impl AgentCore {
             self.map.read().await.values()
                 .map(|h| {
                     (
-                        h.engine.agent.base,
-                        h.engine.agent.name.clone(),
+                        h.engine.cfg().agent.base,
+                        h.engine.cfg().agent.name.clone(),
                         serde_json::json!({
-                            "name": h.engine.agent.name,
-                            "icon": h.engine.agent.icon,
+                            "name": h.engine.cfg().agent.name,
+                            "icon": h.engine.cfg().agent.icon,
                         }),
                     )
                 })
