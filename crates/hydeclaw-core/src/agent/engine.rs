@@ -200,7 +200,7 @@ pub(crate) const RICH_CARD_PREFIX: &str = "__rich_card__:";
 
 /// In-band marker prefix for file/media tool results (image, audio, etc.).
 /// Format: `__file__:{"url":"...","mediaType":"image/png"}`
-const FILE_PREFIX: &str = "__file__:";
+pub(crate) const FILE_PREFIX: &str = "__file__:";
 
 /// Nudge message injected when auto-continue detects incomplete LLM response.
 const AUTO_CONTINUE_NUDGE: &str = "[system] You described remaining steps but didn't execute them. Continue and complete the task using tools.";

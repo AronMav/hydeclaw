@@ -2,6 +2,8 @@
 //! Extracted from engine_execution.rs for readability.
 
 use super::*;
+use crate::agent::pipeline::execution as exec_helpers;
+use crate::agent::pipeline::entry as entry_helpers;
 use crate::agent::tool_executor::ToolExecutor;
 
 impl AgentEngine {
@@ -66,13 +68,7 @@ impl AgentEngine {
         if let Err(e) = sm.set_run_status(session_id, "running").await {
             tracing::warn!(session_id = %session_id, error = %e, "failed to mark SSE session as running");
         }
-        if let Err(e) = sm.log_wal_event(session_id, "running", None).await {
-            tracing::warn!(session_id = %session_id, error = %e, "failed to log WAL running event, retrying");
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            if let Err(e2) = sm.log_wal_event(session_id, "running", None).await {
-                tracing::error!(session_id = %session_id, error = %e2, "WAL running event retry also failed");
-            }
-        }
+        exec_helpers::log_wal_running_with_retry(&sm, session_id).await;
         let mut lifecycle_guard = SessionLifecycleGuard::new(self.db.clone(), session_id);
 
         // Emit session ID so the UI can track which session is active
@@ -107,8 +103,7 @@ impl AgentEngine {
             thinking_blocks: vec![],
         });
 
-        // For inter-agent messages (user_id starts with "agent:"), save the sender agent_id
-        let sender_agent_id = if msg.user_id.starts_with("agent:") { Some(msg.user_id.trim_start_matches("agent:")) } else { None };
+        let sender_agent_id = exec_helpers::extract_sender_agent_id(&msg.user_id);
         let user_msg_id = sm.save_message_ex(session_id, "user", &user_text, None, None, sender_agent_id, None, msg.leaf_message_id).await?;
         let mut last_msg_id = user_msg_id;
 
@@ -218,22 +213,12 @@ impl AgentEngine {
                     }
                     let reason_str = format!("SSE LLM call failed: {e}");
                     lifecycle_guard.fail(&reason_str).await;
-                    {
-                        let db = self.db.clone();
-                        let agent_name = self.agent.name.clone();
-                        let rs = reason_str.clone();
-                        if let Some(ref ui_tx) = self.ui_event_tx {
-                            let tx = ui_tx.clone();
-                            tokio::spawn(async move {
-                                crate::gateway::notify(
-                                    &db, &tx, "agent_error",
-                                    "Agent Error",
-                                    &format!("Agent {} run failed: {}", agent_name, rs),
-                                    serde_json::json!({"agent": agent_name, "reason": rs}),
-                                ).await.ok();
-                            });
-                        }
-                    }
+                    exec_helpers::notify_agent_error(
+                        self.db.clone(),
+                        self.ui_event_tx.as_ref(),
+                        &self.agent.name,
+                        &reason_str,
+                    );
                     break;
                 }
             };
@@ -250,23 +235,13 @@ impl AgentEngine {
                 if auto_continue_count < loop_config.max_auto_continues && !final_response.is_empty() && looks_incomplete(&final_response) {
                     auto_continue_count += 1;
                     tracing::info!(iteration, count = auto_continue_count, max = loop_config.max_auto_continues, "auto-continue: response looks incomplete, nudging LLM");
-                    {
-                        let db = self.db.clone();
-                        let agent_name = self.agent.name.clone();
-                        let cnt = auto_continue_count;
-                        let max = loop_config.max_auto_continues;
-                        if let Some(ref ui_tx) = self.ui_event_tx {
-                            let tx = ui_tx.clone();
-                            tokio::spawn(async move {
-                                crate::gateway::notify(
-                                    &db, &tx, "auto_continue",
-                                    &format!("Auto-continue: {}", agent_name),
-                                    &format!("Agent continued unfinished task (attempt {}/{})", cnt, max),
-                                    serde_json::json!({"agent": agent_name}),
-                                ).await.ok();
-                            });
-                        }
-                    }
+                    exec_helpers::notify_auto_continue(
+                        self.db.clone(),
+                        self.ui_event_tx.as_ref(),
+                        &self.agent.name,
+                        auto_continue_count,
+                        loop_config.max_auto_continues,
+                    );
                     let _ = event_tx.send(StreamEvent::StepFinish {
                         step_id: step_id.clone(),
                         finish_reason: "continuation".into(),
@@ -378,41 +353,8 @@ impl AgentEngine {
                 Ok(results) => {
                     for (tc_id, tool_result) in &results {
                         // Extract RichCard / File markers for SSE events
-                        let (display_result, db_result) = if let Some(json_str) = tool_result.strip_prefix(RICH_CARD_PREFIX) {
-                            if let Ok(data) = serde_json::from_str::<serde_json::Value>(json_str) {
-                                let card_type = data.get("card_type")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("table")
-                                    .to_string();
-                                if event_tx.send(StreamEvent::RichCard { card_type, data }).is_err() {
-                                    tracing::debug!("SSE event channel closed, engine continues for DB save");
-                                }
-                            }
-                            // Preserve raw marker in db_result so parts_builder can extract rich-card parts
-                            ("Rich card displayed".to_string(), tool_result.clone())
-                        } else if tool_result.contains(FILE_PREFIX) {
-                            let db_result = tool_result.clone();
-                            let mut clean_lines = Vec::new();
-                            for line in tool_result.lines() {
-                                if let Some(json_str) = line.strip_prefix(FILE_PREFIX) {
-                                    if let Ok(meta) = serde_json::from_str::<serde_json::Value>(json_str) {
-                                        let url = meta.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                                        let media_type = meta.get("mediaType").and_then(|v| v.as_str()).unwrap_or("application/octet-stream");
-                                        if !url.is_empty()
-                                            && event_tx.send(StreamEvent::File { url: url.to_string(), media_type: media_type.to_string() }).is_err() {
-                                                tracing::debug!("SSE event channel closed, engine continues for DB save");
-                                            }
-                                    }
-                                } else {
-                                    clean_lines.push(line.as_ref());
-                                }
-                            }
-                            let text = clean_lines.join("\n");
-                            let display_result = if text.is_empty() { "Image displayed inline in the chat. Do NOT use canvas or other tools to show it again.".to_string() } else { text };
-                            (display_result, db_result)
-                        } else {
-                            (tool_result.clone(), tool_result.clone())
-                        };
+                        let entry_helpers::ToolResultParts { display_result, db_result } =
+                            entry_helpers::extract_tool_result_events(tool_result, &event_tx);
 
                         if event_tx
                             .send(StreamEvent::ToolResult {
@@ -445,16 +387,9 @@ impl AgentEngine {
                 }
                 Err(parallel_impl::LoopBreak(reason)) => {
                     if loop_nudge_count < loop_config.max_loop_nudges {
-                        let nudge_desc = reason.as_deref().unwrap_or("repeating pattern");
-                        let nudge_msg = format!(
-                            "LOOP DETECTED: You have repeated the same sequence of actions ({desc}). \
-                             Change your approach entirely. If the task is too large for a single session, \
-                             tell the user and suggest breaking it into smaller steps. Do NOT retry the same approach.",
-                            desc = nudge_desc
-                        );
                         messages.push(Message {
                             role: MessageRole::System,
-                            content: nudge_msg,
+                            content: exec_helpers::build_loop_nudge_message(reason.as_deref()),
                             tool_calls: None,
                             tool_call_id: None,
                             thinking_blocks: vec![],
@@ -493,41 +428,21 @@ impl AgentEngine {
             if loop_broken || iteration == loop_config.effective_max_iterations() - 1 {
                 // Notify if hitting iteration limit (not loop break)
                 if !loop_broken && iteration == loop_config.effective_max_iterations() - 1 {
-                    tracing::warn!(
-                        agent = %self.agent.name,
-                        max_iterations = loop_config.effective_max_iterations(),
-                        "agent reached iteration limit"
+                    exec_helpers::notify_iteration_limit(
+                        self.db.clone(),
+                        self.ui_event_tx.as_ref(),
+                        &self.agent.name,
+                        loop_config.effective_max_iterations(),
                     );
-                    if let Some(ref ui_tx) = self.ui_event_tx {
-                        let db = self.db.clone();
-                        let tx = ui_tx.clone();
-                        let agent_name = self.agent.name.clone();
-                        let max_iter = loop_config.effective_max_iterations();
-                        tokio::spawn(async move {
-                            crate::gateway::notify(
-                                &db, &tx, "iteration_limit",
-                                &format!("Iteration limit: {}", agent_name),
-                                &format!("Agent {} reached its iteration limit ({} iterations). The task may be incomplete.", agent_name, max_iter),
-                                serde_json::json!({"agent": agent_name, "max_iterations": max_iter}),
-                            ).await.ok();
-                        });
-                    }
                 }
                 // Notify if loop was broken after max nudges
-                if loop_broken && loop_nudge_count >= loop_config.max_loop_nudges
-                    && let Some(ref ui_tx) = self.ui_event_tx {
-                    let db = self.db.clone();
-                    let tx = ui_tx.clone();
-                    let agent_name = self.agent.name.clone();
-                    let sid = session_id;
-                    tokio::spawn(async move {
-                        crate::gateway::notify(
-                            &db, &tx, "agent_loop_detected",
-                            &format!("Agent stuck in loop: {}", agent_name),
-                            &format!("Agent {} was stopped after detecting a repeating pattern. Session: {}", agent_name, sid),
-                            serde_json::json!({"agent": agent_name, "session_id": sid.to_string()}),
-                        ).await.ok();
-                    });
+                if loop_broken && loop_nudge_count >= loop_config.max_loop_nudges {
+                    exec_helpers::notify_loop_detected(
+                        self.db.clone(),
+                        self.ui_event_tx.as_ref(),
+                        &self.agent.name,
+                        session_id,
+                    );
                 }
                 let step_id = format!("step_{}", iteration + 1);
                 if event_tx
@@ -558,22 +473,12 @@ impl AgentEngine {
                         final_response = fallback;
                         let reason_str = format!("SSE forced final LLM call failed: {e}");
                         lifecycle_guard.fail(&reason_str).await;
-                        {
-                            let db = self.db.clone();
-                            let agent_name = self.agent.name.clone();
-                            let rs = reason_str.clone();
-                            if let Some(ref ui_tx) = self.ui_event_tx {
-                                let tx = ui_tx.clone();
-                                tokio::spawn(async move {
-                                    crate::gateway::notify(
-                                        &db, &tx, "agent_error",
-                                        "Agent Error",
-                                        &format!("Agent {} run failed: {}", agent_name, rs),
-                                        serde_json::json!({"agent": agent_name, "reason": rs}),
-                                    ).await.ok();
-                                });
-                            }
-                        }
+                        exec_helpers::notify_agent_error(
+                            self.db.clone(),
+                            self.ui_event_tx.as_ref(),
+                            &self.agent.name,
+                            &reason_str,
+                        );
                     }
                 }
                 if event_tx
@@ -613,18 +518,10 @@ impl AgentEngine {
         lifecycle_guard.done().await;
 
         // Post-session knowledge extraction (background, non-blocking)
-        if messages.len() >= 5 {
-            let db = self.db.clone();
-            let provider = self.provider.clone();
-            let memory = self.memory_store.clone();
-            let agent = self.agent.name.clone();
-            let sid = session_id;
-            tokio::spawn(async move {
-                crate::agent::knowledge_extractor::extract_and_save(
-                    db, sid, agent, provider, memory,
-                ).await;
-            });
-        }
+        exec_helpers::spawn_knowledge_extraction(
+            self.db.clone(), session_id, self.agent.name.clone(),
+            self.provider.clone(), self.memory_store.clone(), messages.len(),
+        );
 
         // Clear SSE event sender
         *self.sse_event_tx().lock().await = None;
