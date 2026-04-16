@@ -17,3 +17,4 @@ pub mod sandbox;
 pub mod subagent;
 pub mod agent_tool;
 pub mod sessions;
+pub mod canvas;

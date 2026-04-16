@@ -143,7 +143,7 @@ pub struct CanvasContent {
 
 
 /// Maximum canvas content size (5 MB) to protect constrained environments.
-const CANVAS_MAX_BYTES: usize = 5 * 1024 * 1024;
+pub(crate) const CANVAS_MAX_BYTES: usize = 5 * 1024 * 1024;
 
 /// In-band marker prefix for rich card tool results.
 pub(crate) const RICH_CARD_PREFIX: &str = "__rich_card__:";
