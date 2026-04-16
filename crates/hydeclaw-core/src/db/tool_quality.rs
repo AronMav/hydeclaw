@@ -132,9 +132,14 @@ pub async fn record_tool_result(
                         AVG(CASE WHEN (elem->>'success')::boolean THEN 1.0 ELSE 0.0 END),
                         1.0
                     )
-                    FROM jsonb_array_elements(
-                        tool_quality.recent_calls || jsonb_build_array($4::jsonb)
-                    ) AS t(elem)
+                    FROM (
+                        SELECT elem
+                        FROM jsonb_array_elements(
+                            tool_quality.recent_calls || jsonb_build_array($4::jsonb)
+                        ) WITH ORDINALITY AS t(elem, ordinality)
+                        ORDER BY ordinality DESC
+                        LIMIT 20
+                    ) window_sub
                 )
             ),
             last_error       = CASE WHEN $2 THEN tool_quality.last_error ELSE $5 END,
