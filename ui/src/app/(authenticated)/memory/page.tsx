@@ -79,12 +79,18 @@ export default function MemoryPage() {
 
   const [chunks, setChunks] = useState<MemoryDocument[]>([]);
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState(query);
   const [offset, setOffset] = useState(0);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
   const limit = 20;
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(query), 300);
+    return () => clearTimeout(timer);
+  }, [query]);
 
   const fetchChunks = useCallback(async () => {
     setLoading(true);
@@ -94,7 +100,7 @@ export default function MemoryPage() {
         limit: limit.toString(),
         offset: offset.toString(),
       });
-      if (query) params.append("query", query);
+      if (debouncedQuery) params.append("query", debouncedQuery);
 
       const res = await apiGet<{ documents: MemoryDocument[]; total: number }>(`/api/memory/documents?${params.toString()}`);
       setChunks(res.documents);
@@ -103,7 +109,7 @@ export default function MemoryPage() {
     } finally {
       setLoading(false);
     }
-  }, [offset, query]);
+  }, [offset, debouncedQuery]);
 
   useEffect(() => {
     fetchChunks();
@@ -138,7 +144,7 @@ export default function MemoryPage() {
   // Reset pagination on filter change
   useEffect(() => {
     setOffset(0);
-  }, [query]);
+  }, [debouncedQuery]);
 
   // Full document view mode
   if (docId) {
