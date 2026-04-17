@@ -7,6 +7,7 @@
 #![allow(unused_imports)] // Re-exports not used by every test binary.
 
 pub mod drain_fixture;
+pub mod fixtures;
 pub mod harness;
 pub mod metrics_probe;
 pub mod migrations;
