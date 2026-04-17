@@ -100,14 +100,13 @@ impl ToolgateFixture {
                 .timeout(Duration::from_millis(500))
                 .send()
                 .await
+                && resp.status().is_success()
             {
-                if resp.status().is_success() {
-                    return SpawnResult::Started(ToolgateFixture {
-                        child,
-                        port,
-                        base_url,
-                    });
-                }
+                return SpawnResult::Started(ToolgateFixture {
+                    child,
+                    port,
+                    base_url,
+                });
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
