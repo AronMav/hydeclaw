@@ -27,7 +27,16 @@ http_client: httpx.AsyncClient = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global http_client
-    http_client = httpx.AsyncClient(timeout=120.0)
+    # Phase 62 RES-07: cap outbound provider connections to prevent pool exhaustion
+    # on Raspberry Pi. httpx queues requests past max_connections; PoolTimeout fires
+    # after timeout.pool (120s here) — see Pitfall 4 in 62-RESEARCH.md.
+    http_client = httpx.AsyncClient(
+        timeout=120.0,
+        limits=httpx.Limits(
+            max_connections=20,
+            max_keepalive_connections=10,
+        ),
+    )
     app.state.registry = registry
     app.state.http_client = http_client
     await registry.aload()
