@@ -565,15 +565,19 @@ function MonitorPageInner() {
   const { data: approvals = [], isLoading: approvalsLoading, error: approvalsError, refetch: approvalsRefetch } = useApprovals();
   const resolveApproval = useResolveApproval();
   const [actionError, setActionError] = useState("");
+  const [processingIds, setProcessingIds] = useState<Set<string>>(new Set());
 
   const pending = approvals.filter((a) => a.status === "pending");
 
   const handleResolve = async (id: string, status: "approved" | "rejected") => {
     setActionError("");
+    setProcessingIds((prev) => new Set(prev).add(id));
     try {
       await resolveApproval.mutateAsync({ id, status });
     } catch (e) {
       setActionError(`${e}`);
+    } finally {
+      setProcessingIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
     }
   };
 
@@ -590,10 +594,10 @@ function MonitorPageInner() {
   const logsContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!ws || !connected) return;
+    if (!ws || !connected || activeTab !== "logs") return;
     ws.send({ type: "subscribe_logs" });
     return () => { ws.send({ type: "unsubscribe_logs" }); };
-  }, [ws, connected]);
+  }, [ws, connected, activeTab]);
 
   const onLog = useCallback((m: WsLog) => {
     const entry: LogEntry = {
@@ -640,7 +644,7 @@ function MonitorPageInner() {
   if (auditEventType !== "_all") auditParams.event_type = auditEventType;
 
   const { data: auditEvents = [], isFetching: auditLoading, refetch: auditRefetch } = useAudit(auditParams);
-  const auditHasMore = auditEvents.length >= AUDIT_PAGE_SIZE;
+  const auditHasMore = !auditSearch && auditEvents.length >= AUDIT_PAGE_SIZE;
 
   const loadAuditAgents = useCallback(async () => {
     try {
@@ -1154,7 +1158,7 @@ function MonitorPageInner() {
                     >
                       <div className="flex items-center gap-3 shrink-0">
                         <span className="w-16 text-muted-foreground/60 tabular-nums group-hover:text-muted-foreground/70 transition-colors">
-                          {new Date(l.timestamp).toLocaleTimeString("ru-RU", { hour12: false })}
+                          {new Date(l.timestamp).toLocaleTimeString(locale === "en" ? "en-US" : "ru-RU", { hour12: false })}
                         </span>
                         <span className={`w-12 font-bold uppercase tracking-tighter ${LEVEL_COLORS[l.level] || ""}`}>
                           {l.level}
@@ -1611,7 +1615,7 @@ function MonitorPageInner() {
                         variant="outline"
                         size="sm"
                         onClick={() => handleResolve(a.id, "approved")}
-                        disabled={resolveApproval.isPending}
+                        disabled={processingIds.has(a.id)}
                         className="text-xs font-medium border-success/50 text-success hover:bg-success/10"
                       >
                         <Check className="h-3 w-3 mr-2" />
@@ -1621,7 +1625,7 @@ function MonitorPageInner() {
                         variant="outline"
                         size="sm"
                         onClick={() => handleResolve(a.id, "rejected")}
-                        disabled={resolveApproval.isPending}
+                        disabled={processingIds.has(a.id)}
                         className="text-xs font-medium border-destructive/50 text-destructive hover:bg-destructive/10"
                       >
                         <X className="h-3 w-3 mr-2" />

@@ -196,7 +196,7 @@ export function AgentEditDialog({
                       const input = document.createElement("input");
                       input.type = "file";
                       input.accept = "image/*";
-                      input.onchange = async () => {
+                      input.addEventListener("change", async () => {
                         const file = input.files?.[0];
                         if (!file) return;
                         const fd = new FormData();
@@ -215,8 +215,7 @@ export function AgentEditDialog({
                         } catch {
                           toast.error(t("common.icon_upload_error"));
                         }
-                        input.onchange = null;
-                      };
+                      }, { once: true });
                       input.click();
                     }}
                   >

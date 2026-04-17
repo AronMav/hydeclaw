@@ -10,6 +10,8 @@ export function useSmoothedText(rawText: string, isStreaming: boolean) {
   const [displayedText, setDisplayValue] = useState(rawText);
   const queueRef = useRef("");
   const frameRef = useRef<number | null>(null);
+  const streamingRef = useRef(isStreaming);
+  streamingRef.current = isStreaming;
   
   // Синхронизируем очередь при получении новых данных
   useEffect(() => {
@@ -34,16 +36,20 @@ export function useSmoothedText(rawText: string, isStreaming: boolean) {
 
     const animate = () => {
       if (queueRef.current.length > 0) {
-        // Адаптивная скорость: минимум 1 символ, максимум 10% очереди за кадр
+        // Адаптивная скорость: минимум 1 символ, максимум 15% очереди за кадр
         const jump = Math.ceil(queueRef.current.length * 0.15);
         const charsToShow = Math.min(queueRef.current.length, jump);
-        
+
         const nextPart = queueRef.current.slice(0, charsToShow);
         queueRef.current = queueRef.current.slice(charsToShow);
-        
+
         setDisplayValue((prev) => prev + nextPart);
+        frameRef.current = requestAnimationFrame(animate);
+      } else if (streamingRef.current) {
+        // Queue empty but still streaming — poll next frame
+        frameRef.current = requestAnimationFrame(animate);
       }
-      frameRef.current = requestAnimationFrame(animate);
+      // Otherwise: queue empty + not streaming → stop loop
     };
 
     frameRef.current = requestAnimationFrame(animate);

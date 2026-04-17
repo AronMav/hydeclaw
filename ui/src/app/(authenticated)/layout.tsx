@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth-store";
 import { apiGet, apiPost } from "@/lib/api";
@@ -30,6 +30,7 @@ export default function AuthenticatedLayout({
   const connected = useWsStore((s) => s.connected);
   const { t } = useTranslation();
   const [ready, setReady] = useState(false);
+  const restoredRef = useRef(false);
 
   useEffect(() => {
     const init = async (authenticated: boolean) => {
@@ -54,7 +55,10 @@ export default function AuthenticatedLayout({
       init(true);
       return;
     }
-    restore().then((ok) => init(ok));
+    if (!restoredRef.current) {
+      restoredRef.current = true;
+      restore().then((ok) => init(ok));
+    }
   }, [isAuthenticated, restore, router]);
 
   useEffect(() => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useRef, useMemo, useEffect } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { json } from "@codemirror/lang-json";
@@ -53,15 +53,12 @@ export function CodeEditor({ value, onChange, onSave, language }: CodeEditorProp
     [onChange],
   );
 
-  const saveKeymap = keymap.of([
-    {
-      key: "Mod-s",
-      run: () => {
-        onSave?.();
-        return true;
-      },
-    },
-  ]);
+  const onSaveRef = useRef(onSave);
+  useEffect(() => { onSaveRef.current = onSave; }, [onSave]);
+  const saveKeymap = useMemo(() => keymap.of([{
+    key: "Mod-s",
+    run: () => { onSaveRef.current?.(); return true; },
+  }]), []);
 
   return (
     <div className="flex-1 overflow-hidden">

@@ -10,7 +10,9 @@ export function useAutoRefresh(callback: () => void, intervalMs: number) {
   }, [callback]);
 
   useEffect(() => {
-    const id = setInterval(() => savedCallback.current(), intervalMs);
+    const id = setInterval(() => {
+      if (document.visibilityState !== "hidden") savedCallback.current();
+    }, intervalMs);
     return () => clearInterval(id);
   }, [intervalMs]);
 }

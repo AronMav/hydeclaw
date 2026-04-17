@@ -199,7 +199,15 @@ export default function BackupsPage() {
     setRestoring(true);
     setActionError("");
     try {
-      // Fetch the backup file
+      // Note: The restore API only accepts blob body (no server-side filename endpoint).
+      // This means the backup is downloaded to browser memory then re-uploaded.
+      // For large backups this may be slow or fail on low-memory devices.
+      const targetBackup = backups.find((b) => b.filename === restoreTarget);
+      const SIZE_WARN_THRESHOLD = 50 * 1024 * 1024; // 50MB
+      if (targetBackup && targetBackup.size_bytes > SIZE_WARN_THRESHOLD) {
+        toast.warning(`Large backup (${formatBytes(targetBackup.size_bytes)}). Restore may take a while.`);
+      }
+
       const token = getToken();
       const resp = await fetch(`/api/backup/${encodeURIComponent(restoreTarget)}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -207,7 +215,6 @@ export default function BackupsPage() {
       if (!resp.ok) throw new Error(`Failed to download backup: HTTP ${resp.status}`);
       const blob = await resp.blob();
 
-      // POST to restore
       const restoreResp = await fetch("/api/restore", {
         method: "POST",
         headers: {

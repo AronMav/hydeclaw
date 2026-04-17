@@ -36,8 +36,8 @@ export default function WorkspacePage() {
   const [saved, setSaved] = useState(false);
   const [newFileName, setNewFileName] = useState("");
   const [showNewFile, setShowNewFile] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState(false);
-  const [deleteDirTarget, setDeleteDirTarget] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [deleteDirTarget, setDeleteDirTarget] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const loadFileRequestRef = useRef(0);
 
@@ -113,12 +113,15 @@ export default function WorkspacePage() {
   };
 
   const doDelete = async () => {
+    if (!deleteTarget) return;
     try {
-      await apiDelete(`/api/workspace/${selectedFile}`);
-      setSelectedFile("");
-      setContent("");
-      setOriginal("");
-      setDeleteTarget(false);
+      await apiDelete(`/api/workspace/${deleteTarget}`);
+      if (selectedFile === deleteTarget) {
+        setSelectedFile("");
+        setContent("");
+        setOriginal("");
+      }
+      setDeleteTarget(null);
       await fetchFiles();
     } catch (e) {
       setError(`${e}`);
@@ -126,9 +129,10 @@ export default function WorkspacePage() {
   };
 
   const doDeleteDir = async () => {
+    if (!deleteDirTarget) return;
     try {
-      await apiDelete(`/api/workspace/${currentPath}`);
-      setDeleteDirTarget(false);
+      await apiDelete(`/api/workspace/${deleteDirTarget}`);
+      setDeleteDirTarget(null);
       navigateUp();
     } catch (e) {
       setError(`${e}`);
@@ -264,13 +268,13 @@ export default function WorkspacePage() {
         <div className="flex items-center gap-2">
           {saved && <span className="hidden sm:inline text-xs text-success font-medium">{t("workspace.saved")}</span>}
           {currentPath && !selectedFile && (
-            <Button size="sm" variant="destructive" onClick={() => setDeleteDirTarget(true)}>
+            <Button size="sm" variant="destructive" onClick={() => setDeleteDirTarget(currentPath)}>
               <FolderMinus className="h-4 w-4 md:mr-2" />
               <span className="hidden md:inline">{t("workspace.delete_folder")}</span>
             </Button>
           )}
           {selectedFile && (
-            <Button size="sm" variant="destructive" onClick={() => setDeleteTarget(true)}>
+            <Button size="sm" variant="destructive" onClick={() => setDeleteTarget(selectedFile)}>
               <Trash2 className="h-4 w-4 md:mr-2" />
               <span className="hidden md:inline">{t("workspace.delete_file")}</span>
             </Button>
@@ -343,19 +347,19 @@ export default function WorkspacePage() {
       </div>
 
       <ConfirmDialog
-        open={deleteTarget}
-        onClose={() => setDeleteTarget(false)}
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
         onConfirm={doDelete}
         title={t("workspace.delete_file_title")}
-        description={t("workspace.delete_file_description", { name: selectedFileName })}
+        description={t("workspace.delete_file_description", { name: deleteTarget?.split("/").pop() ?? "" })}
       />
 
       <ConfirmDialog
-        open={deleteDirTarget}
-        onClose={() => setDeleteDirTarget(false)}
+        open={!!deleteDirTarget}
+        onClose={() => setDeleteDirTarget(null)}
         onConfirm={doDeleteDir}
         title={t("workspace.delete_folder_title")}
-        description={t("workspace.delete_folder_description", { name: currentPath.split("/").pop() ?? "" })}
+        description={t("workspace.delete_folder_description", { name: deleteDirTarget?.split("/").pop() ?? "" })}
         confirmLabel={t("workspace.delete_folder_action")}
       />
     </div>

@@ -287,7 +287,7 @@ export function RoutingRulesEditor({
         <div className="space-y-3">
           {routing.map((rule, idx) => (
             <RoutingRuleRow
-              key={`${rule.provider}-${rule.condition}-${idx}`}
+              key={idx}
               rule={rule}
               secretNames={secretNames}
               discoveredModels={discoveredModels}

@@ -121,7 +121,7 @@ export default function ChannelsPage() {
   }, [queryClient]));
 
   const isOnline = (ch: ChannelRow) =>
-    active.some((a) => a.agent_name === ch.agent_name && a.channel_type === ch.channel_type);
+    active.some((a) => a.channel_id === ch.id);
 
   const openCreate = () => {
     setEditingChannel(null);

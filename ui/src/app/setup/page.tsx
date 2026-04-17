@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { apiPost, apiGet, apiDelete } from "@/lib/api";
+import { toast } from "sonner";
 import { useTranslation } from "@/hooks/use-translation";
 import type { TranslationKey } from "@/i18n/types";
 import { Button } from "@/components/ui/button";
@@ -230,6 +231,7 @@ export default function SetupPage() {
     if (fb && fb.length > 0) setDefaultModel(fb[0]);
   };
 
+  const providerNameRef = useRef("");
   const discoverGenRef = useRef(0);
   const discoverModels = async () => {
     if (!providerType) return;
@@ -268,6 +270,7 @@ export default function SetupPage() {
         enabled: true,
       });
       setProviderName(created.name ?? name);
+      providerNameRef.current = created.name ?? name;
 
       // WIZ-02: validate key with test call
       setTestCallStatus("testing");
@@ -279,7 +282,9 @@ export default function SetupPage() {
         if (modelList.length === 0 && (selectedTypeInfo?.requires_api_key !== false)) {
           // No models returned and key is required — likely invalid key
           // Clean up orphaned provider record
-          await apiDelete(`/api/providers/${created.id}`).catch(() => {});
+          await apiDelete(`/api/providers/${created.id}`).catch(() => {
+            toast.error("Warning: could not clean up test provider. You may need to remove it manually in Providers page.");
+          });
           setTestCallStatus("fail");
           setError(t("setup.provider_test_fail"));
           setLoading(false);
@@ -293,7 +298,9 @@ export default function SetupPage() {
       } catch {
         // Test call failed (network error, auth error, etc.)
         // Clean up orphaned provider record
-        await apiDelete(`/api/providers/${created.id}`).catch(() => {});
+        await apiDelete(`/api/providers/${created.id}`).catch(() => {
+          toast.error("Warning: could not clean up test provider. You may need to remove it manually in Providers page.");
+        });
         setTestCallStatus("fail");
         setError(t("setup.provider_test_fail"));
         setLoading(false);
@@ -320,7 +327,7 @@ export default function SetupPage() {
         provider: providerType,
         model: defaultModel,
         temperature: 1.0,
-        provider_connection: providerName || undefined,
+        provider_connection: providerNameRef.current || undefined,
       });
       setStep("channel");
     } catch (e) {

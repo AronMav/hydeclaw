@@ -34,6 +34,7 @@ function playNotificationSound() {
     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
     osc.start(ctx.currentTime);
     osc.stop(ctx.currentTime + 0.25);
+    osc.onended = () => ctx.close().catch(() => {});
   } catch {
     // AudioContext not available (SSR or blocked by browser policy — silent fail)
   }

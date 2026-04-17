@@ -40,7 +40,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="ru" suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning>
       <body className={`${nunito.variable} ${manrope.variable} ${jetbrains.variable} font-sans antialiased h-[100dvh] overflow-hidden`}>
         <ThemeProvider
           attribute="class"

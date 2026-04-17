@@ -1071,8 +1071,8 @@ parameters:
 
       <AlertDialog open={!!deleteConfirm} onOpenChange={(open) => { if (!open) setDeleteConfirm(null); }}>
         <AlertDialogContent>
-          <AlertDialogTitle>{t("tools.delete_confirm_title", { kind: deleteConfirm?.kind === "mcp" ? "MCP" : deleteConfirm?.kind === "service" ? t("tools.add_service") : "YAML", name: deleteConfirm?.name ?? "" })}</AlertDialogTitle>
           <AlertDialogHeader>
+            <AlertDialogTitle>{t("tools.delete_confirm_title", { kind: deleteConfirm?.kind === "mcp" ? "MCP" : deleteConfirm?.kind === "service" ? t("tools.add_service") : "YAML", name: deleteConfirm?.name ?? "" })}</AlertDialogTitle>
             <AlertDialogDescription>
               {t("tools.delete_confirm_description")}
             </AlertDialogDescription>

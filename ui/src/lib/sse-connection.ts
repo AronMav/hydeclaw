@@ -92,8 +92,8 @@ export class SseConnection {
       // AbortSignal.any() is not universally available — wire up manually
       const combined = new AbortController();
       const onAbort = () => combined.abort();
-      this.controller.signal.addEventListener("abort", onAbort);
-      externalSignal.addEventListener("abort", onAbort);
+      this.controller.signal.addEventListener("abort", onAbort, { once: true });
+      externalSignal.addEventListener("abort", onAbort, { once: true });
       signal = combined.signal;
     }
 

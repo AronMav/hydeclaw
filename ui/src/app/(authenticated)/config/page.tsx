@@ -68,6 +68,7 @@ export default function ConfigPage() {
 
   const restartPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const restartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
 
   const loadConfig = useCallback(() => {
     apiGet<ConfigData>("/api/config")
@@ -130,6 +131,7 @@ export default function ConfigPage() {
 
   // Cleanup restart polling on unmount
   useEffect(() => () => {
+    mountedRef.current = false;
     if (restartPollRef.current) clearInterval(restartPollRef.current);
     if (restartTimeoutRef.current) clearTimeout(restartTimeoutRef.current);
   }, []);
@@ -141,11 +143,13 @@ export default function ConfigPage() {
       toast.success(t("config.core_restarting"));
       // Poll until core comes back
       const poll = setInterval(async () => {
+        if (!mountedRef.current) return;
         try {
           await apiGet("/health");
           clearInterval(poll);
           restartPollRef.current = null;
           if (restartTimeoutRef.current) { clearTimeout(restartTimeoutRef.current); restartTimeoutRef.current = null; }
+          if (!mountedRef.current) return;
           setRestarting(false);
           loadConfig();
           toast.success(t("config.core_restarted"));

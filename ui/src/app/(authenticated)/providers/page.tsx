@@ -541,7 +541,7 @@ export default function ProvidersPage() {
                 {t("providers.field_category")} <span className="text-destructive">*</span>
               </label>
               <Select
-                value={dialogCategory || undefined}
+                value={dialogCategory}
                 onValueChange={(v) => setCategory(v as ProviderCategory)}
                 disabled={false}
               >

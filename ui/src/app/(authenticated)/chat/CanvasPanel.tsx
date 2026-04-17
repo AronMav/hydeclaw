@@ -49,7 +49,7 @@ export function CanvasPanel({ agent }: CanvasPanelProps) {
 
   // Listen for canvas_update WS events — pass sessionId-based key
   useWsSubscription("canvas_update", useCallback((msg) => {
-    const key = useChatStore.getState().agents[useChatStore.getState().currentAgent]?.activeSessionId ?? msg.agent;
+    const key = msg.agent ?? useChatStore.getState().currentAgent;
     useCanvasStore.getState().handleEvent(msg, key);
   }, []));
 
@@ -108,7 +108,7 @@ export function CanvasPanel({ agent }: CanvasPanelProps) {
         {canvas.contentType === "url" && (
           <iframe
             src={sanitizeUrl(canvas.content)}
-            sandbox="allow-scripts"
+            sandbox="allow-scripts allow-same-origin allow-forms"
             className="h-full w-full rounded-lg border bg-background"
             title={t("canvas.iframe_url")}
           />

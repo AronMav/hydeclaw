@@ -81,6 +81,7 @@ export default function MemoryPage() {
   const { data: stats } = useMemoryStats();
 
   const [chunks, setChunks] = useState<MemoryDocument[]>([]);
+  const [total, setTotal] = useState(0);
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState(query);
   const [offset, setOffset] = useState(0);
@@ -107,6 +108,7 @@ export default function MemoryPage() {
 
       const res = await apiGet<{ documents: MemoryDocument[]; total: number }>(`/api/memory/documents?${params.toString()}`);
       setChunks(res.documents);
+      setTotal(res.total);
     } catch (err: any) {
       setError(err.message || "Failed to fetch memory");
     } finally {
@@ -302,7 +304,7 @@ export default function MemoryPage() {
               <Button variant="outline" size="sm" onClick={prev} disabled={offset === 0 || loading} className="text-xs w-24">
                 <ChevronLeft className="h-3.5 w-3.5 mr-1" /> {t("common.back")}
               </Button>
-              <Button variant="outline" size="sm" onClick={next} disabled={chunks.length < limit || loading} className="text-xs w-24">
+              <Button variant="outline" size="sm" onClick={next} disabled={offset + limit >= total || loading} className="text-xs w-24">
                 {t("common.forward")} <ChevronRight className="h-3.5 w-3.5 ml-1" />
               </Button>
             </div>

@@ -23,10 +23,13 @@ export const useNotificationStore = create<NotificationState>()(
 
       prependNotification: (row) =>
         set(
-          (s) => ({
-            notifications: [row, ...s.notifications],
-            unread_count: s.unread_count + 1,
-          }),
+          (s) => {
+            if (s.notifications.some((n) => n.id === row.id)) return s;
+            return {
+              notifications: [row, ...s.notifications],
+              unread_count: s.unread_count + 1,
+            };
+          },
           false,
           "prependNotification",
         ),

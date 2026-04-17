@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useSecrets, useUpsertSecret, useDeleteSecret, useAgents } from "@/lib/queries";
 import { apiGet } from "@/lib/api";
 import { formatDate } from "@/lib/format";
@@ -98,6 +98,12 @@ export default function SecretsPage() {
       toast.error(`Failed to delete secret: ${e}`);
     }
   }, [deleteTarget, deleteTargetScope, deleteSecret]);
+
+  useEffect(() => {
+    if (!revealedSecret) return;
+    const timer = setTimeout(() => setRevealedSecret(null), 30_000);
+    return () => clearTimeout(timer);
+  }, [revealedSecret]);
 
   const revealSecret = useCallback(async (name: string, scope: string) => {
     try {
@@ -291,7 +297,7 @@ export default function SecretsPage() {
           {editValidation && <p className="text-xs text-destructive px-1">{editValidation}</p>}
           <DialogFooter className="gap-2">
             <Button variant="ghost" onClick={() => setEditTarget(null)}>{t("common.cancel")}</Button>
-            <Button onClick={doEdit} disabled={!editValue.trim() && !editDesc.trim()}>{t("common.save")}</Button>
+            <Button onClick={doEdit} disabled={!editValue.trim()}>{t("common.save")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
