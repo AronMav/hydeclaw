@@ -3,6 +3,19 @@ use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgPool, Row};
 use uuid::Uuid;
 
+/// Maximum number of bind parameters per single SQL round-trip.
+///
+/// PostgreSQL's extended-query wire protocol uses a 16-bit length field for
+/// the parameter count, giving a hard ceiling of 65535. We choose half that
+/// (32767) as a conservative boundary to leave headroom for planner
+/// overhead and for future column additions on tables where we batch.
+///
+/// CONTEXT.md correction #5: chunk_size = MAX_PARAMS_PER_QUERY / BIND_COUNT_PER_ROW,
+/// where BIND_COUNT_PER_ROW counts ONLY the `$N` placeholders per VALUES row,
+/// NOT the target-list column count. Literal SQL values (`'tool'`, `NOW()`,
+/// `'complete'`) do NOT count toward the bind budget.
+pub(crate) const MAX_PARAMS_PER_QUERY: usize = 32767;
+
 #[derive(Debug, FromRow)]
 #[allow(dead_code)]
 pub struct Session {
@@ -357,30 +370,42 @@ pub async fn find_stale_running_sessions(
 }
 
 /// Find sessions stuck in 'running' where assistant never responded.
+///
+/// Phase 63 DATA-02: rewrite from correlated-subquery-per-row to a single-pass
+/// window function. The `latest_msg` CTE labels every message with its reverse-
+/// chronological rank within the session; the outer query filters sessions
+/// where `rn = 1` (the latest message) matches the "stuck" shape:
+///   - run_status='running' AND role='user'  (assistant never responded)
+///   - run_status='done'    AND role='assistant' AND empty content + empty tool_calls
+///
+/// Single scan of `messages` + single scan of `sessions` — no correlated subquery.
 pub async fn find_stuck_sessions(
     db: &PgPool,
     stale_secs: i64,
     max_retries: i32,
 ) -> Result<Vec<(Uuid, String)>> {
-    // Two cases:
-    // 1. run_status='running' + last message is user (agent never responded)
-    // 2. run_status='done' + last assistant has empty content (agent crashed mid-response)
     let rows: Vec<(Uuid, String)> = sqlx::query_as(
-        "SELECT s.id, s.agent_id FROM sessions s \
+        "WITH latest_msg AS ( \
+             SELECT \
+                 session_id, \
+                 id, \
+                 role, \
+                 content, \
+                 tool_calls, \
+                 ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created_at DESC) AS rn \
+             FROM messages \
+         ) \
+         SELECT s.id, s.agent_id FROM sessions s \
+         LEFT JOIN latest_msg lm ON lm.session_id = s.id AND lm.rn = 1 \
          WHERE s.retry_count < $2 \
            AND COALESCE(s.activity_at, s.last_message_at) < NOW() - make_interval(secs => $1) \
            AND ( \
-             (s.run_status = 'running' \
-              AND (SELECT role FROM messages WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1) = 'user') \
+             (s.run_status = 'running' AND lm.role = 'user') \
              OR \
              (s.run_status = 'done' \
-              AND EXISTS ( \
-                SELECT 1 FROM messages m \
-                WHERE m.session_id = s.id AND m.role = 'assistant' \
-                  AND (m.content IS NULL OR m.content = '') \
-                  AND (m.tool_calls IS NULL OR m.tool_calls = '[]'::jsonb) \
-                  AND m.id = (SELECT id FROM messages WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1) \
-              )) \
+              AND lm.role = 'assistant' \
+              AND (lm.content IS NULL OR lm.content = '') \
+              AND (lm.tool_calls IS NULL OR lm.tool_calls = '[]'::jsonb)) \
            )"
     )
     .bind(stale_secs as f64)
