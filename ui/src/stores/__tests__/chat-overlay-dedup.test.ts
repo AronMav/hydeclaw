@@ -109,13 +109,13 @@ describe("mergeLiveOverlay — assistant dedup", () => {
     const historyWithTool: ChatMessage = {
       id: "db-a",
       role: "assistant",
-      parts: [{ type: "tool", toolCallId: "tc1", name: "search", state: "output-available", input: {}, output: "" }],
+      parts: [{ type: "tool", toolCallId: "tc1", toolName: "search", state: "output-available", input: {}, output: "" }],
       createdAt: new Date().toISOString(),
     };
     const liveWithSameTool: ChatMessage = {
       id: "live-a",
       role: "assistant",
-      parts: [{ type: "tool", toolCallId: "tc1", name: "search", state: "output-available", input: {}, output: "" }],
+      parts: [{ type: "tool", toolCallId: "tc1", toolName: "search", state: "output-available", input: {}, output: "" }],
       createdAt: new Date().toISOString(),
     };
     const out = mergeLiveOverlay([historyWithTool], [liveWithSameTool]);
