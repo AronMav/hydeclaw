@@ -1,0 +1,161 @@
+//! TEST-03: Characterization of `resolve_approval` race semantics on baseline v0.18.0.
+//!
+//! Asserts: when 100 concurrent callers attempt to resolve the SAME approval id,
+//! exactly one wins (Ok(true)) and 99 lose (Ok(false)). Wall time MUST be < 1 s.
+//!
+//! Why this test exists:
+//! - REF-02 (Phase 66) will swap RwLock<HashMap> for DashMap in approval_manager.
+//! - DATA-04 (Phase 63) will tighten transactional isolation via SELECT FOR UPDATE.
+//! - This test pins the OBSERVABLE behavior so neither change can silently regress.
+//!
+//! Phase 61 invariant: this test passes on the UNMODIFIED v0.18.0 code today.
+//!
+//! Requires a functional Docker daemon for the ephemeral PostgreSQL container —
+//! CI matrix (Plan 06) provides this.
+
+mod support;
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use hydeclaw_core::db::approvals::{create_approval, resolve_approval};
+use serde_json::json;
+use support::TestHarness;
+use tokio::time::timeout;
+use uuid::Uuid;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_test_03_approval_race_exactly_once_db_layer() {
+    timeout(Duration::from_secs(30), async {
+        let harness = TestHarness::new()
+            .await
+            .expect("ephemeral PG must come up");
+        let pool = harness.pool().clone();
+
+        // 1. Create a single approval row to race on.
+        let approval_id: Uuid = create_approval(
+            &pool,
+            "char-test-agent",
+            None,
+            "noop_tool",
+            &json!({}),
+            &json!({}),
+        )
+        .await
+        .expect("create_approval must succeed against migrated schema");
+
+        // 2. Race: 100 concurrent resolve_approval calls.
+        //
+        // `flavor = "multi_thread", worker_threads = 4` is REQUIRED — a single-
+        // threaded runtime would serialize the 100 tasks and defeat the race.
+        const N: usize = 100;
+        let pool = Arc::new(pool);
+        let mut handles = Vec::with_capacity(N);
+        let start = Instant::now();
+        for i in 0..N {
+            let pool = Arc::clone(&pool);
+            handles.push(tokio::spawn(async move {
+                resolve_approval(
+                    &pool,
+                    approval_id,
+                    "approved",
+                    &format!("racer-{i}"),
+                )
+                .await
+            }));
+        }
+
+        // 3. Collect outcomes.
+        let mut wins = 0usize;
+        let mut losses = 0usize;
+        let mut errors = 0usize;
+        for h in handles {
+            match h.await.expect("task panicked") {
+                Ok(true) => wins += 1,
+                Ok(false) => losses += 1,
+                Err(_) => errors += 1,
+            }
+        }
+        let elapsed = start.elapsed();
+
+        // 4. Assertions: characterize the baseline behavior.
+        assert_eq!(
+            errors, 0,
+            "no DB errors expected on baseline; got {errors} errors"
+        );
+        assert_eq!(
+            wins, 1,
+            "exactly ONE racer must transition pending→resolved; got {wins}"
+        );
+        assert_eq!(
+            losses,
+            N - 1,
+            "remaining racers must observe AlreadyResolved; got {losses}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "100-task race must complete < 1s; took {elapsed:?}"
+        );
+
+        // Observability: surfaces wall-clock time when invoked with --nocapture
+        // so future runs can be compared (recorded in 61-03-SUMMARY.md).
+        eprintln!(
+            "test_test_03_approval_race_exactly_once_db_layer: \
+             wins={wins} losses={losses} errors={errors} elapsed={elapsed:?}"
+        );
+    })
+    .await
+    .expect("approval race test exceeded 30s wall timeout");
+}
+
+/// Sensitivity probe: double-resolve of the SAME existing approval.
+///
+/// Creates one approval row, then sequentially calls resolve_approval TWICE.
+/// Asserts: first call returns Ok(true) (transitioned pending → approved),
+/// second call returns Ok(false) (status no longer 'pending', WHERE clause
+/// matches zero rows). This proves the row-state path is the gating factor:
+/// if the test ever observed (true, true) it would mean the WHERE clause was
+/// removed and the exactly-once race assertion would degenerate to a tautology.
+///
+/// Why this shape (not "resolve a non-existent id"): `resolve_approval` returns
+/// Ok(false) for both "row missing" AND "row not pending" — those two paths
+/// are indistinguishable at this layer. Probing with double-resolve cleanly
+/// targets the row-state contract that the race relies on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_test_03_approval_race_sensitivity_double_resolve_loses_second() {
+    timeout(Duration::from_secs(30), async {
+        let harness = TestHarness::new().await.expect("ephemeral PG");
+        let pool = harness.pool().clone();
+
+        let approval_id: Uuid = create_approval(
+            &pool,
+            "char-test-agent",
+            None,
+            "noop_tool",
+            &json!({}),
+            &json!({}),
+        )
+        .await
+        .expect("create_approval must succeed");
+
+        let first = resolve_approval(&pool, approval_id, "approved", "first")
+            .await
+            .expect("first resolve_approval must succeed (no DB error)");
+        assert!(
+            first,
+            "first resolve_approval against pending row must return Ok(true); got Ok(false)"
+        );
+
+        let second = resolve_approval(&pool, approval_id, "approved", "second")
+            .await
+            .expect("second resolve_approval must succeed (no DB error)");
+        assert!(
+            !second,
+            "second resolve_approval against already-resolved row must return Ok(false); \
+             got Ok(true) — the WHERE status='pending' clause may have been removed, \
+             which would degenerate the exactly-once race assertion to a tautology"
+        );
+    })
+    .await
+    .expect("sensitivity test exceeded 30s");
+}
