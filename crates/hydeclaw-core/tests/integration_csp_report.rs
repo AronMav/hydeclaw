@@ -24,7 +24,7 @@ use hydeclaw_core::metrics::{
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use axum::body::{to_bytes, Body};
+use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use tower::ServiceExt;
 

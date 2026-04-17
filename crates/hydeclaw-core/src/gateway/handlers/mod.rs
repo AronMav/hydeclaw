@@ -26,3 +26,4 @@ pub(crate) mod github_repos;
 pub(crate) mod github_events;
 pub(crate) mod network;
 pub(crate) mod notifications;
+pub(crate) mod csp;

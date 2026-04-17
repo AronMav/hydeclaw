@@ -9,6 +9,10 @@ pub mod error;
 // Phase 62 RES-04: rate limiter types extracted to a leaf submodule
 // (zero crate:: imports) so lib.rs can re-export for integration tests.
 pub mod rate_limiter;
+// Phase 64 SEC-05: pure CSP report core — leaf module (deps: axum, serde,
+// std, tracing, `crate::metrics::MetricsRegistry`). Re-exported from lib.rs
+// at path `hydeclaw_core::gateway::csp` for integration tests.
+pub mod csp_core;
 pub mod middleware;
 pub mod sse;
 pub mod stream_registry;
@@ -18,7 +22,7 @@ pub mod clusters;
 mod handlers;
 pub use error::ApiError;
 pub use state::*;
-use middleware::{AuthRateLimiter, auth_middleware, RequestRateLimiter, WsConnectionBudget, request_rate_limit_middleware};
+use middleware::{AuthRateLimiter, auth_middleware, RequestRateLimiter, WsConnectionBudget, request_rate_limit_middleware, csp_report_rate_limit_middleware};
 // Re-export for use by main.rs
 pub use handlers::agents::start_agent_from_config;
 pub use handlers::email_triggers::renew_expiring_gmail_watches;
@@ -102,6 +106,7 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
         .merge(handlers::access::routes())          // /api/access/*
         .merge(handlers::tasks::routes())           // /api/tasks/*
         .merge(handlers::notifications::routes())   // /api/notifications/*
+        .merge(handlers::csp::routes())             // Phase 64 SEC-05: /api/csp-report (report-only)
         .merge(handlers::media::routes())           // /uploads/*, /api/media/*
         .merge(handlers::workspace::routes());      // /api/workspace/*
 
@@ -129,6 +134,14 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
         Box::leak(Box::new(WsConnectionBudget::new(32)));
     let app = app.layer(axum_mw::from_fn(move |req, next| {
         request_rate_limit_middleware(req, next, req_limiter, ws_budget)
+    }));
+
+    // Phase 64 SEC-05: dedicated per-IP limiter on /api/csp-report (~30 rpm).
+    // Additive to the global limiter above — both apply.
+    let csp_limiter: &'static handlers::csp::CspReportRateLimiter =
+        Box::leak(Box::new(handlers::csp::CspReportRateLimiter::new()));
+    let app = app.layer(axum_mw::from_fn(move |req, next| {
+        csp_report_rate_limit_middleware(req, next, csp_limiter)
     }));
 
     // Phase 62 RES-04: spawn background sweeper tasks.

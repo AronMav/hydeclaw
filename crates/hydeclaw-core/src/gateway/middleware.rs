@@ -53,6 +53,48 @@ impl WsConnectionBudget {
     }
 }
 
+/// Phase 64 SEC-05: dedicated per-IP rate limiter for `/api/csp-report`.
+///
+/// Runs BEFORE the CSP handler so over-quota requests never hit the metrics
+/// counter or the JSON extractor. Returns 429 with `Retry-After` when the
+/// bucket is drained.
+///
+/// This middleware is additive to the global 300 rpm `RequestRateLimiter`.
+/// Both apply: the global limiter protects the Pi from overall overload,
+/// while this limiter prevents one anonymous IP from flooding the CSP path
+/// (which is in `PUBLIC_PREFIX` so it bypasses the 500-fails-in-30s auth
+/// lockout).
+pub(crate) async fn csp_report_rate_limit_middleware(
+    req: Request<Body>,
+    next: Next,
+    limiter: &'static crate::gateway::handlers::csp::CspReportRateLimiter,
+) -> axum::response::Response {
+    let path = req.uri().path();
+    if path != "/api/csp-report" {
+        return next.run(req).await;
+    }
+    // Loopback callers (internal / test) bypass the limiter.
+    let client_ip = extract_client_ip(&req);
+    if is_loopback(&client_ip) {
+        return next.run(req).await;
+    }
+    let Ok(parsed) = client_ip.parse::<std::net::IpAddr>() else {
+        // Unknown peer address — let it through; the global limiter still
+        // applies and unknown-origin should be rare.
+        return next.run(req).await;
+    };
+    if let Some(status) =
+        crate::gateway::handlers::csp::csp_report_rate_limit(limiter, parsed)
+    {
+        let mut response = (status, "csp-report rate limit exceeded").into_response();
+        response
+            .headers_mut()
+            .insert("Retry-After", "60".parse().expect("integer header"));
+        return response;
+    }
+    next.run(req).await
+}
+
 pub(crate) async fn request_rate_limit_middleware(
     req: Request<Body>,
     next: Next,
@@ -124,7 +166,16 @@ pub(crate) async fn auth_middleware(
     // /uploads/*           — UUID filenames, no secrets
     // /api/oauth/callback  — browser redirect from OAuth provider
     // /api/triggers/email/push — validates ?token= query param internally
-    const PUBLIC_EXACT: &[&str] = &["/health", "/api/oauth/callback", "/api/triggers/email/push"];
+    // /api/csp-report      — browsers cannot authenticate CSP reports;
+    //                        dedicated per-IP limiter in
+    //                        `csp_report_rate_limit_middleware` protects it
+    //                        from anonymous abuse (Phase 64 SEC-05).
+    const PUBLIC_EXACT: &[&str] = &[
+        "/health",
+        "/api/oauth/callback",
+        "/api/triggers/email/push",
+        "/api/csp-report",
+    ];
     const PUBLIC_PREFIX: &[&str] = &["/webhook/", "/uploads/"];
 
     if PUBLIC_EXACT.contains(&path) || PUBLIC_PREFIX.iter().any(|p| path.starts_with(p)) {
