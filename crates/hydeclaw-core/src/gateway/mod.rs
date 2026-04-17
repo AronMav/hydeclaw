@@ -102,19 +102,20 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
         .merge(handlers::workspace::routes());      // /api/workspace/*
 
     // Auth middleware — REQUIRED. Refuse to start without a token.
-    let app = if let Some(token) = auth_token {
-        let shared_token: &'static str = Box::leak(token.into_boxed_str());
-        let rate_limiter: &'static AuthRateLimiter = Box::leak(Box::new(AuthRateLimiter::new(500, 30)));
-        let ws_tickets = state.auth.ws_tickets.clone();
-        app.layer(axum_mw::from_fn(move |req, next| {
-            let ws_tickets = ws_tickets.clone();
-            async move { auth_middleware(req, next, shared_token, rate_limiter, ws_tickets).await }
-        }))
-    } else {
+    // Construct rate_limiter OUTSIDE the `if let` so the Phase 62 RES-04 sweeper
+    // below can reach it after the middleware chain is wired.
+    let Some(token) = auth_token else {
         tracing::error!("FATAL: no auth token configured — refusing to start unauthenticated gateway");
         tracing::error!("set gateway.auth_token_env in config and provide the env var");
         anyhow::bail!("gateway requires auth token — set gateway.auth_token_env in hydeclaw.toml");
     };
+    let shared_token: &'static str = Box::leak(token.into_boxed_str());
+    let rate_limiter: &'static AuthRateLimiter = Box::leak(Box::new(AuthRateLimiter::new(500, 30)));
+    let ws_tickets = state.auth.ws_tickets.clone();
+    let app = app.layer(axum_mw::from_fn(move |req, next| {
+        let ws_tickets = ws_tickets.clone();
+        async move { auth_middleware(req, next, shared_token, rate_limiter, ws_tickets).await }
+    }));
 
     // Request rate limiting (per-IP, from config limits.max_requests_per_minute)
     let max_rpm = state.config.config.limits.max_requests_per_minute;
@@ -125,6 +126,28 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
     let app = app.layer(axum_mw::from_fn(move |req, next| {
         request_rate_limit_middleware(req, next, req_limiter, ws_budget)
     }));
+
+    // Phase 62 RES-04: spawn background sweeper tasks.
+    // Every 60s they evict expired entries from the rate-limiter HashMaps,
+    // replacing the inline-on-write eviction that scaled with map size.
+    // `rate_limiter` and `req_limiter` are `&'static` (Copy), so the `async move`
+    // closures copy the reference — no Arc cloning needed.
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            rate_limiter.sweep().await;
+        }
+    });
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            req_limiter.sweep().await;
+        }
+    });
 
     // CORS: restrict to configured origins or derive from listen address.
     let cors_origins: Vec<axum::http::HeaderValue> = if state.config.config.gateway.cors_origins.is_empty() {
