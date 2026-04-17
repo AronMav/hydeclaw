@@ -9,6 +9,7 @@
 //! Plan 02's worktree independently buildable.
 
 #![allow(dead_code)] // Each integration binary uses a different subset; silence unused warnings.
+#![allow(unused_imports)] // Re-exports not used by every test binary.
 
 pub mod mock_provider;
 
