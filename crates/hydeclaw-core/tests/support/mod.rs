@@ -6,9 +6,13 @@
 #![allow(dead_code)] // Each integration binary uses a different subset; silence unused warnings.
 #![allow(unused_imports)] // Re-exports not used by every test binary.
 
+pub mod drain_fixture;
 pub mod harness;
 pub mod migrations;
 pub mod mock_provider;
+pub mod sse_recorder;
 
+pub use drain_fixture::DrainFixture;
 pub use harness::TestHarness;
 pub use mock_provider::{MockLlmProvider, MockProvider, MockTurn};
+pub use sse_recorder::{SseRecorder, TestStreamEvent};
