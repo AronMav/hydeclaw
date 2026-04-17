@@ -3,6 +3,10 @@ name = "hydeclaw-core"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+name = "hydeclaw_core"
+path = "src/lib.rs"
+
 [[bin]]
 name = "hydeclaw-core"
 path = "src/main.rs"
@@ -92,7 +96,7 @@ sd-notify = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.27.0"
-# Integration test harness (Phase 61).
+# Integration test harness (Phase 61 Plan 01).
 # NOTE: testcontainers pinned to 0.23 (not 0.27 as originally planned) because testcontainers 0.24+
 # requires bollard 0.19+ / 0.20+, which has breaking API changes vs. our workspace bollard 0.18
 # (used by src/containers/{sandbox,mod}.rs). Upgrading bollard would require production src changes
@@ -103,4 +107,8 @@ testcontainers = "0.23"
 testcontainers-modules = { version = "0.11", features = ["postgres"] }
 rstest = "0.26.1"
 wiremock = "0.6.5"
+# Integration tests compile as separate crates — they need explicit deps even if the lib re-exports them.
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread", "time"] }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
