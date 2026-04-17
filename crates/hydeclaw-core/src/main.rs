@@ -575,14 +575,14 @@ async fn main() -> Result<()> {
     // shutdown. Invoke both the tracer and the metric provider so any
     // in-flight OTLP batches are flushed before the process exits.
     #[cfg(feature = "otel")]
-    if cfg.otel.enabled {
-        if let Some((tracer_provider, meter_provider)) = OTEL_PROVIDERS.get() {
-            if let Err(err) = tracer_provider.shutdown() {
-                tracing::warn!(error = %err, "otel tracer provider shutdown failed");
-            }
-            if let Err(err) = meter_provider.shutdown() {
-                tracing::warn!(error = %err, "otel meter provider shutdown failed");
-            }
+    if cfg.otel.enabled
+        && let Some((tracer_provider, meter_provider)) = OTEL_PROVIDERS.get()
+    {
+        if let Err(err) = tracer_provider.shutdown() {
+            tracing::warn!(error = %err, "otel tracer provider shutdown failed");
+        }
+        if let Err(err) = meter_provider.shutdown() {
+            tracing::warn!(error = %err, "otel meter provider shutdown failed");
         }
     }
 

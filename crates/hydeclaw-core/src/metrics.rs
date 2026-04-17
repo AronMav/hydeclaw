@@ -29,6 +29,16 @@
 //!     monitoring handler consumes these. Owned by Plan 65-04 (adds full
 //!     contract tests); introduced here to unblock the `--features otel`
 //!     build which otherwise fails at the handler's `use` site.
+//!
+//! NOTE on dead-code warnings: the new Plan 02 record_* / snapshot_* items
+//! are consumed by integration tests (`integration_cardinality_guard.rs`,
+//! `integration_otel_export.rs`) and by Plan 04's extended dashboard body,
+//! but the `hydeclaw-core` BINARY TARGET does not yet wire them into
+//! engine.rs / db/ (that is Phase 66 REF). Applying
+//! `#![allow(dead_code)]` at module scope satisfies `-D warnings` on the
+//! bin target without silencing genuine dead-code in other modules.
+
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -71,6 +81,16 @@ pub const ALLOWED_LABEL_KEYS: &[&str] = &[
 /// label explosion from session_id / user_id slipping through.
 pub const MAX_UNIQUE_SERIES: usize = 10_000;
 
+/// Tri-string key used by `tool_latency` and `llm_call_duration` histograms.
+/// Extracted to satisfy clippy's `type_complexity` lint once the per-value
+/// tuple was also added alongside the raw HashMap.
+type TripleKey = (String, String, String);
+
+/// Always-on `(count, sum_micros)` atomic pair held as the value of each
+/// histogram map. Shared across all three histograms — extracted for
+/// clippy::type_complexity.
+type HistogramBucket = (AtomicU64, AtomicU64);
+
 /// Central metrics registry for Phase 62 observability.
 ///
 /// Lookup path: RwLock for keyed entry (insert on first use), AtomicU64 for
@@ -91,14 +111,14 @@ pub struct MetricsRegistry {
     // ── Phase 65 OBS-02: histograms (always-on `(count, sum_micros)`) ──
     /// (tool_name, agent_id, result) → (count, sum_micros). Hot-path
     /// summary for `tool_latency_seconds`.
-    tool_latency: RwLock<HashMap<(String, String, String), (AtomicU64, AtomicU64)>>,
+    tool_latency: RwLock<HashMap<TripleKey, HistogramBucket>>,
     /// (provider, model, result) → (count, sum_micros). Hot-path summary for
     /// `llm_call_duration_seconds`.
-    llm_call_duration: RwLock<HashMap<(String, String, String), (AtomicU64, AtomicU64)>>,
+    llm_call_duration: RwLock<HashMap<TripleKey, HistogramBucket>>,
     /// (result,) → (count, sum_micros). `tool_name` intentionally NOT in
     /// the DB key namespace (SQL templates would explode cardinality) —
     /// just the outcome.
-    db_query_duration: RwLock<HashMap<String, (AtomicU64, AtomicU64)>>,
+    db_query_duration: RwLock<HashMap<String, HistogramBucket>>,
     /// direction ∈ {"prompt","completion"} → running total tokens. Same
     /// shape the feature-gated OTel `Counter<u64>` uses.
     llm_tokens_total: RwLock<HashMap<String, AtomicU64>>,
