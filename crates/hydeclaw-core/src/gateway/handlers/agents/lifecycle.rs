@@ -164,7 +164,7 @@ pub async fn start_agent_from_config(
                 pinned_chunk_ids: tokio::sync::Mutex::new(vec![]),
                 memory_md_lock: tokio::sync::Mutex::new(()),
                 canvas_state: tokio::sync::RwLock::new(None),
-                ssrf_http_client: crate::tools::ssrf::ssrf_safe_client(
+                ssrf_http_client: crate::net::ssrf::ssrf_http_client(
                     std::time::Duration::from_secs(30),
                 ),
                 oauth: Some(auth.oauth.clone()),

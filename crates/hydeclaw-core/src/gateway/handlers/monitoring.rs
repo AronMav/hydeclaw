@@ -622,7 +622,7 @@ async fn check_provider_reachability(infra: &InfraServices, auth: &AuthServices)
         };
     }
 
-    let http = crate::tools::ssrf::ssrf_safe_client(std::time::Duration::from_secs(3));
+    let http = crate::net::ssrf::ssrf_http_client(std::time::Duration::from_secs(3));
 
     let mut results = serde_json::Map::new();
     let mut any_error = false;
