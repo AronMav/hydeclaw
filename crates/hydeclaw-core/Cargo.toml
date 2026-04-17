@@ -3,6 +3,10 @@ name = "hydeclaw-core"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+name = "hydeclaw_core"
+path = "src/lib.rs"
+
 [[bin]]
 name = "hydeclaw-core"
 path = "src/main.rs"
