@@ -171,10 +171,11 @@ impl TestHarness {
 mod tests {
     use super::*;
 
-    // Windows CI runners do not have a Docker daemon, so testcontainers
-    // cannot pull the pgvector image. Gate with `cfg_attr` — on Linux
-    // runners the test runs normally; on Windows it is skipped.
-    #[cfg_attr(windows, ignore = "testcontainers needs Docker daemon (Linux CI)")]
+    // Testcontainers requires a reachable Docker daemon. CI runners that
+    // lack one — Windows, macOS, and `uraimo/run-on-arch-action` (QEMU,
+    // no nested Docker) — fail to pull the pgvector image. Ignore by
+    // default; x86_64 Linux CI lanes opt in with `cargo test -- --ignored`.
+    #[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")), ignore = "testcontainers needs Docker daemon (x86_64 Linux only)")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pg_stat_statements_variant_exposes_extension() {
         let harness = TestHarness::new_with_pg_stat_statements()
@@ -200,7 +201,7 @@ mod tests {
             .expect("pg_stat_statements view must be queryable when the library is preloaded");
     }
 
-    #[cfg_attr(windows, ignore = "testcontainers needs Docker daemon (Linux CI)")]
+    #[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")), ignore = "testcontainers needs Docker daemon (x86_64 Linux only)")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn plain_variant_does_not_preload_pg_stat_statements() {
         let harness = TestHarness::new().await.expect("plain harness");
