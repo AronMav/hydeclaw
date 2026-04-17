@@ -1,0 +1,71 @@
+/**
+ * Chat live-overlay dedup helper (Architecture C).
+ *
+ * History comes from React Query (DB truth). Live comes from SSE stream +
+ * optimistic user bubble. To avoid flashing duplicates as history catches up,
+ * we merge live on top of history with these rules:
+ *
+ *  - User messages: keep the optimistic/live copy until a DB row with the
+ *    same first-text appears in history. Status ("sending" / "confirmed" /
+ *    "failed") is IRRELEVANT — the only thing that matters is "is this
+ *    message mirrored in history yet?". Prior logic gated on status === "sending"
+ *    and caused the user bubble to disappear the instant the server acknowledged
+ *    the send (data-session-id event) but before history refetched.
+ *  - Assistant messages: dedup part-by-part. Tool parts dedup by toolCallId;
+ *    text parts dedup by the first 80 chars (sufficient to survive streaming
+ *    continuation without false positives).
+ *  - Empty assistant placeholders are filtered — ThinkingMessage handles them.
+ */
+
+import type { ChatMessage } from "./chat-types";
+
+export function mergeLiveOverlay(
+  historyMessages: ChatMessage[],
+  liveMessages: ChatMessage[],
+): ChatMessage[] {
+  if (liveMessages.length === 0) return historyMessages;
+
+  // Index history for O(1) lookups during overlay walk.
+  const historyToolIds = new Set<string>();
+  const historyTextSet = new Set<string>();
+  const historyUserTexts = new Set<string>();
+  for (const m of historyMessages) {
+    if (m.role === "assistant") {
+      for (const p of m.parts) {
+        if (p.type === "tool") historyToolIds.add(p.toolCallId);
+        if (p.type === "text" && p.text) historyTextSet.add(p.text.slice(0, 80));
+      }
+    } else if (m.role === "user") {
+      const first = m.parts?.[0];
+      if (first?.type === "text" && first.text) historyUserTexts.add(first.text);
+    }
+  }
+
+  const overlay: ChatMessage[] = [];
+  for (const m of liveMessages) {
+    if (m.role === "assistant" && m.parts.length === 0) continue;
+
+    if (m.role === "user") {
+      const firstText = m.parts?.[0]?.type === "text" ? (m.parts[0] as { text: string }).text : "";
+      if (!historyUserTexts.has(firstText)) {
+        overlay.push(m);
+      }
+      continue;
+    }
+
+    if (m.role === "assistant") {
+      const uniqueParts = m.parts.filter((p) => {
+        if (p.type === "tool") return !historyToolIds.has(p.toolCallId);
+        if (p.type === "text" && p.text) return !historyTextSet.has(p.text.slice(0, 80));
+        return true;
+      });
+      if (uniqueParts.length === 0) continue;
+      overlay.push({ ...m, parts: uniqueParts });
+      continue;
+    }
+
+    overlay.push(m);
+  }
+
+  return overlay.length > 0 ? [...historyMessages, ...overlay] : historyMessages;
+}

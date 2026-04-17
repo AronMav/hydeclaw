@@ -5,6 +5,7 @@ import type { ErrorInfo, ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { assertToken } from "@/lib/api";
 import { useChatStore, isActivePhase, convertHistory } from "@/stores/chat-store";
+import { mergeLiveOverlay } from "@/stores/chat-overlay-dedup";
 import { uuid } from "@/stores/chat-types";
 import { sanitizeUrl } from "@/lib/sanitize-url";
 import { useVisualViewport } from "@/hooks/use-visual-viewport";
@@ -874,68 +875,14 @@ export function ChatThread({
     return convertHistory(sessionMessagesData.messages, false, selectedBranches);
   }, [activeSessionId, sessionMessagesData, selectedBranches]);
 
-  // Architecture C: history + SSE overlay.
-  // History (React Query) = all completed messages from DB.
-  // Overlay (live) = current streaming message not yet in DB.
-  // Dedup by toolCallId to prevent tool duplication.
+  // Architecture C: history + SSE overlay. See `chat-overlay-dedup.ts`
+  // for the status-independent user-bubble merge (fixes the 2026-04-17
+  // "sent message disappears" regression).
   const sourceMessages = useMemo(() => {
-    if (messageSource.mode !== "live" || messageSource.messages.length === 0) {
+    if (messageSource.mode !== "live") {
       return historyMessages;
     }
-
-    // Collect all toolCallIds already present in history
-    const historyToolIds = new Set<string>();
-    for (const m of historyMessages) {
-      for (const p of m.parts) {
-        if (p.type === "tool") historyToolIds.add(p.toolCallId);
-      }
-    }
-    // Collect history text fingerprints to dedup streaming text
-    const historyTextSet = new Set<string>();
-    for (const m of historyMessages) {
-      if (m.role === "assistant") {
-        for (const p of m.parts) {
-          if (p.type === "text" && p.text) historyTextSet.add(p.text.slice(0, 80));
-        }
-      }
-    }
-
-    const overlay: ChatMessage[] = [];
-    for (const m of messageSource.messages) {
-      if (m.role === "assistant" && m.parts.length === 0) continue;
-
-      // User message: keep only if still "sending" AND not already in history.
-      // During streaming, React Query may refetch and the DB already has the user
-      // message while the optimistic copy is still "sending" — causing a duplicate flash.
-      if (m.role === "user") {
-        if (m.status === "sending") {
-          const firstText = m.parts?.[0]?.type === "text" ? (m.parts[0] as { text: string }).text : "";
-          const isDuplicate = historyMessages.some(
-            hm => hm.role === "user" && hm.parts?.[0]?.type === "text" && (hm.parts[0] as { text: string }).text === firstText
-          );
-          if (!isDuplicate) {
-            overlay.push(m);
-          }
-        }
-        continue;
-      }
-
-      // Assistant: strip parts already in history (tools by ID, text by fingerprint)
-      if (m.role === "assistant") {
-        const uniqueParts = m.parts.filter(p => {
-          if (p.type === "tool") return !historyToolIds.has(p.toolCallId);
-          if (p.type === "text" && p.text) return !historyTextSet.has(p.text.slice(0, 80));
-          return true;
-        });
-        if (uniqueParts.length === 0) continue;
-        overlay.push({ ...m, parts: uniqueParts });
-        continue;
-      }
-
-      overlay.push(m);
-    }
-
-    return overlay.length > 0 ? [...historyMessages, ...overlay] : historyMessages;
+    return mergeLiveOverlay(historyMessages, messageSource.messages);
   }, [messageSource, historyMessages]);
 
   // Filter out inter-agent routing messages (internal inter-agent context passed between agents).
