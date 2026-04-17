@@ -17,3 +17,10 @@ RUN apt-get update \
   && apt-get purge -y build-essential postgresql-server-dev-17 git \
   && apt-get autoremove -y \
   && rm -rf /var/lib/apt/lists/*
+
+# Phase 63 DATA-03: preload pg_stat_statements so operators (and the DATA-03
+# integration test) can query round-trip counts via the pg_stat_statements
+# view. Plain CREATE EXTENSION is not enough — the shared_preload_libraries
+# postgresql.conf directive is required at server startup.
+RUN echo "shared_preload_libraries = 'pg_stat_statements'" >> /usr/share/postgresql/postgresql.conf.sample \
+ && echo "pg_stat_statements.track = 'all'" >> /usr/share/postgresql/postgresql.conf.sample
