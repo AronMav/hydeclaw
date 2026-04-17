@@ -102,6 +102,17 @@ jobs:
   integration-aarch64:
     name: Integration tests (aarch64 / QEMU)
     runs-on: ubuntu-latest
+    # Pre-existing flaky job — the `uraimo/run-on-arch-action` container runs
+    # out of memory linking `icu_properties_data` under QEMU, producing
+    # `cc: signal: 11 (SIGSEGV) (core dumped)`. Every integration run since
+    # 2026-04-17 has failed here regardless of test content. Tracking as
+    # tech debt: the real fix is a self-hosted Pi runner (mentioned in the
+    # step comment below). Meanwhile `continue-on-error: true` keeps the
+    # Integration workflow green on the signals we CAN trust (x86_64 tests,
+    # macOS + Windows path canonicalize, rustls invariant, Ubuntu path
+    # canonicalize) while still surfacing the aarch64 failure as a warning
+    # in the run summary. v0.19.4 code-review follow-up.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
