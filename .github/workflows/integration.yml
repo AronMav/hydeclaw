@@ -1,0 +1,99 @@
+name: Integration
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Force rustls everywhere — defence-in-depth alongside the cargo tree assertion.
+  RUSTFLAGS: ""
+
+jobs:
+  integration-x86_64:
+    name: Integration tests (x86_64) + rustls invariant
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: integration-x86_64
+
+      # Docker is preinstalled on ubuntu-latest GitHub runners — verify it's up.
+      - name: Verify Docker daemon
+        run: |
+          docker version
+          docker info
+
+      - name: Build all test binaries
+        run: cargo build --tests -p hydeclaw-core
+
+      # Full test suite. testcontainers-backed tests (integration_smoke, plus
+      # Wave-2 binaries created by Plans 03/04/05) will spin up ephemeral PG
+      # via the Docker daemon above.
+      - name: Run integration tests
+        run: cargo test -p hydeclaw-core --tests
+
+      # Forward-compat rustls invariant (anticipates OBS-06 in Phase 65).
+      # If `cargo tree -i openssl` finds ANY match, fail the build.
+      # cargo tree exits non-zero with "did not match any packages" when no
+      # match — that's the success path. Anything else (output produced, exit 0)
+      # means OpenSSL crept in and we must reject the PR.
+      - name: Assert no OpenSSL transitive dependency
+        run: |
+          set +e
+          OUTPUT=$(cargo tree -i openssl 2>&1)
+          STATUS=$?
+          set -e
+          if [ "$STATUS" -eq 0 ] && [ -n "$OUTPUT" ]; then
+            echo "::error::OpenSSL transitive dependency detected — rustls-only invariant violated"
+            echo "$OUTPUT"
+            exit 1
+          fi
+          echo "rustls invariant OK (no openssl in tree)"
+
+  integration-aarch64:
+    name: Integration tests (aarch64 / QEMU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ARM64 emulation. We compile the full test suite + run the non-Docker
+      # subset (mock_provider, sse_lifecycle, shutdown_drain). The latter two
+      # are relevant on ARM64 because they exercise tokio mpsc channels and
+      # CancellationToken paths whose memory ordering differs between x86_64
+      # (TSO) and aarch64 (weaker model). testcontainers-backed binaries
+      # (integration_smoke, integration_approval_race) are compiled but not
+      # executed here — Docker-in-QEMU is unreliable. A self-hosted Pi
+      # runner can be added in a future phase to close that gap.
+      - name: Build & run non-Docker tests on aarch64
+        uses: uraimo/run-on-arch-action@v2
+        with:
+          arch: aarch64
+          distro: ubuntu22.04
+          githubToken: ${{ github.token }}
+          # Cache cargo registry across runs for speed.
+          dockerRunArgs: |
+            --volume "${PWD}:/workspace"
+          install: |
+            apt-get update -q
+            apt-get install -y --no-install-recommends \
+              curl build-essential pkg-config ca-certificates
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --default-toolchain stable --profile minimal
+          run: |
+            source "$HOME/.cargo/env"
+            cd /workspace
+            cargo build --tests -p hydeclaw-core
+            # Run ALL integration binaries that DO NOT need Docker.
+            # Each is a separate cargo invocation so individual failures
+            # produce a clear log signature.
+            cargo test -p hydeclaw-core --test integration_mock_provider
+            cargo test -p hydeclaw-core --test integration_sse_lifecycle
+            cargo test -p hydeclaw-core --test integration_shutdown_drain
