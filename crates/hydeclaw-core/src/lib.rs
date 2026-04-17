@@ -54,4 +54,11 @@ pub mod db {
 
     #[path = "approvals.rs"]
     pub mod approvals;
+
+    // Phase 62 RES-03: `session_wal` is a leaf module (deps: anyhow, sqlx,
+    // uuid, serde_json — no crate::* references). Safe to re-export without
+    // cascading the lib surface. Consumed by
+    // `tests/integration_session_events_cleanup.rs`.
+    #[path = "session_wal.rs"]
+    pub mod session_wal;
 }
