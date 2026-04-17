@@ -56,6 +56,9 @@ pub struct AppConfig {
     /// Phase 62 RES-03 cleanup scheduler tuning (session_events WAL retention).
     #[serde(default)]
     pub cleanup: CleanupConfig,
+    /// Phase 62 RES-05 graceful-shutdown drain tuning (drain timeout).
+    #[serde(default)]
+    pub shutdown: ShutdownConfig,
 }
 
 // ── BackupConfig ──────────────────────────────────────────────────────────────
@@ -113,6 +116,31 @@ impl Default for CleanupConfig {
         Self {
             session_events_retention_days: default_session_events_retention_days(),
             session_events_batch_size: default_session_events_batch_size(),
+        }
+    }
+}
+
+// ── ShutdownConfig ────────────────────────────────────────────────────────────
+
+/// Phase 62 RES-05: graceful shutdown drain tuning. Default
+/// `drain_timeout_secs = 30`. systemd `TimeoutStopSec` must be
+/// `drain_timeout_secs + 10s buffer` (40s default) so systemd never
+/// SIGKILLs the process while its drain is still in progress.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct ShutdownConfig {
+    /// Maximum time to wait for in-flight agents to drain before forcing
+    /// shutdown. Must be less than systemd `TimeoutStopSec` by at least 10
+    /// seconds. Default: 30 seconds.
+    #[serde(default = "default_drain_timeout_secs")]
+    pub drain_timeout_secs: u64,
+}
+
+fn default_drain_timeout_secs() -> u64 { 30 }
+
+impl Default for ShutdownConfig {
+    fn default() -> Self {
+        Self {
+            drain_timeout_secs: default_drain_timeout_secs(),
         }
     }
 }
