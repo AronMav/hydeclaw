@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "@/hooks/use-translation";
 import { CodeEditor } from "@/components/workspace/code-editor";
 import { Button } from "@/components/ui/button";
@@ -43,10 +43,11 @@ export function ApprovalArgsEditor({ initialInput, onSubmit, onCancel }: Approva
     }
   }, [isValid, value, onSubmit, t]);
 
-  // Escape key cancels editing
+  // Escape key cancels editing (only when focus is inside this editor)
+  const containerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && containerRef.current?.contains(document.activeElement)) {
         e.preventDefault();
         onCancel();
       }
@@ -56,7 +57,7 @@ export function ApprovalArgsEditor({ initialInput, onSubmit, onCancel }: Approva
   }, [onCancel]);
 
   return (
-    <div aria-label="Edit tool arguments">
+    <div ref={containerRef} aria-label="Edit tool arguments">
       <div className="min-h-[120px] max-h-[300px] overflow-hidden rounded border border-border/50">
         <CodeEditor
           value={value}

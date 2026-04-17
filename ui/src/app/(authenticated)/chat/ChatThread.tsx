@@ -436,6 +436,9 @@ function ChatComposer() {
           content: [{ type: "file", data: result.url as string, mimeType: file.type, filename: file.name }],
         },
       ]);
+    } catch (err) {
+      const { toast } = await import("sonner");
+      toast.error(`Upload failed: ${err instanceof Error ? err.message : "unknown error"}`);
     } finally {
       setUploadingCount(c => c - 1);
     }

@@ -139,6 +139,10 @@ export function createStreamingRenderer(store: StoreAccess) {
           queryClient.invalidateQueries({ queryKey: qk.sessionMessages(sessionId) });
           return;
         }
+        if (resp.status === 401) {
+          import("@/lib/api").then(({ handleUnauthorized }) => handleUnauthorized());
+          return;
+        }
         if (!resp.ok) {
           return resp.text().then((t) => { throw new Error(t || `HTTP ${resp.status}`); });
         }
@@ -297,6 +301,10 @@ export function createStreamingRenderer(store: StoreAccess) {
       signal: controller.signal,
     })
       .then((resp) => {
+        if (resp.status === 401) {
+          import("@/lib/api").then(({ handleUnauthorized }) => handleUnauthorized());
+          return;
+        }
         if (!resp.ok) {
           return resp.text().then((t) => {
             throw new Error(t || `HTTP ${resp.status}`);
@@ -691,7 +699,10 @@ export function createStreamingRenderer(store: StoreAccess) {
               if (receivedSessionId) {
                 const sid = receivedSessionId;
                 store.set((draft: any) => {
-                  draft.activeSessionIds = (draft.activeSessionIds || []).filter((id: string) => id !== sid);
+                  const st = draft.agents[agent];
+                  if (st) {
+                    st.activeSessionIds = (st.activeSessionIds || []).filter((id: string) => id !== sid);
+                  }
                 });
               }
               break;
@@ -725,8 +736,9 @@ export function createStreamingRenderer(store: StoreAccess) {
 
         // SSE-02: Detect connection drop (stream ended without finish event).
         const isError = store.get().agents[agent]?.connectionPhase === "error";
-        if (!isError && !receivedFinishEvent && receivedSessionId) {
-          scheduleReconnect(agent, receivedSessionId, reconnectAttempt);
+        const effectiveSessionId = receivedSessionId ?? store.get().agents[agent]?.activeSessionId;
+        if (!isError && !receivedFinishEvent && effectiveSessionId) {
+          scheduleReconnect(agent, effectiveSessionId, reconnectAttempt);
           return;
         }
 
@@ -734,6 +746,7 @@ export function createStreamingRenderer(store: StoreAccess) {
           update(agent, {
             connectionPhase: "idle",
             connectionError: null,
+            reconnectAttempt: 0,
           });
         }
         saveUiState(agent);

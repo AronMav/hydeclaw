@@ -309,17 +309,11 @@ export default function ChatPage() {
     useChatStore.getState().regenerate();
   }, []);
 
-  // Select a session; if it belongs to a different agent, select session state first then switch.
-  // Mark agent as restored to prevent auto-restore from overriding the explicit selection.
+  // Select a session from the sidebar. Sessions are fetched for currentAgent
+  // (including sessions where currentAgent is a participant but not creator),
+  // so we always select for the current agent — never switch agents.
   const handleSelectSession = useCallback((session: { id: string; agent_id: string }) => {
-    const s = useChatStore.getState();
-    if (session.agent_id === s.currentAgent) {
-      s.selectSession(session.id);
-    } else {
-      restoredAgents.current.add(session.agent_id);
-      s.selectSession(session.id, session.agent_id);
-      s.setCurrentAgent(session.agent_id);
-    }
+    useChatStore.getState().selectSession(session.id);
     setSheetOpen(false);
   }, []);
 

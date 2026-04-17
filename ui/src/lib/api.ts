@@ -9,7 +9,7 @@ export function getToken(): string {
 let redirecting = false;
 /** Reset redirect guard (for tests only). */
 export function _resetRedirecting() { redirecting = false; }
-function handleUnauthorized() {
+export function handleUnauthorized() {
   if (redirecting) return;
   redirecting = true;
   useAuthStore.getState().logout();
