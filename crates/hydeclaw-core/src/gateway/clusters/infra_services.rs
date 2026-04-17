@@ -9,7 +9,7 @@ use crate::memory::EmbeddingService;
 
 /// Cluster holding infrastructure-level services:
 /// the database pool, memory store, embedding service, container/sandbox managers,
-/// and the native process manager.
+/// the native process manager, and the Phase 62 metrics registry.
 #[derive(Clone)]
 pub struct InfraServices {
     /// sqlx PostgreSQL connection pool.
@@ -24,6 +24,10 @@ pub struct InfraServices {
     pub sandbox: Option<Arc<crate::containers::sandbox::CodeSandbox>>,
     /// Native process manager (channels, toolgate, …).
     pub process_manager: Option<Arc<crate::process_manager::ProcessManager>>,
+    /// Phase 62 RES-02: process-wide metrics registry. Backs
+    /// `GET /api/health/dashboard` and the Phase 62 RES-01 coalescer drop
+    /// counter. Phase 65 OBS-02 layers OpenTelemetry meter wrappers on top.
+    pub metrics: Arc<crate::metrics::MetricsRegistry>,
 }
 
 impl InfraServices {
@@ -34,12 +38,14 @@ impl InfraServices {
         container_manager: Option<Arc<crate::containers::ContainerManager>>,
         sandbox: Option<Arc<crate::containers::sandbox::CodeSandbox>>,
         process_manager: Option<Arc<crate::process_manager::ProcessManager>>,
+        metrics: Arc<crate::metrics::MetricsRegistry>,
     ) -> Self {
-        Self { db, memory_store, embedder, container_manager, sandbox, process_manager }
+        Self { db, memory_store, embedder, container_manager, sandbox, process_manager, metrics }
     }
 
     /// Construct a minimal `InfraServices` for unit tests.
     /// Accepts any `MemoryService` impl (e.g. `NullMemory` or `MockMemoryService`).
+    /// Metrics registry is a fresh empty `MetricsRegistry`.
     #[cfg(test)]
     pub fn test_with_memory(memory: impl MemoryService + 'static) -> Self {
         use crate::memory::embedding::FakeEmbedder;
@@ -50,6 +56,7 @@ impl InfraServices {
             container_manager: None,
             sandbox: None,
             process_manager: None,
+            metrics: Arc::new(crate::metrics::MetricsRegistry::new()),
         }
     }
 }

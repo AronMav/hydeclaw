@@ -53,6 +53,9 @@ pub struct AppConfig {
     /// Built-in backup scheduler (disabled by default).
     #[serde(default)]
     pub backup: BackupConfig,
+    /// Phase 62 RES-03 cleanup scheduler tuning (session_events WAL retention).
+    #[serde(default)]
+    pub cleanup: CleanupConfig,
 }
 
 // ── BackupConfig ──────────────────────────────────────────────────────────────
@@ -81,6 +84,35 @@ impl Default for BackupConfig {
             enabled: false,
             cron: default_backup_cron(),
             retention_days: default_backup_retention_days(),
+        }
+    }
+}
+
+// ── CleanupConfig ─────────────────────────────────────────────────────────────
+
+/// Phase 62 RES-03: batched cleanup tuning for the hourly `session_events` WAL
+/// prune cron. Both fields have operator-friendly defaults; `retention_days = 0`
+/// disables the hourly cleanup entirely.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct CleanupConfig {
+    /// Retention for `session_events` WAL rows in days. `0` disables cleanup.
+    /// Default: 7 days.
+    #[serde(default = "default_session_events_retention_days")]
+    pub session_events_retention_days: u32,
+    /// Rows deleted per batch iteration — keeps lock hold-time short and
+    /// autovacuum-friendly. Must be `> 0`. Default: 5000.
+    #[serde(default = "default_session_events_batch_size")]
+    pub session_events_batch_size: i64,
+}
+
+fn default_session_events_retention_days() -> u32 { 7 }
+fn default_session_events_batch_size() -> i64 { 5000 }
+
+impl Default for CleanupConfig {
+    fn default() -> Self {
+        Self {
+            session_events_retention_days: default_session_events_retention_days(),
+            session_events_batch_size: default_session_events_batch_size(),
         }
     }
 }

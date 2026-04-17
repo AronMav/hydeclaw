@@ -356,6 +356,11 @@ async fn main() -> Result<()> {
         public_url,
     ));
 
+    // Phase 62 RES-02: single process-wide metrics registry. Shared via
+    // `InfraServices.metrics` so SSE coalescer (Plan 03) and
+    // `/api/health/dashboard` handler (Plan 02) see the same counters.
+    let metrics = Arc::new(crate::metrics::MetricsRegistry::new());
+
     // Shared application state for gateway (built early so start_agent_from_config can use it)
     let state = gateway::AppState {
         agents: gateway::clusters::AgentCore::new(
@@ -378,6 +383,7 @@ async fn main() -> Result<()> {
             container_manager.clone(),
             sandbox.clone(),
             process_manager.clone(),
+            metrics.clone(),
         ),
         channels: gateway::clusters::ChannelBus::new(
             Arc::new(tokio::sync::RwLock::new(Vec::new())),
