@@ -92,3 +92,15 @@ sd-notify = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+# Integration test harness (Phase 61).
+# NOTE: testcontainers pinned to 0.23 (not 0.27 as originally planned) because testcontainers 0.24+
+# requires bollard 0.19+ / 0.20+, which has breaking API changes vs. our workspace bollard 0.18
+# (used by src/containers/{sandbox,mod}.rs). Upgrading bollard would require production src changes
+# explicitly forbidden by Phase 61 scope. 0.23 pulls bollard 0.18.1 — compatible drop-in.
+# testcontainers-modules 0.11 targets testcontainers 0.23. API surface used by the harness
+# (GenericImage, AsyncRunner, ImageExt, WaitFor, IntoContainerPort) is identical across 0.23-0.27.
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres"] }
+rstest = "0.26.1"
+wiremock = "0.6.5"
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread", "time"] }
