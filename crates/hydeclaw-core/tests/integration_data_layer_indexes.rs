@@ -213,34 +213,62 @@ async fn partial_index_NOT_used_by_parameterised_where_read_eq_dollar1() {
             .await
             .expect("ANALYZE");
 
-        // EXPLAIN with a bound parameter — PostgreSQL cannot prove the
-        // runtime value $1 = FALSE matches the partial index predicate.
-        // We use a prepared-statement shape by binding explicitly.
-        let explain: (Value,) = sqlx::query_as(
-            "EXPLAIN (FORMAT JSON) \
+        // DATA-05 regression guard: EXPLAIN with bound parameters under the
+        // simple-protocol path that sqlx uses runs a *custom plan* — PG sees
+        // the literal bind value at plan time, so it CAN still pick the
+        // partial index. The real production risk is a prepared statement
+        // that gets reused enough times to trigger PG's generic plan
+        // (plan_cache_mode=force_generic_plan simulates this deterministically).
+        //
+        // Under a generic plan, the planner cannot prove `$1 = FALSE` at
+        // plan time, and therefore MUST NOT select the partial index.
+        // This pins the DATA-05 contract: our production queries use
+        // literal `WHERE read = FALSE` precisely so this degradation never
+        // occurs when PG starts generic-planning our prepared statement.
+        //
+        // We acquire a single connection so PREPARE/EXECUTE/SET share state.
+        let mut conn = pool.acquire().await.expect("acquire conn");
+
+        sqlx::query("SET plan_cache_mode = force_generic_plan")
+            .execute(&mut *conn)
+            .await
+            .expect("force generic plan");
+
+        sqlx::query(
+            "PREPARE unread_q (bool) AS \
              SELECT id, type, title, body, data, read, created_at \
              FROM notifications \
              WHERE read = $1 \
              ORDER BY created_at DESC LIMIT 50",
         )
-        .bind(false)
-        .fetch_one(pool)
+        .execute(&mut *conn)
         .await
-        .expect("EXPLAIN parameterised");
+        .expect("PREPARE");
+
+        let explain: (Value,) = sqlx::query_as(
+            "EXPLAIN (FORMAT JSON) EXECUTE unread_q(FALSE)",
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .expect("EXPLAIN EXECUTE generic plan");
 
         let plan_root = explain
             .0
             .pointer("/0/Plan")
             .expect("plan root");
 
-        // Find all index names referenced in the plan tree.
+        // Under generic plan, the planner cannot prove `$1 = FALSE` and
+        // therefore MUST fall back to the full-table non-partial path
+        // (either a Seq Scan or the non-partial notifications_read_created_at).
         let idx_hit = find_index_name_recursive(plan_root);
         assert_ne!(
             idx_hit.as_deref(),
             Some("idx_notifications_unread"),
-            "parameterised `WHERE read = $1` MUST NOT pick the partial index \
-             idx_notifications_unread — it would mean prepared-statement caching \
-             silently proved the bool predicate. Got plan: {:#}",
+            "parameterised `WHERE read = $1` under generic plan MUST NOT pick \
+             the partial index idx_notifications_unread — it would mean PG \
+             silently proved the bool predicate. This pins DATA-05: \
+             production code MUST use literal `WHERE read = FALSE`. \
+             Got plan: {:#}",
             explain.0
         );
     })
@@ -267,10 +295,10 @@ fn find_index_name_recursive(node: &Value) -> Option<String> {
 
 /// Recursively find the first `Node Type` that is an index scan variant.
 fn find_index_scan_node_type_recursive(node: &Value) -> Option<String> {
-    if let Some(nt) = node.pointer("/Node Type").and_then(|v| v.as_str()) {
-        if nt == "Index Scan" || nt == "Bitmap Index Scan" {
-            return Some(nt.to_string());
-        }
+    if let Some(nt) = node.pointer("/Node Type").and_then(|v| v.as_str())
+        && (nt == "Index Scan" || nt == "Bitmap Index Scan")
+    {
+        return Some(nt.to_string());
     }
     if let Some(plans) = node.pointer("/Plans").and_then(|v| v.as_array()) {
         for child in plans {
