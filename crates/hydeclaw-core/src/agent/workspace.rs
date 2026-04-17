@@ -276,53 +276,28 @@ pub fn build_system_prompt(
         }
     }
 
-    // 4. Operating Mode: reasoning, tools, output
-    prompt.push_str("\n# Operating Mode\n");
+    // 4. Core rules (load-bearing only; everything else is in on-demand skills
+    //    via `skill_use(action="list"|"load")`). 2026-04-18 refactor: reduced
+    //    from ~2600 chars of overlapping guidance to 5 rules. Reasoning steps,
+    //    task-planning details, per-channel formatting, and tool-family how-tos
+    //    were moved to existing skills (discovery-protocol, task-planning,
+    //    channel-formatting, web-search, multi-agent-coordination).
+    prompt.push_str("\n# Core Rules\n");
     prompt.push_str(concat!(
-        "## Reasoning\n",
-        "For complex requests, think step by step:\n",
-        "1. Understand what is being asked\n",
-        "2. Identify what information or actions are needed\n",
-        "3. Execute tools to gather information or perform actions\n",
-        "4. Synthesize results into a clear response\n\n",
-        "For simple questions, respond directly without unnecessary deliberation.\n\n",
+        "1. Complete ALL steps of a multi-step task before responding. If a tool result requires a follow-up action, call the next tool immediately.\n",
+        "2. Your final message to the user MUST contain text. Tool results are NOT visible to the user — always summarize. An empty or blank response is a FAILURE.\n",
+        "3. For factual data (dates, prices, weather, exchange rates, holidays, news) ALWAYS use a tool. Your training data may be outdated.\n",
+        "4. Report tool results accurately. Never reinterpret errors as 'normal behavior' or invent explanations the tool did not provide.\n",
+        "5. If a tool fails, analyze the error and try an alternative approach before giving up.\n",
     ));
-    prompt.push_str(concat!(
-        "## Task Completion\n",
-        "When given a multi-step task, complete ALL steps before responding to the user.\n",
-        "Do NOT stop after partial progress — if a tool result requires a follow-up action, call the next tool immediately.\n",
-        "Only respond when the ENTIRE task is done or you hit an unrecoverable error.\n",
-        "For complex tasks with 5+ tool calls: prioritize the most valuable action first, then add secondary details. If you run low on iterations, deliver partial results rather than nothing.\n",
-        "CRITICAL: Your final message to the user MUST contain text. If you wrote to a file or workspace — still summarize the key findings in your chat response. An empty or blank response is a FAILURE. The user cannot see tool results directly — they only see your message text.\n\n",
-    ));
-    prompt.push_str(concat!(
-        "## Tool Usage\n",
-        "Act on tool results — don't narrate the process of calling them.\n",
-        "When multiple tools are needed, execute them in logical order.\n",
-        "Never invent data that a tool could provide — use the tool.\n",
-        "CRITICAL: When the user asks for factual data (dates, prices, weather, holidays, exchange rates, etc.) — ALWAYS use a tool. Do NOT answer from memory or general knowledge. Your training data may be outdated.\n",
-        "If a tool fails, analyze the error and try an alternative approach before giving up.\n",
-        "For routine tool calls, act directly on results without explaining what you're doing.\n",
-        "When a tool returns error JSON, extract the error message and report it clearly to the user.\n",
-        "Report tool results ACCURATELY. Never reinterpret errors as 'normal behavior' or add explanations the tool did not provide.\n",
-        "When you need to look up a URL, read a webpage, or fetch API data — use `web_fetch` to retrieve the content.\n",
-        "When you need another agent's expertise — use `agent` tool with agent name, task description, and relevant context. The target agent runs within the session and works in background.\n",
-        "\n",
-    ));
-    prompt.push_str(&format!("## Output\nCurrent channel: **{}**.\n", runtime.channel));
+    prompt.push_str(&format!("\n## Output\nCurrent channel: **{}**.\n", runtime.channel));
     if let Some(ref instructions) = runtime.formatting_prompt {
         prompt.push_str(instructions);
         prompt.push('\n');
     } else {
         prompt.push_str(concat!(
-            "Adapt your output accordingly:\n",
-            "- Match response length to question complexity — short question = short answer\n",
-            "- Use the channel's native formatting (markdown, HTML, or plain text)\n",
-            "- Messenger channels (telegram, discord, whatsapp): concise, mobile-friendly, split long responses\n",
-            "- Scheduled tasks (cron, heartbeat): data and conclusions only, no filler. If nothing to report: HEARTBEAT_OK\n",
-            "- Inter-agent (agent tool, inter-agent): structured data (JSON, lists), no personality, task-focused\n",
-            "- API/webhook: adapt freely to question complexity, use full formatting\n",
-            "- Bold key conclusions, use lists for multi-part answers, keep code snippets short\n\n",
+            "Match response length to question complexity; use channel-native formatting; bold key conclusions.\n",
+            "For detailed per-channel rules (messenger brevity, cron terseness, inter-agent structured data, API/webhook freedom) load the `channel-formatting` skill.\n",
         ));
     }
 
@@ -350,81 +325,28 @@ pub fn build_system_prompt(
     if capabilities.has_yaml_tools {
         prompt.push_str("- **External Tools**: YAML-defined tools in workspace/tools/ — check tool list for specifics\n");
     }
-    prompt.push_str(concat!(
-        "- **Skills**: Load detailed guides via `skill_use(action=\"load\", name=\"...\")`. Available skills:\n",
-        "  - `web-search` — search strategy (primary engine vs Brave)\n",
-        "  - `research` / `research-strategy` — deep multi-source research\n",
-        "  - `media-processing` — handle photos, documents, audio attachments\n",
-        "  - `code-review` — review code for bugs and security\n",
-        "  - `code-methodology` — TDD, refactoring, debugging\n",
-        "  - `task-planning` — decompose complex tasks into steps\n",
-        "  - `decision-frameworks` — RICE, pros/cons, risk assessment\n",
-        "  - `architecture-design` — system design, trade-offs, ADRs\n",
-        "  - `multi-agent-coordination` — delegate and track between agents\n",
-        "  - `prompt-crafting` — write effective prompts for agent tool tasks\n",
-        "  - `market-analysis` — stocks, portfolio, investments\n",
-        "  - `daily-briefing` — morning briefing (weather, news, calendar)\n",
-        "  - `smart-home` — Home Assistant control (lights, climate)\n",
-        "  - `calendar-management` — schedule, events, reminders\n",
-        "  - `email-management` — inbox, send, search\n",
-        "  - `verification` — adversarial testing protocol\n",
-        "  - `discovery-protocol` — classify task complexity (Level 0-3)\n",
-        "  - `quality-loop` — Research→Plan→Execute→Verify workflow\n",
-        "  - `yaml-tools-guide` / `toolgate-guide` / `channels-guide` / `mcp-docker-pattern` — creating tools and services\n",
-    ));
+    // Skills: single pointer, no enumeration — `skill_use(action="list")`
+    // returns the current skill catalogue at runtime (no prompt bloat, no
+    // staleness when skills are added/renamed).
+    prompt.push_str(
+        "- **Skills**: detailed guides loaded on demand. `skill_use(action=\"list\")` to discover, `skill_use(action=\"load\", name=\"...\")` to read. For task classification start with `discovery-protocol`.\n",
+    );
     if capabilities.has_browser {
-        prompt.push_str("- **Browser Automation**: `browser_action` to interact with web pages — create_session → navigate → click/type/screenshot/evaluate → close. Sessions expire after 5 min idle\n");
+        prompt.push_str("- **Browser Automation**: `browser_action` (create_session → navigate → click/type/screenshot/evaluate → close; 5 min idle TTL)\n");
     }
     if capabilities.has_host_exec {
-        prompt.push_str(
-            "- **Host Access**: code_exec runs bash/python directly on the host. Full access to filesystem, package managers (pip/apt/npm), service management, and system configuration.\n",
-        );
+        prompt.push_str("- **Host Access**: `code_exec` runs bash/python on the host (filesystem, package managers, services, system config)\n");
     }
 
-    // 6. Agent tool management rules
-    prompt.push_str(concat!(
-        "\n## Agent Tool\n",
-        "The `agent` tool delegates tasks to other agents. By default it BLOCKS until the agent completes and returns the result directly.\n\n",
-        "### Single agent (most common):\n",
-        "`agent(action=\"run\", target=\"Name\", task=\"...\")` — runs the agent and returns its result (may take several minutes, this is normal)\n\n",
-        "### Parallel agents:\n",
-        "1. `agent(action=\"run\", target=\"Alma\", task=\"...\", mode=\"async\")` — starts without waiting\n",
-        "2. `agent(action=\"run\", target=\"Hyde\", task=\"...\", mode=\"async\")` — starts without waiting\n",
-        "3. Do other useful work while they process\n",
-        "4. `agent(action=\"collect\", target=\"Alma\")` — blocks until Alma completes, returns result\n",
-        "5. `agent(action=\"collect\", target=\"Hyde\")` — blocks until Hyde completes, returns result\n\n",
-        "### Other actions:\n",
-        "- `agent(action=\"message\", target=\"Name\", text=\"...\")` — send follow-up to a running agent\n",
-        "- `agent(action=\"status\")` — check agent status (diagnostic, rarely needed)\n",
-        "- `agent(action=\"kill\", target=\"Name\")` — terminate an agent\n\n",
-        "Agents have NO access to workspace files via code_exec. Use workspace_read first, pass data in task.\n\n",
-    ));
+    // Agent tool: 1-line pointer, full delegation patterns live in the
+    // `multi-agent-coordination` skill (already in the catalogue).
+    prompt.push_str("- **Agent Tool**: delegate to another agent with `agent(action=\"run\"|\"async\"|\"collect\"|\"message\"|\"kill\", target, task)`. Load `multi-agent-coordination` skill for parallel/orchestration patterns.\n");
 
-    // 7. Memory usage instructions (only when memory is available)
+    // Memory: 1-line pointer; rules live in `memory-management` skill
+    // (search-before-save, categorization, deduplication).
     if capabilities.has_memory {
-        prompt.push_str(concat!(
-            "\n# Memory\n",
-            "Long-term memory via `memory_search`. Memory is NOT loaded automatically — search explicitly when needed.\n\n",
-            "**Search memory when:**\n",
-            "- User references past conversations or previously discussed topics\n",
-            "- You need context about user preferences, projects, or recurring tasks\n",
-            "- Before making assumptions about what the user wants\n\n",
-            "**Skip memory search when:**\n",
-            "- The question is self-contained with all needed context\n",
-            "- Simple greetings or generic questions\n\n",
-            "**Saving:** Before `memory_index`, always `memory_search` first for duplicates. See AGENTS.md for deduplication rules.\n",
-        ));
+        prompt.push_str("- **Memory**: `memory(action=\"search\"|\"index\")`. Search before acting on user references to past conversations. Load `memory-management` skill for categorization and deduplication rules.\n");
     }
-
-    // 7. Response quality
-    prompt.push_str(concat!(
-        "\n# Response Quality\n",
-        "- Focus on results, not process. Don't explain what tools you're about to call.\n",
-        "- If memory search found nothing, proceed without mentioning it.\n",
-        "- Synthesize data from multiple tool calls into one coherent response.\n",
-        "- Match response detail to question complexity — short question = short answer.\n",
-        "- Complete the task fully before responding. Don't stop halfway.\n",
-    ));
 
     // 8. Language instruction (reinforced — must appear both early and late in prompt)
     prompt.push_str(&format!(
@@ -1043,5 +965,176 @@ mod tests {
         // Verify SOUL.md was NOT modified
         let content = std::fs::read_to_string(agent_dir_path.join("SOUL.md")).unwrap();
         assert_eq!(content, "original soul", "SOUL.md must not be modified");
+    }
+
+    // ── build_system_prompt — refactor regression tests (2026-04-18) ────────
+    //
+    // After slimming the prompt, we lock the load-bearing invariants so
+    // future edits can't silently regress:
+    //   * Core rules remain (final-message-must-have-text, factual → tool)
+    //   * Language reinforcement appears BOTH early AND late in the prompt
+    //   * Skills section points to `skill_use(list)` without enumerating
+    //   * Detailed how-tos were moved to skills (multi-agent-coordination,
+    //     memory-management, channel-formatting)
+    //   * Prompt size is smaller than the pre-refactor ~5600-char baseline
+
+    fn test_runtime() -> RuntimeContext {
+        RuntimeContext {
+            agent_name: "TestAgent".into(),
+            owner_id: Some("user1".into()),
+            channel: "ui".into(),
+            model: "test-model".into(),
+            datetime_display: "2026-04-18 12:00 (UTC)".into(),
+            formatting_prompt: None,
+            channels: vec![],
+        }
+    }
+
+    fn test_caps() -> CapabilityFlags {
+        CapabilityFlags {
+            has_search: true,
+            has_memory: true,
+            has_message_actions: true,
+            has_cron: true,
+            has_yaml_tools: true,
+            has_browser: true,
+            has_host_exec: false,
+            is_base: false,
+        }
+    }
+
+    #[test]
+    fn prompt_contains_load_bearing_core_rules() {
+        let p = build_system_prompt("", &[], &test_caps(), "ru", &test_runtime());
+        assert!(
+            p.contains("final message to the user MUST contain text") ||
+            p.contains("final message"),
+            "core rule 'final message must contain text' missing"
+        );
+        assert!(
+            p.contains("factual data"),
+            "core rule 'factual data → tool' missing"
+        );
+        assert!(
+            p.contains("Report tool results accurately"),
+            "core rule 'report tool results accurately' missing"
+        );
+    }
+
+    #[test]
+    fn prompt_enforces_language_twice() {
+        let p = build_system_prompt("", &[], &test_caps(), "ru", &test_runtime());
+        let first = p.find("Russian").expect("language mentioned in Runtime section");
+        let critical = p.find("Language — CRITICAL RULE").expect("Language CRITICAL block missing");
+        assert!(
+            critical > first,
+            "Language CRITICAL block must come AFTER the initial Runtime mention \
+             (reinforcement gate against Chinese/other drift)"
+        );
+    }
+
+    #[test]
+    fn skills_section_does_not_enumerate_individual_skills() {
+        let p = build_system_prompt("", &[], &test_caps(), "en", &test_runtime());
+        // Refactor invariant: skill catalogue is discovered via runtime tool call,
+        // NOT enumerated in every prompt. If someone re-adds an enumeration
+        // (e.g. "- `web-search` — ..."), this test catches it.
+        assert!(
+            p.contains("skill_use(action=\"list\")"),
+            "Skills section must point to skill_use(list) for discovery"
+        );
+        // Known previous enumerations — none should be inline anymore.
+        assert!(
+            !p.contains("- `web-search` —"),
+            "web-search skill must not be enumerated in base prompt"
+        );
+        assert!(
+            !p.contains("- `calendar-management` —"),
+            "calendar-management skill must not be enumerated in base prompt"
+        );
+    }
+
+    #[test]
+    fn agent_tool_section_points_to_skill_no_inline_patterns() {
+        let p = build_system_prompt("", &[], &test_caps(), "en", &test_runtime());
+        // Full parallel-execution pattern (run-then-collect) lives in the
+        // multi-agent-coordination skill, not the base prompt.
+        assert!(
+            p.contains("multi-agent-coordination"),
+            "agent-tool section must reference multi-agent-coordination skill"
+        );
+        assert!(
+            !p.contains("### Parallel agents:"),
+            "parallel-agent how-to must not be inline in base prompt"
+        );
+    }
+
+    #[test]
+    fn memory_section_points_to_skill_when_capability_enabled() {
+        let p = build_system_prompt("", &[], &test_caps(), "en", &test_runtime());
+        assert!(
+            p.contains("memory-management"),
+            "memory section must reference memory-management skill"
+        );
+        // The long "Search memory when / Skip memory search when" block is now
+        // in the skill — ensure it did not leak back into the base prompt.
+        assert!(
+            !p.contains("Skip memory search when:"),
+            "detailed memory search rules must live in the skill, not base prompt"
+        );
+    }
+
+    #[test]
+    fn channel_formatting_points_to_skill_when_no_override() {
+        let p = build_system_prompt("", &[], &test_caps(), "en", &test_runtime());
+        assert!(
+            p.contains("channel-formatting"),
+            "output section must reference channel-formatting skill when no override"
+        );
+        // Previously the prompt listed all 5+ channel format rules inline.
+        assert!(
+            !p.contains("Messenger channels (telegram, discord, whatsapp):"),
+            "per-channel formatting detail must live in skill, not base prompt"
+        );
+    }
+
+    #[test]
+    fn prompt_is_smaller_than_pre_refactor_baseline() {
+        // Pre-refactor prompt with empty workspace + no tool schemas + caps on
+        // was ~5600 chars. After the 2026-04-18 refactor it should drop under
+        // ~4000 chars of fixed content. This guard catches regressions that
+        // re-inline the skill catalogue, agent patterns, or memory rules.
+        let p = build_system_prompt("", &[], &test_caps(), "en", &test_runtime());
+        assert!(
+            p.len() < 4000,
+            "base prompt should be <4000 chars after slim refactor; got {} chars",
+            p.len()
+        );
+    }
+
+    #[test]
+    fn memory_pointer_absent_when_memory_capability_disabled() {
+        let mut caps = test_caps();
+        caps.has_memory = false;
+        let p = build_system_prompt("", &[], &caps, "en", &test_runtime());
+        assert!(
+            !p.contains("Memory"),
+            "memory line must not appear when has_memory=false"
+        );
+    }
+
+    #[test]
+    fn formatting_prompt_override_replaces_channel_skill_pointer() {
+        let mut runtime = test_runtime();
+        runtime.formatting_prompt = Some("Telegram MarkdownV2. No HTML.".into());
+        let p = build_system_prompt("", &[], &test_caps(), "en", &runtime);
+        assert!(
+            p.contains("Telegram MarkdownV2"),
+            "runtime-provided formatting_prompt must be injected"
+        );
+        assert!(
+            !p.contains("channel-formatting"),
+            "skill pointer must be suppressed when a formatting_prompt is provided"
+        );
     }
 }
