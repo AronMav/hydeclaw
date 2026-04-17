@@ -107,8 +107,10 @@ pub struct DefaultToolExecutor {
     /// Event hooks for policy enforcement and logging.
     pub(crate) hooks: Arc<crate::agent::hooks::HookRegistry>,
     /// In-memory waiters for pending tool-call approvals (shared with ApprovalManager).
-    #[allow(clippy::type_complexity, dead_code)]
-    pub(crate) approval_waiters: Arc<tokio::sync::RwLock<std::collections::HashMap<uuid::Uuid, (tokio::sync::oneshot::Sender<crate::agent::engine::ApprovalResult>, std::time::Instant)>>>,
+    /// Phase 66 REF-02: backed by `DashMap` (sharded sync lock) — see
+    /// `crate::agent::approval_manager::ApprovalWaitersMap`.
+    #[allow(dead_code)]
+    pub(crate) approval_waiters: crate::agent::approval_manager::ApprovalWaitersMap,
     /// SSE event sender for current streaming session — set/cleared by SSE loop.
     pub(crate) sse_event_tx: Arc<tokio::sync::Mutex<Option<crate::agent::engine_event_sender::EngineEventSender>>>,
 }
@@ -132,8 +134,7 @@ pub struct DefaultToolExecutorFields {
     pub mcp: Option<Arc<crate::mcp::McpRegistry>>,
     pub http_client: reqwest::Client,
     pub hooks: Arc<crate::agent::hooks::HookRegistry>,
-    #[allow(clippy::type_complexity)]
-    pub approval_waiters: Arc<tokio::sync::RwLock<std::collections::HashMap<uuid::Uuid, (tokio::sync::oneshot::Sender<crate::agent::engine::ApprovalResult>, std::time::Instant)>>>,
+    pub approval_waiters: crate::agent::approval_manager::ApprovalWaitersMap,
     pub sse_event_tx: Arc<tokio::sync::Mutex<Option<crate::agent::engine_event_sender::EngineEventSender>>>,
 }
 

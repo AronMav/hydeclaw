@@ -102,8 +102,10 @@ pub async fn start_agent_from_config(
     };
 
     // Shared approval waiters map — used by both ApprovalManager and DefaultToolExecutor.
+    // Phase 66 REF-02: `DashMap` (sharded sync locks) replaces `RwLock<HashMap>` so
+    // callers never hold a write guard across `.await`.
     let approval_waiters: crate::agent::approval_manager::ApprovalWaitersMap =
-        Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+        Arc::new(dashmap::DashMap::new());
 
     let approval_manager = Arc::new(crate::agent::approval_manager::ApprovalManager::new(
         infra.db.clone(),

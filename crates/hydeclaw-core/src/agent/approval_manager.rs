@@ -1,12 +1,19 @@
+#![deny(clippy::await_holding_lock)]
 //! Approval workflow manager: check/create/wait/cleanup for tool-call approvals.
 //! Extracted from `engine_dispatch.rs` for readability and encapsulation.
+//!
+//! Phase 66 REF-02: the pending-waiter map is backed by `DashMap` (sharded,
+//! synchronous lock-per-bucket) rather than `RwLock<HashMap>`. This eliminates
+//! the "hold write guard across `.await`" anti-pattern that previously forced
+//! us to carefully drop the guard before touching `sse_event_tx` / DB resolvers.
+//! The module-level `#![deny(clippy::await_holding_lock)]` lint ensures the
+//! anti-pattern cannot regress.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use dashmap::DashMap;
 use sqlx::PgPool;
-use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use super::channel_actions::{ChannelAction, ChannelActionRouter};
@@ -15,11 +22,13 @@ use super::engine::{ApprovalResult, StreamEvent};
 // ── Types ────────────────────────────────────────────────────────────────────
 
 /// Map of pending approval waiters: approval_id → (oneshot sender, creation time).
-pub(crate) type ApprovalWaitersMap = Arc<
-    RwLock<
-        HashMap<Uuid, (tokio::sync::oneshot::Sender<ApprovalResult>, Instant)>,
-    >,
->;
+///
+/// `DashMap` shards internally — each bucket is protected by its own sync
+/// `RwLock`. Guards returned by `get()` / `get_mut()` are RAII and MUST NOT be
+/// held across `.await`; the module-level `await_holding_lock` deny lint
+/// enforces this at compile time.
+pub(crate) type ApprovalWaitersMap =
+    Arc<DashMap<Uuid, (tokio::sync::oneshot::Sender<ApprovalResult>, Instant)>>;
 
 /// Outcome of `request_approval`: tells the caller how to proceed.
 #[derive(Debug)]
@@ -179,15 +188,13 @@ impl ApprovalManager {
             );
         }
 
-        // 3. Create oneshot waiter and insert into map
+        // 3. Create oneshot waiter and insert into map.
+        //    DashMap is sync and sharded — no cross-await lock held.
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-        {
-            let mut waiters = self.waiters.write().await;
-            // Opportunistic cleanup: remove expired entries (>5 min).
-            let cutoff = Instant::now() - Duration::from_secs(300);
-            waiters.retain(|_, (_, created_at)| *created_at > cutoff);
-            waiters.insert(approval_id, (result_tx, Instant::now()));
-        }
+        // Opportunistic cleanup: remove expired entries (>5 min).
+        let cutoff = Instant::now() - Duration::from_secs(300);
+        self.waiters.retain(|_, (_, created_at)| *created_at > cutoff);
+        self.waiters.insert(approval_id, (result_tx, Instant::now()));
 
         // 4. Emit SSE event for inline approval in chat UI
         if let Some(tx) = sse_event_tx.lock().await.as_ref() {
@@ -225,11 +232,8 @@ impl ApprovalManager {
                 ApprovalOutcome::Rejected(format!("Tool `{}` was rejected: {}", tool_name, reason))
             }
             Ok(Err(_)) => {
-                // Sender dropped (pruned or retain cleanup) — resolve DB record
-                {
-                    let mut waiters = self.waiters.write().await;
-                    waiters.remove(&approval_id);
-                }
+                // Sender dropped (pruned or retain cleanup) — resolve DB record.
+                self.waiters.remove(&approval_id);
                 let _ = crate::db::approvals::resolve_approval(
                     &self.db, approval_id, "cancelled", "system",
                 ).await;
@@ -246,12 +250,10 @@ impl ApprovalManager {
                 .await
                 .unwrap_or(false);
 
-                // Release waiters lock BEFORE acquiring sse_event_tx (prevents deadlock
-                // with resolve_approval which acquires locks in opposite order)
-                {
-                    let mut waiters = self.waiters.write().await;
-                    waiters.remove(&approval_id);
-                }
+                // Drop the waiter. DashMap has no cross-await lock to hold, so
+                // the prior "release waiters lock before acquiring sse_event_tx"
+                // dance is no longer needed.
+                self.waiters.remove(&approval_id);
 
                 // If timeout raced with approval (DB already resolved), check actual DB status.
                 // The webhook may have approved it just before our timeout fired.
@@ -273,7 +275,7 @@ impl ApprovalManager {
                     );
                 }
 
-                // Emit SSE event for timeout (lock-safe: waiters already released)
+                // Emit SSE event for timeout.
                 if let Some(tx) = sse_event_tx.lock().await.as_ref() {
                     tx.send(StreamEvent::ApprovalResolved {
                         approval_id: approval_id.to_string(),
@@ -289,10 +291,12 @@ impl ApprovalManager {
     }
 
     /// Evict stale approval waiters (older than 10 minutes).
+    ///
+    /// Kept `async` for call-site stability (`engine_execution.rs` awaits it).
+    /// The body itself no longer requires async since DashMap's `retain` is sync.
     pub(crate) async fn prune_stale(&self) {
-        let mut waiters = self.waiters.write().await;
         let now = Instant::now();
-        waiters.retain(|id, (_, created)| {
+        self.waiters.retain(|id, (_, created)| {
             let stale = now.duration_since(*created) > Duration::from_secs(600);
             if stale {
                 tracing::debug!(approval_id = %id, "evicting stale approval waiter (>10min)");

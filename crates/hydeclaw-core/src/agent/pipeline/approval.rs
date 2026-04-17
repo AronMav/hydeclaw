@@ -66,9 +66,10 @@ pub async fn resolve_approval(
         }).ok();
     }
 
-    // Wake up the waiting tool execution
-    let mut waiters = ctx.cfg.approval_manager.waiters().write().await;
-    if let Some((tx, _created_at)) = waiters.remove(&approval_id) {
+    // Wake up the waiting tool execution.
+    // Phase 66 REF-02: waiters map is a DashMap — no async lock, `.remove()` returns Option<(K, V)>.
+    let waiters = ctx.cfg.approval_manager.waiters();
+    if let Some((_id, (tx, _created_at))) = waiters.remove(&approval_id) {
         let result = if approved {
             match modified_input {
                 Some(args) => ApprovalResult::ApprovedWithModifiedArgs(args),

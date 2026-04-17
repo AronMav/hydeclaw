@@ -63,15 +63,15 @@ impl AgentCore {
     /// we aggregate them here for the `/api/health/dashboard` snapshot so
     /// operators can see at a glance whether approvals are backing up.
     ///
-    /// Read-locks the agent map briefly, then each per-executor waiters
-    /// RwLock in sequence. Expected n ≤ 20 on Pi — negligible cost.
+    /// Read-locks the agent map briefly, then reads each per-executor
+    /// DashMap `.len()` (sync, sharded). Expected n ≤ 20 on Pi — negligible cost.
     pub async fn approval_waiters_size(&self) -> u64 {
         let map = self.map.read().await;
         let mut total: u64 = 0;
         for handle in map.values() {
             let tex = handle.engine.tex();
-            let waiters = tex.approval_waiters.read().await;
-            total += waiters.len() as u64;
+            // Phase 66 REF-02: DashMap::len() is sync — no `.await` needed.
+            total += tex.approval_waiters.len() as u64;
         }
         total
     }
