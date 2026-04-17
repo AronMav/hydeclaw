@@ -72,13 +72,16 @@ impl AgentEngine {
         tools: &[ToolDefinition],
     ) -> Result<hydeclaw_types::LlmResponse> {
         self.check_budget().await?;
-        crate::agent::pipeline::llm_call::chat_with_transient_retry(
+        let start = std::time::Instant::now();
+        let result = crate::agent::pipeline::llm_call::chat_with_transient_retry(
             self.cfg().provider.as_ref(),
             messages,
             tools,
             self,
         )
-        .await
+        .await;
+        self.record_llm_metrics(self.cfg().provider.as_ref(), start.elapsed(), result.as_ref());
+        result
     }
 
     /// Streaming variant of chat_with_overflow_recovery.
@@ -108,14 +111,17 @@ impl AgentEngine {
         chunk_tx: mpsc::UnboundedSender<String>,
     ) -> Result<hydeclaw_types::LlmResponse> {
         self.check_budget().await?;
-        crate::agent::pipeline::llm_call::chat_stream_with_transient_retry(
+        let start = std::time::Instant::now();
+        let result = crate::agent::pipeline::llm_call::chat_stream_with_transient_retry(
             self.cfg().provider.as_ref(),
             messages,
             tools,
             chunk_tx,
             self,
         )
-        .await
+        .await;
+        self.record_llm_metrics(self.cfg().provider.as_ref(), start.elapsed(), result.as_ref());
+        result
     }
 
     /// Variant that uses an explicit provider (for fallback switching).
@@ -126,13 +132,16 @@ impl AgentEngine {
         tools: &[ToolDefinition],
     ) -> Result<hydeclaw_types::LlmResponse> {
         self.check_budget().await?;
-        crate::agent::pipeline::llm_call::chat_with_transient_retry_using(
+        let start = std::time::Instant::now();
+        let result = crate::agent::pipeline::llm_call::chat_with_transient_retry_using(
             provider,
             messages,
             tools,
             self,
         )
-        .await
+        .await;
+        self.record_llm_metrics(provider.as_ref(), start.elapsed(), result.as_ref());
+        result
     }
 
     /// Streaming variant of chat_with_transient_retry_using.
@@ -144,14 +153,50 @@ impl AgentEngine {
         chunk_tx: mpsc::UnboundedSender<String>,
     ) -> Result<hydeclaw_types::LlmResponse> {
         self.check_budget().await?;
-        crate::agent::pipeline::llm_call::chat_stream_with_transient_retry_using(
+        let start = std::time::Instant::now();
+        let result = crate::agent::pipeline::llm_call::chat_stream_with_transient_retry_using(
             provider,
             messages,
             tools,
             chunk_tx,
             self,
         )
-        .await
+        .await;
+        self.record_llm_metrics(provider.as_ref(), start.elapsed(), result.as_ref());
+        result
+    }
+
+    /// Phase 65 OBS-02: record `llm_call_duration_seconds` + `llm_tokens_total`
+    /// after an LLM call (streaming or non-streaming). `provider` / `model` are
+    /// bounded-cardinality (provider registry + model override), `result` is
+    /// "ok" / "error". Token counts come from `LlmResponse.usage` when present.
+    fn record_llm_metrics(
+        &self,
+        provider: &dyn crate::agent::providers::LlmProvider,
+        elapsed: std::time::Duration,
+        result: std::result::Result<&hydeclaw_types::LlmResponse, &anyhow::Error>,
+    ) {
+        let result_label = if result.is_ok() { "ok" } else { "error" };
+        let provider_name = self.cfg().agent.provider.as_str();
+        let model = provider.current_model();
+        self.cfg()
+            .metrics
+            .record_llm_call_duration(provider_name, &model, result_label, elapsed);
+
+        if let Ok(resp) = result
+            && let Some(usage) = resp.usage.as_ref()
+        {
+            if usage.input_tokens > 0 {
+                self.cfg()
+                    .metrics
+                    .record_llm_tokens(u64::from(usage.input_tokens), "prompt");
+            }
+            if usage.output_tokens > 0 {
+                self.cfg()
+                    .metrics
+                    .record_llm_tokens(u64::from(usage.output_tokens), "completion");
+            }
+        }
     }
 
     /// Fire-and-forget audit event recording.

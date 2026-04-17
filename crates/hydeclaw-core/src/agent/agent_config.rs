@@ -54,6 +54,10 @@ pub struct AgentConfig {
     pub agent_map: Option<AgentMap>,
     pub session_pools: Option<SessionPoolsMap>,
     pub audit_queue: Arc<AuditQueue>,
+    /// Phase 65 OBS-02: process-wide metrics registry for recording tool
+    /// latency, LLM call duration, and token usage. Cloned from
+    /// `InfraServices.metrics` at engine construction time.
+    pub metrics: Arc<crate::metrics::MetricsRegistry>,
 }
 
 #[cfg(test)]

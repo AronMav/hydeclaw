@@ -135,6 +135,7 @@ pub async fn start_agent_from_config(
         agent_map: Some(agents.map.clone()),
         session_pools: Some(agents.session_pools.clone()),
         audit_queue: deps.audit_queue.clone(),
+        metrics: infra.metrics.clone(),
     });
 
     let engine = Arc::new(AgentEngine {

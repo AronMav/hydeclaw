@@ -184,7 +184,16 @@ pub(crate) async fn api_session_messages(
             return resp;
         }
 
-    match sessions::load_messages(&infra.db, id, Some(limit)).await {
+    // Phase 65 OBS-02: record db_query_duration around a representative
+    // high-traffic query. `result` label is bounded "ok" / "error".
+    let db_start = std::time::Instant::now();
+    let query_result = sessions::load_messages(&infra.db, id, Some(limit)).await;
+    let db_result_label = if query_result.is_ok() { "ok" } else { "error" };
+    infra
+        .metrics
+        .record_db_query_duration(db_result_label, db_start.elapsed());
+
+    match query_result {
         Ok(rows) => {
             let messages: Vec<Value> = rows
                 .iter()

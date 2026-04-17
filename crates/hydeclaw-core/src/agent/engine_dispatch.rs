@@ -20,13 +20,23 @@ impl AgentEngine {
             let result = self.execute_tool_call_inner(name, arguments).await;
 
             // Audit record (dispatched via bounded queue)
-            let duration_ms = audit_start.elapsed().as_millis() as i32;
+            let elapsed = audit_start.elapsed();
+            let duration_ms = elapsed.as_millis() as i32;
             let is_error = crate::agent::pipeline::dispatch::classify_tool_result(&result);
             let (status, error_msg) = if is_error {
                 ("error", Some(result.clone()))
             } else {
                 ("ok", None)
             };
+
+            // Phase 65 OBS-02: record tool latency histogram. `status` is
+            // bounded-cardinality ("ok" / "error") — safe label.
+            self.cfg().metrics.record_tool_latency(
+                name,
+                &self.cfg().agent.name,
+                status,
+                elapsed,
+            );
 
             // Extract session_id from enriched _context
             let session_id = arguments
