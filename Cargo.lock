@@ -1232,6 +1232,8 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tempfile",
+ "testcontainers",
+ "testcontainers-modules",
  "tokio",
  "toml",
  "tracing",

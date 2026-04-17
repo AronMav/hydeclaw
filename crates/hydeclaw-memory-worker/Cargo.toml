@@ -3,6 +3,13 @@ name = "hydeclaw-memory-worker"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# Phase 66 REF-04: enables a `test_noop` dispatch arm used by the
+# integration_memory_worker_notify integration test. MUST NOT be enabled in
+# release builds — the arm accepts arbitrary task rows and returns OK without
+# doing any work.
+test-noop = []
+
 [dependencies]
 tokio = { workspace = true }
 reqwest = { workspace = true }
@@ -22,3 +29,9 @@ sd-notify = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
+# Phase 66 REF-04: integration test harness for LISTEN/NOTIFY crash-recovery test.
+# testcontainers 0.23 pins bollard 0.18.1 (workspace-compatible) — see
+# Phase 61 Plan 01 SUMMARY "Deviations from Plan" for the rationale.
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres"] }
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread", "time", "process"] }
