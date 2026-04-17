@@ -143,4 +143,11 @@ pub mod db {
     // `tests/integration_session_events_cleanup.rs`.
     #[path = "session_wal.rs"]
     pub mod session_wal;
+
+    // Phase 63 DATA-02: `sessions` is a leaf module (deps: anyhow, chrono,
+    // sqlx, uuid — no crate::* references). Safe to re-export without
+    // cascading the lib surface. Consumed by
+    // `tests/integration_stuck_sessions_window_fn.rs`.
+    #[path = "sessions.rs"]
+    pub mod sessions;
 }
