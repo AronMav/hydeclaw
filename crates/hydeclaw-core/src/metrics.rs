@@ -84,6 +84,43 @@ impl Default for MetricsRegistry {
     }
 }
 
+/// Build the `GET /api/health/dashboard` response body from a `MetricsRegistry`.
+///
+/// Pure flat→nested transformation: `snapshot_sse_drops()` returns
+/// `HashMap<(agent, event_type), u64>` (flat), and this function groups it
+/// into `{agent: {event_type: count}}` (nested) using `BTreeMap` for stable
+/// key ordering in serialized JSON.
+///
+/// Used by `gateway::handlers::monitoring::api_health_dashboard` as the
+/// single source of truth for the dashboard JSON shape.  Exposed on the
+/// library surface so integration tests (`integration_dashboard_metrics.rs`)
+/// can pin the nested-grouping contract without reaching into the gateway
+/// handler subtree.
+///
+/// Returns a JSON object of the form:
+/// ```json
+/// {
+///   "version": "0.19.0",
+///   "sse_events_dropped_total": { "<agent>": { "<event_type>": <count> } }
+/// }
+/// ```
+/// Phase 65 OBS-05 extends with additional fields (active_agents, DB pool
+/// stats, …); clients MUST treat unknown top-level fields as opaque.
+pub fn build_dashboard_body(registry: &MetricsRegistry) -> serde_json::Value {
+    use std::collections::BTreeMap;
+
+    let drops = registry.snapshot_sse_drops();
+    // Flat (agent, event_type) → nested {agent: {event_type: count}}.
+    let mut by_agent: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
+    for ((agent, event_type), count) in drops {
+        by_agent.entry(agent).or_default().insert(event_type, count);
+    }
+    serde_json::json!({
+        "version": "0.19.0",
+        "sse_events_dropped_total": by_agent,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

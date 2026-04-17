@@ -28,12 +28,36 @@ pub(crate) fn routes(state: AppState) -> Router<AppState> {
         .route("/api/usage/daily", get(api_usage_daily))
         .route("/api/usage/sessions", get(api_usage_sessions))
         .route("/api/doctor", get(api_doctor))
+        .route("/api/health/dashboard", get(api_health_dashboard))
         .route("/api/audit", get(api_audit_events))
         .route("/api/audit/tools", get(api_tool_audit))
         .route("/api/watchdog/status", get(api_watchdog_status))
         .route("/api/watchdog/config", get(api_watchdog_config).put(api_watchdog_config_update))
         .route("/api/watchdog/settings", get(api_watchdog_settings).put(api_watchdog_settings_update))
         .route("/api/watchdog/restart/{name}", post(api_watchdog_restart_check))
+}
+
+/// GET /api/health/dashboard — Phase 62 RES-02 resilience metrics.
+///
+/// Minimal shape for v0.19.0:
+/// ```json
+/// {
+///   "version": "0.19.0",
+///   "sse_events_dropped_total": { "<agent>": { "<event_type>": <u64> } }
+/// }
+/// ```
+///
+/// Phase 65 OBS-05 extends with: `active_agents`, SSE streams, approval
+/// waiters, rate-limiter sizes, `stream_registry` size, DB pool stats,
+/// memory-worker heartbeat. Clients MUST treat unknown fields as opaque.
+///
+/// Body construction is delegated to `crate::metrics::build_dashboard_body`
+/// so integration tests can pin the nested-JSON grouping contract against
+/// a `MetricsRegistry` fixture without extracting a handler-state harness.
+pub(crate) async fn api_health_dashboard(
+    State(infra): State<InfraServices>,
+) -> Json<Value> {
+    Json(crate::metrics::build_dashboard_body(&infra.metrics))
 }
 
 // ── Doctor check types ──────────────────────────────────────────────────────
