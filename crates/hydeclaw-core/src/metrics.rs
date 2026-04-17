@@ -271,6 +271,115 @@ pub fn build_dashboard_body(registry: &MetricsRegistry) -> serde_json::Value {
     })
 }
 
+// ── Phase 65 OBS-05 — extended dashboard with cluster runtime snapshot ──
+
+/// Runtime snapshot of cluster-level counters the `MetricsRegistry` itself
+/// does not own. Collected by the `/api/health/dashboard` handler from
+/// `AppState` clusters (DB pool, agent map, SSE stream registry, approval
+/// waiters, rate limiters, status monitor) and passed into
+/// [`build_dashboard_body_with_snapshot`] to populate the extended dashboard
+/// JSON body.
+///
+/// Isolation boundary: keeping the cluster reads in the handler layer (not
+/// in `metrics.rs`) preserves the `metrics` module's leaf-discipline status
+/// — it has zero `crate::*` dependencies and stays re-exportable via the
+/// `hydeclaw_core::metrics` lib facade (see `src/lib.rs` 10-module cap).
+#[derive(Debug, Clone)]
+pub struct DashboardSnapshot {
+    /// Number of running agents (`AgentCore.map.len()`).
+    pub active_agents: u64,
+    /// Active SSE streams currently registered.
+    pub sse_streams: u64,
+    /// Pending approval waiters (in-memory oneshot senders awaiting resolve).
+    pub approval_waiters: u64,
+    /// Entries currently held in the `AuthRateLimiter` state map.
+    pub auth_rate_limiter_size: u64,
+    /// Entries currently held in the `RequestRateLimiter` state map.
+    pub request_rate_limiter_size: u64,
+    /// Alias of `sse_streams` for clarity in dashboards (both fields are
+    /// emitted so UIs can pick whichever label fits).
+    pub stream_registry_size: u64,
+    /// sqlx PgPool configured pool size (`pool.size()`).
+    pub db_pool_total: u64,
+    /// sqlx PgPool idle connection count (`pool.num_idle()`).
+    pub db_pool_idle: u64,
+    /// Age in seconds of the latest `memory_tasks` row, or `-1` if the
+    /// heartbeat is unknown / the table is empty.
+    pub memory_worker_heartbeat_age_secs: i64,
+    /// `pg_total_relation_size('session_events')` — Postgres-reported
+    /// on-disk size of the SSE WAL table, in bytes.
+    pub session_events_table_size_bytes: u64,
+    /// Process uptime in whole seconds (`StatusMonitor.started_at.elapsed()`).
+    pub uptime_secs: u64,
+}
+
+/// Build the `/api/health/dashboard` response body, extending the Phase 62
+/// payload with Phase 65 OBS-05 cluster-level runtime fields.
+///
+/// Contract (additive extension — Plan 04 success criteria):
+///   * Every Phase 62 field from [`build_dashboard_body`] remains present
+///     and byte-identical in shape (`sse_events_dropped_total` stays nested,
+///     `csp_violations` + `csp_violations_overflow` unchanged).
+///   * `version` is upgraded from the Phase 62 hardcoded `"0.19.0"` string
+///     to the live `env!("CARGO_PKG_VERSION")` — single source of truth
+///     matches `Cargo.toml` so a version bump does not leave the dashboard
+///     stale.
+///   * Adds the 11 numeric cluster fields from [`DashboardSnapshot`] as
+///     flat top-level JSON numbers (no nesting — scraping tools parse
+///     `body.active_agents` directly).
+///
+/// Clients MUST continue to treat unknown top-level fields as opaque so
+/// future OBS phases can add more signals without breaking consumers.
+pub fn build_dashboard_body_with_snapshot(
+    registry: &MetricsRegistry,
+    snap: &DashboardSnapshot,
+) -> serde_json::Value {
+    // Start from the Phase 62 body so the nested `sse_events_dropped_total`
+    // grouping + Phase 64 `csp_violations` shape are inherited verbatim.
+    let base = build_dashboard_body(registry);
+    let mut obj = base
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+
+    // Upgrade `version` from the Phase 62 hardcoded "0.19.0" string to the
+    // live CARGO_PKG_VERSION. Cargo.toml is the single source of truth.
+    obj.insert(
+        "version".into(),
+        serde_json::Value::String(env!("CARGO_PKG_VERSION").to_string()),
+    );
+
+    // ── Cluster runtime snapshot (flat u64/i64 fields) ────────────────
+    obj.insert("active_agents".into(), snap.active_agents.into());
+    obj.insert("sse_streams".into(), snap.sse_streams.into());
+    obj.insert("approval_waiters".into(), snap.approval_waiters.into());
+    obj.insert(
+        "auth_rate_limiter_size".into(),
+        snap.auth_rate_limiter_size.into(),
+    );
+    obj.insert(
+        "request_rate_limiter_size".into(),
+        snap.request_rate_limiter_size.into(),
+    );
+    obj.insert(
+        "stream_registry_size".into(),
+        snap.stream_registry_size.into(),
+    );
+    obj.insert("db_pool_total".into(), snap.db_pool_total.into());
+    obj.insert("db_pool_idle".into(), snap.db_pool_idle.into());
+    obj.insert(
+        "memory_worker_heartbeat_age_secs".into(),
+        snap.memory_worker_heartbeat_age_secs.into(),
+    );
+    obj.insert(
+        "session_events_table_size_bytes".into(),
+        snap.session_events_table_size_bytes.into(),
+    );
+    obj.insert("uptime_secs".into(), snap.uptime_secs.into());
+
+    serde_json::Value::Object(obj)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

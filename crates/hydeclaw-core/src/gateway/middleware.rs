@@ -15,6 +15,55 @@ use tokio::sync::Mutex;
 // path consumed by `gateway/mod.rs`.
 pub use super::rate_limiter::{AuthRateLimiter, RequestRateLimiter};
 
+// ── Phase 65 OBS-05 — rate-limiter size accessor ─────────────────────────
+//
+// The auth + request rate limiters are constructed via `Box::leak` inside
+// `gateway::router()` — Phase 66 REF-06 replaces this pattern with
+// `Arc<OnceLock<_>>`, at which point this accessor can be deleted. Until
+// then, we publish the two `&'static` references into a pair of
+// `OnceLock`s so the `/api/health/dashboard` handler (Phase 65 OBS-05)
+// can report their map sizes without reaching into gateway internals.
+//
+// `install_rate_limiter_handles` MUST be called exactly once from
+// `router()` after both limiters are created. Subsequent calls are no-ops
+// (guarded by `OnceLock::set`) — tests that spin up parallel routers are
+// fine as long as all routers share the same global limiters (they do, by
+// construction: the leaked refs live forever).
+
+use std::sync::OnceLock;
+
+static AUTH_RATE_LIMITER_HANDLE: OnceLock<&'static AuthRateLimiter> = OnceLock::new();
+static REQUEST_RATE_LIMITER_HANDLE: OnceLock<&'static RequestRateLimiter> = OnceLock::new();
+
+/// Phase 65 OBS-05: publish the router-owned rate-limiter refs so the
+/// dashboard handler can read their sizes. Called once from
+/// `gateway::router()` after the limiters are constructed via `Box::leak`.
+pub(crate) fn install_rate_limiter_handles(
+    auth: &'static AuthRateLimiter,
+    req: &'static RequestRateLimiter,
+) {
+    let _ = AUTH_RATE_LIMITER_HANDLE.set(auth);
+    let _ = REQUEST_RATE_LIMITER_HANDLE.set(req);
+}
+
+/// Phase 65 OBS-05: snapshot both rate-limiter map sizes for
+/// `/api/health/dashboard`. Returns `(0, 0)` before the router has
+/// installed the handles (only happens during early startup / tests that
+/// do not construct a gateway). Each call takes the limiter's async lock
+/// briefly — the background sweeper (Phase 62 RES-04) keeps the maps
+/// bounded, so this is an O(1)-wall-clock read in practice.
+pub async fn rate_limiter_sizes() -> (u64, u64) {
+    let auth_size = match AUTH_RATE_LIMITER_HANDLE.get() {
+        Some(lim) => lim.snapshot_size().await as u64,
+        None => 0,
+    };
+    let req_size = match REQUEST_RATE_LIMITER_HANDLE.get() {
+        Some(lim) => lim.snapshot_size().await as u64,
+        None => 0,
+    };
+    (auth_size, req_size)
+}
+
 /// Per-IP budget for concurrent WebSocket upgrades (pre-auth).
 /// Prevents `DoS` via mass WS upgrade requests before auth is checked.
 /// NOTE: currently bypassed because the budget is released on 101 response, not on WS close.

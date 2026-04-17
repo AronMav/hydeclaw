@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::super::AppState;
-use crate::gateway::clusters::{AgentCore, AuthServices, ConfigServices, InfraServices, StatusMonitor};
+use crate::gateway::clusters::{
+    AgentCore, AuthServices, ChannelBus, ConfigServices, InfraServices, StatusMonitor,
+};
 use crate::agent::cli_backend::CLI_PRESETS;
 
 pub(crate) fn routes(state: AppState) -> Router<AppState> {
@@ -37,27 +39,96 @@ pub(crate) fn routes(state: AppState) -> Router<AppState> {
         .route("/api/watchdog/restart/{name}", post(api_watchdog_restart_check))
 }
 
-/// GET /api/health/dashboard — Phase 62 RES-02 resilience metrics.
+/// GET /api/health/dashboard — Phase 62 RES-02 + Phase 65 OBS-05 resilience
+/// metrics.
 ///
-/// Minimal shape for v0.19.0:
+/// Response shape:
 /// ```json
 /// {
 ///   "version": "0.19.0",
-///   "sse_events_dropped_total": { "<agent>": { "<event_type>": <u64> } }
+///   "sse_events_dropped_total": { "<agent>": { "<event_type>": <u64> } },
+///   "csp_violations": { "<directive>": <u64> },
+///   "csp_violations_overflow": <u64>,
+///   "active_agents": <u64>,
+///   "sse_streams": <u64>,
+///   "approval_waiters": <u64>,
+///   "auth_rate_limiter_size": <u64>,
+///   "request_rate_limiter_size": <u64>,
+///   "stream_registry_size": <u64>,
+///   "db_pool_total": <u64>,
+///   "db_pool_idle": <u64>,
+///   "memory_worker_heartbeat_age_secs": <i64>,
+///   "session_events_table_size_bytes": <u64>,
+///   "uptime_secs": <u64>
 /// }
 /// ```
 ///
-/// Phase 65 OBS-05 extends with: `active_agents`, SSE streams, approval
-/// waiters, rate-limiter sizes, `stream_registry` size, DB pool stats,
-/// memory-worker heartbeat. Clients MUST treat unknown fields as opaque.
-///
-/// Body construction is delegated to `crate::metrics::build_dashboard_body`
-/// so integration tests can pin the nested-JSON grouping contract against
-/// a `MetricsRegistry` fixture without extracting a handler-state harness.
+/// Body construction is delegated to
+/// `crate::metrics::build_dashboard_body_with_snapshot` so integration tests
+/// can pin both the nested `sse_events_dropped_total` contract (Phase 62)
+/// AND the ≥10-field extension contract (Phase 65 OBS-05) without
+/// extracting a handler-state harness. Clients MUST treat unknown fields
+/// as opaque.
 pub(crate) async fn api_health_dashboard(
     State(infra): State<InfraServices>,
+    State(agents): State<AgentCore>,
+    State(channels): State<ChannelBus>,
+    State(status): State<StatusMonitor>,
 ) -> Json<Value> {
-    Json(crate::metrics::build_dashboard_body(&infra.metrics))
+    use crate::metrics::{DashboardSnapshot, build_dashboard_body_with_snapshot};
+
+    // ── Cluster reads (all cheap, in-process) ────────────────────────────
+    let active_agents = agents.map.read().await.len() as u64;
+    let approval_waiters = agents.approval_waiters_size().await;
+    let sse_streams = channels.stream_registry.snapshot_size().await;
+    let (auth_rate_limiter_size, request_rate_limiter_size) =
+        crate::gateway::middleware::rate_limiter_sizes().await;
+
+    // sqlx::PgPool live counters — O(1) atomic reads.
+    let db_pool_total = infra.db.size() as u64;
+    let db_pool_idle = infra.db.num_idle() as u64;
+
+    // ── DB-backed reads (bounded; cheap — both queries read metadata or a
+    //    single aggregate, never scan data pages) ─────────────────────────
+    let session_events_table_size_bytes: u64 = sqlx::query_scalar::<_, i64>(
+        "SELECT pg_total_relation_size('session_events')",
+    )
+    .fetch_one(&infra.db)
+    .await
+    .unwrap_or(0)
+    .max(0) as u64;
+
+    // Memory-worker heartbeat: age in seconds of the latest processed task.
+    // If the table is empty or unreachable, emit -1 (unknown) so dashboards
+    // can display "n/a" rather than mis-interpret 0 as "just ran".
+    let memory_worker_heartbeat_age_secs: i64 = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT EXTRACT(EPOCH FROM (NOW() - MAX(updated_at)))::BIGINT \
+         FROM memory_tasks \
+         WHERE status IN ('processing', 'complete')",
+    )
+    .fetch_one(&infra.db)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(-1);
+
+    let snap = DashboardSnapshot {
+        active_agents,
+        sse_streams,
+        approval_waiters,
+        auth_rate_limiter_size,
+        request_rate_limiter_size,
+        // `stream_registry_size` is an alias of `sse_streams` so clients can
+        // pick whichever label fits; both emitted for clarity.
+        stream_registry_size: sse_streams,
+        db_pool_total,
+        db_pool_idle,
+        memory_worker_heartbeat_age_secs,
+        session_events_table_size_bytes,
+        uptime_secs: status.started_at.elapsed().as_secs(),
+    };
+
+    Json(build_dashboard_body_with_snapshot(&infra.metrics, &snap))
 }
 
 // ── Doctor check types ──────────────────────────────────────────────────────

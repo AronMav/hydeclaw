@@ -187,6 +187,13 @@ impl StreamRegistry {
         &self.db
     }
 
+    /// Phase 65 OBS-05: snapshot the number of registered streams for
+    /// `/api/health/dashboard`. Briefly acquires the read lock on the
+    /// streams map — safe to call from a request handler.
+    pub async fn snapshot_size(&self) -> u64 {
+        self.streams.read().await.len() as u64
+    }
+
     /// Subscribe to a stream: returns (buffered events snapshot, broadcast receiver, `is_finished`).
     ///
     /// The subscribe + snapshot is atomic (same per-stream lock) to prevent event loss.

@@ -105,6 +105,13 @@ impl AuthRateLimiter {
     pub async fn __test_len(&self) -> usize {
         self.state.lock().await.len()
     }
+
+    /// Phase 65 OBS-05: snapshot current map size for `/api/health/dashboard`.
+    /// Takes a shared async lock briefly; safe to call from a hot-path
+    /// request handler because the background sweeper keeps the map bounded.
+    pub async fn snapshot_size(&self) -> usize {
+        self.state.lock().await.len()
+    }
 }
 
 /// Per-IP request rate limiter using a fixed-window counter.
@@ -167,6 +174,12 @@ impl RequestRateLimiter {
 
     #[doc(hidden)]
     pub async fn __test_len(&self) -> usize {
+        self.state.lock().await.len()
+    }
+
+    /// Phase 65 OBS-05: snapshot current map size for `/api/health/dashboard`.
+    /// Same bounded-lock semantics as [`AuthRateLimiter::snapshot_size`].
+    pub async fn snapshot_size(&self) -> usize {
         self.state.lock().await.len()
     }
 }

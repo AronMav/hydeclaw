@@ -58,6 +58,24 @@ impl AgentCore {
         self.map.read().await.values().next().map(|h| h.engine.clone())
     }
 
+    /// Phase 65 OBS-05: total pending approval waiters across every running
+    /// agent. Each agent owns its own waiters map (keyed by approval UUID);
+    /// we aggregate them here for the `/api/health/dashboard` snapshot so
+    /// operators can see at a glance whether approvals are backing up.
+    ///
+    /// Read-locks the agent map briefly, then each per-executor waiters
+    /// RwLock in sequence. Expected n ≤ 20 on Pi — negligible cost.
+    pub async fn approval_waiters_size(&self) -> u64 {
+        let map = self.map.read().await;
+        let mut total: u64 = 0;
+        for handle in map.values() {
+            let tex = handle.engine.tex();
+            let waiters = tex.approval_waiters.read().await;
+            total += waiters.len() as u64;
+        }
+        total
+    }
+
     /// Get list of running agent names (base agents first, then alphabetical).
     pub async fn agent_names(&self) -> Vec<String> {
         let mut names: Vec<(bool, String)> = self.map.read().await.values()
