@@ -118,6 +118,14 @@ pub mod gateway {
 
         pub use coalescer::spawn_coalescing_converter;
     }
+
+    // Phase 64 SEC-05: `csp_core` is a leaf module (deps: axum, serde, std,
+    // tracing, `crate::metrics::MetricsRegistry` — last one already exposed
+    // above). Safe to re-export for `integration_csp_report.rs`. Exposed at
+    // path `hydeclaw_core::gateway::csp` so callers don't see the `_core`
+    // implementation detail.
+    #[path = "csp_core.rs"]
+    pub mod csp;
 }
 
 // ── Test-facing re-exports added by Phase 61 Plan 03 ────────────────────

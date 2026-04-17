@@ -92,9 +92,11 @@ fn unc_or_standard_windows_path() {
     if cfg!(windows) {
         let s = format!("\\\\?\\{}", p.display());
         let result = resolve_workspace_path(ws.path().to_str().unwrap(), &PathBuf::from(&s));
-        match result {
-            Ok(p2) => assert!(p2.starts_with(ws.path()), "UNC escaped ws: {p2:?}"),
-            Err(_) => {}
+        // UNC prefix must either canonicalize into the workspace or be rejected —
+        // never silently bypass `starts_with`. Both outcomes satisfy the contract.
+        if let Ok(p2) = result {
+            let root = dunce::canonicalize(ws.path()).unwrap();
+            assert!(p2.starts_with(&root), "UNC escaped ws: {p2:?}");
         }
     }
 }

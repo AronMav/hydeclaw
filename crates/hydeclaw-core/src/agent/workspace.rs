@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
+use crate::agent::path_guard::resolve_workspace_path;
+
 /// Workspace file order for system prompt assembly (per-agent files).
 const WORKSPACE_FILES: &[&str] = &[
     "SOUL.md",
@@ -445,11 +447,11 @@ pub async fn write_workspace_file(
     let path = validate_workspace_path(workspace_dir, agent_name, filename).await?;
     // Canonicalize before is_read_only to prevent symlink bypass:
     // a symlink "notes.md" -> "SOUL.md" must be checked as "SOUL.md"
-    let check_path = if path.exists() {
-        path.canonicalize().unwrap_or_else(|_| path.clone())
-    } else {
-        path.clone()
-    };
+    // Phase 64 SEC-02: use path_guard::resolve_workspace_path which
+    // fails closed on workspace escape and uses dunce::canonicalize
+    // for cross-platform consistency (no \\?\ prefix on Windows).
+    let check_path = resolve_workspace_path(workspace_dir, &path)
+        .with_context(|| format!("'{filename}' escapes workspace or cannot be resolved"))?;
     if is_read_only(workspace_dir, &check_path, base) {
         anyhow::bail!("'{filename}' is read-only and cannot be modified");
     }
@@ -748,12 +750,12 @@ pub async fn edit_workspace_file(
     base: bool,
 ) -> Result<()> {
     let path = validate_workspace_path(workspace_dir, agent_name, filename).await?;
-    // Canonicalize before is_read_only to prevent symlink bypass
-    let check_path = if path.exists() {
-        path.canonicalize().unwrap_or_else(|_| path.clone())
-    } else {
-        path.clone()
-    };
+    // Canonicalize before is_read_only to prevent symlink bypass.
+    // Phase 64 SEC-02: use path_guard::resolve_workspace_path which
+    // fails closed on workspace escape and uses dunce::canonicalize
+    // for cross-platform consistency (no \\?\ prefix on Windows).
+    let check_path = resolve_workspace_path(workspace_dir, &path)
+        .with_context(|| format!("'{filename}' escapes workspace or cannot be resolved"))?;
     if is_read_only(workspace_dir, &check_path, base) {
         anyhow::bail!("'{filename}' is read-only and cannot be modified");
     }
