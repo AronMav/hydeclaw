@@ -110,7 +110,29 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for BroadcastLogLayer 
     }
 }
 
+/// Phase 65 OBS-01 / OBS-02 (Plan 02): live OTel provider handles retained
+/// across the lifetime of the process so `main()` can invoke `.shutdown()`
+/// on clean exit. OTel 0.31 removed the global `shutdown_tracer_provider()`
+/// helper — providers now own their shutdown lifecycle.
+#[cfg(feature = "otel")]
+static OTEL_PROVIDERS: std::sync::OnceLock<(
+    opentelemetry_sdk::trace::SdkTracerProvider,
+    opentelemetry_sdk::metrics::SdkMeterProvider,
+)> = std::sync::OnceLock::new();
+
 /// Initialize tracing subscriber with optional OTEL layer.
+///
+/// Phase 65 Plan 02 (OTel 0.31 migration):
+///   * `opentelemetry_sdk::trace::TracerProvider` → `SdkTracerProvider`
+///   * `opentelemetry_sdk::Resource::new(...)` → `Resource::builder().with_service_name(...).build()`
+///   * `SpanExporter::builder().with_tonic()` now requires the `grpc-tonic`
+///     feature (enabled at workspace level).
+///   * `shutdown_tracer_provider()` removed — caller owns the handle and
+///     invokes `.shutdown()` on exit. Handles stored in `OTEL_PROVIDERS`.
+///   * Metrics provider now created alongside tracer so Plan 02 OTel
+///     instruments (`tool_latency_seconds`, `llm_call_duration_seconds`,
+///     `db_query_duration_seconds`, `llm_tokens_total`) are exported via
+///     the same OTLP collector endpoint.
 fn init_tracing(log_tx: tokio::sync::broadcast::Sender<String>, cfg: &config::AppConfig) {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| "hydeclaw_core=info".into());
     let fmt_layer = tracing_subscriber::fmt::layer();
@@ -123,32 +145,90 @@ fn init_tracing(log_tx: tokio::sync::broadcast::Sender<String>, cfg: &config::Ap
         if cfg.otel.enabled {
             let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
                 .unwrap_or_else(|_| "http://localhost:4317".to_string());
-            eprintln!("[otel] exporting traces to {endpoint} as {:?}", cfg.otel.service_name);
+            eprintln!(
+                "[otel] exporting traces + metrics to {endpoint} as {:?}",
+                cfg.otel.service_name
+            );
 
-            if let Ok(exporter) = opentelemetry_otlp::SpanExporter::builder()
+            // Shared resource: `service.name` identifies this process in the
+            // collector. `Resource::builder()` pulls default attributes
+            // (service.version via env, telemetry.sdk.*) — the 0.31 idiom.
+            let resource = opentelemetry_sdk::Resource::builder()
+                .with_service_name(cfg.otel.service_name.clone())
+                .build();
+
+            // ── Trace exporter + provider ───────────────────────────────
+            let span_exporter = match opentelemetry_otlp::SpanExporter::builder()
                 .with_tonic()
                 .with_endpoint(&endpoint)
                 .build()
             {
-                let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-                    .with_simple_exporter(exporter)
-                    .with_resource(opentelemetry_sdk::Resource::new([
-                        opentelemetry::KeyValue::new("service.name", cfg.otel.service_name.clone()),
-                    ]))
-                    .build();
-                opentelemetry::global::set_tracer_provider(provider.clone());
-                let tracer = opentelemetry::trace::TracerProvider::tracer(&provider, "hydeclaw");
-                let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+                Ok(e) => e,
+                Err(err) => {
+                    eprintln!("[otel] span exporter build failed: {err}; falling back");
+                    tracing_subscriber::registry()
+                        .with(env_filter)
+                        .with(fmt_layer)
+                        .with(broadcast_layer)
+                        .init();
+                    return;
+                }
+            };
+            let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+                .with_batch_exporter(span_exporter)
+                .with_resource(resource.clone())
+                .build();
+            opentelemetry::global::set_tracer_provider(tracer_provider.clone());
 
-                tracing_subscriber::registry()
-                    .with(env_filter)
-                    .with(fmt_layer)
-                    .with(broadcast_layer)
-                    .with(otel_layer)
-                    .init();
-                return;
-            }
-            eprintln!("[otel] failed to create exporter, falling back to non-OTEL tracing");
+            // ── Metric exporter + provider (Plan 02 OBS-02) ─────────────
+            let metric_exporter = match opentelemetry_otlp::MetricExporter::builder()
+                .with_tonic()
+                .with_endpoint(&endpoint)
+                .build()
+            {
+                Ok(e) => e,
+                Err(err) => {
+                    eprintln!("[otel] metric exporter build failed: {err}; proceeding with traces only");
+                    // Keep tracer provider wired; install empty meter
+                    // provider so `MetricsRegistry::install_otel_instruments`
+                    // fails safe (the underlying global meter is a no-op).
+                    let _ = OTEL_PROVIDERS.set((
+                        tracer_provider.clone(),
+                        opentelemetry_sdk::metrics::SdkMeterProvider::builder().build(),
+                    ));
+                    let tracer = opentelemetry::trace::TracerProvider::tracer(
+                        &tracer_provider,
+                        "hydeclaw",
+                    );
+                    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+                    tracing_subscriber::registry()
+                        .with(env_filter)
+                        .with(fmt_layer)
+                        .with(broadcast_layer)
+                        .with(otel_layer)
+                        .init();
+                    return;
+                }
+            };
+            let meter_provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
+                .with_periodic_exporter(metric_exporter)
+                .with_resource(resource)
+                .build();
+            opentelemetry::global::set_meter_provider(meter_provider.clone());
+
+            // Retain handles for graceful shutdown.
+            let _ = OTEL_PROVIDERS.set((tracer_provider.clone(), meter_provider));
+
+            let tracer = opentelemetry::trace::TracerProvider::tracer(&tracer_provider, "hydeclaw");
+            let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(fmt_layer)
+                .with(broadcast_layer)
+                .with(otel_layer)
+                .init();
+            return;
         }
     }
 
@@ -364,6 +444,14 @@ async fn main() -> Result<()> {
     // `/api/health/dashboard` handler (Plan 02) see the same counters.
     let metrics = Arc::new(crate::metrics::MetricsRegistry::new());
 
+    // Phase 65 Plan 02 OBS-02: when --features otel is on, wire OTel
+    // instruments onto the registry. Safe to call unconditionally — the
+    // method is itself feature-gated and `install_otel_instruments()` is a
+    // no-op if the global MeterProvider was not set by init_tracing (e.g.
+    // when `cfg.otel.enabled = false`). Idempotent via `OnceLock::set`.
+    #[cfg(feature = "otel")]
+    metrics.install_otel_instruments();
+
     // Shared application state for gateway (built early so start_agent_from_config can use it)
     let state = gateway::AppState {
         agents: gateway::clusters::AgentCore::new(
@@ -482,8 +570,21 @@ async fn main() -> Result<()> {
     #[cfg(target_os = "linux")]
     let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
 
+    // Phase 65 OBS-01 (Plan 02): OTel 0.31 removed the global
+    // `shutdown_tracer_provider()` helper — each provider owns its own
+    // shutdown. Invoke both the tracer and the metric provider so any
+    // in-flight OTLP batches are flushed before the process exits.
     #[cfg(feature = "otel")]
-    if cfg.otel.enabled { opentelemetry::global::shutdown_tracer_provider(); }
+    if cfg.otel.enabled {
+        if let Some((tracer_provider, meter_provider)) = OTEL_PROVIDERS.get() {
+            if let Err(err) = tracer_provider.shutdown() {
+                tracing::warn!(error = %err, "otel tracer provider shutdown failed");
+            }
+            if let Err(err) = meter_provider.shutdown() {
+                tracing::warn!(error = %err, "otel meter provider shutdown failed");
+            }
+        }
+    }
 
     tracing::info!("HydeClaw Core shutting down");
     Ok(())

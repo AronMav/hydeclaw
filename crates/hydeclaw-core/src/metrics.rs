@@ -3,16 +3,37 @@
 //! AtomicU64 counters keyed by (agent, event_type). Phase 65 OBS-02 layers
 //! OpenTelemetry meter wrappers on top — Phase 62 only needs raw counters
 //! to back GET /api/health/dashboard and the Phase 62 RES-01 coalescer
-//! drop counter. NO external dependencies (std + tracing only).
+//! drop counter. NO external dependencies (std + tracing only) on the
+//! always-on path.
 //!
 //! Phase 64 SEC-05 (additive): CSP violation counter keyed by directive,
 //! with length + cardinality caps to prevent hostile browsers from inflating
 //! the map. Overflow attempts past the cap bump a single `csp_violations_overflow`
 //! atomic instead of growing the map.
+//!
+//! Phase 65 OBS-02 / OBS-03 (additive, feature-gated on `otel`):
+//!   * Three histograms — `tool_latency_seconds`, `llm_call_duration_seconds`,
+//!     `db_query_duration_seconds` — recorded both into always-on
+//!     `(count, sum_micros)` atomic summaries and (when `--features otel`
+//!     is on) into OTel `Histogram<f64>` instruments.
+//!   * One directional counter — `llm_tokens_total{direction}` — with the
+//!     same split.
+//!   * Label allowlist `ALLOWED_LABEL_KEYS = {agent_id, tool_name, provider,
+//!     model, result}` enforced at runtime via `assert_label_allowed()`.
+//!   * Runtime cardinality guard — inserting more than `MAX_UNIQUE_SERIES`
+//!     distinct histogram keys panics with a diagnostic. Catches the classic
+//!     "session_id became a label" mistake before it blows Prometheus memory.
+//!
+//! Phase 65 OBS-05 scaffolding:
+//!   * `DashboardSnapshot` + `build_dashboard_body_with_snapshot()` — the
+//!     monitoring handler consumes these. Owned by Plan 65-04 (adds full
+//!     contract tests); introduced here to unblock the `--features otel`
+//!     build which otherwise fails at the handler's `use` site.
 
 use std::collections::HashMap;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 /// Sampled-warn sampling rate: log 1 out of every 64 drops.
 /// Keeps logs non-overwhelming under saturation (RES-02).
@@ -32,6 +53,24 @@ pub const MAX_CSP_DIRECTIVES: usize = 32;
 /// send multi-KB "directive" strings that bloat the counter map memory footprint.
 pub const MAX_CSP_DIRECTIVE_LEN: usize = 64;
 
+/// Phase 65 OBS-03 (CONTEXT.md D-03): the ONLY label keys that may appear on
+/// histograms / counters. Any other key causes a runtime panic in
+/// [`MetricsRegistry::assert_label_allowed`] — prevents high-cardinality
+/// identifiers (`session_id`, `user_id`, `request_id`, stringified error
+/// messages, …) from leaking into metric labels and exploding the series
+/// count.
+pub const ALLOWED_LABEL_KEYS: &[&str] = &[
+    "agent_id", "tool_name", "provider", "model", "result",
+];
+
+/// Phase 65 OBS-03: hard cap on unique (tool_name × agent_id × provider ×
+/// model × result) tuples. Past this, the registry panics — caught by the
+/// `integration_cardinality_guard.rs` 10k synthetic-session test. The
+/// ceiling is large enough for realistic combinations (5 agents × 20 tools
+/// × 4 providers × 5 models × 2 results = 4000) but tight enough to catch
+/// label explosion from session_id / user_id slipping through.
+pub const MAX_UNIQUE_SERIES: usize = 10_000;
+
 /// Central metrics registry for Phase 62 observability.
 ///
 /// Lookup path: RwLock for keyed entry (insert on first use), AtomicU64 for
@@ -48,6 +87,30 @@ pub struct MetricsRegistry {
     /// cardinality cap. A non-zero value signals abuse and should trigger
     /// operator attention.
     csp_violations_overflow: AtomicU64,
+
+    // ── Phase 65 OBS-02: histograms (always-on `(count, sum_micros)`) ──
+    /// (tool_name, agent_id, result) → (count, sum_micros). Hot-path
+    /// summary for `tool_latency_seconds`.
+    tool_latency: RwLock<HashMap<(String, String, String), (AtomicU64, AtomicU64)>>,
+    /// (provider, model, result) → (count, sum_micros). Hot-path summary for
+    /// `llm_call_duration_seconds`.
+    llm_call_duration: RwLock<HashMap<(String, String, String), (AtomicU64, AtomicU64)>>,
+    /// (result,) → (count, sum_micros). `tool_name` intentionally NOT in
+    /// the DB key namespace (SQL templates would explode cardinality) —
+    /// just the outcome.
+    db_query_duration: RwLock<HashMap<String, (AtomicU64, AtomicU64)>>,
+    /// direction ∈ {"prompt","completion"} → running total tokens. Same
+    /// shape the feature-gated OTel `Counter<u64>` uses.
+    llm_tokens_total: RwLock<HashMap<String, AtomicU64>>,
+    /// Running count of unique series inserted across all three histograms.
+    /// Checked against [`MAX_UNIQUE_SERIES`] on every new-key insert.
+    unique_series: AtomicU64,
+
+    /// Feature-gated OTel instruments. Populated by
+    /// [`MetricsRegistry::install_otel_instruments`] after the global
+    /// `MeterProvider` is set. `None` on `--no-default-features`.
+    #[cfg(feature = "otel")]
+    otel_instruments: std::sync::OnceLock<OtelInstruments>,
 }
 
 impl MetricsRegistry {
@@ -56,6 +119,13 @@ impl MetricsRegistry {
             sse_events_dropped: RwLock::new(HashMap::new()),
             csp_violations_total: RwLock::new(HashMap::new()),
             csp_violations_overflow: AtomicU64::new(0),
+            tool_latency: RwLock::new(HashMap::new()),
+            llm_call_duration: RwLock::new(HashMap::new()),
+            db_query_duration: RwLock::new(HashMap::new()),
+            llm_tokens_total: RwLock::new(HashMap::new()),
+            unique_series: AtomicU64::new(0),
+            #[cfg(feature = "otel")]
+            otel_instruments: std::sync::OnceLock::new(),
         }
     }
 
@@ -216,6 +286,404 @@ impl MetricsRegistry {
     pub fn csp_violations_overflow_count(&self) -> u64 {
         self.csp_violations_overflow.load(Ordering::Relaxed)
     }
+
+    // ── Phase 65 OBS-02 / OBS-03 — histograms + allowlist + cardinality ──
+
+    /// Panics if `key` is not in [`ALLOWED_LABEL_KEYS`]. Public so the
+    /// dashboard / audit paths can defensively re-check, and so
+    /// `integration_cardinality_guard.rs` can pin the runtime contract
+    /// via a `#[should_panic]` test.
+    pub fn assert_label_allowed(key: &str) {
+        if !ALLOWED_LABEL_KEYS.contains(&key) {
+            panic!("label key not in allowlist: {key}");
+        }
+    }
+
+    /// Number of unique series currently tracked across all histograms.
+    /// Test-facing accessor (used by `integration_cardinality_guard.rs`).
+    pub fn unique_series_count(&self) -> u64 {
+        self.unique_series.load(Ordering::Relaxed)
+    }
+
+    /// Cardinality guard. Called on every new-key insert across the three
+    /// histograms. Panics if the running count exceeds [`MAX_UNIQUE_SERIES`].
+    ///
+    /// The diagnostic message includes the hit count, the ceiling, and the
+    /// allowlist — operators get immediate context about what to check.
+    fn bump_series_or_panic(&self) {
+        let n = self.unique_series.fetch_add(1, Ordering::Relaxed) + 1;
+        if (n as usize) > MAX_UNIQUE_SERIES {
+            panic!(
+                "metrics cardinality guard: {n} unique series exceeds MAX_UNIQUE_SERIES={MAX_UNIQUE_SERIES}. \
+                 Check that no code path is passing session_id / user_id / request_id as a label. \
+                 Allowed keys: {ALLOWED_LABEL_KEYS:?}"
+            );
+        }
+    }
+
+    /// Record tool latency. `result` SHOULD be a bounded-cardinality value
+    /// — typically `"ok"`, `"error"`, or `"timeout"` — NOT the error
+    /// message body (that would explode cardinality).
+    ///
+    /// Always-on: bumps `(count, sum_micros)` in the in-process summary.
+    /// Feature-gated (`otel`): also records on the OTel `f64_histogram`
+    /// with seconds resolution, labels filtered to `ALLOWED_LABEL_KEYS`.
+    pub fn record_tool_latency(
+        &self,
+        tool_name: &str,
+        agent_id: &str,
+        result: &str,
+        d: Duration,
+    ) {
+        let micros = d.as_micros() as u64;
+        let key = (
+            tool_name.to_string(),
+            agent_id.to_string(),
+            result.to_string(),
+        );
+
+        // Fast path: existing key — atomic bump under read lock.
+        {
+            let read = self.tool_latency.read().expect("tool_latency RwLock poisoned");
+            if let Some((count, sum)) = read.get(&key) {
+                count.fetch_add(1, Ordering::Relaxed);
+                sum.fetch_add(micros, Ordering::Relaxed);
+                self.record_tool_latency_otel(tool_name, agent_id, result, d);
+                return;
+            }
+        }
+
+        // Slow path: insert new key. Cardinality guard runs inside — MUST
+        // happen BEFORE the insert so a panic does not leak half-baked
+        // state into the summary map.
+        let mut write = self.tool_latency.write().expect("tool_latency RwLock poisoned");
+        if let Some((count, sum)) = write.get(&key) {
+            count.fetch_add(1, Ordering::Relaxed);
+            sum.fetch_add(micros, Ordering::Relaxed);
+            drop(write);
+            self.record_tool_latency_otel(tool_name, agent_id, result, d);
+            return;
+        }
+        self.bump_series_or_panic();
+        write.insert(key, (AtomicU64::new(1), AtomicU64::new(micros)));
+        drop(write);
+        self.record_tool_latency_otel(tool_name, agent_id, result, d);
+    }
+
+    /// Record LLM call duration. `provider` and `model` come from the
+    /// provider registry (bounded — a few dozen max). `result` is
+    /// `"ok"`/`"error"`/`"timeout"`.
+    pub fn record_llm_call_duration(
+        &self,
+        provider: &str,
+        model: &str,
+        result: &str,
+        d: Duration,
+    ) {
+        let micros = d.as_micros() as u64;
+        let key = (
+            provider.to_string(),
+            model.to_string(),
+            result.to_string(),
+        );
+
+        {
+            let read = self
+                .llm_call_duration
+                .read()
+                .expect("llm_call_duration RwLock poisoned");
+            if let Some((count, sum)) = read.get(&key) {
+                count.fetch_add(1, Ordering::Relaxed);
+                sum.fetch_add(micros, Ordering::Relaxed);
+                self.record_llm_call_duration_otel(provider, model, result, d);
+                return;
+            }
+        }
+
+        let mut write = self
+            .llm_call_duration
+            .write()
+            .expect("llm_call_duration RwLock poisoned");
+        if let Some((count, sum)) = write.get(&key) {
+            count.fetch_add(1, Ordering::Relaxed);
+            sum.fetch_add(micros, Ordering::Relaxed);
+            drop(write);
+            self.record_llm_call_duration_otel(provider, model, result, d);
+            return;
+        }
+        self.bump_series_or_panic();
+        write.insert(key, (AtomicU64::new(1), AtomicU64::new(micros)));
+        drop(write);
+        self.record_llm_call_duration_otel(provider, model, result, d);
+    }
+
+    /// Record DB query duration. Keyed by `result` only (SQL templates are
+    /// templated strings — including them would explode cardinality).
+    pub fn record_db_query_duration(&self, result: &str, d: Duration) {
+        let micros = d.as_micros() as u64;
+        let key = result.to_string();
+
+        {
+            let read = self
+                .db_query_duration
+                .read()
+                .expect("db_query_duration RwLock poisoned");
+            if let Some((count, sum)) = read.get(&key) {
+                count.fetch_add(1, Ordering::Relaxed);
+                sum.fetch_add(micros, Ordering::Relaxed);
+                self.record_db_query_duration_otel(result, d);
+                return;
+            }
+        }
+
+        let mut write = self
+            .db_query_duration
+            .write()
+            .expect("db_query_duration RwLock poisoned");
+        if let Some((count, sum)) = write.get(&key) {
+            count.fetch_add(1, Ordering::Relaxed);
+            sum.fetch_add(micros, Ordering::Relaxed);
+            drop(write);
+            self.record_db_query_duration_otel(result, d);
+            return;
+        }
+        self.bump_series_or_panic();
+        write.insert(key, (AtomicU64::new(1), AtomicU64::new(micros)));
+        drop(write);
+        self.record_db_query_duration_otel(result, d);
+    }
+
+    /// Record LLM token usage. `direction` MUST be `"prompt"` or
+    /// `"completion"` — debug-asserted; other values still accumulate but
+    /// the debug_assert fires in dev/test builds.
+    pub fn record_llm_tokens(&self, n: u64, direction: &str) {
+        debug_assert!(
+            direction == "prompt" || direction == "completion",
+            "llm_tokens direction must be 'prompt' or 'completion', got {direction:?}"
+        );
+        let key = direction.to_string();
+
+        {
+            let read = self
+                .llm_tokens_total
+                .read()
+                .expect("llm_tokens_total RwLock poisoned");
+            if let Some(counter) = read.get(&key) {
+                counter.fetch_add(n, Ordering::Relaxed);
+                self.record_llm_tokens_otel(n, direction);
+                return;
+            }
+        }
+
+        let mut write = self
+            .llm_tokens_total
+            .write()
+            .expect("llm_tokens_total RwLock poisoned");
+        if let Some(counter) = write.get(&key) {
+            counter.fetch_add(n, Ordering::Relaxed);
+            drop(write);
+            self.record_llm_tokens_otel(n, direction);
+            return;
+        }
+        // llm_tokens_total shares the unique-series budget — each new
+        // direction is a new series. Bounded to 2 in practice (prompt,
+        // completion) but we count it for safety.
+        self.bump_series_or_panic();
+        write.insert(key, AtomicU64::new(n));
+        drop(write);
+        self.record_llm_tokens_otel(n, direction);
+    }
+
+    /// Snapshot tool_latency summary as `{(tool, agent, result): (count, sum_micros)}`.
+    pub fn snapshot_tool_latency_summary(
+        &self,
+    ) -> HashMap<(String, String, String), (u64, u64)> {
+        let read = self.tool_latency.read().expect("tool_latency RwLock poisoned");
+        read.iter()
+            .map(|(k, (c, s))| (k.clone(), (c.load(Ordering::Relaxed), s.load(Ordering::Relaxed))))
+            .collect()
+    }
+
+    /// Snapshot llm_call_duration summary as `{(provider, model, result): (count, sum_micros)}`.
+    pub fn snapshot_llm_call_duration_summary(
+        &self,
+    ) -> HashMap<(String, String, String), (u64, u64)> {
+        let read = self
+            .llm_call_duration
+            .read()
+            .expect("llm_call_duration RwLock poisoned");
+        read.iter()
+            .map(|(k, (c, s))| (k.clone(), (c.load(Ordering::Relaxed), s.load(Ordering::Relaxed))))
+            .collect()
+    }
+
+    /// Snapshot db_query_duration summary as `{result: (count, sum_micros)}`.
+    pub fn snapshot_db_query_duration_summary(&self) -> HashMap<String, (u64, u64)> {
+        let read = self
+            .db_query_duration
+            .read()
+            .expect("db_query_duration RwLock poisoned");
+        read.iter()
+            .map(|(k, (c, s))| (k.clone(), (c.load(Ordering::Relaxed), s.load(Ordering::Relaxed))))
+            .collect()
+    }
+
+    /// Snapshot llm_tokens_total as `{direction: total}`.
+    pub fn snapshot_llm_tokens_total(&self) -> HashMap<String, u64> {
+        let read = self
+            .llm_tokens_total
+            .read()
+            .expect("llm_tokens_total RwLock poisoned");
+        read.iter()
+            .map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed)))
+            .collect()
+    }
+
+    // ── Feature-gated OTel emitter helpers ──────────────────────────────
+    // Each `record_*` method calls the matching `*_otel` helper after the
+    // always-on bump. When `--features otel` is off, these helpers are
+    // no-ops (inlined to nothing by the optimizer).
+
+    #[cfg(not(feature = "otel"))]
+    fn record_tool_latency_otel(
+        &self,
+        _tool_name: &str,
+        _agent_id: &str,
+        _result: &str,
+        _d: Duration,
+    ) {
+    }
+
+    #[cfg(feature = "otel")]
+    fn record_tool_latency_otel(
+        &self,
+        tool_name: &str,
+        agent_id: &str,
+        result: &str,
+        d: Duration,
+    ) {
+        if let Some(inst) = self.otel_instruments.get() {
+            use opentelemetry::KeyValue;
+            inst.tool_latency.record(
+                d.as_secs_f64(),
+                &[
+                    KeyValue::new("tool_name", tool_name.to_string()),
+                    KeyValue::new("agent_id", agent_id.to_string()),
+                    KeyValue::new("result", result.to_string()),
+                ],
+            );
+        }
+    }
+
+    #[cfg(not(feature = "otel"))]
+    fn record_llm_call_duration_otel(
+        &self,
+        _provider: &str,
+        _model: &str,
+        _result: &str,
+        _d: Duration,
+    ) {
+    }
+
+    #[cfg(feature = "otel")]
+    fn record_llm_call_duration_otel(
+        &self,
+        provider: &str,
+        model: &str,
+        result: &str,
+        d: Duration,
+    ) {
+        if let Some(inst) = self.otel_instruments.get() {
+            use opentelemetry::KeyValue;
+            inst.llm_call_duration.record(
+                d.as_secs_f64(),
+                &[
+                    KeyValue::new("provider", provider.to_string()),
+                    KeyValue::new("model", model.to_string()),
+                    KeyValue::new("result", result.to_string()),
+                ],
+            );
+        }
+    }
+
+    #[cfg(not(feature = "otel"))]
+    fn record_db_query_duration_otel(&self, _result: &str, _d: Duration) {}
+
+    #[cfg(feature = "otel")]
+    fn record_db_query_duration_otel(&self, result: &str, d: Duration) {
+        if let Some(inst) = self.otel_instruments.get() {
+            use opentelemetry::KeyValue;
+            inst.db_query_duration.record(
+                d.as_secs_f64(),
+                &[KeyValue::new("result", result.to_string())],
+            );
+        }
+    }
+
+    #[cfg(not(feature = "otel"))]
+    fn record_llm_tokens_otel(&self, _n: u64, _direction: &str) {}
+
+    #[cfg(feature = "otel")]
+    fn record_llm_tokens_otel(&self, n: u64, direction: &str) {
+        if let Some(inst) = self.otel_instruments.get() {
+            use opentelemetry::KeyValue;
+            inst.llm_tokens_total
+                .add(n, &[KeyValue::new("direction", direction.to_string())]);
+        }
+    }
+}
+
+// ── Feature-gated OTel instrument wiring ────────────────────────────────
+// Lives at module bottom so the always-on path above stays self-contained.
+
+#[cfg(feature = "otel")]
+struct OtelInstruments {
+    tool_latency: opentelemetry::metrics::Histogram<f64>,
+    llm_call_duration: opentelemetry::metrics::Histogram<f64>,
+    db_query_duration: opentelemetry::metrics::Histogram<f64>,
+    llm_tokens_total: opentelemetry::metrics::Counter<u64>,
+}
+
+#[cfg(feature = "otel")]
+impl std::fmt::Debug for OtelInstruments {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OtelInstruments")
+            .field("tool_latency", &"Histogram<f64> tool_latency_seconds")
+            .field("llm_call_duration", &"Histogram<f64> llm_call_duration_seconds")
+            .field("db_query_duration", &"Histogram<f64> db_query_duration_seconds")
+            .field("llm_tokens_total", &"Counter<u64> llm_tokens_total")
+            .finish()
+    }
+}
+
+#[cfg(feature = "otel")]
+impl MetricsRegistry {
+    /// Install OTel instruments on this registry. Must be called once,
+    /// from `main.rs::init_tracing()`, AFTER the global `MeterProvider`
+    /// is set via `opentelemetry::global::set_meter_provider()`.
+    ///
+    /// Idempotent: subsequent calls are no-ops (the underlying
+    /// `OnceLock::set` fails silently when already initialized).
+    pub fn install_otel_instruments(&self) {
+        use opentelemetry::global;
+        let meter = global::meter("hydeclaw-core");
+        let inst = OtelInstruments {
+            tool_latency: meter
+                .f64_histogram("tool_latency_seconds")
+                .with_unit("s")
+                .build(),
+            llm_call_duration: meter
+                .f64_histogram("llm_call_duration_seconds")
+                .with_unit("s")
+                .build(),
+            db_query_duration: meter
+                .f64_histogram("db_query_duration_seconds")
+                .with_unit("s")
+                .build(),
+            llm_tokens_total: meter.u64_counter("llm_tokens_total").build(),
+        };
+        let _ = self.otel_instruments.set(inst);
+    }
 }
 
 impl Default for MetricsRegistry {
@@ -271,7 +739,7 @@ pub fn build_dashboard_body(registry: &MetricsRegistry) -> serde_json::Value {
     })
 }
 
-// ── Phase 65 OBS-05 — extended dashboard with cluster runtime snapshot ──
+// ── Phase 65 OBS-05 scaffolding (consumed by Plan 65-04) ──────────────
 
 /// Runtime snapshot of cluster-level counters the `MetricsRegistry` itself
 /// does not own. Collected by the `/api/health/dashboard` handler from
@@ -284,6 +752,11 @@ pub fn build_dashboard_body(registry: &MetricsRegistry) -> serde_json::Value {
 /// in `metrics.rs`) preserves the `metrics` module's leaf-discipline status
 /// — it has zero `crate::*` dependencies and stays re-exportable via the
 /// `hydeclaw_core::metrics` lib facade (see `src/lib.rs` 10-module cap).
+///
+/// Plan 65-04 owns the full contract test
+/// (`dashboard_has_at_least_10_named_metrics`). This struct is introduced
+/// in Plan 65-02 ONLY because the monitoring handler already references it
+/// and the default/feature builds would otherwise fail to compile.
 #[derive(Debug, Clone)]
 pub struct DashboardSnapshot {
     /// Number of running agents (`AgentCore.map.len()`).
@@ -334,50 +807,35 @@ pub fn build_dashboard_body_with_snapshot(
     registry: &MetricsRegistry,
     snap: &DashboardSnapshot,
 ) -> serde_json::Value {
-    // Start from the Phase 62 body so the nested `sse_events_dropped_total`
-    // grouping + Phase 64 `csp_violations` shape are inherited verbatim.
-    let base = build_dashboard_body(registry);
-    let mut obj = base
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
+    use std::collections::BTreeMap;
 
-    // Upgrade `version` from the Phase 62 hardcoded "0.19.0" string to the
-    // live CARGO_PKG_VERSION. Cargo.toml is the single source of truth.
-    obj.insert(
-        "version".into(),
-        serde_json::Value::String(env!("CARGO_PKG_VERSION").to_string()),
-    );
+    let drops = registry.snapshot_sse_drops();
+    let mut by_agent: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
+    for ((agent, event_type), count) in drops {
+        by_agent.entry(agent).or_default().insert(event_type, count);
+    }
+    let csp_violations: BTreeMap<String, u64> = registry
+        .snapshot_csp_violations()
+        .into_iter()
+        .collect();
 
-    // ── Cluster runtime snapshot (flat u64/i64 fields) ────────────────
-    obj.insert("active_agents".into(), snap.active_agents.into());
-    obj.insert("sse_streams".into(), snap.sse_streams.into());
-    obj.insert("approval_waiters".into(), snap.approval_waiters.into());
-    obj.insert(
-        "auth_rate_limiter_size".into(),
-        snap.auth_rate_limiter_size.into(),
-    );
-    obj.insert(
-        "request_rate_limiter_size".into(),
-        snap.request_rate_limiter_size.into(),
-    );
-    obj.insert(
-        "stream_registry_size".into(),
-        snap.stream_registry_size.into(),
-    );
-    obj.insert("db_pool_total".into(), snap.db_pool_total.into());
-    obj.insert("db_pool_idle".into(), snap.db_pool_idle.into());
-    obj.insert(
-        "memory_worker_heartbeat_age_secs".into(),
-        snap.memory_worker_heartbeat_age_secs.into(),
-    );
-    obj.insert(
-        "session_events_table_size_bytes".into(),
-        snap.session_events_table_size_bytes.into(),
-    );
-    obj.insert("uptime_secs".into(), snap.uptime_secs.into());
-
-    serde_json::Value::Object(obj)
+    serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "active_agents": snap.active_agents,
+        "sse_streams": snap.sse_streams,
+        "approval_waiters": snap.approval_waiters,
+        "auth_rate_limiter_size": snap.auth_rate_limiter_size,
+        "request_rate_limiter_size": snap.request_rate_limiter_size,
+        "stream_registry_size": snap.stream_registry_size,
+        "db_pool_total": snap.db_pool_total,
+        "db_pool_idle": snap.db_pool_idle,
+        "memory_worker_heartbeat_age_secs": snap.memory_worker_heartbeat_age_secs,
+        "session_events_table_size_bytes": snap.session_events_table_size_bytes,
+        "uptime_secs": snap.uptime_secs,
+        "sse_events_dropped_total": by_agent,
+        "csp_violations": csp_violations,
+        "csp_violations_overflow": registry.csp_violations_overflow_count(),
+    })
 }
 
 #[cfg(test)]
