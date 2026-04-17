@@ -36,13 +36,28 @@ impl AgentEngine {
         if let Some(result) = self.handle_command(&user_text, msg).await {
             let text = result?;
             let msg_id_str = format!("msg_{}", Uuid::new_v4());
-            if event_tx.send(StreamEvent::MessageStart { message_id: msg_id_str }).is_err() {
+            // MessageStart is non-text, MUST be delivered (the client needs the
+            // message_id to correlate parts). send_async honors the
+            // EngineEventSender non-text-never-dropped contract.
+            if event_tx
+                .send_async(StreamEvent::MessageStart { message_id: msg_id_str })
+                .await
+                .is_err()
+            {
                 tracing::debug!("SSE event channel closed, engine continues for DB save");
             }
             if event_tx.send(StreamEvent::TextDelta(text.clone())).is_err() {
                 tracing::debug!("SSE event channel closed, engine continues for DB save");
             }
-            if event_tx.send(StreamEvent::Finish { finish_reason: "command".to_string(), continuation: false }).is_err() {
+            // Finish is a terminal event — must always reach the client.
+            if event_tx
+                .send_async(StreamEvent::Finish {
+                    finish_reason: "command".to_string(),
+                    continuation: false,
+                })
+                .await
+                .is_err()
+            {
                 tracing::debug!("SSE event channel closed, engine continues for DB save");
             }
 
@@ -82,7 +97,13 @@ impl AgentEngine {
         let mut lifecycle_guard = SessionLifecycleGuard::new(self.cfg().db.clone(), session_id);
 
         // Emit session ID so the UI can track which session is active
-        if event_tx.send(StreamEvent::SessionId(session_id.to_string())).is_err() {
+        // SessionId is the identifier the UI uses to track streams — non-text,
+        // MUST be delivered. Use send_async per the non-drop contract.
+        if event_tx
+            .send_async(StreamEvent::SessionId(session_id.to_string()))
+            .await
+            .is_err()
+        {
             tracing::debug!("SSE event channel closed, engine continues for DB save");
         }
 
@@ -132,12 +153,14 @@ impl AgentEngine {
         // Context compaction if needed (model-aware token budget)
         self.compact_messages(&mut messages, None).await;
 
-        // Emit message start
+        // Emit message start — non-text, MUST reach the client so parts can
+        // be correlated. send_async honors EngineEventSender non-drop contract.
         let message_id = format!("msg_{}", Uuid::new_v4());
         if event_tx
-            .send(StreamEvent::MessageStart {
+            .send_async(StreamEvent::MessageStart {
                 message_id: message_id.clone(),
             })
+            .await
             .is_err()
         {
             tracing::debug!("SSE event channel closed, engine continues for DB save");
@@ -234,7 +257,15 @@ impl AgentEngine {
                                 iteration,
                                 "switching to fallback provider after consecutive failures (SSE)"
                             );
-                            if event_tx.send(StreamEvent::StepFinish { step_id, finish_reason: "fallback".into() }).is_err() {
+                            // StepFinish is a tool-cycle marker — non-text, use send_async.
+                            if event_tx
+                                .send_async(StreamEvent::StepFinish {
+                                    step_id,
+                                    finish_reason: "fallback".into(),
+                                })
+                                .await
+                                .is_err()
+                            {
                                 tracing::debug!("SSE event channel closed, engine continues for DB save");
                             }
                             continue;
@@ -252,7 +283,14 @@ impl AgentEngine {
                         tracing::debug!("SSE event channel closed, engine continues for DB save");
                     }
                     final_response = fallback;
-                    if event_tx.send(StreamEvent::StepFinish { step_id, finish_reason: "error".into() }).is_err() {
+                    if event_tx
+                        .send_async(StreamEvent::StepFinish {
+                            step_id,
+                            finish_reason: "error".into(),
+                        })
+                        .await
+                        .is_err()
+                    {
                         tracing::debug!("SSE event channel closed, engine continues for DB save");
                     }
                     let reason_str = format!("SSE LLM call failed: {e}");
@@ -286,14 +324,20 @@ impl AgentEngine {
                         auto_continue_count,
                         loop_config.max_auto_continues,
                     );
-                    let _ = event_tx.send(StreamEvent::StepFinish {
-                        step_id: step_id.clone(),
-                        finish_reason: "continuation".into(),
-                    });
-                    let _ = event_tx.send(StreamEvent::Finish {
-                        finish_reason: "continuation".into(),
-                        continuation: true,
-                    });
+                    // Auto-continue markers are non-text and MUST be delivered so
+                    // the UI can render a continuation separator correctly.
+                    let _ = event_tx
+                        .send_async(StreamEvent::StepFinish {
+                            step_id: step_id.clone(),
+                            finish_reason: "continuation".into(),
+                        })
+                        .await;
+                    let _ = event_tx
+                        .send_async(StreamEvent::Finish {
+                            finish_reason: "continuation".into(),
+                            continuation: true,
+                        })
+                        .await;
                     let _ = event_tx.send(StreamEvent::TextDelta("\n\n...".to_string()));
                     messages.push(Message {
                         role: MessageRole::User,
@@ -576,5 +620,49 @@ impl AgentEngine {
         }
 
         Ok(assistant_msg_id)
+    }
+}
+#[cfg(test)]
+mod tests {
+    //! Regression guards for code review 2026-04-17. Terminal/identifier
+    //! StreamEvents on the bounded SSE path MUST use `send_async` — the sync
+    //! `send()` silently drops on Full, breaking the UI's ability to
+    //! correlate message ids, session ids, and stream completion. TextDelta
+    //! is the ONLY variant allowed to drop (covered by Phase 62 RES-01).
+    use std::path::Path;
+
+    fn source() -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/agent/engine_sse.rs");
+        std::fs::read_to_string(&path).expect("read engine_sse.rs")
+    }
+
+    #[test]
+    fn slash_command_message_start_uses_send_async() {
+        let src = source();
+        // The slash-command early-return path must deliver MessageStart reliably.
+        assert!(
+            src.contains("send_async(StreamEvent::MessageStart"),
+            "slash-command MessageStart must use send_async"
+        );
+    }
+
+    #[test]
+    fn slash_command_finish_uses_send_async() {
+        let src = source();
+        assert!(
+            src.contains(r#"send_async(StreamEvent::Finish {
+                    finish_reason: "command".to_string()"#),
+            "slash-command Finish must use send_async"
+        );
+    }
+
+    #[test]
+    fn session_id_uses_send_async() {
+        let src = source();
+        assert!(
+            src.contains("send_async(StreamEvent::SessionId"),
+            "SessionId must use send_async (UI correlation depends on it)"
+        );
     }
 }

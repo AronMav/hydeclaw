@@ -98,7 +98,12 @@ fn file_basename(path: &str) -> &str {
 /// `base`: if true, agent is a system (base) agent — can write to service source files
 ///   and tools, but SOUL.md and IDENTITY.md are read-only (protected system prompt files).
 fn is_read_only(workspace_dir: &str, resolved: &Path, base: bool) -> bool {
-    let root = Path::new(workspace_dir);
+    // `resolved` is absolute (canonicalized via `dunce::canonicalize` in the
+    // caller — Phase 64 SEC-02). `workspace_dir` is typically the relative
+    // string `"workspace"` from config — canonicalize it here so path equality
+    // and prefix checks operate on comparable shapes. Fallback to literal path
+    // if canonicalize fails (e.g., dir doesn't exist during early init).
+    let root: PathBuf = dunce::canonicalize(workspace_dir).unwrap_or_else(|_| PathBuf::from(workspace_dir));
     // Root-level read-only files (blocked for all agents)
     if READ_ONLY_FILES.iter().any(|name| resolved == root.join(name)) {
         return true;
@@ -964,6 +969,45 @@ mod tests {
         let notes = agent_dir_path.join("notes.md");
         std::fs::write(&notes, "content").unwrap();
         assert!(!is_read_only(ws.to_str().unwrap(), &notes, true));
+    }
+
+    /// Regression: `workspace_dir` passed as a RELATIVE string (production's
+    /// `WORKSPACE_DIR = "workspace"`) must still block `AGENTS.md` and
+    /// `tools/*.yaml` writes from non-base agents. Before the canonicalize-root
+    /// fix (2026-04-17), the absolute `resolved` path never equaled the
+    /// relative `Path::new("workspace").join("AGENTS.md")`, so the guard never
+    /// fired in production.
+    #[test]
+    fn is_read_only_blocks_agents_md_when_workspace_dir_is_relative() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd_backup = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        std::fs::create_dir_all("workspace").unwrap();
+        let agents_md = tmp.path().join("workspace").join("AGENTS.md");
+        std::fs::write(&agents_md, "stub").unwrap();
+        let resolved = dunce::canonicalize(&agents_md).unwrap();
+        // Non-base agent must be blocked even when workspace_dir is "workspace" (relative).
+        assert!(
+            is_read_only("workspace", &resolved, false),
+            "non-base agent must not write AGENTS.md even with relative workspace_dir"
+        );
+        std::env::set_current_dir(cwd_backup).unwrap();
+    }
+
+    #[test]
+    fn is_read_only_blocks_tools_write_for_non_base_with_relative_workspace_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd_backup = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        std::fs::create_dir_all("workspace/tools").unwrap();
+        let tool_yaml = tmp.path().join("workspace").join("tools").join("evil.yaml");
+        std::fs::write(&tool_yaml, "stub").unwrap();
+        let resolved = dunce::canonicalize(&tool_yaml).unwrap();
+        assert!(
+            is_read_only("workspace", &resolved, false),
+            "non-base agent must not write into tools/ even with relative workspace_dir"
+        );
+        std::env::set_current_dir(cwd_backup).unwrap();
     }
 
     #[cfg(unix)]

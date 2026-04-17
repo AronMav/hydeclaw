@@ -205,13 +205,21 @@ impl ApprovalManager {
                 }
                 args_clone
             };
-            tx.send(StreamEvent::ApprovalNeeded {
-                approval_id: approval_id.to_string(),
-                tool_name: tool_name.to_string(),
-                tool_input: clean_input,
-                timeout_ms: timeout_secs * 1000,
-            })
-            .ok();
+            // ApprovalNeeded is a non-text event that MUST be delivered —
+            // losing it would strand the client waiting indefinitely.
+            // send_async blocks until a slot is available (or closed), honoring
+            // the EngineEventSender "non-text never dropped" contract.
+            if let Err(e) = tx
+                .send_async(StreamEvent::ApprovalNeeded {
+                    approval_id: approval_id.to_string(),
+                    tool_name: tool_name.to_string(),
+                    tool_input: clean_input,
+                    timeout_ms: timeout_secs * 1000,
+                })
+                .await
+            {
+                tracing::warn!(approval_id = %approval_id, error = ?e, "ApprovalNeeded send failed");
+            }
         }
 
         // 5. Wait for approval with timeout
@@ -275,14 +283,17 @@ impl ApprovalManager {
                     );
                 }
 
-                // Emit SSE event for timeout.
-                if let Some(tx) = sse_event_tx.lock().await.as_ref() {
-                    tx.send(StreamEvent::ApprovalResolved {
-                        approval_id: approval_id.to_string(),
-                        action: "timeout_rejected".to_string(),
-                        modified_input: None,
-                    })
-                    .ok();
+                // Emit SSE event for timeout — non-text, MUST be delivered.
+                if let Some(tx) = sse_event_tx.lock().await.as_ref()
+                    && let Err(e) = tx
+                        .send_async(StreamEvent::ApprovalResolved {
+                            approval_id: approval_id.to_string(),
+                            action: "timeout_rejected".to_string(),
+                            modified_input: None,
+                        })
+                        .await
+                {
+                    tracing::warn!(approval_id = %approval_id, error = ?e, "ApprovalResolved timeout send failed");
                 }
 
                 ApprovalOutcome::TimedOut { timeout_secs }
@@ -314,5 +325,56 @@ impl ApprovalManager {
         if let Some(tx) = ui_event_tx {
             tx.send(event.to_string()).ok();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Regression guards for the code review fix (2026-04-17).
+    //! Approval SSE events must use the async non-drop path on the bounded
+    //! channel; the sync path can silently drop when the channel is Full.
+    //! Patterns are constructed at runtime so the haystack (this file's own
+    //! source) cannot contain them literally.
+    use std::path::Path;
+
+    fn source() -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/agent/approval_manager.rs");
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {}", path.display(), e))
+    }
+
+    fn bad_pattern(variant: &str) -> String {
+        format!("{}{}{}{}", ".", "send", "(StreamEvent::", variant)
+    }
+
+    fn good_pattern(variant: &str) -> String {
+        format!("send_async(StreamEvent::{variant}")
+    }
+
+    #[test]
+    fn approval_needed_uses_send_async() {
+        let src = source();
+        assert!(
+            !src.contains(&bad_pattern("ApprovalNeeded")),
+            "ApprovalNeeded must use send_async path; sync path silently drops on Full"
+        );
+        assert!(
+            src.contains(&good_pattern("ApprovalNeeded")),
+            "ApprovalNeeded must explicitly call send_async"
+        );
+    }
+
+    #[test]
+    fn approval_resolved_uses_send_async() {
+        let src = source();
+        assert!(
+            !src.contains(&bad_pattern("ApprovalResolved")),
+            "ApprovalResolved must use send_async path; sync path silently drops on Full"
+        );
+        assert!(
+            src.contains(&good_pattern("ApprovalResolved")),
+            "ApprovalResolved must explicitly call send_async"
+        );
     }
 }

@@ -56,14 +56,21 @@ pub async fn resolve_approval(
         }).to_string()).ok();
     }
 
-    // Emit SSE event for inline approval resolution in chat UI
+    // Emit SSE event for inline approval resolution in chat UI.
+    // ApprovalResolved is non-text and MUST be delivered (the client is
+    // actively waiting on this event); use send_async to honor the
+    // EngineEventSender "non-text never dropped" contract.
     let action_str = if approved { "approved" } else { "rejected" };
-    if let Some(tx) = ctx.tex.sse_event_tx.lock().await.as_ref() {
-        tx.send(StreamEvent::ApprovalResolved {
-            approval_id: approval_id.to_string(),
-            action: action_str.to_string(),
-            modified_input: modified_input.clone(),
-        }).ok();
+    if let Some(tx) = ctx.tex.sse_event_tx.lock().await.as_ref()
+        && let Err(e) = tx
+            .send_async(StreamEvent::ApprovalResolved {
+                approval_id: approval_id.to_string(),
+                action: action_str.to_string(),
+                modified_input: modified_input.clone(),
+            })
+            .await
+    {
+        tracing::warn!(approval_id = %approval_id, error = ?e, "ApprovalResolved send failed");
     }
 
     // Wake up the waiting tool execution.
@@ -92,4 +99,23 @@ pub async fn resolve_approval(
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Regression guard: the inline resolve_approval SSE event must be
+    //! delivered via the async non-drop path. Runtime-constructed patterns
+    //! prevent the test from matching its own source.
+    use std::path::Path;
+
+    #[test]
+    fn approval_resolved_in_pipeline_uses_send_async() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/agent/pipeline/approval.rs");
+        let src = std::fs::read_to_string(&path).expect("read pipeline/approval.rs");
+        let bad = format!("{}{}{}", ".", "send", "(StreamEvent::ApprovalResolved");
+        let good = "send_async(StreamEvent::ApprovalResolved";
+        assert!(!src.contains(&bad), "pipeline ApprovalResolved must use async path");
+        assert!(src.contains(good), "pipeline ApprovalResolved must explicitly call send_async");
+    }
 }

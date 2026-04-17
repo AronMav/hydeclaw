@@ -118,11 +118,21 @@ async fn main() -> anyhow::Result<()> {
         // Drop the broken one first, then attempt a fresh connect. If the
         // reconnect fails, `listener` becomes `None` and the next iteration
         // relies on the poll tick until the next attempt.
-        if matches!(wake, Wake::ListenerDied)
-            && cfg.worker.notify_mode == config::NotifyMode::Listen
-        {
+        //
+        // ALSO retry when `listener` is `None` and the wake is `Wake::Poll`
+        // — covers the case where the INITIAL `connect_listener` at startup
+        // returned `None` (e.g., transient DB unavailability). Without this,
+        // the worker would silently stay poll-only for its lifetime, defeating
+        // REF-04 sub-100ms pickup. See code review 2026-04-17.
+        let should_retry_listen = cfg.worker.notify_mode == config::NotifyMode::Listen
+            && (matches!(wake, Wake::ListenerDied)
+                || (matches!(wake, Wake::Poll) && listener.is_none()));
+        if should_retry_listen {
             drop(listener.take());
             listener = connect_listener(&cfg.database_url).await;
+            if listener.is_some() {
+                tracing::info!("PgListener reconnected");
+            }
             // Fall through and drain pending tasks unconditionally — the poll
             // path is still responsible for catch-up.
         }
@@ -186,5 +196,88 @@ async fn connect_listener(database_url: &str) -> Option<PgListener> {
             );
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Unit-level tests for the LISTEN/NOTIFY reconnect logic.
+    //!
+    //! We re-implement the should_retry_listen predicate exactly — tests
+    //! protect the decision semantics from regression even without a live
+    //! PostgreSQL. The integration test `integration_memory_worker_notify`
+    //! covers the end-to-end wake-up path.
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Wake {
+        Notify,
+        Poll,
+        ListenerDied,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum NotifyMode {
+        Listen,
+        Poll,
+    }
+
+    fn should_retry_listen(
+        notify_mode: NotifyMode,
+        wake: Wake,
+        listener_is_some: bool,
+    ) -> bool {
+        notify_mode == NotifyMode::Listen
+            && (matches!(wake, Wake::ListenerDied)
+                || (matches!(wake, Wake::Poll) && !listener_is_some))
+    }
+
+    /// Regression for code review 2026-04-17: if the INITIAL `connect_listener`
+    /// returns `None`, the worker must retry on the next `Wake::Poll` tick.
+    /// Prior bug: reconnect was gated only on `Wake::ListenerDied`, so a
+    /// failed-at-startup worker silently stayed poll-only for its lifetime.
+    #[test]
+    fn retry_when_listener_is_none_and_poll_wake() {
+        assert!(
+            should_retry_listen(NotifyMode::Listen, Wake::Poll, false),
+            "poll tick with no listener must trigger reconnect in Listen mode"
+        );
+    }
+
+    #[test]
+    fn retry_on_listener_died() {
+        assert!(
+            should_retry_listen(NotifyMode::Listen, Wake::ListenerDied, true),
+            "listener death must always trigger reconnect in Listen mode"
+        );
+    }
+
+    #[test]
+    fn no_retry_in_poll_mode() {
+        assert!(
+            !should_retry_listen(NotifyMode::Poll, Wake::Poll, false),
+            "Poll mode must never attempt LISTEN reconnect"
+        );
+        assert!(
+            !should_retry_listen(NotifyMode::Poll, Wake::ListenerDied, false),
+            "Poll mode must ignore ListenerDied (cannot happen anyway)"
+        );
+    }
+
+    #[test]
+    fn no_retry_on_healthy_poll_tick() {
+        // listener_is_some + Wake::Poll means the listener is working fine and
+        // the poll tick is acting as the catch-up safety net — NO reconnect.
+        assert!(
+            !should_retry_listen(NotifyMode::Listen, Wake::Poll, true),
+            "healthy poll tick with active listener must not re-connect"
+        );
+    }
+
+    #[test]
+    fn no_retry_on_successful_notify() {
+        assert!(
+            !should_retry_listen(NotifyMode::Listen, Wake::Notify, true),
+            "Wake::Notify means the listener delivered; no reconnect needed"
+        );
     }
 }

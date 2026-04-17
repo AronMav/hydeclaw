@@ -92,6 +92,11 @@ struson = { version = "0.6", features = ["serde"] }
 # Pairs with existing `sha2 = "0.10"` and `hmac = "0.12"`. Pure Rust. No openssl.
 hkdf = "0.12"
 
+# Zeroize master key material on drop — reduces exposure via coredumps, /proc/<pid>/mem,
+# migration snapshots. Already a transitive dep of chacha20poly1305; exposed directly
+# here so SecretsManager can derive ZeroizeOnDrop on the [u8; 32] master key field.
+zeroize = { version = "1", features = ["derive"] }
+
 # Internal
 hydeclaw-types = { workspace = true }
 

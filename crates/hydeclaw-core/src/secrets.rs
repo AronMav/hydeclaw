@@ -14,6 +14,7 @@ use sqlx::{FromRow, PgPool};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use zeroize::Zeroizing;
 
 /// Manages encrypted secrets in `PostgreSQL` with in-memory caching.
 ///
@@ -32,7 +33,12 @@ pub struct SecretsManager {
     /// NEVER exposed publicly — every accessor MUST return a DERIVED key and the
     /// raw bytes must not leave this module. Adding a `pub fn master_key_bytes()`
     /// getter would defeat the HKDF domain-separation invariant.
-    master_key_bytes: [u8; 32],
+    ///
+    /// Wrapped in `Arc<Zeroizing<[u8; 32]>>`: the inner bytes are zeroed when
+    /// the LAST reference to the `Arc` drops (typically at process shutdown),
+    /// reducing exposure via coredumps / `/proc/<pid>/mem` / live-migration
+    /// snapshots. Review 2026-04-17.
+    master_key_bytes: Arc<Zeroizing<[u8; 32]>>,
 }
 
 /// Plaintext secret for portable backup (decrypted, re-encrypted on restore).
@@ -75,9 +81,10 @@ impl SecretsManager {
                 key_bytes.len()
             );
         }
-        // Phase 64 SEC-03: copy bytes into fixed array BEFORE cipher construction
-        // so the ChaCha20Poly1305 constructor doesn't consume them.
-        let mut master_key_bytes = [0u8; 32];
+        // Phase 64 SEC-03: copy bytes into Zeroizing fixed array BEFORE cipher
+        // construction so the ChaCha20Poly1305 constructor doesn't consume them.
+        // Zeroizing clears the bytes on drop (review 2026-04-17 hardening).
+        let mut master_key_bytes: Zeroizing<[u8; 32]> = Zeroizing::new([0u8; 32]);
         master_key_bytes.copy_from_slice(&key_bytes);
 
         let cipher = ChaCha20Poly1305::new_from_slice(&key_bytes)
@@ -87,7 +94,7 @@ impl SecretsManager {
             cipher: Arc::new(cipher),
             db,
             cache: Arc::new(RwLock::new(HashMap::new())),
-            master_key_bytes,
+            master_key_bytes: Arc::new(master_key_bytes),
         })
     }
 
@@ -101,7 +108,7 @@ impl SecretsManager {
             cipher: Arc::new(cipher),
             db,
             cache: Arc::new(RwLock::new(HashMap::new())),
-            master_key_bytes: [0u8; 32],
+            master_key_bytes: Arc::new(Zeroizing::new([0u8; 32])),
         }
     }
 
@@ -440,5 +447,30 @@ mod tests {
         // Sanity: HKDF output of all-zero ikm must be nonzero after expand —
         // otherwise we'd be returning the raw master instead of the HKDF okm.
         assert_ne!(k_a1, [0u8; 32], "HKDF expand(all-zero ikm) must be nonzero");
+    }
+
+    /// Code review 2026-04-17: master_key_bytes is stored in a `Zeroizing`
+    /// wrapper so the 32 bytes are overwritten when the last Arc ref drops.
+    /// This test does NOT assert the post-drop memory state (impossible to
+    /// observe reliably in safe Rust), but proves:
+    ///  * `SecretsManager` still holds and uses the bytes correctly after
+    ///    the wrapper change (derive produces a stable, nonzero output).
+    ///  * Cloning the manager shares the Arc (reference count >= 2) — so
+    ///    the secret is not accidentally duplicated on clone.
+    ///  * Dropping one clone does NOT zero the key for surviving clones.
+    #[tokio::test]
+    async fn master_key_zeroize_wrapper_preserves_functionality() {
+        let hex = "11".repeat(32);
+        let db = PgPool::connect_lazy("postgres://invalid").unwrap();
+        let sm = SecretsManager::new(&hex, db).unwrap();
+
+        let k1 = sm.get_upload_hmac_key();
+        assert_ne!(k1, [0u8; 32], "HKDF output must be nonzero");
+
+        // Clone shares the Arc — dropping one must not break the other.
+        let sm2 = sm.clone();
+        drop(sm);
+        let k2 = sm2.get_upload_hmac_key();
+        assert_eq!(k1, k2, "surviving Arc clone must still produce same key");
     }
 }
