@@ -1,11 +1,26 @@
 use serde::Deserialize;
 
+/// REF-04 wake-mode for the memory worker main loop.
+///
+/// - `Listen` (default): primary wake via `PgListener` on `memory_tasks_new`;
+///   `poll_interval_secs` becomes the catch-up safety-net tick.
+/// - `Poll`: pure-polling mode — operator escape hatch (HCS-4 back-compat / debug).
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NotifyMode {
+    #[default]
+    Listen,
+    Poll,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct MemoryWorkerConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_5")]
     pub poll_interval_secs: u64,
+    #[serde(default)]
+    pub notify_mode: NotifyMode,
 }
 
 impl Default for MemoryWorkerConfig {
@@ -13,6 +28,7 @@ impl Default for MemoryWorkerConfig {
         Self {
             enabled: true,
             poll_interval_secs: 5,
+            notify_mode: NotifyMode::Listen,
         }
     }
 }
@@ -156,5 +172,64 @@ mod tests {
         let cfg = MemoryWorkerConfig::default();
         assert!(cfg.enabled);
         assert_eq!(cfg.poll_interval_secs, 5);
+        assert_eq!(cfg.notify_mode, NotifyMode::Listen);
+    }
+
+    #[test]
+    fn test_notify_mode_default_is_listen() {
+        // REF-04: LISTEN/NOTIFY is the primary wake signal by default.
+        assert_eq!(NotifyMode::default(), NotifyMode::Listen);
+    }
+
+    #[test]
+    fn test_notify_mode_deserialize_listen() {
+        let cfg: MemoryWorkerConfig = toml::from_str(
+            r#"
+            enabled = true
+            poll_interval_secs = 5
+            notify_mode = "listen"
+            "#,
+        )
+        .expect("parse listen config");
+        assert_eq!(cfg.notify_mode, NotifyMode::Listen);
+    }
+
+    #[test]
+    fn test_notify_mode_deserialize_poll() {
+        let cfg: MemoryWorkerConfig = toml::from_str(
+            r#"
+            enabled = true
+            poll_interval_secs = 5
+            notify_mode = "poll"
+            "#,
+        )
+        .expect("parse poll config");
+        assert_eq!(cfg.notify_mode, NotifyMode::Poll);
+    }
+
+    #[test]
+    fn test_notify_mode_omitted_defaults_to_listen() {
+        // HCS-4: operators upgrading from pre-REF-04 configs must not need to touch
+        // anything — absent notify_mode MUST default to Listen.
+        let cfg: MemoryWorkerConfig = toml::from_str(
+            r#"
+            enabled = true
+            poll_interval_secs = 5
+            "#,
+        )
+        .expect("parse legacy config without notify_mode");
+        assert_eq!(cfg.notify_mode, NotifyMode::Listen);
+    }
+
+    #[test]
+    fn test_poll_interval_secs_preserved() {
+        // HCS-4 mandate: poll_interval_secs key MUST remain functional after REF-04.
+        let cfg: MemoryWorkerConfig = toml::from_str(
+            r#"
+            poll_interval_secs = 17
+            "#,
+        )
+        .expect("parse poll interval override");
+        assert_eq!(cfg.poll_interval_secs, 17);
     }
 }

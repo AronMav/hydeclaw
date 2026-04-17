@@ -79,6 +79,11 @@ extra_binds = []
 [memory_worker]
 enabled = true
 poll_interval_secs = 5
+# REF-04: primary wake is PostgreSQL LISTEN/NOTIFY on channel `memory_tasks_new`
+# (migration 023 installs the AFTER INSERT trigger). The poll loop above remains
+# as the catch-up safety net (HCS-4 — operators depend on it as an override).
+# Set `notify_mode = "poll"` to force pure-polling mode (debug / back-compat).
+notify_mode = "listen"
 
 # ═══ Automatic Backups ═══
 
