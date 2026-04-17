@@ -98,13 +98,17 @@ pub(crate) async fn api_health_dashboard(
     .unwrap_or(0)
     .max(0) as u64;
 
-    // Memory-worker heartbeat: age in seconds of the latest processed task.
+    // Memory-worker heartbeat: age in seconds since the worker last touched a task.
+    // GREATEST(completed_at, started_at) captures both "finished a task" and
+    // "currently working on one" — whichever is newer. memory_tasks schema uses
+    // 'done' for successful completion (not 'complete'); include all statuses
+    // the worker may have advanced.
     // If the table is empty or unreachable, emit -1 (unknown) so dashboards
     // can display "n/a" rather than mis-interpret 0 as "just ran".
     let memory_worker_heartbeat_age_secs: i64 = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT EXTRACT(EPOCH FROM (NOW() - MAX(updated_at)))::BIGINT \
+        "SELECT EXTRACT(EPOCH FROM (NOW() - GREATEST(MAX(completed_at), MAX(started_at))))::BIGINT \
          FROM memory_tasks \
-         WHERE status IN ('processing', 'complete')",
+         WHERE status IN ('processing', 'done', 'failed')",
     )
     .fetch_one(&infra.db)
     .await
