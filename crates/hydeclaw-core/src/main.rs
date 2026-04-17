@@ -7,6 +7,7 @@ mod db;
 mod gateway;
 mod memory;
 mod metrics;
+pub mod net;
 mod oauth;
 mod process_manager;
 mod scheduler;
@@ -16,6 +17,7 @@ mod shutdown;
 mod skills;
 mod tasks;
 mod tools;
+mod uploads;
 
 use anyhow::Result;
 use std::collections::HashMap;

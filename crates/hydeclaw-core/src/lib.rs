@@ -58,6 +58,13 @@ pub mod agent {
         //! Facade preserving `agent::engine::StreamEvent` path.
         pub use super::stream_event::StreamEvent;
     }
+
+    // Phase 64 SEC-02: workspace path canonicalization guard. Leaf module
+    // (deps: std + dunce only — zero crate::* references), safe to re-export
+    // for integration tests without cascading the agent subtree. Consumed by
+    // `tests/integration_path_canonicalize.rs`.
+    #[path = "path_guard.rs"]
+    pub mod path_guard;
 }
 
 // ── Phase 62 Plan 04: shutdown drain surface ───────────────────────────
@@ -151,3 +158,33 @@ pub mod db {
     #[path = "sessions.rs"]
     pub mod sessions;
 }
+
+// ── Phase 64 SEC-01: unified SSRF guard ────────────────────────────────
+// `net::ssrf` is a leaf module (deps: std + reqwest::dns + tokio::net +
+// thiserror + url). No `crate::*` references, so re-exposing it here does
+// NOT cascade any other subtree into the lib facade.
+//
+// Consumed by:
+//   * tests/integration_ssrf_guard.rs  (DNS-rebinding + expanded IP set)
+//   * tests/integration_webhook_ssrf.rs (shared-guard contract for future
+//     webhook outbound delivery code paths — see 64-02-SUMMARY.md for the
+//     no-existing-client deviation note).
+#[path = "net"]
+pub mod net {
+    //! Test-facing re-export subset of the binary's `src/net/` tree.
+    //! Only `ssrf` is exposed today — any future `net::*` leaf added to
+    //! the binary must be opted in here explicitly.
+
+    #[path = "ssrf.rs"]
+    pub mod ssrf;
+}
+
+// ── Phase 64 SEC-03: signed upload URL mint/verify ─────────────────────
+// Leaf module (deps: std + base64 + hmac + sha2 + hkdf + subtle + thiserror —
+// zero crate::* references). Safe to re-export without cascading the lib
+// surface. Consumed by `tests/integration_upload_hmac.rs`.
+//
+// Top-level `pub mod` accounting (per src/lib.rs 10-module cap):
+//   metrics, agent, shutdown, gateway, db, net, uploads = 7. OK.
+#[path = "uploads.rs"]
+pub mod uploads;
