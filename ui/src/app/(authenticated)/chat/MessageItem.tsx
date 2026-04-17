@@ -3,6 +3,12 @@
 import React, { memo, type ReactNode } from "react";
 import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { useChatStore } from "@/stores/chat-store";
+import {
+  selectCurrentActiveSessionId,
+  selectCurrentAgent,
+  useChatActions,
+  useShallow,
+} from "@/stores/chat-selectors";
 import { useAuthStore } from "@/stores/auth-store";
 import { useTranslation } from "@/hooks/use-translation";
 import type { ChatMessage, MessagePart, ToolPart, ToolPartState, ApprovalPart } from "@/stores/chat-store";
@@ -119,8 +125,15 @@ function renderAllParts(parts: MessagePart[]) {
 
 function UserMessage({ message, sessionChannel, sessionUserId }: { message: ChatMessage; sessionChannel?: string; sessionUserId?: string }) {
   const { t, locale } = useTranslation();
-  const agentIcons = useAuthStore((s) => s.agentIcons);
-  const activeSessionId = useChatStore((s) => s.agents[s.currentAgent]?.activeSessionId ?? null);
+  // REF-05: useShallow-gated read of the agentIcons record — shallow-equal
+  // means this component won't re-render when an unrelated key is mutated.
+  const agentIcons = useAuthStore(useShallow((s: { agentIcons: Record<string, string | null> }) => s.agentIcons));
+  // REF-05: typed selector from chat-selectors (primitive — Zustand's default
+  // strict equality is sufficient, no useShallow wrapper needed).
+  const activeSessionId = useChatStore(selectCurrentActiveSessionId);
+  // REF-05: actions come from the store via a useShallow-gated bundle — stable
+  // references replace the old `useChatStore.getState()` imperative access.
+  const { regenerate } = useChatActions();
 
   // Compute branch siblings for this user message (only when branching data exists)
   const branchInfo = React.useMemo(() => {
@@ -194,7 +207,7 @@ function UserMessage({ message, sessionChannel, sessionUserId }: { message: Chat
             <button
               type="button"
               className="underline hover:no-underline"
-              onClick={() => useChatStore.getState().regenerate()}
+              onClick={() => regenerate()}
             >
               {t("chat.retry")}
             </button>
@@ -209,8 +222,11 @@ function UserMessage({ message, sessionChannel, sessionUserId }: { message: Chat
 
 function AssistantMessage({ message }: { message: ChatMessage }) {
   const { t, locale } = useTranslation();
-  const currentAgent = useChatStore((s) => s.currentAgent);
-  const agentIcons = useAuthStore((s) => s.agentIcons);
+  // REF-05: typed selector from chat-selectors (primitive value — Zustand's
+  // default strict-equality gating is enough, no useShallow wrapper needed).
+  const currentAgent = useChatStore(selectCurrentAgent);
+  // REF-05: useShallow-gated read of the agentIcons record.
+  const agentIcons = useAuthStore(useShallow((s: { agentIcons: Record<string, string | null> }) => s.agentIcons));
 
   // Direct agentId from message props -- no more AgentTurnCounterContext hack
   const agentName = message.agentId || currentAgent;
@@ -261,7 +277,9 @@ function AssistantMessage({ message }: { message: ChatMessage }) {
 
 // ── Main MessageItem ────────────────────────────────────────────────────────
 
-export const MessageItem = memo(function MessageItem({
+// REF-05: React.memo with default shallow prop comparison — unrelated parent
+// re-renders no longer force a full re-render of every row in the list.
+function MessageItemImpl({
   message,
   sessionChannel,
   sessionUserId,
@@ -274,4 +292,7 @@ export const MessageItem = memo(function MessageItem({
     return <UserMessage message={message} sessionChannel={sessionChannel} sessionUserId={sessionUserId} />;
   }
   return <AssistantMessage message={message} />;
-});
+}
+
+export const MessageItem = memo(MessageItemImpl);
+MessageItem.displayName = "MessageItem";
