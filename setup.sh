@@ -438,6 +438,65 @@ for i in $(seq 1 30); do
 done
 ok "Docker infrastructure started"
 
+# ── Phase 64 SEC-05: nginx Content-Security-Policy-Report-Only header ──────
+# v0.19.0 ships CSP in *observation* mode: browsers will POST violations to
+# /api/csp-report, core will log + count them, and we'll flip to enforce in
+# v0.19.1 once the 7-day observation window shows what CodeMirror / Mermaid /
+# KaTeX / shiki workers actually need.
+#
+# Locked directive (Phase 64 CONTEXT D-CSP-01) — copy-paste-compatible:
+#   default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
+#   connect-src 'self' ws: wss:; style-src 'self' 'unsafe-inline'; \
+#   img-src 'self' data: blob:; font-src 'self' data:
+#
+# If you front hydeclaw-core with nginx, add this INSIDE the `location /` block:
+#
+#   # Phase 64 SEC-05: CSP observation window (v0.19.0). Flip to enforce in v0.19.1.
+#   add_header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' ws: wss:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; report-uri /api/csp-report" always;
+#
+# Use `always` so the header is emitted on 4xx/5xx responses too — browsers
+# need it to fire reports for blocked subresources even when the document
+# itself is non-2xx.
+
+configure_nginx_csp() {
+  # Only act when nginx is present AND a hydeclaw site config exists.
+  [[ -d /etc/nginx ]] || return 0
+  local site=""
+  for candidate in /etc/nginx/sites-available/hydeclaw /etc/nginx/conf.d/hydeclaw.conf; do
+    if [[ -f "$candidate" ]]; then site="$candidate"; break; fi
+  done
+  [[ -z "$site" ]] && { info "nginx present but no hydeclaw site config — skipping CSP header"; return 0; }
+
+  # Skip if already configured (idempotent).
+  if grep -q 'Content-Security-Policy-Report-Only' "$site" 2>/dev/null; then
+    ok "nginx CSP Report-Only header already configured in $site"
+    return 0
+  fi
+
+  info "Injecting Content-Security-Policy-Report-Only into $site"
+  maybe_sudo cp "$site" "${site}.bak"
+
+  # Insert the add_header directive right after the first `location / {` line.
+  # Locked directive string — do not drift from Phase 64 CONTEXT D-CSP-01.
+  local csp_line='        # Phase 64 SEC-05: CSP observation window (v0.19.0). Flip to enforce in v0.19.1.\n        add_header Content-Security-Policy-Report-Only "default-src '"'"'self'"'"'; script-src '"'"'self'"'"' '"'"'wasm-unsafe-eval'"'"'; connect-src '"'"'self'"'"' ws: wss:; style-src '"'"'self'"'"' '"'"'unsafe-inline'"'"'; img-src '"'"'self'"'"' data: blob:; font-src '"'"'self'"'"' data:; report-uri /api/csp-report" always;'
+
+  # Use sed with the FIRST `location / {` match. Falls back to a warning if the
+  # site config does not contain one (operator layout is unusual).
+  if grep -q 'location / {' "$site"; then
+    maybe_sudo sed -i "0,/location \/ {/{s|location / {|location / {\n${csp_line}|}" "$site"
+    if maybe_sudo nginx -t 2>/dev/null; then
+      maybe_sudo systemctl reload nginx 2>/dev/null && ok "nginx reloaded with CSP Report-Only header"
+    else
+      warn "nginx -t failed — reverted from backup"
+      maybe_sudo cp "${site}.bak" "$site"
+    fi
+  else
+    warn "no 'location / {' block in $site — paste the CSP snippet manually (see docs/DEPLOYMENT.md)"
+  fi
+}
+
+if [[ -d /etc/nginx ]]; then configure_nginx_csp; fi
+
 # Public URL (auto-detect LAN IP)
 LAN_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
 PUBLIC_URL="http://${LAN_IP}:18789"
