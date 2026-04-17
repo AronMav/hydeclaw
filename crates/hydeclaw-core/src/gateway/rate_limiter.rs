@@ -17,6 +17,7 @@ use tokio::sync::Mutex;
 /// Tracks failed auth attempts per IP. After `max_attempts` failures within the window,
 /// the IP is locked out for `lockout_secs` seconds.
 pub struct AuthRateLimiter {
+    #[allow(dead_code)]
     max_attempts: u32,
     lockout_secs: u64,
     /// IP → (`fail_count`, `first_fail_time`, `locked_until`)
@@ -33,6 +34,7 @@ impl AuthRateLimiter {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn is_locked(&self, ip: &str) -> bool {
         let state = self.state.lock().await;
         if let Some((_, _, Some(locked_until))) = state.get(ip)
@@ -42,6 +44,7 @@ impl AuthRateLimiter {
         false
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn record_failure(&self, ip: &str) {
         let mut state = self.state.lock().await;
         let now = Instant::now();
@@ -63,6 +66,7 @@ impl AuthRateLimiter {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn record_success(&self, ip: &str) {
         let mut state = self.state.lock().await;
         state.remove(ip);
@@ -106,6 +110,7 @@ impl AuthRateLimiter {
 /// Per-IP request rate limiter using a fixed-window counter.
 /// Protects the Pi from overload by limiting requests per minute.
 pub struct RequestRateLimiter {
+    #[allow(dead_code)]
     pub(crate) max_per_minute: u32,
     /// IP → (`request_count`, `window_start`)
     state: Mutex<HashMap<String, (u32, Instant)>>,
@@ -120,6 +125,7 @@ impl RequestRateLimiter {
     }
 
     /// Returns Ok(()) if allowed, `Err(seconds_until_reset)` if rate-limited.
+    #[allow(dead_code)]
     pub(crate) async fn check(&self, ip: &str) -> std::result::Result<(), u64> {
         let mut state = self.state.lock().await;
         let now = Instant::now();

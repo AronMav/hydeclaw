@@ -76,8 +76,7 @@ impl SseRecorder {
             }
             // Wait for converter to fully exit so we observe POST-drain state.
             let _ = converter_handle.await;
-            let final_vec = recorded_for_recorder.lock().await.clone();
-            final_vec
+            recorded_for_recorder.lock().await.clone()
         });
 
         (Self { inner_tx, outer_capacity }, snapshot_handle)

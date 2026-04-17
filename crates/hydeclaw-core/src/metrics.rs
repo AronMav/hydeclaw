@@ -39,7 +39,7 @@ impl MetricsRegistry {
             if let Some(counter) = read.get(&(agent.to_string(), event_type.to_string())) {
                 let prev = counter.fetch_add(1, Ordering::Relaxed);
                 let new_count = prev.wrapping_add(1);
-                if new_count % DROP_WARN_SAMPLE_RATE == 0 {
+                if new_count.is_multiple_of(DROP_WARN_SAMPLE_RATE) {
                     tracing::warn!(
                         agent = %agent,
                         event_type = %event_type,
@@ -58,7 +58,7 @@ impl MetricsRegistry {
             .or_insert_with(|| AtomicU64::new(0));
         let prev = counter.fetch_add(1, Ordering::Relaxed);
         let new_count = prev.wrapping_add(1);
-        if new_count % DROP_WARN_SAMPLE_RATE == 0 {
+        if new_count.is_multiple_of(DROP_WARN_SAMPLE_RATE) {
             tracing::warn!(
                 agent = %agent,
                 event_type = %event_type,

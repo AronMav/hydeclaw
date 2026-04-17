@@ -5,7 +5,6 @@ use axum::{
     response::IntoResponse,
 };
 use std::collections::HashMap;
-use std::time::Instant;
 use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
 
