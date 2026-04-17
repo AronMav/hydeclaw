@@ -462,32 +462,17 @@ async fn main() -> Result<()> {
         .await?;
 
     // ── Graceful shutdown: cancel → drain → stop ──────────────────────────
-    tracing::info!("graceful shutdown: cancelling all active requests");
-    {
-        let agents = agents_map.read().await;
-        for (name, handle) in agents.iter() {
-            tracing::info!(agent = %name, "cancelling active requests");
-            handle.engine.state.cancel_all_requests();
-        }
-    }
-
-    tracing::info!("graceful shutdown: waiting for agents to drain (10s)");
-    {
-        let agents = agents_map.read().await;
-        let drain_futures: Vec<_> = agents.values()
-            .map(|h| h.engine.state.wait_drain(std::time::Duration::from_secs(10)))
-            .collect();
-        futures_util::future::join_all(drain_futures).await;
-    }
-
-    tracing::info!("graceful shutdown: stopping agents");
-    {
-        let mut agents = agents_map.write().await;
-        for (name, handle) in agents.drain() {
-            tracing::info!(agent = %name, "shutting down agent");
-            handle.shutdown(&sched).await;
-        }
-    }
+    // Phase 62 RES-05: extracted into `shutdown::drain_agents_with_scheduler`.
+    // Fixes v0.18.0 lock-during-drain bug (read lock held across wait_drain
+    // await). Drain timeout is configurable via [shutdown] drain_timeout_secs
+    // in hydeclaw.toml (default 30s); systemd TimeoutStopSec should be
+    // drain_timeout_secs + 10s buffer (40s) so SIGKILL never races the drain.
+    let drain_timeout = std::time::Duration::from_secs(cfg.shutdown.drain_timeout_secs);
+    crate::shutdown::drain_agents_with_scheduler(
+        agents_map.clone(),
+        drain_timeout,
+        &sched,
+    ).await;
 
     tracing::info!("graceful shutdown: stopping managed processes");
     if let Some(pm) = &process_manager { pm.stop_all().await; }
@@ -521,7 +506,7 @@ fn setup_systemd_units() {
                  ExecStart={binary} config/watchdog.toml\n\
                  Environment=HYDECLAW_AUTH_TOKEN={token}\n\
                  Environment=RUST_LOG=hydeclaw_watchdog=info\n\
-                 WatchdogSec=120\nRestart=always\nRestartSec=5\n\n\
+                 TimeoutStopSec=40\nWatchdogSec=120\nRestart=always\nRestartSec=5\n\n\
                  [Install]\nWantedBy=default.target\n",
                 cwd = cwd.display(),
                 binary = binary_path.display(),
@@ -556,7 +541,7 @@ fn setup_systemd_units() {
                  ExecStart={binary} config/hydeclaw.toml\n\
                  EnvironmentFile={cwd}/.env\n\
                  Environment=RUST_LOG=hydeclaw_memory_worker=info\n\
-                 WatchdogSec=300\nRestart=always\nRestartSec=5\n\n\
+                 TimeoutStopSec=40\nWatchdogSec=300\nRestart=always\nRestartSec=5\n\n\
                  [Install]\nWantedBy=default.target\n",
                 cwd = cwd.display(),
                 binary = binary_path.display(),
