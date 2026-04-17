@@ -22,3 +22,28 @@
 // Re-export hydeclaw-types so test code can build LlmResponse values
 // without re-importing the workspace dep at the dev-dep layer.
 pub use hydeclaw_types;
+
+// ── Test-facing re-exports added by Phase 61 Plan 03 ────────────────────
+// Wave-2 characterization tests need direct access to `db::approvals`.
+// These re-exports are TEST-FACING ONLY — production consumers continue
+// to use the binary's internal module tree via `src/main.rs`.
+//
+// CASCADE AVOIDANCE: including `db/mod.rs` would pull in every db submodule,
+// some of which reference `crate::memory` (see `db/memory_queries.rs`) and
+// would in turn cascade to `config`, `secrets`, etc. — exceeding the
+// 10-module budget documented at the top of this file. Instead, we include
+// ONLY `db/approvals.rs` via a `#[path]` attribute, because `approvals.rs`
+// has zero crate-internal dependencies (only `anyhow`, `chrono`, `sqlx`,
+// `uuid` — all regular `[dependencies]` so the lib already has them).
+pub mod db {
+    //! Test-facing re-export subset of the binary's `src/db/` tree.
+    //! Keep this minimal — every added submodule risks pulling in new
+    //! crate::* cross-references and cascading the lib surface.
+    //!
+    //! The `#[path]` attribute is resolved relative to the default
+    //! directory of this inline module, which is `src/db/`. Hence the
+    //! bare filename points at `src/db/approvals.rs`.
+
+    #[path = "approvals.rs"]
+    pub mod approvals;
+}
