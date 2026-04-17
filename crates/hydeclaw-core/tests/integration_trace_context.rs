@@ -36,7 +36,7 @@ use tower::ServiceExt;
 // ── Small echo handler that reflects the Extension<TraceId> into a response header ──
 
 async fn echo_handler(Extension(tid): Extension<TraceId>) -> Response<Body> {
-    let mut resp: Response<Body> = ().into_response().into();
+    let mut resp: Response<Body> = ().into_response();
     resp.headers_mut()
         .insert("X-Trace-Id", tid.0.parse().expect("valid header value"));
     resp

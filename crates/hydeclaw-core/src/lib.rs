@@ -135,6 +135,18 @@ pub mod gateway {
     // max_restore_size_mb without loading the whole body.
     #[path = "restore_stream_core.rs"]
     pub mod restore_stream_core;
+
+    // Phase 65 OBS-04: `trace_context` is a leaf module (deps: axum, tracing,
+    // uuid — zero `crate::*` references). Safe to re-export for
+    // `integration_trace_context.rs`. Provides `parse_traceparent`,
+    // `new_trace_id`, `TraceId`, `trace_context_middleware` — the primitives
+    // for the W3C Trace Context middleware that sits upstream of
+    // `auth_middleware` in the router chain.
+    //
+    // Exposed inside the existing `gateway` facade (not a new top-level
+    // `pub mod`), so the 10-module lib-facade cap stays at 7 top-level mods.
+    #[path = "trace_context.rs"]
+    pub mod trace_context;
 }
 
 // ── Test-facing re-exports added by Phase 61 Plan 03 ────────────────────

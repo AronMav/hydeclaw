@@ -17,6 +17,10 @@ pub mod csp_core;
 // Leaf module — zero `crate::*` imports — re-exported from lib.rs at path
 // `hydeclaw_core::gateway::restore_stream_core` for integration_backup_size_cap.rs.
 pub mod restore_stream_core;
+// Phase 65 OBS-04: W3C Trace Context middleware — leaf module (axum + tracing
+// + uuid, zero `crate::*` imports). Re-exported from lib.rs at path
+// `hydeclaw_core::gateway::trace_context` for integration_trace_context.rs.
+pub mod trace_context;
 pub mod middleware;
 pub mod sse;
 pub mod stream_registry;
@@ -140,6 +144,12 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
         request_rate_limit_middleware(req, next, req_limiter, ws_budget)
     }));
 
+    // Phase 65 OBS-05: publish the leaked limiter refs so the
+    // `/api/health/dashboard` handler can report their map sizes. Phase 66
+    // REF-06 replaces the Box::leak pattern with Arc<OnceLock<_>> and this
+    // call is retired alongside.
+    middleware::install_rate_limiter_handles(rate_limiter, req_limiter);
+
     // Phase 64 SEC-05: dedicated per-IP limiter on /api/csp-report (~30 rpm).
     // Additive to the global limiter above — both apply.
     let csp_limiter: &'static handlers::csp::CspReportRateLimiter =
@@ -257,6 +267,18 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
         headers.insert("Referrer-Policy", "strict-origin-when-cross-origin".parse().expect("valid header value"));
         response
     }));
+
+    // Phase 65 OBS-04: W3C Trace Context middleware — OUTERMOST layer.
+    //
+    // Axum semantics: `.layer(A).layer(B)` means `B` wraps `A`, so `B` runs
+    // FIRST on request ingress. By adding this layer LAST in the chain,
+    // trace_context_middleware becomes the first middleware to see every
+    // incoming request — before auth, before rate-limiting, before CORS.
+    //
+    // Consequence: even 401 / 403 / 429 responses carry a trace_id extension
+    // for diagnostic correlation, satisfying the roadmap's "grep <trace_id>
+    // in journalctl returns the full lifecycle of one request" goal.
+    let app = app.layer(axum_mw::from_fn(trace_context::trace_context_middleware));
 
     Ok(app.with_state(state))
 }
