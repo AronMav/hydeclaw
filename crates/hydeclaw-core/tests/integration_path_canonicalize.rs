@@ -1,0 +1,100 @@
+//! Phase 64 SEC-02 — path canonicalization cross-platform matrix.
+//!
+//! CRITICAL: file MUST compile on all three OSes. Runtime-only platform
+//! checks use `if cfg!(windows) { ... }` NOT `#[cfg(windows)]` where
+//! possible, so CI runs one binary per-OS and skips per-runtime.
+//!
+//! Contract under test: `hydeclaw_core::agent::path_guard::resolve_workspace_path`
+//!   - Relative `..` traversal is rejected on every OS.
+//!   - Symlinks whose canonical target escapes the workspace root are rejected.
+//!     (Unix: unconditional. Windows: requires Developer Mode; if symlink
+//!     creation fails the test skips — never fails.)
+//!   - Mixed-case input on Windows canonicalizes to the on-disk form.
+//!   - UNC-prefixed Windows paths are either normalized into the workspace
+//!     or rejected — they MUST NOT silently bypass `starts_with(root)`.
+
+mod support;
+
+use std::fs;
+use std::path::PathBuf;
+use tempfile::TempDir;
+
+use hydeclaw_core::agent::path_guard::resolve_workspace_path;
+
+#[test]
+fn dotdot_traversal_blocked() {
+    let ws = TempDir::new().unwrap();
+    fs::create_dir_all(ws.path().join("inner")).unwrap();
+    let escape = PathBuf::from("../../etc/passwd");
+    let result = resolve_workspace_path(ws.path().to_str().unwrap(), &escape);
+    assert!(
+        result.is_err(),
+        "dotdot must be blocked, got {result:?}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn symlink_escape_blocked_unix() {
+    let ws = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    fs::write(outside.path().join("secret.txt"), b"x").unwrap();
+    std::os::unix::fs::symlink(outside.path(), ws.path().join("escape")).unwrap();
+    let probe = PathBuf::from("escape").join("secret.txt");
+    let result = resolve_workspace_path(ws.path().to_str().unwrap(), &probe);
+    assert!(
+        result.is_err(),
+        "symlink escape must be blocked, got {result:?}"
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn symlink_escape_blocked_windows() {
+    use std::os::windows::fs::symlink_dir;
+    let ws = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    fs::write(outside.path().join("secret.txt"), b"x").unwrap();
+    if symlink_dir(outside.path(), ws.path().join("escape")).is_err() {
+        eprintln!("skip: Windows symlink creation needs Developer Mode or admin");
+        return;
+    }
+    let probe = PathBuf::from("escape").join("secret.txt");
+    let result = resolve_workspace_path(ws.path().to_str().unwrap(), &probe);
+    assert!(
+        result.is_err(),
+        "windows symlink escape must be blocked, got {result:?}"
+    );
+}
+
+#[test]
+fn mixed_case_path_stable() {
+    let ws = TempDir::new().unwrap();
+    let p = ws.path().join("hello.md");
+    fs::write(&p, b"hi").unwrap();
+    let a = resolve_workspace_path(ws.path().to_str().unwrap(), &PathBuf::from("hello.md"))
+        .expect("lower-case path resolves");
+    if cfg!(windows) {
+        let b = resolve_workspace_path(ws.path().to_str().unwrap(), &PathBuf::from("Hello.md"))
+            .expect("mixed-case resolves on windows");
+        assert_eq!(
+            a, b,
+            "windows case-insensitive — canonical forms must match"
+        );
+    }
+}
+
+#[test]
+fn unc_or_standard_windows_path() {
+    let ws = TempDir::new().unwrap();
+    let p = ws.path().join("foo.md");
+    fs::write(&p, b"x").unwrap();
+    if cfg!(windows) {
+        let s = format!("\\\\?\\{}", p.display());
+        let result = resolve_workspace_path(ws.path().to_str().unwrap(), &PathBuf::from(&s));
+        match result {
+            Ok(p2) => assert!(p2.starts_with(ws.path()), "UNC escaped ws: {p2:?}"),
+            Err(_) => {}
+        }
+    }
+}
