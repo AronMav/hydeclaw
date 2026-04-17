@@ -920,8 +920,18 @@ export function ChatThread({
         || engineRunning || sessionRunStatus === "running");
 
   // Only show loading skeleton when there is truly no data to display (Fix D).
-  // If we have seeded live messages (F5 resume) or cached history, skip the skeleton.
-  if (historyLoading && !sessionMessagesData && messageSource.mode !== "live") {
+  // If we have cached history, skip the skeleton.
+  // Regression 2026-04-17: previously `messageSource.mode !== "live"` skipped
+  // the skeleton for live mode even when the live overlay was empty — on F5
+  // during an active stream, `resumeStream` sets live:[] and history is still
+  // loading, leaving the user with a BLANK chat until SSE events arrive. Now
+  // we also show the skeleton when live overlay is empty AND history is still
+  // loading, so the user sees a proper loading indicator instead of emptiness.
+  const liveIsEmpty = messageSource.mode === "live" && messageSource.messages.length === 0;
+  const showSkeleton =
+    historyLoading && !sessionMessagesData &&
+    (messageSource.mode !== "live" || liveIsEmpty);
+  if (showSkeleton) {
     return (
       <div className="flex flex-1 flex-col gap-6 p-6 max-w-4xl mx-auto">
         {[1, 2, 3].map((i) => (
