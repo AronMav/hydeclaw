@@ -9,6 +9,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   # Force rustls everywhere — defence-in-depth alongside the cargo tree assertion.
+  # See Phase 65 OBS-06: the `rustls-only-assertion` job below codifies this
+  # invariant permanently across both --no-default-features and --features otel.
   RUSTFLAGS: ""
 
 jobs:
@@ -40,23 +42,62 @@ jobs:
       - name: Run integration tests
         run: cargo test -p hydeclaw-core --tests
 
-      # Forward-compat rustls invariant (anticipates OBS-06 in Phase 65).
-      # If `cargo tree -i openssl` finds ANY match, fail the build.
-      # cargo tree exits non-zero with "did not match any packages" when no
-      # match — that's the success path. Anything else (output produced, exit 0)
-      # means OpenSSL crept in and we must reject the PR.
+  # Phase 65 OBS-06: rustls-only invariant — no OpenSSL in the transitive
+  # dep graph under EITHER feature configuration. Protects against silent
+  # regressions from the Phase 65 OTel 0.31 bump (Plan 01) or from any
+  # future crate that has a wrong default-features leak.
+  #
+  # Runs on BOTH `--no-default-features` (release.sh binary — Pi constraint)
+  # AND `--features otel` (operator opt-in binary — tonic + opentelemetry-otlp
+  # CAN drag in openssl if a wrong feature flag is chosen).
+  #
+  # `cargo tree -i openssl` exits non-zero (code 101) when openssl is NOT
+  # in the graph — that's the success path. Failure is STATUS==0 AND
+  # non-empty stdout. Defence-in-depth: `native-tls` is also checked
+  # because it is the canonical carrier that pulls openssl transitively.
+  rustls-only-assertion:
+    name: rustls-only (${{ matrix.features.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - name: default
+            flag: "--no-default-features"
+          - name: otel
+            flag: "--features otel"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: rustls-only-${{ matrix.features.name }}
       - name: Assert no OpenSSL transitive dependency
         run: |
           set +e
-          OUTPUT=$(cargo tree -i openssl 2>&1)
+          OUTPUT=$(cargo tree ${{ matrix.features.flag }} -i openssl 2>&1)
           STATUS=$?
           set -e
           if [ "$STATUS" -eq 0 ] && [ -n "$OUTPUT" ]; then
-            echo "::error::OpenSSL transitive dependency detected — rustls-only invariant violated"
+            echo "::error::OpenSSL transitive dependency detected under ${{ matrix.features.name }} — rustls-only invariant violated"
             echo "$OUTPUT"
             exit 1
           fi
-          echo "rustls invariant OK (no openssl in tree)"
+          echo "rustls invariant OK for ${{ matrix.features.name }} (no openssl in tree)"
+      # Defence-in-depth: also check `native-tls` which often pulls openssl transitively.
+      - name: Assert no native-tls
+        run: |
+          set +e
+          OUTPUT=$(cargo tree ${{ matrix.features.flag }} -i native-tls 2>&1)
+          STATUS=$?
+          set -e
+          if [ "$STATUS" -eq 0 ] && [ -n "$OUTPUT" ]; then
+            echo "::warning::native-tls transitive dependency detected under ${{ matrix.features.name }} — likely openssl carrier"
+            echo "$OUTPUT"
+            exit 1
+          fi
+          echo "native-tls absent for ${{ matrix.features.name }}"
 
   integration-aarch64:
     name: Integration tests (aarch64 / QEMU)
