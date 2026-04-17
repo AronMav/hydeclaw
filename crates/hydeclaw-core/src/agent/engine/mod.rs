@@ -18,10 +18,18 @@ use super::tool_loop::LoopDetector;
 // Extracted impl AgentEngine blocks (submodules of engine for full super:: access)
 pub use crate::agent::pipeline::parallel::LoopBreak;
 pub(crate) use crate::agent::pipeline::subagent::parse_subagent_timeout;
-#[path = "engine_execution.rs"]
+#[path = "../engine_execution.rs"]
 mod execution_impl;
-#[path = "engine_sse.rs"]
+#[path = "../engine_sse.rs"]
 mod sse_impl;
+
+// ── REF-01 submodule skeletons (populated in tasks 2–7) ─────────────────────
+pub mod stream;
+pub mod approval_flow;
+pub mod yaml_tool_runner;
+pub mod context_builder;
+pub mod tool_executor;
+pub mod loop_detector_integration;
 
 /// Resolves env var names through `SecretsManager` (scoped to agent).
 pub(crate) struct SecretsEnvResolver {
@@ -1012,7 +1020,7 @@ pub fn all_system_tool_names() -> &'static [&'static str] {
 }
 
 // ── Extracted submodules ─────────────────────────────────────────────────────
-#[path = "engine_dispatch.rs"]
+#[path = "../engine_dispatch.rs"]
 mod dispatch_impl;
 
 // ── ContextBuilderDeps impl ───────────────────────────────────────────────────
