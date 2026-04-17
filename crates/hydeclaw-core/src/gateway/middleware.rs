@@ -9,13 +9,9 @@ use std::time::Instant;
 use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
 
-/// Eviction threshold for rate limiter `HashMaps`.
-/// When the map exceeds this size, expired entries are cleaned up.
-const RATE_LIMITER_EVICT_THRESHOLD: usize = 50;
-
 /// Tracks failed auth attempts per IP. After `max_attempts` failures within the window,
 /// the IP is locked out for `lockout_secs` seconds.
-pub(crate) struct AuthRateLimiter {
+pub struct AuthRateLimiter {
     max_attempts: u32,
     lockout_secs: u64,
     /// IP → (`fail_count`, `first_fail_time`, `locked_until`)
@@ -24,7 +20,7 @@ pub(crate) struct AuthRateLimiter {
 }
 
 impl AuthRateLimiter {
-    pub(crate) fn new(max_attempts: u32, lockout_secs: u64) -> Self {
+    pub fn new(max_attempts: u32, lockout_secs: u64) -> Self {
         Self {
             max_attempts,
             lockout_secs,
@@ -45,17 +41,7 @@ impl AuthRateLimiter {
         let mut state = self.state.lock().await;
         let now = Instant::now();
 
-        // Evict expired entries to prevent unbounded growth from bot scans
-        if state.len() > RATE_LIMITER_EVICT_THRESHOLD {
-            let lockout = std::time::Duration::from_secs(self.lockout_secs);
-            state.retain(|_, (_, first_fail, locked_until)| {
-                if let Some(until) = locked_until {
-                    now < *until // keep if still locked out
-                } else {
-                    now.duration_since(*first_fail) < lockout // keep if window active
-                }
-            });
-        }
+        // Phase 62 RES-04: inline eviction removed — background sweeper handles it.
 
         let entry = state.entry(ip.to_string()).or_insert((0, now, None));
 
@@ -76,18 +62,52 @@ impl AuthRateLimiter {
         let mut state = self.state.lock().await;
         state.remove(ip);
     }
+
+    /// Phase 62 RES-04: evict expired entries. Called by the background
+    /// sweeper task (spawned in gateway::mod.rs) every 60 seconds.
+    /// Replaces the per-write inline eviction that scaled with HashMap size.
+    pub async fn sweep(&self) {
+        let mut state = self.state.lock().await;
+        let now = Instant::now();
+        let lockout = std::time::Duration::from_secs(self.lockout_secs);
+        state.retain(|_, (_, first_fail, locked_until)| {
+            if let Some(until) = locked_until {
+                now < *until // keep if still locked out
+            } else {
+                now.duration_since(*first_fail) < lockout // keep if window active
+            }
+        });
+    }
+
+    /// Test backdoor — insert a synthetic entry. NOT part of the public API;
+    /// prefixed __ to signal this. Used by `integration_rate_limiter_sweeper.rs`.
+    #[doc(hidden)]
+    pub async fn __test_insert(
+        &self,
+        ip: &str,
+        first_fail: Instant,
+        locked_until: Option<Instant>,
+    ) {
+        let mut state = self.state.lock().await;
+        state.insert(ip.to_string(), (1, first_fail, locked_until));
+    }
+
+    #[doc(hidden)]
+    pub async fn __test_len(&self) -> usize {
+        self.state.lock().await.len()
+    }
 }
 
 /// Per-IP request rate limiter using a fixed-window counter.
 /// Protects the Pi from overload by limiting requests per minute.
-pub(crate) struct RequestRateLimiter {
+pub struct RequestRateLimiter {
     max_per_minute: u32,
     /// IP → (`request_count`, `window_start`)
     state: Mutex<HashMap<String, (u32, Instant)>>,
 }
 
 impl RequestRateLimiter {
-    pub(crate) fn new(max_per_minute: u32) -> Self {
+    pub fn new(max_per_minute: u32) -> Self {
         Self {
             max_per_minute,
             state: Mutex::new(HashMap::new()),
@@ -100,10 +120,7 @@ impl RequestRateLimiter {
         let now = Instant::now();
         let window = std::time::Duration::from_secs(60);
 
-        // Evict stale entries to prevent unbounded growth from bot scans
-        if state.len() > RATE_LIMITER_EVICT_THRESHOLD {
-            state.retain(|_, (_, start)| now.duration_since(*start) < window);
-        }
+        // Phase 62 RES-04: inline eviction removed — background sweeper handles it.
 
         let entry = state.entry(ip.to_string()).or_insert((0, now));
 
@@ -121,6 +138,25 @@ impl RequestRateLimiter {
         } else {
             Ok(())
         }
+    }
+
+    /// Phase 62 RES-04: evict stale entries past the 60s window.
+    pub async fn sweep(&self) {
+        let mut state = self.state.lock().await;
+        let now = Instant::now();
+        let window = std::time::Duration::from_secs(60);
+        state.retain(|_, (_, start)| now.duration_since(*start) < window);
+    }
+
+    #[doc(hidden)]
+    pub async fn __test_insert(&self, ip: &str, start: Instant) {
+        let mut state = self.state.lock().await;
+        state.insert(ip.to_string(), (1, start));
+    }
+
+    #[doc(hidden)]
+    pub async fn __test_len(&self) -> usize {
+        self.state.lock().await.len()
     }
 }
 

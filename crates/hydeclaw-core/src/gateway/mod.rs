@@ -6,7 +6,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use serde::{Deserialize, Serialize};
 
 pub mod error;
-pub(crate) mod middleware;
+pub mod middleware;
 pub mod stream_registry;
 pub mod stream_jobs;
 pub mod state;
