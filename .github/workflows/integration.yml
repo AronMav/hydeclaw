@@ -97,3 +97,27 @@ jobs:
             cargo test -p hydeclaw-core --test integration_mock_provider
             cargo test -p hydeclaw-core --test integration_sse_lifecycle
             cargo test -p hydeclaw-core --test integration_shutdown_drain
+
+  # Phase 64 SEC-02: cross-platform path canonicalization matrix.
+  # Runs the symlink-escape / .. traversal / mixed-case / UNC matrix on
+  # ubuntu + macos + windows so the dunce::canonicalize guard is proven
+  # on every supported host OS — no #[cfg(unix)] skips on the portable
+  # assertions. Scoped to SEC-02: does NOT pull the full test suite, so
+  # total runner time stays well under a minute per OS.
+  path-canonicalize-matrix:
+    name: SEC-02 path canonicalize (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: path-canonicalize-${{ matrix.os }}
+      - name: Run path canonicalize integration test
+        run: cargo test -p hydeclaw-core --test integration_path_canonicalize -- --nocapture
+        shell: bash
