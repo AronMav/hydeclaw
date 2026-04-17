@@ -16,7 +16,7 @@ pub mod toolgate_fixture;
 
 pub use drain_fixture::DrainFixture;
 pub use harness::TestHarness;
-pub use metrics_probe::MetricsProbe;
+pub use metrics_probe::{BoundMetricsProbe, MetricsProbe};
 pub use mock_provider::{MockLlmProvider, MockProvider, MockTurn};
 pub use sse_recorder::{SseRecorder, TestStreamEvent};
 pub use toolgate_fixture::{SpawnResult, ToolgateFixture};

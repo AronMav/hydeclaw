@@ -6,6 +6,7 @@ mod containers;
 mod db;
 mod gateway;
 mod memory;
+mod metrics;
 mod oauth;
 mod process_manager;
 mod scheduler;

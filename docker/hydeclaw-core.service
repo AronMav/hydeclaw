@@ -9,6 +9,7 @@ WatchdogSec=120
 ExecStart=%h/hydeclaw/hydeclaw-core
 WorkingDirectory=%h/hydeclaw
 EnvironmentFile=%h/hydeclaw/.env
+TimeoutStopSec=40
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

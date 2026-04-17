@@ -23,6 +23,14 @@
 // without re-importing the workspace dep at the dev-dep layer.
 pub use hydeclaw_types;
 
+// ── Phase 62 Plan 02: metrics surface ──────────────────────────────────
+// `metrics` is a leaf module with zero crate-internal deps (std + tracing only),
+// so re-exporting it here does not cascade the lib facade. Integration tests
+// (`integration_dashboard_metrics.rs`) and `tests/support/metrics_probe.rs`
+// both reach `MetricsRegistry` via `hydeclaw_core::metrics::MetricsRegistry`.
+#[path = "metrics.rs"]
+pub mod metrics;
+
 // ── Test-facing re-exports added by Phase 61 Plan 03 ────────────────────
 // Wave-2 characterization tests need direct access to `db::approvals`.
 // These re-exports are TEST-FACING ONLY — production consumers continue

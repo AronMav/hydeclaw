@@ -4,6 +4,8 @@ services:
   # ═══════════════════════════════════════════════════
   postgres:
     image: hydeclaw-pg:17-age-pgvector
+    mem_limit: ${POSTGRES_MEM_LIMIT:-2g}
+    cpus: ${POSTGRES_CPUS:-1.5}
     build:
       context: .
       dockerfile: Dockerfile.postgres
@@ -30,6 +32,8 @@ services:
   # ═══════════════════════════════════════════════════
   searxng:
     image: searxng/searxng:latest
+    mem_limit: ${SEARXNG_MEM_LIMIT:-256m}
+    cpus: ${SEARXNG_CPUS:-0.5}
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
@@ -46,6 +50,8 @@ services:
 
   browser-renderer:
     image: browser-renderer:latest
+    mem_limit: ${BROWSER_RENDERER_MEM_LIMIT:-1g}
+    cpus: ${BROWSER_RENDERER_CPUS:-1.0}
     build: ./browser-renderer
     ports:
       - "127.0.0.1:9020:9020"
@@ -66,6 +72,8 @@ services:
   mcp-stock-analysis:
     container_name: mcp-stock-analysis
     image: hydeclaw-mcp-stocks:latest
+    mem_limit: ${MCP_DEFAULT_MEM_LIMIT:-384m}
+    cpus: ${MCP_DEFAULT_CPUS:-0.5}
     build: ./mcp/stock-analysis
     ports:
       - "9003:8000"
@@ -77,6 +85,8 @@ services:
   mcp-weather:
     container_name: mcp-weather
     image: hydeclaw-mcp-weather:latest
+    mem_limit: ${MCP_DEFAULT_MEM_LIMIT:-384m}
+    cpus: ${MCP_DEFAULT_CPUS:-0.5}
     build: ./mcp/weather
     ports:
       - "9004:8000"
@@ -88,6 +98,8 @@ services:
   mcp-obsidian:
     container_name: mcp-obsidian
     image: hydeclaw-mcp-obsidian:latest
+    mem_limit: ${MCP_DEFAULT_MEM_LIMIT:-384m}
+    cpus: ${MCP_DEFAULT_CPUS:-0.5}
     build: ./mcp/obsidian
     ports:
       - "9005:8000"
@@ -100,6 +112,8 @@ services:
   mcp-browser-cdp:
     container_name: mcp-browser-cdp
     image: hydeclaw-mcp-browser-cdp:latest
+    mem_limit: ${MCP_DEFAULT_MEM_LIMIT:-384m}
+    cpus: ${MCP_DEFAULT_CPUS:-0.5}
     build: ./mcp/browser-cdp
     ports:
       - "9030:9030"
@@ -111,6 +125,8 @@ services:
   mcp-postgres:
     container_name: mcp-postgres
     image: hydeclaw-mcp-postgres:latest
+    mem_limit: ${MCP_DEFAULT_MEM_LIMIT:-384m}
+    cpus: ${MCP_DEFAULT_CPUS:-0.5}
     build: ./mcp/postgres
     ports:
       - "127.0.0.1:9007:8000"
@@ -128,6 +144,8 @@ services:
   mcp-fetch:
     container_name: mcp-fetch
     image: hydeclaw-mcp-fetch:latest
+    mem_limit: ${MCP_DEFAULT_MEM_LIMIT:-384m}
+    cpus: ${MCP_DEFAULT_CPUS:-0.5}
     build: ./mcp/fetch
     ports:
       - "9040:8000"
@@ -139,6 +157,8 @@ services:
   mcp-memory:
     container_name: mcp-memory
     image: hydeclaw-mcp-memory:latest
+    mem_limit: ${MCP_DEFAULT_MEM_LIMIT:-384m}
+    cpus: ${MCP_DEFAULT_CPUS:-0.5}
     build: ./mcp/memory
     ports:
       - "9041:8000"
@@ -150,6 +170,8 @@ services:
   mcp-sequential-thinking:
     container_name: mcp-sequential-thinking
     image: hydeclaw-mcp-sequential-thinking:latest
+    mem_limit: ${MCP_DEFAULT_MEM_LIMIT:-384m}
+    cpus: ${MCP_DEFAULT_CPUS:-0.5}
     build: ./mcp/sequential-thinking
     ports:
       - "9042:8000"
@@ -161,6 +183,8 @@ services:
   mcp-youtube-transcript:
     container_name: mcp-youtube-transcript
     image: hydeclaw-mcp-youtube-transcript:latest
+    mem_limit: ${MCP_DEFAULT_MEM_LIMIT:-384m}
+    cpus: ${MCP_DEFAULT_CPUS:-0.5}
     build: ./mcp/youtube-transcript
     ports:
       - "9043:8000"
@@ -172,6 +196,8 @@ services:
   mcp-time:
     container_name: mcp-time
     image: hydeclaw-mcp-time:latest
+    mem_limit: ${MCP_DEFAULT_MEM_LIMIT:-384m}
+    cpus: ${MCP_DEFAULT_CPUS:-0.5}
     build: ./mcp/time
     ports:
       - "9044:8000"
@@ -183,6 +209,8 @@ services:
   mcp-filesystem:
     container_name: mcp-filesystem
     image: hydeclaw-mcp-filesystem:latest
+    mem_limit: ${MCP_DEFAULT_MEM_LIMIT:-384m}
+    cpus: ${MCP_DEFAULT_CPUS:-0.5}
     build: ./mcp/filesystem
     ports:
       - "9045:8000"
@@ -195,6 +223,8 @@ services:
   mcp-git:
     container_name: mcp-git
     image: hydeclaw-mcp-git:latest
+    mem_limit: ${MCP_DEFAULT_MEM_LIMIT:-384m}
+    cpus: ${MCP_DEFAULT_CPUS:-0.5}
     build: ./mcp/git
     ports:
       - "9046:8000"
@@ -206,6 +236,8 @@ services:
   mcp-notion:
     container_name: mcp-notion
     image: hydeclaw-mcp-notion:latest
+    mem_limit: ${MCP_DEFAULT_MEM_LIMIT:-384m}
+    cpus: ${MCP_DEFAULT_CPUS:-0.5}
     build: ./mcp/notion
     ports:
       - "9048:8000"
@@ -217,6 +249,8 @@ services:
   mcp-todoist:
     container_name: mcp-todoist
     image: hydeclaw-mcp-todoist:latest
+    mem_limit: ${MCP_DEFAULT_MEM_LIMIT:-384m}
+    cpus: ${MCP_DEFAULT_CPUS:-0.5}
     build: ./mcp/todoist
     ports:
       - "9049:8000"

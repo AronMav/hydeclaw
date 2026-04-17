@@ -1,8 +1,9 @@
 //! MetricsProbe — test helper that reads AtomicU64 counters by (agent, event_type).
 //!
-//! Standalone today (stores its own DashMap<(String, String), AtomicU64> for
-//! self-tests). Once Plan 02 ships `src/metrics.rs`, the `connect(&MetricsRegistry)`
-//! method wires this probe to the real registry. Until then, `connect` is a stub.
+//! Plan 01 shipped the standalone probe (self-contained map for self-tests). Plan 02
+//! adds `BoundMetricsProbe`: `connect(Arc<MetricsRegistry>)` binds the probe to the
+//! real production registry so integration tests observe the same counters the
+//! `/api/health/dashboard` handler reads from.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -49,17 +50,46 @@ impl MetricsProbe {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Stub: will wire to `crate::metrics::MetricsRegistry` once Plan 02 ships.
-    /// Returns self unchanged today. Do not remove — keeps Plan 02 API stable.
+    /// Bind this probe to a real `MetricsRegistry`. The returned `BoundMetricsProbe`
+    /// reads from the registry via `snapshot_sse_drops()`. Call this from tests
+    /// that need to observe counters from the production code path.
+    ///
+    /// Plan 02: replaces the Plan 01 no-op stub with a real registry binding.
     #[allow(dead_code)]
-    pub fn connect(self) -> Self {
-        self
+    pub fn connect(
+        self,
+        registry: std::sync::Arc<hydeclaw_core::metrics::MetricsRegistry>,
+    ) -> BoundMetricsProbe {
+        BoundMetricsProbe { registry }
     }
 }
 
 impl Default for MetricsProbe {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Probe bound to a real `MetricsRegistry`. Reads from the production counter
+/// surface (`MetricsRegistry::snapshot_sse_drops`), so integration tests see
+/// exactly what the `/api/health/dashboard` handler sees.
+pub struct BoundMetricsProbe {
+    registry: std::sync::Arc<hydeclaw_core::metrics::MetricsRegistry>,
+}
+
+impl BoundMetricsProbe {
+    /// Read counter value for (agent, event_type). Returns 0 if unknown.
+    pub fn read_counter(&self, agent: &str, event_type: &str) -> u64 {
+        self.registry
+            .snapshot_sse_drops()
+            .get(&(agent.to_string(), event_type.to_string()))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Snapshot of all counters in the registry.
+    pub fn snapshot(&self) -> HashMap<(String, String), u64> {
+        self.registry.snapshot_sse_drops()
     }
 }
 
