@@ -78,6 +78,18 @@ hmac = "0.12"
 sha2 = "0.10"
 dashmap = "6"
 
+# Phase 64 SEC-02: cross-platform path canonicalization (pure Rust, no system deps;
+# wraps std::fs::canonicalize with Windows `\\?\` prefix removal). No openssl.
+dunce = "1.0"
+
+# Phase 64 SEC-04: streaming JSON pull parser (bounded-memory, pure Rust).
+# Used by the backup-restore size-cap path to avoid loading the whole body. No openssl.
+struson = "0.6"
+
+# Phase 64 SEC-03: HKDF-SHA256 for domain-separated upload-HMAC key derivation.
+# Pairs with existing `sha2 = "0.10"` and `hmac = "0.12"`. Pure Rust. No openssl.
+hkdf = "0.12"
+
 # Internal
 hydeclaw-types = { workspace = true }
 
