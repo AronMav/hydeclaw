@@ -28,6 +28,10 @@ pub async fn log_event(
 }
 
 /// Delete WAL events older than `days` to prevent unbounded table growth.
+///
+/// Unbounded single-statement DELETE — acquires a lock across the full scan
+/// and can bloat WAL. Retained as a thin wrapper for backward compatibility;
+/// new call sites should use `prune_old_events_batched` (Phase 62 RES-03).
 pub async fn prune_old_events(db: &PgPool, days: u32) -> Result<u64> {
     if days == 0 {
         return Ok(0);
@@ -39,6 +43,62 @@ pub async fn prune_old_events(db: &PgPool, days: u32) -> Result<u64> {
     .execute(db)
     .await?;
     Ok(result.rows_affected())
+}
+
+/// Phase 62 RES-03: batched DELETE variant of `prune_old_events`.
+///
+/// PostgreSQL has no native `DELETE ... LIMIT`. We wrap with
+/// `DELETE FROM t WHERE id IN (SELECT id FROM t WHERE <cond> ORDER BY id LIMIT N)`
+/// and loop until `rows_affected < batch_size`.
+///
+/// This avoids long table locks and WAL bloat during large cleanups — each
+/// iteration locks only `batch_size` rows, keeping autovacuum happy and
+/// letting the tokio scheduler interleave other work between batches.
+///
+/// Returns the total number of rows deleted across all batches.
+///
+/// # Errors
+/// Returns an error if `batch_size <= 0` (guard against accidental "delete all"
+/// via negative/zero LIMIT that PostgreSQL would reject at execution time).
+pub async fn prune_old_events_batched(
+    db: &PgPool,
+    days: u32,
+    batch_size: i64,
+) -> Result<u64> {
+    if days == 0 {
+        return Ok(0);
+    }
+    if batch_size <= 0 {
+        anyhow::bail!("batch_size must be > 0, got {batch_size}");
+    }
+    let mut total_deleted: u64 = 0;
+    loop {
+        let affected = sqlx::query(
+            r#"
+            DELETE FROM session_events
+            WHERE id IN (
+                SELECT id FROM session_events
+                WHERE created_at < now() - make_interval(days => $1)
+                ORDER BY id
+                LIMIT $2
+            )
+            "#,
+        )
+        .bind(days as i32)
+        .bind(batch_size)
+        .execute(db)
+        .await?
+        .rows_affected();
+
+        total_deleted = total_deleted.saturating_add(affected);
+        if (affected as i64) < batch_size {
+            // Fewer than batch_size rows deleted — no more work to do.
+            break;
+        }
+        // Yield between batches so cleanup doesn't starve other tokio tasks.
+        tokio::task::yield_now().await;
+    }
+    Ok(total_deleted)
 }
 
 /// WAL event row for LoopDetector warm-up.
