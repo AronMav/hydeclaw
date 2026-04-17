@@ -855,6 +855,19 @@ async fn schedule_periodic_jobs(state: &gateway::AppState, agent_configs: &[conf
     let ttl_days = agent_configs.iter().filter_map(|c| c.agent.session.as_ref()).map(|s| s.ttl_days).max().unwrap_or(30);
     sched.add_session_cleanup(db.clone(), ttl_days).await.ok();
 
+    // Phase 62 RES-03: hourly batched session_events WAL cleanup. Runs
+    // alongside the legacy daily add_session_cleanup (which still handles
+    // cleanup_old_sessions) — the hourly job only prunes session_events,
+    // with bounded LIMIT per batch to avoid long table locks.
+    sched
+        .add_session_events_cleanup_hourly(
+            db.clone(),
+            state.config.config.cleanup.session_events_retention_days,
+            state.config.config.cleanup.session_events_batch_size,
+        )
+        .await
+        .ok();
+
     // Automatic backup
     if state.config.config.backup.enabled {
         sched.add_backup(
