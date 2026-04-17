@@ -13,6 +13,10 @@ pub mod rate_limiter;
 // std, tracing, `crate::metrics::MetricsRegistry`). Re-exported from lib.rs
 // at path `hydeclaw_core::gateway::csp` for integration tests.
 pub mod csp_core;
+// Phase 64 SEC-04: streaming body cap + struson primitives for POST /api/restore.
+// Leaf module — zero `crate::*` imports — re-exported from lib.rs at path
+// `hydeclaw_core::gateway::restore_stream_core` for integration_backup_size_cap.rs.
+pub mod restore_stream_core;
 pub mod middleware;
 pub mod sse;
 pub mod stream_registry;

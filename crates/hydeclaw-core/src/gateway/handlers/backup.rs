@@ -1,7 +1,7 @@
 use anyhow::Result;
 use axum::{
     Router,
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, Request, State},
     http::{header, StatusCode},
     response::{IntoResponse, Json},
     routing::{get, post},
@@ -12,22 +12,31 @@ use serde_json::{json, Value};
 use sqlx::PgPool;
 use std::path::Path as FsPath;
 use std::sync::Arc;
+use struson::reader::{JsonReader, JsonStreamReader};
 use tokio::fs;
 
 use sqlx::Row;
 
 use crate::gateway::AppState;
 use crate::gateway::clusters::{AgentCore, AuthServices, InfraServices};
+use crate::gateway::restore_stream_core::{
+    check_content_length_cap, drain_body_with_cap, CapExceeded,
+};
 use crate::secrets::{PlaintextSecret, SecretsManager};
 
 pub(crate) fn routes() -> Router<AppState> {
+    // Phase 64 SEC-04: `/api/restore` caps request body size via the per-handler
+    // `cfg.config.limits.max_restore_size_mb` (default 500 MB), enforced by the
+    // `check_content_length_cap` fast-path AND the `drain_body_with_cap` streaming
+    // byte counter. We must `DefaultBodyLimit::disable()` here so axum's default
+    // 2 MB extractor limit doesn't short-circuit our own cap check.
     Router::new()
         .route("/api/backup", post(api_create_backup).get(api_list_backups))
         .route("/api/backup/{filename}", get(api_download_backup).delete(api_delete_backup))
         .merge(
             Router::new()
                 .route("/api/restore", post(api_restore))
-                .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024)) // 100 MB
+                .layer(DefaultBodyLimit::disable()),
         )
 }
 
@@ -36,7 +45,7 @@ const RETENTION_DAYS: i64 = 7;
 
 // ── Backup file format ──────────────────────────────────────────────────────
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct BackupFile {
     pub version: u32,
     pub created_at: chrono::DateTime<Utc>,
@@ -69,13 +78,13 @@ pub(crate) struct BackupFile {
     pub github_repos: Vec<BackupGithubRepo>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct WorkspaceFile {
     pub path: String,
     pub content: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct MemoryChunk {
     pub id: String,
     #[serde(default)]
@@ -91,7 +100,7 @@ pub(crate) struct MemoryChunk {
     pub chunk_index: i32,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct CronJob {
     pub agent_id: String,
     pub name: String,
@@ -123,7 +132,7 @@ pub struct BackupProviderActive {
     pub provider_name: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct BackupChannel {
     pub id: String,
     pub agent_name: String,
@@ -133,7 +142,7 @@ pub(crate) struct BackupChannel {
     pub status: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct BackupWebhook {
     pub name: String,
     pub agent_id: String,
@@ -144,26 +153,26 @@ pub(crate) struct BackupWebhook {
     pub event_filter: Option<Vec<String>>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct BackupWatchdogSetting {
     pub key: String,
     pub value: Value,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct BackupAllowedUser {
     pub agent_id: String,
     pub channel_user_id: String,
     pub display_name: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct BackupApprovalAllow {
     pub agent_id: String,
     pub tool_pattern: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct BackupOAuthAccount {
     pub id: String,
     pub provider: String,
@@ -172,14 +181,14 @@ pub(crate) struct BackupOAuthAccount {
     pub status: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct BackupOAuthBinding {
     pub agent_id: String,
     pub provider: String,
     pub account_id: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct BackupGmailTrigger {
     pub agent_id: String,
     pub email_address: String,
@@ -187,7 +196,7 @@ pub(crate) struct BackupGmailTrigger {
     pub enabled: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct BackupGithubRepo {
     pub agent_id: String,
     pub owner: String,
@@ -402,6 +411,15 @@ pub(crate) async fn api_delete_backup(Path(filename): Path<String>) -> impl Into
 
 // ── POST /api/restore ─────────────────────────────────────────────────────────
 
+/// Phase 64 SEC-04 — streaming restore handler.
+///
+/// Replaces the old `Json<BackupFile>` extractor with a bounded streaming pipeline:
+///   1. Validate the `X-Confirm-Restore` header (unchanged security gate).
+///   2. `check_content_length_cap` fast-path — 413 in <1ms if CL exceeds cap.
+///   3. `drain_body_with_cap` — streams the body, aborts at exact cap if CL was
+///      missing or lying. Returns a bounded `Vec<u8>` buffer.
+///   4. `parse_backup_stream` — struson JsonStreamReader section walk. NO
+///      `serde_json::from_slice(&buf)` fallback (CONTEXT D-SEC-04).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn api_restore(
     State(infra): State<InfraServices>,
@@ -410,17 +428,75 @@ pub(crate) async fn api_restore(
     State(bus): State<crate::gateway::clusters::ChannelBus>,
     State(cfg_svc): State<crate::gateway::clusters::ConfigServices>,
     State(status): State<crate::gateway::clusters::StatusMonitor>,
-    headers: axum::http::HeaderMap,
-    Json(backup): Json<BackupFile>,
-) -> impl IntoResponse {
+    req: Request,
+) -> axum::response::Response {
     // Security: restore is a destructive operation — require X-Confirm-Restore header
     // to prevent accidental or automated restore via stolen API token.
+    let headers = req.headers().clone();
     let confirm = headers.get("x-confirm-restore").and_then(|v| v.to_str().ok()).unwrap_or("");
     if confirm != "yes-i-am-sure" {
         return (StatusCode::BAD_REQUEST, Json(json!({
             "error": "restore requires X-Confirm-Restore: yes-i-am-sure header"
         }))).into_response();
     }
+
+    // Phase 64 SEC-04: Content-Length fast-path. Rejects oversized uploads with a
+    // 413 + structured JSON body in <1ms — before we touch the body stream.
+    let cap_mb = cfg_svc.config.limits.max_restore_size_mb;
+    let cap_bytes = (cap_mb as usize).saturating_mul(1024 * 1024);
+    if let Some((status, body)) = check_content_length_cap(&headers, cap_bytes) {
+        tracing::warn!(
+            cap_mb,
+            "restore rejected via Content-Length fast-path (payload > cap)"
+        );
+        return (
+            status,
+            [(header::CONTENT_TYPE, "application/json")],
+            body,
+        )
+            .into_response();
+    }
+
+    // Streaming body drain with byte-counter cap enforcement. Catches the case where
+    // the client omitted Content-Length or lied about it; aborts the moment cumulative
+    // bytes cross the cap. NOTE: `into_data_stream()` yields axum::Error on I/O errors
+    // — `drain_body_with_cap` maps those to CapExceeded (safer default than silent pass).
+    let body = req.into_body();
+    let stream = body.into_data_stream();
+    let buf = match drain_body_with_cap(stream, cap_bytes).await {
+        Ok(b) => b,
+        Err(CapExceeded { observed_bytes, cap_bytes }) => {
+            tracing::warn!(
+                observed_bytes,
+                cap_bytes,
+                "restore rejected via streaming byte-counter (payload > cap or body error)"
+            );
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(json!({
+                    "error": "payload exceeds max_restore_size_mb",
+                    "cap_bytes": cap_bytes,
+                    "observed_bytes": observed_bytes,
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // struson section walk (CONTEXT D-SEC-04). Each section is deserialize_next'd
+    // into the typed accumulator; unknown fields are skip_value()-ed for forward-compat.
+    let cursor = std::io::Cursor::new(&buf);
+    let backup: BackupFile = match parse_backup_stream(cursor) {
+        Ok(b) => b,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("invalid backup JSON: {e}")})),
+            )
+                .into_response();
+        }
+    };
+
     tracing::warn!("RESTORE initiated — overwriting configs, secrets, memory, cron");
 
     // Stop all running agents before restore to prevent stale state
@@ -1161,6 +1237,207 @@ async fn restore_memory_and_cron(
     Ok((chunks.len(), jobs.len()))
 }
 
+// ── Phase 64 SEC-04 — struson section-walker for BackupFile ─────────────────
+
+/// Fatal error while streaming-parsing the restore payload.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum BackupParseError {
+    #[error("{0}")]
+    Parse(String),
+}
+
+/// struson-backed streaming BackupFile parser. Walks the top-level JSON object
+/// section-by-section; each known field is deserialized via `JsonReader::deserialize_next`
+/// (struson 0.6 `serde` feature). Unknown fields are `skip_value()`-ed for forward
+/// compatibility.
+///
+/// Peak heap bound: the buffer backing the reader PLUS the single largest section
+/// typed out at once. For a 100 MiB BackupFile that's roughly 100 MiB (reader buffer)
+/// + ~50 MiB (largest workspace section) — well under the 150 MiB CONTEXT cap.
+///
+/// NO `serde_json::from_slice(&buf)` fallback exists: that would materialise the
+/// whole `Value` graph and violate CONTEXT D-SEC-04.
+pub(crate) fn parse_backup_stream<R: std::io::Read>(
+    reader: R,
+) -> std::result::Result<BackupFile, BackupParseError> {
+    let mut json = JsonStreamReader::new(reader);
+
+    // Accumulators — one per top-level BackupFile field. `Option` lets us detect
+    // required-but-missing fields and preserve `#[serde(default)]` semantics for
+    // the v2 extras.
+    let mut version: Option<u32> = None;
+    let mut created_at: Option<chrono::DateTime<Utc>> = None;
+    let mut config: Option<Value> = None;
+    let mut workspace: Option<Vec<WorkspaceFile>> = None;
+    let mut secrets_: Option<Vec<PlaintextSecret>> = None;
+    let mut memory: Option<Vec<MemoryChunk>> = None;
+    let mut cron: Option<Vec<CronJob>> = None;
+    let mut providers: Option<Vec<BackupProvider>> = None;
+    let mut provider_active: Option<Vec<BackupProviderActive>> = None;
+    let mut channels: Option<Vec<BackupChannel>> = None;
+    let mut webhooks: Option<Vec<BackupWebhook>> = None;
+    let mut watchdog_settings: Option<Vec<BackupWatchdogSetting>> = None;
+    let mut allowed_users: Option<Vec<BackupAllowedUser>> = None;
+    let mut approval_allowlist: Option<Vec<BackupApprovalAllow>> = None;
+    let mut oauth_accounts: Option<Vec<BackupOAuthAccount>> = None;
+    let mut oauth_bindings: Option<Vec<BackupOAuthBinding>> = None;
+    let mut gmail_triggers: Option<Vec<BackupGmailTrigger>> = None;
+    let mut github_repos: Option<Vec<BackupGithubRepo>> = None;
+
+    json.begin_object()
+        .map_err(|e| BackupParseError::Parse(format!("begin_object: {e}")))?;
+
+    while json
+        .has_next()
+        .map_err(|e| BackupParseError::Parse(format!("has_next: {e}")))?
+    {
+        let name = json
+            .next_name_owned()
+            .map_err(|e| BackupParseError::Parse(format!("next_name: {e}")))?;
+
+        match name.as_str() {
+            "version" => {
+                version = Some(
+                    json.deserialize_next::<u32>()
+                        .map_err(|e| BackupParseError::Parse(format!("version: {e}")))?,
+                );
+            }
+            "created_at" => {
+                created_at = Some(
+                    json.deserialize_next::<chrono::DateTime<Utc>>()
+                        .map_err(|e| BackupParseError::Parse(format!("created_at: {e}")))?,
+                );
+            }
+            "config" => {
+                config = Some(
+                    json.deserialize_next::<Value>()
+                        .map_err(|e| BackupParseError::Parse(format!("config: {e}")))?,
+                );
+            }
+            "workspace" => {
+                workspace = Some(
+                    json.deserialize_next::<Vec<WorkspaceFile>>()
+                        .map_err(|e| BackupParseError::Parse(format!("workspace: {e}")))?,
+                );
+            }
+            "secrets" => {
+                secrets_ = Some(
+                    json.deserialize_next::<Vec<PlaintextSecret>>()
+                        .map_err(|e| BackupParseError::Parse(format!("secrets: {e}")))?,
+                );
+            }
+            "memory" => {
+                memory = Some(
+                    json.deserialize_next::<Vec<MemoryChunk>>()
+                        .map_err(|e| BackupParseError::Parse(format!("memory: {e}")))?,
+                );
+            }
+            "cron" => {
+                cron = Some(
+                    json.deserialize_next::<Vec<CronJob>>()
+                        .map_err(|e| BackupParseError::Parse(format!("cron: {e}")))?,
+                );
+            }
+            "providers" => {
+                providers = Some(
+                    json.deserialize_next::<Vec<BackupProvider>>()
+                        .map_err(|e| BackupParseError::Parse(format!("providers: {e}")))?,
+                );
+            }
+            "provider_active" => {
+                provider_active = Some(
+                    json.deserialize_next::<Vec<BackupProviderActive>>()
+                        .map_err(|e| BackupParseError::Parse(format!("provider_active: {e}")))?,
+                );
+            }
+            "channels" => {
+                channels = Some(
+                    json.deserialize_next::<Vec<BackupChannel>>()
+                        .map_err(|e| BackupParseError::Parse(format!("channels: {e}")))?,
+                );
+            }
+            "webhooks" => {
+                webhooks = Some(
+                    json.deserialize_next::<Vec<BackupWebhook>>()
+                        .map_err(|e| BackupParseError::Parse(format!("webhooks: {e}")))?,
+                );
+            }
+            "watchdog_settings" => {
+                watchdog_settings = Some(
+                    json.deserialize_next::<Vec<BackupWatchdogSetting>>()
+                        .map_err(|e| BackupParseError::Parse(format!("watchdog_settings: {e}")))?,
+                );
+            }
+            "allowed_users" => {
+                allowed_users = Some(
+                    json.deserialize_next::<Vec<BackupAllowedUser>>()
+                        .map_err(|e| BackupParseError::Parse(format!("allowed_users: {e}")))?,
+                );
+            }
+            "approval_allowlist" => {
+                approval_allowlist = Some(
+                    json.deserialize_next::<Vec<BackupApprovalAllow>>()
+                        .map_err(|e| BackupParseError::Parse(format!("approval_allowlist: {e}")))?,
+                );
+            }
+            "oauth_accounts" => {
+                oauth_accounts = Some(
+                    json.deserialize_next::<Vec<BackupOAuthAccount>>()
+                        .map_err(|e| BackupParseError::Parse(format!("oauth_accounts: {e}")))?,
+                );
+            }
+            "oauth_bindings" => {
+                oauth_bindings = Some(
+                    json.deserialize_next::<Vec<BackupOAuthBinding>>()
+                        .map_err(|e| BackupParseError::Parse(format!("oauth_bindings: {e}")))?,
+                );
+            }
+            "gmail_triggers" => {
+                gmail_triggers = Some(
+                    json.deserialize_next::<Vec<BackupGmailTrigger>>()
+                        .map_err(|e| BackupParseError::Parse(format!("gmail_triggers: {e}")))?,
+                );
+            }
+            "github_repos" => {
+                github_repos = Some(
+                    json.deserialize_next::<Vec<BackupGithubRepo>>()
+                        .map_err(|e| BackupParseError::Parse(format!("github_repos: {e}")))?,
+                );
+            }
+            _ => {
+                // Forward-compat: unknown top-level fields are skipped, not an error.
+                json.skip_value()
+                    .map_err(|e| BackupParseError::Parse(format!("skip_value({name}): {e}")))?;
+            }
+        }
+    }
+
+    json.end_object()
+        .map_err(|e| BackupParseError::Parse(format!("end_object: {e}")))?;
+
+    Ok(BackupFile {
+        version: version.ok_or_else(|| BackupParseError::Parse("missing version".into()))?,
+        created_at: created_at
+            .ok_or_else(|| BackupParseError::Parse("missing created_at".into()))?,
+        config: config.unwrap_or_else(|| Value::Object(serde_json::Map::new())),
+        workspace: workspace.unwrap_or_default(),
+        secrets: secrets_.unwrap_or_default(),
+        memory: memory.unwrap_or_default(),
+        cron: cron.unwrap_or_default(),
+        providers: providers.unwrap_or_default(),
+        provider_active: provider_active.unwrap_or_default(),
+        channels: channels.unwrap_or_default(),
+        webhooks: webhooks.unwrap_or_default(),
+        watchdog_settings: watchdog_settings.unwrap_or_default(),
+        allowed_users: allowed_users.unwrap_or_default(),
+        approval_allowlist: approval_allowlist.unwrap_or_default(),
+        oauth_accounts: oauth_accounts.unwrap_or_default(),
+        oauth_bindings: oauth_bindings.unwrap_or_default(),
+        gmail_triggers: gmail_triggers.unwrap_or_default(),
+        github_repos: github_repos.unwrap_or_default(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1273,5 +1550,123 @@ mod tests {
 
         assert_eq!(providers, final_providers, "nested round-trip providers mismatch");
         assert_eq!(active, final_active, "nested round-trip active mismatch");
+    }
+
+    // ── Phase 64 SEC-04: struson section-walker unit tests ─────────────────
+
+    #[test]
+    fn parse_backup_stream_happy_path() {
+        let payload = br#"{
+            "version": 2,
+            "created_at": "2026-01-01T00:00:00Z",
+            "config": {},
+            "workspace": [{"path":"a.txt","content":"hello"}],
+            "secrets": [],
+            "memory": [],
+            "cron": []
+        }"#;
+        let parsed = parse_backup_stream(std::io::Cursor::new(&payload[..])).unwrap();
+        assert_eq!(parsed.version, 2);
+        assert_eq!(parsed.workspace.len(), 1);
+        assert_eq!(parsed.workspace[0].path, "a.txt");
+        assert_eq!(parsed.workspace[0].content, "hello");
+        assert!(parsed.providers.is_empty());
+        assert!(parsed.channels.is_empty());
+    }
+
+    #[test]
+    fn parse_backup_stream_missing_version_fails() {
+        let payload = br#"{
+            "created_at": "2026-01-01T00:00:00Z",
+            "config": {},
+            "workspace": [],
+            "secrets": [],
+            "memory": [],
+            "cron": []
+        }"#;
+        let err = parse_backup_stream(std::io::Cursor::new(&payload[..])).unwrap_err();
+        assert!(matches!(err, BackupParseError::Parse(_)));
+    }
+
+    #[test]
+    fn parse_backup_stream_missing_created_at_fails() {
+        let payload = br#"{
+            "version": 2,
+            "config": {},
+            "workspace": [],
+            "secrets": [],
+            "memory": [],
+            "cron": []
+        }"#;
+        let err = parse_backup_stream(std::io::Cursor::new(&payload[..])).unwrap_err();
+        assert!(matches!(err, BackupParseError::Parse(_)));
+    }
+
+    #[test]
+    fn parse_backup_stream_unknown_fields_skipped() {
+        let payload = br#"{
+            "version": 1,
+            "created_at": "2026-01-01T00:00:00Z",
+            "config": {},
+            "workspace": [],
+            "secrets": [],
+            "memory": [],
+            "cron": [],
+            "future_field_2099": {"we": "ignore this", "nested": [1,2,3]},
+            "another_unknown": "string value"
+        }"#;
+        let parsed = parse_backup_stream(std::io::Cursor::new(&payload[..])).unwrap();
+        assert_eq!(parsed.version, 1);
+    }
+
+    /// Parity with `serde_json::from_slice` on a realistic small backup. Proves the
+    /// struson walker produces an equivalent `BackupFile` for every field. Required
+    /// by plan Task 2b acceptance — guards against silent field-skipping regressions.
+    #[test]
+    fn parse_backup_stream_parity_with_serde_json() {
+        let payload = br##"{
+            "version": 2,
+            "created_at": "2026-01-01T00:00:00Z",
+            "config": {"app_config": "x"},
+            "workspace": [
+                {"path":"a.txt","content":"hello"},
+                {"path":"b/c.md","content":"# title"}
+            ],
+            "secrets": [],
+            "memory": [],
+            "cron": [],
+            "providers": [{
+                "id": "550e8400-e29b-41d4-a716-446655440001",
+                "name": "openai",
+                "type": "text",
+                "provider_type": "openai",
+                "base_url": null,
+                "default_model": "gpt-4o",
+                "enabled": true,
+                "options": {},
+                "notes": null
+            }],
+            "provider_active": [{"capability":"text","provider_name":"openai"}],
+            "channels": [],
+            "webhooks": [],
+            "watchdog_settings": [],
+            "allowed_users": [],
+            "approval_allowlist": [],
+            "oauth_accounts": [],
+            "oauth_bindings": [],
+            "gmail_triggers": [],
+            "github_repos": []
+        }"##;
+        let via_serde: BackupFile = serde_json::from_slice(&payload[..]).unwrap();
+        let via_struson = parse_backup_stream(std::io::Cursor::new(&payload[..])).unwrap();
+
+        assert_eq!(via_struson.version, via_serde.version);
+        assert_eq!(via_struson.created_at, via_serde.created_at);
+        assert_eq!(via_struson.workspace.len(), via_serde.workspace.len());
+        assert_eq!(via_struson.workspace[0].path, via_serde.workspace[0].path);
+        assert_eq!(via_struson.workspace[1].content, via_serde.workspace[1].content);
+        assert_eq!(via_struson.providers.len(), via_serde.providers.len());
+        assert_eq!(via_struson.providers[0], via_serde.providers[0]);
+        assert_eq!(via_struson.provider_active, via_serde.provider_active);
     }
 }

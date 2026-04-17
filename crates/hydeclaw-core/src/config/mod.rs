@@ -236,6 +236,11 @@ pub struct LimitsConfig {
     /// Exposed via GET/PUT /api/config — not consumed internally by the turn loop.
     #[serde(default = "default_max_inter_agent_context_chars")]
     pub max_inter_agent_context_chars: usize,
+    /// Phase 64 SEC-04: cap for POST /api/restore request body size in megabytes.
+    /// Default 500 MB. Enforced by `check_content_length_cap` (fast-path) +
+    /// `drain_body_with_cap` (streaming byte counter). Overflow → 413 Payload Too Large.
+    #[serde(default = "default_max_restore_size_mb")]
+    pub max_restore_size_mb: u64,
 }
 
 fn default_max_requests() -> u32 { 300 }
@@ -243,6 +248,7 @@ fn default_max_tool_concurrency() -> u32 { 10 }
 fn default_request_timeout() -> u64 { 180 }
 fn default_max_agent_turns() -> usize { 5 }
 fn default_max_inter_agent_context_chars() -> usize { 2000 }
+fn default_max_restore_size_mb() -> u64 { 500 }
 
 impl Default for LimitsConfig {
     fn default() -> Self {
@@ -252,6 +258,7 @@ impl Default for LimitsConfig {
             request_timeout_secs: default_request_timeout(),
             max_agent_turns: default_max_agent_turns(),
             max_inter_agent_context_chars: default_max_inter_agent_context_chars(),
+            max_restore_size_mb: default_max_restore_size_mb(),
         }
     }
 }
@@ -1400,6 +1407,8 @@ model = "m2.5"
         assert_eq!(cfg.max_tool_concurrency, 10);
         assert_eq!(cfg.request_timeout_secs, 180);
         assert_eq!(cfg.max_agent_turns, 5);
+        // Phase 64 SEC-04: new [limits] key — default 500 MB.
+        assert_eq!(cfg.max_restore_size_mb, 500);
     }
 
     // ── 4d. UploadsConfig defaults (Phase 64 SEC-03) ──
@@ -1488,6 +1497,40 @@ max_agent_turns = 10
 "#;
         let cfg: AppConfig = toml::from_str(toml_str).expect("parse");
         assert_eq!(cfg.limits.max_agent_turns, 10);
+    }
+
+    // ── 4e. LimitsConfig max_restore_size_mb (Phase 64 SEC-04) ──
+
+    #[test]
+    fn limits_config_max_restore_size_mb_custom() {
+        let toml_str = r#"
+[gateway]
+listen = "0.0.0.0:18789"
+
+[database]
+url = "postgres://localhost/test"
+
+[limits]
+max_restore_size_mb = 250
+"#;
+        let cfg: AppConfig = toml::from_str(toml_str).expect("parse");
+        assert_eq!(cfg.limits.max_restore_size_mb, 250);
+    }
+
+    #[test]
+    fn limits_config_max_restore_size_mb_missing_uses_default() {
+        let toml_str = r#"
+[gateway]
+listen = "0.0.0.0:18789"
+
+[database]
+url = "postgres://localhost/test"
+
+[limits]
+max_requests_per_minute = 200
+"#;
+        let cfg: AppConfig = toml::from_str(toml_str).expect("parse");
+        assert_eq!(cfg.limits.max_restore_size_mb, 500, "missing key uses default");
     }
 
     // ── 5. SubagentsConfig defaults ──

@@ -9,6 +9,10 @@ url = "postgresql://hydeclaw:hydeclaw@localhost:5432/hydeclaw"
 [limits]
 max_requests_per_minute = 100
 max_tool_concurrency = 10
+# Phase 64 SEC-04: cap for POST /api/restore body. Oversized uploads are rejected
+# with 413 Payload Too Large within 100ms (Content-Length fast-path) + streaming
+# byte counter (aborts mid-stream if CL header is absent or lies). Defaults to 500.
+max_restore_size_mb = 500
 
 # Phase 64 SEC-03: signed-URL HMAC verification for /uploads/*
 # Grace period in v0.19.0 keeps require_signature=false so existing

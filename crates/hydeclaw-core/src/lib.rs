@@ -126,6 +126,15 @@ pub mod gateway {
     // implementation detail.
     #[path = "csp_core.rs"]
     pub mod csp;
+
+    // Phase 64 SEC-04: `restore_stream_core` is a leaf module (deps: axum,
+    // serde_json, futures_util, struson, thiserror, tracing — zero `crate::*`
+    // references). Safe to re-export for `integration_backup_size_cap.rs`.
+    // Provides `check_content_length_cap`, `drain_body_with_cap`, `CapExceeded`,
+    // `parse_stream_value` — the primitives POST /api/restore uses to enforce
+    // max_restore_size_mb without loading the whole body.
+    #[path = "restore_stream_core.rs"]
+    pub mod restore_stream_core;
 }
 
 // ── Test-facing re-exports added by Phase 61 Plan 03 ────────────────────

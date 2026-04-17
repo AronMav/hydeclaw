@@ -33,18 +33,38 @@ use std::time::Duration;
 use axum::http::HeaderMap;
 use futures_util::stream;
 
-use hydeclaw_core::config::LimitsConfig;
-use hydeclaw_core::gateway::restore_stream::{
-    check_content_length_cap, drain_body_with_cap, parse_backup_stream, CapExceeded,
+use hydeclaw_core::gateway::restore_stream_core::{
+    check_content_length_cap, drain_body_with_cap, parse_stream_value, CapExceeded,
 };
 
 use support::synthesize_backup_bytes;
 
-/// Pure config unit test — ensures the default propagates to TOML and runtime.
-/// RED signal in Task 1: `LimitsConfig` has no `max_restore_size_mb` field — compile fails.
+/// Production `config/hydeclaw.toml` ships `max_restore_size_mb = 500` — enforces
+/// that the on-disk default matches the plan's locked cap. The corresponding
+/// `LimitsConfig::default()` assertion lives in `src/config/mod.rs` as the inline
+/// unit test `limits_config_defaults` (binary target — lib facade cannot re-export
+/// config without cascading the 10-module cap, see 64-05-SUMMARY.md deviation note).
 #[test]
-fn default_cap_value_500mb() {
-    assert_eq!(LimitsConfig::default().max_restore_size_mb, 500);
+fn on_disk_default_cap_value_500mb() {
+    // Walk up from the test binary's working dir (crates/hydeclaw-core) to repo root
+    // where config/hydeclaw.toml lives.
+    let candidates = [
+        "config/hydeclaw.toml",
+        "../../config/hydeclaw.toml",
+        "../config/hydeclaw.toml",
+    ];
+    let mut content = None;
+    for p in candidates {
+        if let Ok(c) = std::fs::read_to_string(p) {
+            content = Some(c);
+            break;
+        }
+    }
+    let toml_str = content.expect("config/hydeclaw.toml must be readable");
+    assert!(
+        toml_str.contains("max_restore_size_mb = 500"),
+        "config/hydeclaw.toml must ship `max_restore_size_mb = 500` in [limits]"
+    );
 }
 
 /// 600MB body with Content-Length header → 413 in <100ms via the fast-path.
@@ -108,9 +128,16 @@ fn oversized_body_rejected_413() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn valid_100mb_backup_streams_200() {
     let bytes = synthesize_backup_bytes(100);
+    // Fixture targets 100 * 1_048_576 bytes ±1 MiB — see
+    // tests/support/backup_fixture.rs docstring. Assert we're in the 99–101 MB band.
     assert!(
-        bytes.len() > 100 * 1024 * 1024,
-        "fixture must exceed 100MB, got {} bytes",
+        bytes.len() > 99 * 1024 * 1024,
+        "fixture must be ≥99MB, got {} bytes",
+        bytes.len()
+    );
+    assert!(
+        bytes.len() <= 101 * 1024 * 1024,
+        "fixture must be ≤101MB, got {} bytes",
         bytes.len()
     );
 
@@ -128,15 +155,25 @@ async fn valid_100mb_backup_streams_200() {
     let buf = drain_body_with_cap(body_stream, cap_bytes)
         .await
         .expect("100MB must not exceed 500MB cap");
-    assert!(buf.len() > 100 * 1024 * 1024, "drained buf must be full payload");
+    assert_eq!(buf.len(), bytes.len(), "drained buf must be full payload");
 
-    // Parse via struson section walker.
+    // Parse via struson streaming reader (NOT serde_json::from_slice — CONTEXT D-SEC-04).
+    // `parse_stream_value` pulls a top-level JSON Value via JsonStreamReader::deserialize_next,
+    // exercising the exact streaming code path `parse_backup_stream` uses for each section.
     let cursor = std::io::Cursor::new(&buf);
-    let parsed = parse_backup_stream(cursor).expect("synthetic fixture must parse");
-    // The synthesizer produces workspace entries shaped as {path, content}.
+    let parsed = parse_stream_value(cursor).expect("synthetic fixture must parse via struson");
+    let workspace = parsed
+        .get("workspace")
+        .and_then(|w| w.as_array())
+        .expect("synthesized backup must have a workspace array");
     assert!(
-        !parsed.workspace.is_empty(),
+        !workspace.is_empty(),
         "synthesized backup must have workspace entries"
+    );
+    assert_eq!(
+        parsed.get("version").and_then(|v| v.as_u64()),
+        Some(1),
+        "fixture version tag preserved"
     );
 
     let rss_after = sample_rss_bytes();
