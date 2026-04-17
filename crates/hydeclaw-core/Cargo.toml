@@ -96,3 +96,11 @@ sd-notify = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+# Integration test deps (Phase 61 Plan 02 — mock LLM provider + smoke tests).
+# These are required by integration tests under `tests/` because integration
+# tests compile as separate crates and cannot use deps transitively through
+# the lib's public API alone.
+tokio = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
