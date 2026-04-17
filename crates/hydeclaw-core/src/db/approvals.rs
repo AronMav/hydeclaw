@@ -5,6 +5,21 @@ use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
+/// Phase 63 DATA-04: structured error for [`resolve_approval_strict`].
+///
+/// The legacy [`resolve_approval`] `-> Result<bool>` wrapper still exists and maps
+/// `NotFound` / `AlreadyResolved` → `Ok(false)` so the Phase 61-03 characterization
+/// test (`integration_approval_race.rs`) continues to pass UNCHANGED.
+#[derive(Debug, thiserror::Error)]
+pub enum ApprovalError {
+    #[error("approval {id} not found")]
+    NotFound { id: Uuid },
+    #[error("approval {id} already resolved (status={status})")]
+    AlreadyResolved { id: Uuid, status: String },
+    #[error(transparent)]
+    Db(#[from] sqlx::Error),
+}
+
 #[derive(Debug, FromRow, Clone)]
 #[allow(dead_code)]
 pub struct PendingApproval {
@@ -44,24 +59,90 @@ pub async fn create_approval(
     Ok(row)
 }
 
-/// Resolve an approval (approve or reject).
+/// Phase 63 DATA-04: transactionally resolve an approval with row-level locking.
+///
+/// Flow:
+///
+/// ```text
+///   BEGIN
+///   SELECT status FROM pending_approvals WHERE id = $1 FOR UPDATE
+///     - not found   → ROLLBACK, return ApprovalError::NotFound
+///     - not pending → ROLLBACK, return ApprovalError::AlreadyResolved { status }
+///     - pending     → UPDATE ..., COMMIT, return Ok(())
+/// ```
+///
+/// Default isolation is `READ COMMITTED`; `FOR UPDATE` serialises competing
+/// resolvers on the same PK. 100 concurrent callers produce exactly
+/// `1 Ok(())` and `99 Err(AlreadyResolved)` — verified by
+/// `integration_data_layer_approval.rs` and the strict block in
+/// `integration_approval_race.rs`.
+pub async fn resolve_approval_strict(
+    db: &PgPool,
+    id: Uuid,
+    status: &str,
+    resolved_by: &str,
+) -> std::result::Result<(), ApprovalError> {
+    let mut tx = db.begin().await?;
+
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT status FROM pending_approvals WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+    match row {
+        None => {
+            tx.rollback().await?;
+            Err(ApprovalError::NotFound { id })
+        }
+        Some((current_status,)) if current_status != "pending" => {
+            tx.rollback().await?;
+            Err(ApprovalError::AlreadyResolved {
+                id,
+                status: current_status,
+            })
+        }
+        Some(_) => {
+            sqlx::query(
+                "UPDATE pending_approvals SET status = $2, resolved_at = now(), resolved_by = $3 \
+                 WHERE id = $1",
+            )
+            .bind(id)
+            .bind(status)
+            .bind(resolved_by)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        }
+    }
+}
+
+/// Legacy wrapper over [`resolve_approval_strict`]. Preserves the
+/// `Result<bool>` signature that Phase 61-03's characterization test
+/// (`integration_approval_race.rs`) depends on.
+///
+/// Mapping:
+///
+/// ```text
+///   Ok(())                         → Ok(true)    // this caller won the race
+///   Err(AlreadyResolved { .. })    → Ok(false)   // someone else won, or already resolved
+///   Err(NotFound { .. })           → Ok(false)   // row missing (legacy ambiguous semantics)
+///   Err(Db(e))                     → Err(anyhow!(e))
+/// ```
 pub async fn resolve_approval(
     db: &PgPool,
     id: Uuid,
     status: &str,
     resolved_by: &str,
 ) -> Result<bool> {
-    let result = sqlx::query(
-        "UPDATE pending_approvals SET status = $2, resolved_at = now(), resolved_by = $3 \
-         WHERE id = $1 AND status = 'pending'",
-    )
-    .bind(id)
-    .bind(status)
-    .bind(resolved_by)
-    .execute(db)
-    .await?;
-
-    Ok(result.rows_affected() > 0)
+    match resolve_approval_strict(db, id, status, resolved_by).await {
+        Ok(()) => Ok(true),
+        Err(ApprovalError::AlreadyResolved { .. }) | Err(ApprovalError::NotFound { .. }) => {
+            Ok(false)
+        }
+        Err(ApprovalError::Db(e)) => Err(e.into()),
+    }
 }
 
 /// Get a specific approval by ID.
@@ -151,4 +232,3 @@ pub async fn remove_from_allowlist(db: &PgPool, id: Uuid) -> Result<bool> {
         .await?;
     Ok(res.rows_affected() > 0)
 }
-
