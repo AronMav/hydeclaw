@@ -31,6 +31,35 @@ pub use hydeclaw_types;
 #[path = "metrics.rs"]
 pub mod metrics;
 
+// ── Phase 62 Plan 03: SSE coalescer + StreamEvent leaf exposure ────────
+// `agent::stream_event` and `gateway::sse::coalescer` are both leaf modules
+// (zero `crate::*` imports) so the lib can expose them for the
+// `tests/integration_sse_coalescing.rs` 10k-burst + drop-counter tests.
+// We preserve the original paths the binary target uses:
+//   * `hydeclaw_core::agent::engine::StreamEvent` — facade that re-exports
+//     the leaf enum (same path the binary's `crate::agent::engine::StreamEvent`
+//     resolves to). Callers don't need to learn a new path.
+//   * `hydeclaw_core::gateway::sse::spawn_coalescing_converter` — leaf
+//     coalescer task entry point.
+// Neither `agent/engine.rs` nor any other non-leaf module is pulled in.
+pub mod agent {
+    //! Test-facing re-export subset of the binary's `src/agent/` tree.
+    //! ONLY the two leaf modules are exposed — including `engine.rs` would
+    //! cascade dozens of `super::*` imports (secrets, providers, tool_loop,
+    //! workspace, …) and blow the 10-module lib-facade cap.
+    //!
+    //! `engine` here is a TINY facade that re-exports `StreamEvent` so
+    //! external callers can keep using `agent::engine::StreamEvent`.
+
+    #[path = "stream_event.rs"]
+    pub mod stream_event;
+
+    pub mod engine {
+        //! Facade preserving `agent::engine::StreamEvent` path.
+        pub use super::stream_event::StreamEvent;
+    }
+}
+
 // ── Phase 62 Plan 04: shutdown drain surface ───────────────────────────
 // `shutdown` is trait-parametric over `DrainableAgent`, so it has zero
 // crate-internal deps (only std + tokio + futures-util + tracing). Safe
@@ -53,9 +82,11 @@ pub mod shutdown;
 #[path = "gateway"]
 pub mod gateway {
     //! Test-facing re-export subset of the binary's `src/gateway/` tree.
-    //! ONLY the leaf `rate_limiter` module is exposed; `middleware` is a
-    //! pure re-export facade for the `middleware::{AuthRateLimiter, ...}`
-    //! path consumed by Phase 62 RES-04 integration tests.
+    //! ONLY the leaf `rate_limiter` and `sse` modules are exposed;
+    //! `middleware` is a pure re-export facade for the
+    //! `middleware::{AuthRateLimiter, ...}` path consumed by Phase 62 RES-04
+    //! integration tests. `sse` is exposed for Phase 62 RES-01
+    //! integration tests.
 
     #[path = "rate_limiter.rs"]
     pub mod rate_limiter;
@@ -64,6 +95,21 @@ pub mod gateway {
         //! Facade preserving `gateway::middleware::{AuthRateLimiter, RequestRateLimiter}`
         //! path used by `integration_rate_limiter_sweeper.rs`.
         pub use super::rate_limiter::{AuthRateLimiter, RequestRateLimiter};
+    }
+
+    // Phase 62 RES-01: `sse::coalescer` is a leaf module
+    // (deps: std + tokio + tracing + `crate::agent::engine::StreamEvent`
+    // + `crate::metrics::MetricsRegistry` — both already exposed above).
+    // Safe to re-export without cascading the gateway handler subtree.
+    #[path = "sse"]
+    pub mod sse {
+        //! SSE coalescer leaf — safe to re-export for
+        //! `integration_sse_coalescing.rs`.
+
+        #[path = "coalescer.rs"]
+        pub mod coalescer;
+
+        pub use coalescer::spawn_coalescing_converter;
     }
 }
 

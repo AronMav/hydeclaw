@@ -64,11 +64,19 @@ pub enum EngineSendError {
 
 /// Thin wrapper around `mpsc::Sender<StreamEvent>` enforcing the Phase 62
 /// RES-01 contract: text-delta is droppable, everything else is not.
+///
+/// The `Err` variants of `send`/`send_async` intentionally carry the original
+/// `StreamEvent` so callers can retry (for `FullNonText`) or log detailed
+/// diagnostics (for `Closed`). `clippy::result_large_err` is silenced at the
+/// impl block below — every call site either ignores the Err via `.ok()` /
+/// `let _ = …` or pattern-matches on the enum, so the 128-byte payload is
+/// cold-path only and never copied into hot-loop error propagation.
 #[derive(Clone)]
 pub struct EngineEventSender {
     inner: mpsc::Sender<StreamEvent>,
 }
 
+#[allow(clippy::result_large_err)] // Err variants carry StreamEvent by design for retry paths.
 impl EngineEventSender {
     pub fn new(inner: mpsc::Sender<StreamEvent>) -> Self {
         Self { inner }

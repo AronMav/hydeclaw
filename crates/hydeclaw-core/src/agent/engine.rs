@@ -56,43 +56,11 @@ impl ProcessingPhase {
     }
 }
 
-/// Events emitted during SSE streaming (AI SDK UI Message Stream Protocol v1).
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub enum StreamEvent {
-    /// Session ID resolved/created by `build_context` — emitted first so the UI can track it.
-    SessionId(String),
-    MessageStart { message_id: String },
-    StepStart { step_id: String },
-    TextDelta(String),
-    ToolCallStart { id: String, name: String },
-    ToolCallArgs { id: String, args_text: String },
-    ToolResult { id: String, result: String },
-    StepFinish { step_id: String, finish_reason: String },
-    /// Rich card embedded inline in the message stream (tables, metrics, etc.).
-    RichCard { card_type: String, data: serde_json::Value },
-    /// File/media attachment (image, audio, etc.) — displayed inline in UI chat.
-    File { url: String, media_type: String },
-    Finish { finish_reason: String, continuation: bool },
-    /// Approval needed: a tool call is waiting for human approval.
-    ApprovalNeeded {
-        approval_id: String,
-        tool_name: String,
-        tool_input: serde_json::Value,
-        timeout_ms: u64,
-    },
-    /// Approval resolved: a pending approval was approved, rejected, or timed out.
-    ApprovalResolved {
-        approval_id: String,
-        action: String, // "approved" | "rejected" | "timeout_rejected"
-        modified_input: Option<serde_json::Value>,
-    },
-    /// Internal event: signals that a different agent is now responding (multi-agent session).
-    /// Converter task updates `current_responding_agent`; no SSE is emitted to the client.
-    /// Retained for API compatibility — not currently emitted.
-    AgentSwitch { agent_name: String },
-    Error(String),
-}
+// Phase 62 RES-01: `StreamEvent` extracted to a leaf module
+// (`agent/stream_event.rs`) so the lib facade can expose it to integration
+// tests without cascading the whole `engine.rs` dependency tree. Re-exported
+// here so every existing `crate::agent::engine::StreamEvent` path resolves.
+pub use super::stream_event::StreamEvent;
 
 /// A background process started by the `process_start` tool (base agents only).
 #[allow(dead_code)]

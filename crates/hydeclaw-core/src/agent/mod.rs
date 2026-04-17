@@ -9,6 +9,9 @@ pub mod channel_actions;
 pub mod channel_kind;
 pub mod cli_backend;
 pub mod hooks;
+// Phase 62 RES-01: `StreamEvent` extracted as a leaf module so the lib
+// facade can expose it to integration tests without cascading engine.rs.
+pub mod stream_event;
 pub mod engine;
 // Phase 62 RES-01: sole engine-side send surface (text-delta droppable,
 // everything else never dropped per CONTEXT.md locked decisions).
