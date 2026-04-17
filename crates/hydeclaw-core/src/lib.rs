@@ -31,6 +31,42 @@ pub use hydeclaw_types;
 #[path = "metrics.rs"]
 pub mod metrics;
 
+// ── Phase 62 Plan 04: shutdown drain surface ───────────────────────────
+// `shutdown` is trait-parametric over `DrainableAgent`, so it has zero
+// crate-internal deps (only std + tokio + futures-util + tracing). Safe
+// to re-export here without cascading the agent subtree into the lib.
+// Integration tests (`integration_shutdown_reproducer.rs`) can exercise
+// the drain sequence directly against fake handles; the binary target
+// wires `AgentHandle: DrainableAgent` in `src/agent/handle.rs`.
+#[path = "shutdown.rs"]
+pub mod shutdown;
+
+// ── Phase 62 Plan 06: rate limiter sweep() surface ─────────────────────
+// `gateway::rate_limiter` is a leaf module (deps: std + tokio::sync::Mutex
+// + tracing — no `crate::*` references). We re-export just the leaf via a
+// minimal `gateway::middleware` facade so integration tests can reach
+// `AuthRateLimiter` / `RequestRateLimiter` at the path they expect:
+// `hydeclaw_core::gateway::middleware::{AuthRateLimiter, RequestRateLimiter}`.
+// This keeps the test-facing lib surface intact without pulling the gateway
+// handler subtree (which would cascade dozens of modules — see Phase 61
+// 10-module cap note above).
+#[path = "gateway"]
+pub mod gateway {
+    //! Test-facing re-export subset of the binary's `src/gateway/` tree.
+    //! ONLY the leaf `rate_limiter` module is exposed; `middleware` is a
+    //! pure re-export facade for the `middleware::{AuthRateLimiter, ...}`
+    //! path consumed by Phase 62 RES-04 integration tests.
+
+    #[path = "rate_limiter.rs"]
+    pub mod rate_limiter;
+
+    pub mod middleware {
+        //! Facade preserving `gateway::middleware::{AuthRateLimiter, RequestRateLimiter}`
+        //! path used by `integration_rate_limiter_sweeper.rs`.
+        pub use super::rate_limiter::{AuthRateLimiter, RequestRateLimiter};
+    }
+}
+
 // ── Test-facing re-exports added by Phase 61 Plan 03 ────────────────────
 // Wave-2 characterization tests need direct access to `db::approvals`.
 // These re-exports are TEST-FACING ONLY — production consumers continue

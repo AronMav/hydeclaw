@@ -12,6 +12,7 @@ mod process_manager;
 mod scheduler;
 mod secrets;
 mod mcp;
+mod shutdown;
 mod skills;
 mod tasks;
 mod tools;
