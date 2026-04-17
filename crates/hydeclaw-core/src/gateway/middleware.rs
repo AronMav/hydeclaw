@@ -5,6 +5,7 @@ use axum::{
     response::IntoResponse,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
 
@@ -15,49 +16,31 @@ use tokio::sync::Mutex;
 // path consumed by `gateway/mod.rs`.
 pub use super::rate_limiter::{AuthRateLimiter, RequestRateLimiter};
 
-// ── Phase 65 OBS-05 — rate-limiter size accessor ─────────────────────────
+// ── Phase 66 REF-06 — rate-limiter size accessor ─────────────────────────
 //
-// The auth + request rate limiters are constructed via `Box::leak` inside
-// `gateway::router()` — Phase 66 REF-06 replaces this pattern with
-// `Arc<OnceLock<_>>`, at which point this accessor can be deleted. Until
-// then, we publish the two `&'static` references into a pair of
-// `OnceLock`s so the `/api/health/dashboard` handler (Phase 65 OBS-05)
-// can report their map sizes without reaching into gateway internals.
+// The auth + request rate limiters are now stored in `gateway::mod.rs` as
+// `OnceLock<Arc<T>>` statics (replacing the Phase 65 `OnceLock<&'static T>`
+// backed by `Box::leak`). The `/api/health/dashboard` handler consumes this
+// public async helper via `crate::gateway::middleware::rate_limiter_sizes()`;
+// internally it delegates to the mod.rs accessors (`auth_limiter()`,
+// `request_limiter()`) which lazily return a cheap `Arc::clone`.
 //
-// `install_rate_limiter_handles` MUST be called exactly once from
-// `router()` after both limiters are created. Subsequent calls are no-ops
-// (guarded by `OnceLock::set`) — tests that spin up parallel routers are
-// fine as long as all routers share the same global limiters (they do, by
-// construction: the leaked refs live forever).
+// The Phase 65-04 `install_rate_limiter_handles` shim is retired — the
+// dashboard reads sizes directly from the Arc-owned instances held in
+// `gateway::mod.rs` state.
 
-use std::sync::OnceLock;
-
-static AUTH_RATE_LIMITER_HANDLE: OnceLock<&'static AuthRateLimiter> = OnceLock::new();
-static REQUEST_RATE_LIMITER_HANDLE: OnceLock<&'static RequestRateLimiter> = OnceLock::new();
-
-/// Phase 65 OBS-05: publish the router-owned rate-limiter refs so the
-/// dashboard handler can read their sizes. Called once from
-/// `gateway::router()` after the limiters are constructed via `Box::leak`.
-pub(crate) fn install_rate_limiter_handles(
-    auth: &'static AuthRateLimiter,
-    req: &'static RequestRateLimiter,
-) {
-    let _ = AUTH_RATE_LIMITER_HANDLE.set(auth);
-    let _ = REQUEST_RATE_LIMITER_HANDLE.set(req);
-}
-
-/// Phase 65 OBS-05: snapshot both rate-limiter map sizes for
+/// Phase 66 REF-06: snapshot both rate-limiter map sizes for
 /// `/api/health/dashboard`. Returns `(0, 0)` before the router has
-/// installed the handles (only happens during early startup / tests that
-/// do not construct a gateway). Each call takes the limiter's async lock
-/// briefly — the background sweeper (Phase 62 RES-04) keeps the maps
+/// constructed the limiters (only happens during early startup / tests
+/// that do not construct a gateway). Each call takes the limiter's async
+/// lock briefly — the background sweeper (Phase 62 RES-04) keeps the maps
 /// bounded, so this is an O(1)-wall-clock read in practice.
 pub async fn rate_limiter_sizes() -> (u64, u64) {
-    let auth_size = match AUTH_RATE_LIMITER_HANDLE.get() {
+    let auth_size = match super::auth_limiter_opt() {
         Some(lim) => lim.snapshot_size().await as u64,
         None => 0,
     };
-    let req_size = match REQUEST_RATE_LIMITER_HANDLE.get() {
+    let req_size = match super::request_limiter_opt() {
         Some(lim) => lim.snapshot_size().await as u64,
         None => 0,
     };
@@ -116,7 +99,7 @@ impl WsConnectionBudget {
 pub(crate) async fn csp_report_rate_limit_middleware(
     req: Request<Body>,
     next: Next,
-    limiter: &'static crate::gateway::handlers::csp::CspReportRateLimiter,
+    limiter: Arc<crate::gateway::handlers::csp::CspReportRateLimiter>,
 ) -> axum::response::Response {
     let path = req.uri().path();
     if path != "/api/csp-report" {
@@ -133,7 +116,7 @@ pub(crate) async fn csp_report_rate_limit_middleware(
         return next.run(req).await;
     };
     if let Some(status) =
-        crate::gateway::handlers::csp::csp_report_rate_limit(limiter, parsed)
+        crate::gateway::handlers::csp::csp_report_rate_limit(&limiter, parsed)
     {
         let mut response = (status, "csp-report rate limit exceeded").into_response();
         response
@@ -147,8 +130,8 @@ pub(crate) async fn csp_report_rate_limit_middleware(
 pub(crate) async fn request_rate_limit_middleware(
     req: Request<Body>,
     next: Next,
-    limiter: &'static RequestRateLimiter,
-    _ws_budget: &'static WsConnectionBudget,
+    limiter: Arc<RequestRateLimiter>,
+    _ws_budget: Arc<WsConnectionBudget>,
 ) -> impl IntoResponse {
     let path = req.uri().path();
     // Exempt health from rate limiting
@@ -203,9 +186,9 @@ pub(crate) fn is_loopback(ip: &str) -> bool {
 pub(crate) async fn auth_middleware(
     req: Request<Body>,
     next: Next,
-    expected_token: &'static str,
-    rate_limiter: &'static AuthRateLimiter,
-    ws_tickets: std::sync::Arc<Mutex<HashMap<String, std::time::Instant>>>,
+    expected_token: Arc<str>,
+    rate_limiter: Arc<AuthRateLimiter>,
+    ws_tickets: Arc<Mutex<HashMap<String, std::time::Instant>>>,
 ) -> impl IntoResponse {
     let path = req.uri().path();
 

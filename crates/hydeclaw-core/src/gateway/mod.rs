@@ -2,6 +2,7 @@ use axum::{
     Router,
     middleware as axum_mw,
 };
+use std::sync::{Arc, OnceLock};
 use tower_http::services::{ServeDir, ServeFile};
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +39,43 @@ pub use handlers::channels::migrate_credentials_to_vault;
 pub use handlers::providers::migrate_provider_keys_to_vault;
 pub(crate) use handlers::backup::create_backup_internal;
 pub(crate) use handlers::notifications::notify;
+
+// ── Phase 66 REF-06 — intentional-leak retirement ────────────────────────
+//
+// Rate limiter family + shared auth token now live behind
+// `OnceLock<Arc<T>>` statics (std::sync, stable since Rust 1.70 — no
+// `once_cell` dep per CONTEXT.md decision). Middleware closures
+// `Arc::clone` into their captures instead of `Copy`-ing a `&'static`
+// reference; the Arc's strong-count stays bounded (router ctor + one per
+// middleware layer + one per sweeper = ~6), and dropping the router
+// drops the middleware closures, decrementing the Arc count back down —
+// no unreclaimable allocation, unlike the retired intentional-leak
+// pattern.
+//
+// The Phase 65-04 `install_rate_limiter_handles` shim is retired; the
+// `/api/health/dashboard` handler reads sizes via the public async helper
+// `crate::gateway::middleware::rate_limiter_sizes`, which delegates to
+// `auth_limiter_opt()` / `request_limiter_opt()` below.
+
+static SHARED_TOKEN: OnceLock<Arc<str>> = OnceLock::new();
+static AUTH_LIMITER: OnceLock<Arc<AuthRateLimiter>> = OnceLock::new();
+static REQ_LIMITER: OnceLock<Arc<RequestRateLimiter>> = OnceLock::new();
+static WS_BUDGET: OnceLock<Arc<WsConnectionBudget>> = OnceLock::new();
+static CSP_LIMITER: OnceLock<Arc<handlers::csp::CspReportRateLimiter>> = OnceLock::new();
+
+/// Phase 66 REF-06: dashboard size accessor helper. Returns a cheap
+/// `Arc::clone` of the auth rate limiter, or `None` before the router has
+/// been constructed (e.g. early startup / tests that skip the gateway).
+pub(crate) fn auth_limiter_opt() -> Option<Arc<AuthRateLimiter>> {
+    AUTH_LIMITER.get().cloned()
+}
+
+/// Phase 66 REF-06: dashboard size accessor helper. Returns a cheap
+/// `Arc::clone` of the request rate limiter, or `None` before the router
+/// has been constructed.
+pub(crate) fn request_limiter_opt() -> Option<Arc<RequestRateLimiter>> {
+    REQ_LIMITER.get().cloned()
+}
 
 /// SSE event type constants for Vercel AI SDK v3 compatibility.
 mod sse_types {
@@ -119,66 +157,89 @@ pub fn router(state: AppState) -> anyhow::Result<Router> {
         .merge(handlers::workspace::routes());      // /api/workspace/*
 
     // Auth middleware — REQUIRED. Refuse to start without a token.
-    // Construct rate_limiter OUTSIDE the `if let` so the Phase 62 RES-04 sweeper
-    // below can reach it after the middleware chain is wired.
+    // Phase 66 REF-06: token + rate limiters are stored in module-level
+    // `OnceLock<Arc<T>>` statics (replacing the Phase 65 intentional-leak
+    // pattern).
+    // The `.set(...).ok()` pattern is idempotent: second router construction
+    // (tests, hot-reload) keeps the original Arc — no allocation delta.
     let Some(token) = auth_token else {
         tracing::error!("FATAL: no auth token configured — refusing to start unauthenticated gateway");
         tracing::error!("set gateway.auth_token_env in config and provide the env var");
         anyhow::bail!("gateway requires auth token — set gateway.auth_token_env in hydeclaw.toml");
     };
-    let shared_token: &'static str = Box::leak(token.into_boxed_str());
-    let rate_limiter: &'static AuthRateLimiter = Box::leak(Box::new(AuthRateLimiter::new(500, 30)));
+    // First-router wins; subsequent constructions reuse the same Arc.
+    let _ = SHARED_TOKEN.set(Arc::from(token.as_str()));
+    let _ = AUTH_LIMITER.set(Arc::new(AuthRateLimiter::new(500, 30)));
+    let shared_token = SHARED_TOKEN.get().cloned().expect("SHARED_TOKEN just set");
+    let rate_limiter = AUTH_LIMITER.get().cloned().expect("AUTH_LIMITER just set");
+
     let ws_tickets = state.auth.ws_tickets.clone();
-    let app = app.layer(axum_mw::from_fn(move |req, next| {
-        let ws_tickets = ws_tickets.clone();
-        async move { auth_middleware(req, next, shared_token, rate_limiter, ws_tickets).await }
-    }));
+    let app = {
+        let shared_token = shared_token.clone();
+        let rate_limiter = rate_limiter.clone();
+        app.layer(axum_mw::from_fn(move |req, next| {
+            let shared_token = shared_token.clone();
+            let rate_limiter = rate_limiter.clone();
+            let ws_tickets = ws_tickets.clone();
+            async move { auth_middleware(req, next, shared_token, rate_limiter, ws_tickets).await }
+        }))
+    };
 
     // Request rate limiting (per-IP, from config limits.max_requests_per_minute)
     let max_rpm = state.config.config.limits.max_requests_per_minute;
-    let req_limiter: &'static RequestRateLimiter =
-        Box::leak(Box::new(RequestRateLimiter::new(max_rpm)));
-    let ws_budget: &'static WsConnectionBudget =
-        Box::leak(Box::new(WsConnectionBudget::new(32)));
-    let app = app.layer(axum_mw::from_fn(move |req, next| {
-        request_rate_limit_middleware(req, next, req_limiter, ws_budget)
-    }));
+    let _ = REQ_LIMITER.set(Arc::new(RequestRateLimiter::new(max_rpm)));
+    let _ = WS_BUDGET.set(Arc::new(WsConnectionBudget::new(32)));
+    let req_limiter = REQ_LIMITER.get().cloned().expect("REQ_LIMITER just set");
+    let ws_budget = WS_BUDGET.get().cloned().expect("WS_BUDGET just set");
+    let app = {
+        let req_limiter = req_limiter.clone();
+        let ws_budget = ws_budget.clone();
+        app.layer(axum_mw::from_fn(move |req, next| {
+            request_rate_limit_middleware(req, next, req_limiter.clone(), ws_budget.clone())
+        }))
+    };
 
-    // Phase 65 OBS-05: publish the leaked limiter refs so the
-    // `/api/health/dashboard` handler can report their map sizes. Phase 66
-    // REF-06 replaces the Box::leak pattern with Arc<OnceLock<_>> and this
-    // call is retired alongside.
-    middleware::install_rate_limiter_handles(rate_limiter, req_limiter);
+    // Phase 66 REF-06: `install_rate_limiter_handles` retired — the
+    // `/api/health/dashboard` handler reads sizes via
+    // `middleware::rate_limiter_sizes()` which delegates to the
+    // `auth_limiter_opt()` / `request_limiter_opt()` helpers above.
 
     // Phase 64 SEC-05: dedicated per-IP limiter on /api/csp-report (~30 rpm).
     // Additive to the global limiter above — both apply.
-    let csp_limiter: &'static handlers::csp::CspReportRateLimiter =
-        Box::leak(Box::new(handlers::csp::CspReportRateLimiter::new()));
+    let _ = CSP_LIMITER.set(Arc::new(handlers::csp::CspReportRateLimiter::new()));
+    let csp_limiter = CSP_LIMITER.get().cloned().expect("CSP_LIMITER just set");
     let app = app.layer(axum_mw::from_fn(move |req, next| {
-        csp_report_rate_limit_middleware(req, next, csp_limiter)
+        csp_report_rate_limit_middleware(req, next, csp_limiter.clone())
     }));
 
     // Phase 62 RES-04: spawn background sweeper tasks.
     // Every 60s they evict expired entries from the rate-limiter HashMaps,
     // replacing the inline-on-write eviction that scaled with map size.
-    // `rate_limiter` and `req_limiter` are `&'static` (Copy), so the `async move`
-    // closures copy the reference — no Arc cloning needed.
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            interval.tick().await;
-            rate_limiter.sweep().await;
-        }
-    });
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            interval.tick().await;
-            req_limiter.sweep().await;
-        }
-    });
+    // Phase 66 REF-06: each sweeper owns its own `Arc::clone` — dropping
+    // the router + joining the task releases the Arc back to the shared
+    // static; no `&'static` leak.
+    {
+        let rate_limiter = rate_limiter.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                rate_limiter.sweep().await;
+            }
+        });
+    }
+    {
+        let req_limiter = req_limiter.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                req_limiter.sweep().await;
+            }
+        });
+    }
 
     // CORS: restrict to configured origins or derive from listen address.
     let cors_origins: Vec<axum::http::HeaderValue> = if state.config.config.gateway.cors_origins.is_empty() {
