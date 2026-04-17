@@ -84,7 +84,9 @@ dunce = "1.0"
 
 # Phase 64 SEC-04: streaming JSON pull parser (bounded-memory, pure Rust).
 # Used by the backup-restore size-cap path to avoid loading the whole body. No openssl.
-struson = "0.6"
+# `serde` feature enables JsonReader::deserialize_next<T: DeserializeOwned> — the
+# section-by-section walker lets us bound peak RSS to the largest single section.
+struson = { version = "0.6", features = ["serde"] }
 
 # Phase 64 SEC-03: HKDF-SHA256 for domain-separated upload-HMAC key derivation.
 # Pairs with existing `sha2 = "0.10"` and `hmac = "0.12"`. Pure Rust. No openssl.

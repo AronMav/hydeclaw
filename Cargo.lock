@@ -3569,6 +3569,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "18c68ef850864c0fa120c07a17d6369ec4df02a33cad4aa593e0e0566e031bda"
 dependencies = [
  "duplicate",
+ "serde",
  "strum",
  "thiserror 1.0.69",
 ]
