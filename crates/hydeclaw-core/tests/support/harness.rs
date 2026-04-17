@@ -83,6 +83,79 @@ impl TestHarness {
         })
     }
 
+    /// Spin up a fresh PG container with `shared_preload_libraries=pg_stat_statements`
+    /// active, apply migrations, and enable the extension via `CREATE EXTENSION IF NOT EXISTS`.
+    ///
+    /// Phase 63 DATA-03 uses this variant to verify batch INSERT round-trip counts
+    /// against `pg_stat_statements.calls`. Plain `TestHarness::new()` does NOT preload
+    /// the extension, so the view is not queryable there.
+    ///
+    /// Implementation: we override the container CMD via `ImageExt::with_cmd(["postgres",
+    /// "-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=all"])`.
+    /// This is the documented testcontainers-rs way to pass `-c key=value` to a
+    /// pre-built Postgres image without rebuilding the image itself.
+    pub async fn new_with_pg_stat_statements() -> Result<Self> {
+        let image_spec = std::env::var(PG_IMAGE_ENV)
+            .unwrap_or_else(|_| DEFAULT_PG_IMAGE.to_string());
+        let (repo, tag) = match image_spec.rsplit_once(':') {
+            Some((r, t)) if !r.is_empty() && !t.is_empty() => (r.to_string(), t.to_string()),
+            _ => anyhow::bail!(
+                "{} must be of the form '<image>:<tag>', got: {:?}",
+                PG_IMAGE_ENV,
+                image_spec
+            ),
+        };
+
+        let image = GenericImage::new(&repo, &tag)
+            .with_exposed_port(5432.tcp())
+            .with_wait_for(WaitFor::message_on_stderr(
+                "database system is ready to accept connections",
+            ));
+
+        let container = image
+            .with_env_var("POSTGRES_PASSWORD", "postgres")
+            .with_env_var("POSTGRES_USER", "postgres")
+            .with_env_var("POSTGRES_DB", "postgres")
+            .with_cmd(vec![
+                "postgres".to_string(),
+                "-c".to_string(),
+                "shared_preload_libraries=pg_stat_statements".to_string(),
+                "-c".to_string(),
+                "pg_stat_statements.track=all".to_string(),
+            ])
+            .start()
+            .await
+            .with_context(|| {
+                format!("starting ephemeral PG with pg_stat_statements ({image_spec})")
+            })?;
+
+        let host_port = container
+            .get_host_port_ipv4(5432)
+            .await
+            .context("resolving container host port")?;
+        let pg_url = format!("postgres://postgres:postgres@127.0.0.1:{host_port}/postgres");
+
+        let pool = PgPool::connect(&pg_url)
+            .await
+            .context("connecting to ephemeral PG")?;
+
+        super::migrations::apply_all(&pool)
+            .await
+            .context("applying migrations to ephemeral PG")?;
+
+        // Extension must exist at the connection level to populate the view.
+        sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+            .execute(&pool)
+            .await
+            .context("creating pg_stat_statements extension on ephemeral PG")?;
+
+        Ok(Self {
+            pool,
+            pg_url,
+            _container: container,
+        })
+    }
+
     /// Borrow the connected pool.
     pub fn pool(&self) -> &PgPool {
         &self.pool
@@ -91,5 +164,51 @@ impl TestHarness {
     /// PostgreSQL URL of the ephemeral container.
     pub fn pg_url(&self) -> &str {
         &self.pg_url
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pg_stat_statements_variant_exposes_extension() {
+        let harness = TestHarness::new_with_pg_stat_statements()
+            .await
+            .expect("harness must come up with pg_stat_statements preloaded");
+        let pool = harness.pool();
+
+        let extension_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*)::bigint FROM pg_extension WHERE extname = 'pg_stat_statements'",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("pg_extension query");
+        assert_eq!(
+            extension_count.0, 1,
+            "pg_stat_statements extension must be installed on the new variant"
+        );
+
+        // The view must be queryable (proves shared_preload_libraries was effective).
+        let _sample: (i64,) = sqlx::query_as("SELECT COUNT(*)::bigint FROM pg_stat_statements")
+            .fetch_one(pool)
+            .await
+            .expect("pg_stat_statements view must be queryable when the library is preloaded");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plain_variant_does_not_preload_pg_stat_statements() {
+        let harness = TestHarness::new().await.expect("plain harness");
+        let pool = harness.pool();
+        let extension_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*)::bigint FROM pg_extension WHERE extname = 'pg_stat_statements'",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("pg_extension query");
+        assert_eq!(
+            extension_count.0, 0,
+            "plain TestHarness::new() MUST NOT install pg_stat_statements — it is opt-in"
+        );
     }
 }
