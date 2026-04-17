@@ -799,10 +799,33 @@ pub(crate) async fn api_resolve_approval(
                 // audit is already recorded inside engine.resolve_approval()
                 Json(json!({"ok": true, "status": status, "modified": modified_input.is_some()})).into_response()
             }
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
-            ).into_response(),
+            Err(e) => {
+                // Phase 63 DATA-04: surface typed HTTP status on known pipeline
+                // outcomes. Pipeline::approval::resolve_approval bails with
+                // deterministic messages:
+                //   "approval {id} not found"
+                //   "approval {id} already resolved (status={...})"
+                // Substring-match is brittle but contained to this one site;
+                // a typed error-chain refactor is a Phase 66 candidate.
+                let msg = e.to_string();
+                let (status_code, body) = if msg.contains("already resolved") {
+                    (
+                        StatusCode::CONFLICT,
+                        json!({"error": "already_resolved", "detail": msg}),
+                    )
+                } else if msg.contains("not found") {
+                    (
+                        StatusCode::NOT_FOUND,
+                        json!({"error": "not_found", "detail": msg}),
+                    )
+                } else {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        json!({"error": msg}),
+                    )
+                };
+                (status_code, Json(body)).into_response()
+            }
         }
     } else {
         (

@@ -14,9 +14,27 @@ pub async fn resolve_approval(
     modified_input: Option<serde_json::Value>,
 ) -> anyhow::Result<()> {
     let status = if approved { "approved" } else { "rejected" };
-    let updated = crate::db::approvals::resolve_approval(&ctx.cfg.db, approval_id, status, resolved_by).await?;
-    if !updated {
-        anyhow::bail!("approval {approval_id} not found or already resolved");
+    // Phase 63 DATA-04: switch to the transactional strict variant so we can
+    // surface typed outcomes. Distinct bail! messages let `api_resolve_approval`
+    // pattern-match on the anyhow root cause when deciding HTTP status.
+    match crate::db::approvals::resolve_approval_strict(
+        &ctx.cfg.db,
+        approval_id,
+        status,
+        resolved_by,
+    )
+    .await
+    {
+        Ok(()) => { /* fall through to downstream audit/SSE/waiter logic */ }
+        Err(crate::db::approvals::ApprovalError::NotFound { id }) => {
+            anyhow::bail!("approval {id} not found");
+        }
+        Err(crate::db::approvals::ApprovalError::AlreadyResolved { id, status: current }) => {
+            anyhow::bail!("approval {id} already resolved (status={current})");
+        }
+        Err(crate::db::approvals::ApprovalError::Db(e)) => {
+            return Err(anyhow::Error::from(e).context("resolve_approval_strict DB error"));
+        }
     }
 
     crate::agent::pipeline::llm_call::audit(

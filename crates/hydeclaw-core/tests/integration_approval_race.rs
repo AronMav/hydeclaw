@@ -159,3 +159,83 @@ async fn test_test_03_approval_race_sensitivity_double_resolve_loses_second() {
     .await
     .expect("sensitivity test exceeded 30s");
 }
+
+/// Phase 63 DATA-04 extension: 100-task race against `resolve_approval_strict`.
+///
+/// Preserves the Phase 61-03 contract (legacy tests above are untouched) AND adds
+/// a typed-error assertion block: winners get `Ok(())`, losers get
+/// `Err(ApprovalError::AlreadyResolved { .. })`, zero `Err(Db(_))`. Wall time
+/// MUST be < 1 s to prove `FOR UPDATE` doesn't serialise pathologically.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn strict_race_exactly_one_ok_rest_already_resolved() {
+    use hydeclaw_core::db::approvals::{resolve_approval_strict, ApprovalError};
+    timeout(Duration::from_secs(30), async {
+        let harness = TestHarness::new().await.expect("PG");
+        let pool = harness.pool().clone();
+
+        let approval_id: Uuid = create_approval(
+            &pool,
+            "char-test-agent",
+            None,
+            "noop_tool",
+            &json!({}),
+            &json!({}),
+        )
+        .await
+        .expect("create_approval");
+
+        const N: usize = 100;
+        let pool = Arc::new(pool);
+        let mut handles = Vec::with_capacity(N);
+        let start = Instant::now();
+        for i in 0..N {
+            let pool = Arc::clone(&pool);
+            handles.push(tokio::spawn(async move {
+                resolve_approval_strict(
+                    &pool,
+                    approval_id,
+                    "approved",
+                    &format!("strict-racer-{i}"),
+                )
+                .await
+            }));
+        }
+
+        let mut wins = 0usize;
+        let mut already_resolved = 0usize;
+        let mut not_found = 0usize;
+        let mut db_errors = 0usize;
+        for h in handles {
+            match h.await.expect("task panicked") {
+                Ok(()) => wins += 1,
+                Err(ApprovalError::AlreadyResolved { .. }) => already_resolved += 1,
+                Err(ApprovalError::NotFound { .. }) => not_found += 1,
+                Err(ApprovalError::Db(_)) => db_errors += 1,
+            }
+        }
+        let elapsed = start.elapsed();
+
+        assert_eq!(db_errors, 0, "zero DB errors expected; got {db_errors}");
+        assert_eq!(
+            not_found, 0,
+            "zero NotFound expected — the row exists; got {not_found}"
+        );
+        assert_eq!(wins, 1, "exactly one Ok(()) must win; got {wins}");
+        assert_eq!(
+            already_resolved,
+            N - 1,
+            "remaining must be AlreadyResolved; got {already_resolved}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "strict 100-task race must complete < 1s; took {elapsed:?}"
+        );
+        eprintln!(
+            "strict_race_exactly_one_ok_rest_already_resolved: \
+             wins={wins} already_resolved={already_resolved} \
+             db_errors={db_errors} elapsed={elapsed:?}"
+        );
+    })
+    .await
+    .expect("strict race exceeded 30s");
+}
