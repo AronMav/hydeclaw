@@ -49,6 +49,10 @@ pub(crate) use self::yaml_tool_runner::SecretsEnvResolver;
 // `#[path]`-included leaf of engine) keeps seeing it via `use super::*;`.
 pub(super) use self::yaml_tool_runner::CACHEABLE_SEARCH_TOOLS;
 
+// REF-01 task 6: re-export all_system_tool_names() so external callers using
+// `crate::agent::engine::all_system_tool_names()` still resolve.
+pub use self::tool_executor::all_system_tool_names;
+
 // ProcessingPhase / StreamEvent — moved to self::stream (REF-01 task 2),
 // re-exported above via `pub use self::stream::{ProcessingPhase, StreamEvent}`.
 
@@ -346,159 +350,20 @@ impl AgentEngine {
     // build_context / compact_tool_results / compaction_params / compact_messages /
     // compact_session / handle_command — moved to self::context_builder (REF-01 task 5).
 
-    // ── Tool definitions (from engine_tool_defs.rs) ──────────────────────────
-
-    /// Resolve tool group settings (from agent config or defaults).
-    pub(super) fn tool_groups(&self) -> &crate::config::ToolGroups {
-        crate::agent::pipeline::tool_defs::resolve_tool_groups(self.cfg().agent.tools.as_ref())
-    }
-
-    /// Return tool definitions for internal tools available to the LLM.
-    pub(super) fn internal_tool_definitions(&self) -> Vec<ToolDefinition> {
-        let browser_url = crate::agent::pipeline::canvas::browser_renderer_url();
-        let ctx = crate::agent::pipeline::tool_defs::ToolDefsContext {
-            is_base: self.cfg().agent.base,
-            groups: self.tool_groups(),
-            default_timezone: &self.cfg().default_timezone,
-            has_sandbox: self.sandbox().is_some(),
-            browser_renderer_url: &browser_url,
-        };
-        crate::agent::pipeline::tool_defs::build_internal_tool_definitions(&ctx)
-    }
-
-    /// Internal tool definitions filtered for subagent use.
-    pub(super) fn internal_tool_definitions_for_subagent(
-        &self,
-        allowed_tools: Option<&[String]>,
-    ) -> Vec<hydeclaw_types::ToolDefinition> {
-        crate::agent::pipeline::tool_defs::filter_for_subagent(
-            self.internal_tool_definitions(),
-            crate::agent::pipeline::subagent::SUBAGENT_DENIED_TOOLS,
-            allowed_tools,
-        )
-    }
+    // tool_groups / internal_tool_definitions / internal_tool_definitions_for_subagent
+    // -- moved to self::tool_executor (REF-01 task 6).
 }
 
-/// All system (internal) tool names — single source of truth.
-pub fn all_system_tool_names() -> &'static [&'static str] {
-    crate::agent::pipeline::tool_defs::all_system_tool_names()
-}
+// tool_groups / internal_tool_definitions / internal_tool_definitions_for_subagent /
+// execute_tool_calls_partitioned / all_system_tool_names() / ToolExecutorDeps /
+// parallel::ToolExecutor / llm_call::Compactor -- moved to self::tool_executor
+// (REF-01 task 6).
 
-// ── Extracted submodules ─────────────────────────────────────────────────────
+// Legacy `#[path]` bridge: engine_dispatch.rs holds the dispatch inherent
+// methods (execute_tool_call, record_usage, apply_tool_policy_override, etc.).
+// Kept here so they continue to resolve via `use super::*;` inside the leaf.
 #[path = "../engine_dispatch.rs"]
 mod dispatch_impl;
-
-// ── ContextBuilderDeps impl ───────────────────────────────────────────────────
-
-// ContextBuilderDeps for AgentEngine — moved to self::context_builder (REF-01 task 5).
-
-// ── ToolExecutorDeps impl ─────────────────────────────────────────────────────
-
-#[async_trait::async_trait]
-impl crate::agent::tool_executor::ToolExecutorDeps for AgentEngine {
-    async fn execute_tool_calls_partitioned_raw(
-        &self,
-        tool_calls: &[hydeclaw_types::ToolCall],
-        context: &serde_json::Value,
-        session_id: Uuid,
-        channel: &str,
-        current_context_chars: usize,
-        detector: &mut crate::agent::tool_loop::LoopDetector,
-        detect_loops: bool,
-    ) -> Result<Vec<(String, String)>, LoopBreak> {
-        self.execute_tool_calls_partitioned(
-            tool_calls,
-            context,
-            session_id,
-            channel,
-            current_context_chars,
-            detector,
-            detect_loops,
-        )
-        .await
-    }
-}
-
-// ── Inlined from engine_parallel.rs ──────────────────────────────────────────
-
-impl crate::agent::pipeline::parallel::ToolExecutor for AgentEngine {
-    fn execute_tool_call<'a>(
-        &'a self,
-        name: &'a str,
-        arguments: &'a serde_json::Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
-        self.execute_tool_call(name, arguments)
-    }
-
-    fn needs_approval(&self, tool_name: &str) -> bool {
-        self.needs_approval(tool_name)
-    }
-}
-
-impl AgentEngine {
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn execute_tool_calls_partitioned(
-        &self,
-        tool_calls: &[hydeclaw_types::ToolCall],
-        context: &serde_json::Value,
-        session_id: Uuid,
-        channel: &str,
-        current_context_chars: usize,
-        detector: &mut LoopDetector,
-        detect_loops: bool,
-    ) -> Result<Vec<(String, String)>, LoopBreak> {
-        // Load YAML tools (cached for 30s)
-        let yaml_tools: std::sync::Arc<std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef>> = {
-            let cache = self.tex().yaml_tools_cache.read().await;
-            if cache.0.elapsed() < std::time::Duration::from_secs(30) && !cache.1.is_empty() {
-                std::sync::Arc::clone(&cache.1)
-            } else {
-                drop(cache);
-                let tools = std::sync::Arc::new(
-                    crate::tools::yaml_tools::load_yaml_tools(&self.cfg().workspace_dir, false)
-                        .await
-                        .into_iter()
-                        .map(|t| (t.name.clone(), t))
-                        .collect::<std::collections::HashMap<String, crate::tools::yaml_tools::YamlToolDef>>(),
-                );
-                *self.tex().yaml_tools_cache.write().await =
-                    (std::time::Instant::now(), std::sync::Arc::clone(&tools));
-                tools
-            }
-        };
-
-        let subagent_timeout =
-            parse_subagent_timeout(&self.cfg().app_config.subagents.in_process_timeout)
-                + std::time::Duration::from_secs(10);
-
-        crate::agent::pipeline::parallel::execute_tool_calls_partitioned(
-            tool_calls,
-            context,
-            session_id,
-            channel,
-            &self.cfg().agent.model,
-            current_context_chars,
-            detector,
-            detect_loops,
-            &self.cfg().db,
-            &self.cfg().embedder,
-            &yaml_tools,
-            subagent_timeout,
-            self,
-        )
-        .await
-    }
-}
-
-// ── Inlined from engine_provider.rs ──────────────────────────────────────────
-
-/// `AgentEngine` acts as its own compactor — delegates to `compact_messages`.
-#[async_trait::async_trait]
-impl crate::agent::pipeline::llm_call::Compactor for AgentEngine {
-    async fn compact(&self, messages: &mut Vec<Message>) {
-        self.compact_messages(messages, None).await;
-    }
-}
 
 impl AgentEngine {
     /// Build tool loop config from agent TOML settings (or defaults).
