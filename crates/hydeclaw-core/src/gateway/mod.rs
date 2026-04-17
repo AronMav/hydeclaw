@@ -10,6 +10,7 @@ pub mod error;
 // (zero crate:: imports) so lib.rs can re-export for integration tests.
 pub mod rate_limiter;
 pub mod middleware;
+pub mod sse;
 pub mod stream_registry;
 pub mod stream_jobs;
 pub mod state;
