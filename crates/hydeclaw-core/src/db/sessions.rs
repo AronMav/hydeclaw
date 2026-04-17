@@ -518,22 +518,47 @@ pub async fn insert_synthetic_tool_results(db: &PgPool, session_id: Uuid) -> Res
         return Ok(0);
     }
 
-    // Batch insert synthetic results in a transaction to avoid partial inserts on error
+    // Phase 63 DATA-03: chunked batch INSERT.
+    //
+    // Row shape: (id, session_id, role, content, tool_call_id, created_at, status)
+    //   - bound placeholders per row: id=$X, session_id=$Y, content=$Z, tool_call_id=$W  → 4 binds
+    //   - literal SQL per row:        'tool', NOW(), 'complete'                          → 3 literals
+    //
+    // chunk_size = MAX_PARAMS_PER_QUERY / BIND_COUNT_PER_ROW = 32767 / 4 = 8191 rows.
+    const BIND_COUNT_PER_ROW: usize = 4;
+    let chunk_size: usize = MAX_PARAMS_PER_QUERY / BIND_COUNT_PER_ROW;
+
     let mut tx = db.begin().await?;
-    let mut inserted = 0usize;
-    for call_id in &missing {
-        let synthetic_id = uuid::Uuid::new_v4();
-        sqlx::query(
-            "INSERT INTO messages (id, session_id, role, content, tool_call_id, created_at, status)
-             VALUES ($1, $2, 'tool', $3, $4, NOW(), 'complete')"
-        )
-        .bind(synthetic_id)
-        .bind(session_id)
-        .bind("[interrupted] Tool execution was interrupted (process restart). Result unavailable.")
-        .bind(call_id)
-        .execute(&mut *tx)
-        .await?;
-        inserted += 1;
+    let mut inserted: usize = 0;
+    for chunk in missing.chunks(chunk_size) {
+        let mut sql = String::from(
+            "INSERT INTO messages (id, session_id, role, content, tool_call_id, created_at, status) VALUES ",
+        );
+        let mut placeholders: Vec<String> = Vec::with_capacity(chunk.len());
+        for i in 0..chunk.len() {
+            let base = i * BIND_COUNT_PER_ROW;
+            placeholders.push(format!(
+                "(${}, ${}, 'tool', ${}, ${}, NOW(), 'complete')",
+                base + 1,
+                base + 2,
+                base + 3,
+                base + 4
+            ));
+        }
+        sql.push_str(&placeholders.join(", "));
+
+        let mut q = sqlx::query(&sql);
+        for call_id in chunk {
+            let synthetic_id = uuid::Uuid::new_v4();
+            q = q
+                .bind(synthetic_id)
+                .bind(session_id)
+                .bind("[interrupted] Tool execution was interrupted (process restart). Result unavailable.")
+                .bind(*call_id);
+        }
+
+        let result = q.execute(&mut *tx).await?;
+        inserted += result.rows_affected() as usize;
     }
     tx.commit().await?;
     Ok(inserted)
