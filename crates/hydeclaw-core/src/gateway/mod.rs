@@ -6,6 +6,9 @@ use tower_http::services::{ServeDir, ServeFile};
 use serde::{Deserialize, Serialize};
 
 pub mod error;
+// Phase 62 RES-04: rate limiter types extracted to a leaf submodule
+// (zero crate:: imports) so lib.rs can re-export for integration tests.
+pub mod rate_limiter;
 pub mod middleware;
 pub mod stream_registry;
 pub mod stream_jobs;
