@@ -8,11 +8,13 @@
 
 pub mod drain_fixture;
 pub mod harness;
+pub mod metrics_probe;
 pub mod migrations;
 pub mod mock_provider;
 pub mod sse_recorder;
 
 pub use drain_fixture::DrainFixture;
 pub use harness::TestHarness;
+pub use metrics_probe::MetricsProbe;
 pub use mock_provider::{MockLlmProvider, MockProvider, MockTurn};
 pub use sse_recorder::{SseRecorder, TestStreamEvent};
