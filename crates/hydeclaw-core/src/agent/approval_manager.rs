@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sqlx::PgPool;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use super::channel_actions::{ChannelAction, ChannelActionRouter};
@@ -74,7 +74,7 @@ impl ApprovalManager {
         timeout_secs: u64,
         channel_router: Option<&ChannelActionRouter>,
         ui_event_tx: Option<&tokio::sync::broadcast::Sender<String>>,
-        sse_event_tx: &Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<StreamEvent>>>>,
+        sse_event_tx: &Arc<tokio::sync::Mutex<Option<crate::agent::engine_event_sender::EngineEventSender>>>,
     ) -> ApprovalOutcome {
         let session_id = context
             .get("session_id")

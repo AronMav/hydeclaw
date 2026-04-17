@@ -3,9 +3,8 @@
 //! These free functions handle SSE-specific concerns like extracting inline
 //! markers from tool results and converting them into `StreamEvent`s.
 
-use tokio::sync::mpsc;
-
 use crate::agent::engine::{StreamEvent, FILE_PREFIX, RICH_CARD_PREFIX};
+use crate::agent::engine_event_sender::EngineEventSender;
 
 /// Result of processing a tool result for SSE event emission.
 ///
@@ -25,7 +24,7 @@ pub struct ToolResultParts {
 /// 3. **Plain text** — no markers, returned as-is.
 pub fn extract_tool_result_events(
     tool_result: &str,
-    event_tx: &mpsc::UnboundedSender<StreamEvent>,
+    event_tx: &EngineEventSender,
 ) -> ToolResultParts {
     if let Some(json_str) = tool_result.strip_prefix(RICH_CARD_PREFIX) {
         // Case 1: Rich card

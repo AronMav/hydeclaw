@@ -110,7 +110,7 @@ pub struct DefaultToolExecutor {
     #[allow(clippy::type_complexity, dead_code)]
     pub(crate) approval_waiters: Arc<tokio::sync::RwLock<std::collections::HashMap<uuid::Uuid, (tokio::sync::oneshot::Sender<crate::agent::engine::ApprovalResult>, std::time::Instant)>>>,
     /// SSE event sender for current streaming session — set/cleared by SSE loop.
-    pub(crate) sse_event_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<crate::agent::engine::StreamEvent>>>>,
+    pub(crate) sse_event_tx: Arc<tokio::sync::Mutex<Option<crate::agent::engine_event_sender::EngineEventSender>>>,
 }
 
 /// Construction parameters for `DefaultToolExecutor` — all 13 migrated fields.
@@ -134,7 +134,7 @@ pub struct DefaultToolExecutorFields {
     pub hooks: Arc<crate::agent::hooks::HookRegistry>,
     #[allow(clippy::type_complexity)]
     pub approval_waiters: Arc<tokio::sync::RwLock<std::collections::HashMap<uuid::Uuid, (tokio::sync::oneshot::Sender<crate::agent::engine::ApprovalResult>, std::time::Instant)>>>,
-    pub sse_event_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<crate::agent::engine::StreamEvent>>>>,
+    pub sse_event_tx: Arc<tokio::sync::Mutex<Option<crate::agent::engine_event_sender::EngineEventSender>>>,
 }
 
 impl DefaultToolExecutor {

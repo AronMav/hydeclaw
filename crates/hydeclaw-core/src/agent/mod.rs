@@ -10,6 +10,9 @@ pub mod channel_kind;
 pub mod cli_backend;
 pub mod hooks;
 pub mod engine;
+// Phase 62 RES-01: sole engine-side send surface (text-delta droppable,
+// everything else never dropped per CONTEXT.md locked decisions).
+pub mod engine_event_sender;
 pub(crate) mod error_classify;
 pub(crate) mod localization;
 pub mod handle;

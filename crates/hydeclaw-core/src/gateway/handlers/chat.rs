@@ -497,10 +497,28 @@ pub(crate) async fn api_chat_sse(
         leaf_message_id: req.leaf_message_id,
     };
 
+    // Phase 62 RES-01: bounded engine-side channel + coalescing converter task.
+    // Engine writes to raw_tx (bounded 256) via EngineEventSender wrapper which
+    // enforces the CONTEXT.md contract (text-delta droppable, others never
+    // dropped under normal operation). A coalescer task reads raw_rx, merges
+    // TextDelta events on a 16 ms tick, and writes to event_tx (unbounded
+    // toward the converter — coalescer is the sole producer and is rate-limited
+    // by the 16 ms tick, so unbounded downstream is safe).
+    let (raw_tx, raw_rx) = tokio::sync::mpsc::channel::<StreamEvent>(256);
     let (event_tx, mut event_rx) =
         tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
     let (sse_tx, sse_rx) =
         tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(1024);
+
+    crate::gateway::sse::spawn_coalescing_converter(
+        raw_rx,
+        event_tx.clone(),
+        infra.metrics.clone(),
+        msg.agent_id.clone(),
+    );
+
+    let engine_event_tx =
+        crate::agent::engine_event_sender::EngineEventSender::new(raw_tx);
 
     // Engine task: process message and emit StreamEvents.
     // Inter-agent communication now happens via the `agent` tool (polling model),
@@ -511,9 +529,12 @@ pub(crate) async fn api_chat_sse(
     let mentioned_for_invite = mentioned_agent.clone();
     let engine_handle = tokio::spawn(async move {
         let current_agent_name = engine.name().to_string();
-        if let Err(e) = engine.handle_sse(&msg, event_tx.clone(), session_id, force_new_session).await {
+        if let Err(e) = engine.handle_sse(&msg, engine_event_tx.clone(), session_id, force_new_session).await {
             tracing::error!(error = %e, "SSE chat error (agent: {})", current_agent_name);
-            event_tx.send(StreamEvent::Error(e.to_string())).ok();
+            // Error is a non-text event — use send_async to honor CONTEXT.md
+            // "non-text never dropped" contract. send_async awaits a slot on
+            // the bounded channel and only errors if the channel is closed.
+            let _ = engine_event_tx.send_async(StreamEvent::Error(e.to_string())).await;
         }
 
         // Notify UI about session update so sidebar refreshes

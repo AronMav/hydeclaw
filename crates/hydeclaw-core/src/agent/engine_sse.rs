@@ -9,10 +9,17 @@ use crate::agent::tool_executor::ToolExecutor;
 impl AgentEngine {
     /// Handle message via SSE: emits StreamEvents for AI SDK UI Message Stream Protocol v1.
     /// Supports tool execution, session continuation, and real-time status updates.
+    ///
+    /// Phase 62 RES-01: `event_tx` is an `EngineEventSender` wrapping a bounded
+    /// `mpsc::Sender<StreamEvent>` (capacity 256 in chat.rs). TextDelta uses
+    /// `try_send` (droppable per CONTEXT.md); all other variants either use
+    /// the synchronous `.send(ev)` entry (which surfaces `FullNonText` on
+    /// backpressure so the caller can log/retry) or `.send_async(ev).await`
+    /// (which awaits a free slot and only errors on closed channel).
     pub async fn handle_sse(
         &self,
         msg: &IncomingMessage,
-        event_tx: mpsc::UnboundedSender<StreamEvent>,
+        event_tx: crate::agent::engine_event_sender::EngineEventSender,
         resume_session_id: Option<Uuid>,
         force_new_session: bool,
     ) -> Result<Uuid> {
@@ -185,8 +192,13 @@ impl AgentEngine {
             let event_tx_fwd = event_tx.clone();
             tokio::spawn(async move {
                 while let Some(chunk) = chunk_rx.recv().await {
+                    // TextDelta uses try_send under the hood (droppable per
+                    // CONTEXT.md). Err here means either the channel closed
+                    // OR the bounded buffer filled faster than the coalescer
+                    // drains; in both cases the drop counter is recorded by
+                    // the coalescer when it next writes to the outer.
                     if event_tx_fwd.send(StreamEvent::TextDelta(chunk)).is_err() {
-                        tracing::debug!("SSE forwarder: event channel closed");
+                        tracing::debug!("SSE forwarder: event channel closed or full");
                     }
                 }
             });

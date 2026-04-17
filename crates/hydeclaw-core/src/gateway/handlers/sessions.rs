@@ -837,9 +837,14 @@ pub(crate) async fn api_retry_session(
     let db = infra.db.clone();
     let session_id = id;
     tokio::spawn(async move {
-        // Bounded drain channel — prevents unbounded memory growth during retry
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        tokio::spawn(async move { while event_rx.recv().await.is_some() {} });
+        // Phase 62 RES-01: engine writes to the bounded EngineEventSender
+        // wrapper; a local drain task silently consumes all events. The retry
+        // path does not stream to any UI client — events are only needed for
+        // session-state side effects (DB persistence happens inside handle_sse
+        // regardless of whether the outer channel is consumed).
+        let (raw_tx, mut raw_rx) = tokio::sync::mpsc::channel::<crate::agent::engine::StreamEvent>(256);
+        tokio::spawn(async move { while raw_rx.recv().await.is_some() {} });
+        let event_tx = crate::agent::engine_event_sender::EngineEventSender::new(raw_tx);
 
         match engine.handle_sse(&msg, event_tx, Some(session_id), false).await {
             Ok(_msg_id) => {
