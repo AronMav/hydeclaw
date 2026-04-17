@@ -38,6 +38,10 @@ pub mod loop_detector_integration;
 pub use self::stream::{ProcessingPhase, StreamEvent};
 pub(crate) use self::stream::ProcessingGuard;
 
+// REF-01 task 3: re-export ApprovalResult so `super::engine::ApprovalResult`
+// keeps resolving for `approval_manager.rs` and external callers.
+pub use self::approval_flow::ApprovalResult;
+
 /// Resolves env var names through `SecretsManager` (scoped to agent).
 pub(crate) struct SecretsEnvResolver {
     pub(crate) secrets: Arc<crate::secrets::SecretsManager>,
@@ -114,13 +118,9 @@ fn search_cache_key(query: &str) -> u64 {
     h.finish()
 }
 
-/// Result of a tool-call approval request.
-#[derive(Debug)]
-pub enum ApprovalResult {
-    Approved,
-    ApprovedWithModifiedArgs(serde_json::Value),
-    Rejected(String),
-}
+// ApprovalResult — moved to self::approval_flow (REF-01 task 3), re-exported
+// above via `pub use self::approval_flow::ApprovalResult` so
+// `approval_manager.rs` keeps importing it via `super::engine::ApprovalResult`.
 
 // ProcessingGuard — moved to self::stream (REF-01 task 2), re-exported above
 // via `pub(super) use self::stream::ProcessingGuard` so engine_execution.rs /
@@ -347,16 +347,7 @@ impl AgentEngine {
         }
     }
 
-    /// Check if a tool requires approval before execution.
-    fn needs_approval(&self, tool_name: &str) -> bool {
-        super::pipeline::dispatch::needs_approval(self.cfg().agent.approval.as_ref(), tool_name)
-    }
-
-    /// Resolve a pending approval (called from API/callback handler).
-    pub async fn resolve_approval(&self, approval_id: Uuid, approved: bool, resolved_by: &str, modified_input: Option<serde_json::Value>) -> anyhow::Result<()> {
-        let ctx = crate::agent::pipeline::CommandContext { cfg: self.cfg(), state: self.state(), tex: self.tex() };
-        crate::agent::pipeline::approval::resolve_approval(&ctx, approval_id, approved, resolved_by, modified_input).await
-    }
+    // needs_approval() + resolve_approval() — moved to self::approval_flow (REF-01 task 3).
 
 
     /// Check if an enabled YAML tool exists in workspace/tools/ (shared tools).
