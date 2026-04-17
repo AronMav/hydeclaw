@@ -78,7 +78,8 @@ pub(crate) struct WorkspaceFile {
 #[derive(Serialize, Deserialize)]
 pub(crate) struct MemoryChunk {
     pub id: String,
-    pub user_id: String,
+    #[serde(default)]
+    pub user_id: Option<String>,
     pub content: String,
     pub source: Option<String>,
     pub pinned: bool,
@@ -685,9 +686,9 @@ async fn collect_memory_from_db(db: &PgPool) -> sqlx::Result<Vec<MemoryChunk>> {
     }
 
     #[allow(clippy::type_complexity)]
-    let rows: Vec<(uuid::Uuid, String, String, Option<String>, bool, f64, chrono::DateTime<Utc>, Option<uuid::Uuid>, i32)> =
+    let rows: Vec<(uuid::Uuid, String, Option<String>, bool, f64, chrono::DateTime<Utc>, Option<uuid::Uuid>, i32)> =
         sqlx::query_as(
-            "SELECT id, user_id, content, source, pinned, relevance_score, created_at, parent_id, chunk_index
+            "SELECT id, content, source, pinned, relevance_score, created_at, parent_id, chunk_index
              FROM memory_chunks ORDER BY created_at LIMIT $1",
         )
         .bind(MEMORY_BACKUP_LIMIT)
@@ -695,9 +696,9 @@ async fn collect_memory_from_db(db: &PgPool) -> sqlx::Result<Vec<MemoryChunk>> {
         .await?;
     Ok(rows
         .into_iter()
-        .map(|(id, user_id, content, source, pinned, relevance_score, created_at, parent_id, chunk_index)| MemoryChunk {
+        .map(|(id, content, source, pinned, relevance_score, created_at, parent_id, chunk_index)| MemoryChunk {
             id: id.to_string(),
-            user_id,
+            user_id: None,
             content,
             source,
             pinned,
@@ -1110,11 +1111,10 @@ async fn restore_memory_and_cron(
         let id = uuid::Uuid::parse_str(&chunk.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
         let parent_id = chunk.parent_id.as_deref().and_then(|s| uuid::Uuid::parse_str(s).ok());
         sqlx::query(
-            "INSERT INTO memory_chunks (id, user_id, content, source, pinned, relevance_score, created_at, tsv, parent_id, chunk_index)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, to_tsvector($8::regconfig, $3), $9, $10)",
+            "INSERT INTO memory_chunks (id, content, source, pinned, relevance_score, created_at, tsv, parent_id, chunk_index)
+             VALUES ($1, $2, $3, $4, $5, $6, to_tsvector($7::regconfig, $2), $8, $9)",
         )
         .bind(id)
-        .bind(&chunk.user_id)
         .bind(&chunk.content)
         .bind(&chunk.source)
         .bind(chunk.pinned)
