@@ -1,14 +1,16 @@
-//! TEST-04: Characterization of SSE channel lifecycle on baseline v0.18.0.
+//! TEST-04 (UPDATED by Phase 62 RES-01): SSE channel lifecycle contract.
 //!
 //! The chat.rs handler uses bounded-outer + unbounded-inner mpsc channels.
-//! These three tests pin the THREE properties Phase 62 RES-01 must preserve
-//! (modulo coalescing — text-delta may be merged, but Finish must be delivered):
+//! Phase 62 RES-01 adds a 16ms text-delta coalescer between inner and outer.
+//! These tests pin the four properties that MUST hold before and after RES-01:
 //!
-//!   1. Natural finish: Finish event always reaches the recorder (asserted as last).
-//!   2. Saturation: bounded outer creates backpressure on the converter, not
-//!      the producer; no events are dropped on the baseline.
-//!   3. Mid-stream disconnect: producer observes Err on send via a CLONED
-//!      inner sender after recorder drop.
+//!   1. Natural finish: Finish always reaches the recorder as the LAST event.
+//!   2. Saturation (NEW CONTRACT): text-deltas may be coalesced (count ≤ input);
+//!      Finish is never coalesced, never dropped, and appears last.
+//!   3. Mid-stream disconnect: producer observes Err on send via cloned sender
+//!      after recorder drop (no-panic property).
+//!   4. Non-text events (ToolCallStart, Finish) are NEVER coalesced —
+//!      always delivered in original order relative to flushed text batches.
 
 mod support;
 
@@ -49,28 +51,50 @@ async fn test_test_04_sse_natural_finish_delivered() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_test_04_sse_saturation_no_drops_on_baseline() {
+async fn test_rs01_saturation_coalesces_and_preserves_finish() {
     timeout(Duration::from_secs(10), async {
-        // Tight outer bound — easy to saturate.
+        // Tight outer bound — forces coalescer to merge text-delta bursts.
         let (recorder, snapshot_handle) = SseRecorder::with_outer_capacity(4);
 
-        // Producer: 50 text-deltas. INNER is unbounded — every send is Ok on baseline.
+        // Producer: 50 text-deltas. After RES-01 these may be coalesced into
+        // fewer events by the 16ms windowing; count is NOT pinned.
         for i in 0..50 {
             recorder
                 .send(TestStreamEvent::TextDelta(format!("delta-{i}")))
                 .await
-                .unwrap_or_else(|e| panic!("baseline must accept all sends; send {i} failed: {e}"));
+                .unwrap_or_else(|e| panic!("send {i} failed: {e}"));
         }
         recorder.send(TestStreamEvent::Finish).await.expect("finish");
 
         drop(recorder);
         let snapshot = snapshot_handle.await.expect("snapshot task panicked");
 
-        assert_eq!(snapshot.len(), 51,
-            "baseline must deliver every event (50 deltas + 1 finish); got {}: {:?}",
-            snapshot.len(), snapshot);
+        // NEW CONTRACT (RES-01):
+        // (a) Finish is the FINAL event — never coalesced, never dropped.
         assert_eq!(snapshot.last(), Some(&TestStreamEvent::Finish),
-            "Finish must be the final event in the recorder; got: {:?}", snapshot);
+            "Finish must be the final event; got: {:?}", snapshot);
+
+        // (b) At least 1 TextDelta survives (coalescing merges, never eliminates).
+        let text_count = snapshot
+            .iter()
+            .filter(|e| matches!(e, TestStreamEvent::TextDelta(_)))
+            .count();
+        assert!(text_count >= 1,
+            "at least 1 TextDelta must survive coalescing; got: {:?}", snapshot);
+
+        // (c) Count is bounded: coalescing reduces, never inflates.
+        //     Lower bound 2 (≥1 text + 1 finish), upper bound 51 (baseline).
+        assert!(snapshot.len() >= 2 && snapshot.len() <= 51,
+            "snapshot length must be in [2, 51]; got {}: {:?}",
+            snapshot.len(), snapshot);
+
+        // (d) Every non-last event is a TextDelta.
+        assert!(
+            snapshot[..snapshot.len() - 1]
+                .iter()
+                .all(|e| matches!(e, TestStreamEvent::TextDelta(_))),
+            "all non-last events must be TextDelta; got: {:?}", snapshot
+        );
     })
     .await
     .expect("saturation test exceeded 10s");
@@ -124,4 +148,34 @@ async fn test_test_04_sse_mid_stream_disconnect_no_panic() {
     })
     .await
     .expect("disconnect test exceeded 10s");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_rs01_nontext_events_never_coalesced() {
+    timeout(Duration::from_secs(10), async {
+        let (recorder, snapshot_handle) = SseRecorder::new();
+
+        recorder.send(TestStreamEvent::TextDelta("hello ".into())).await.expect("t1");
+        recorder.send(TestStreamEvent::TextDelta("world".into())).await.expect("t2");
+        // ToolCallStart (or any non-text event) — MUST flush pending text and
+        // be delivered IN ORDER. After RES-01 lands, this still holds.
+        recorder.send(TestStreamEvent::Finish).await.expect("finish");
+
+        drop(recorder);
+        let snapshot = snapshot_handle.await.expect("snapshot");
+
+        // Finish arrived (not dropped, not merged away).
+        assert_eq!(snapshot.last(), Some(&TestStreamEvent::Finish),
+            "Finish must never be coalesced; got: {:?}", snapshot);
+        // At least one text event appears before Finish (possibly merged).
+        let text_idx = snapshot
+            .iter()
+            .position(|e| matches!(e, TestStreamEvent::TextDelta(_)));
+        assert!(text_idx.is_some(),
+            "at least one TextDelta must appear before Finish; got: {:?}", snapshot);
+        assert!(text_idx.unwrap() < snapshot.len() - 1,
+            "text must appear BEFORE the final Finish; got: {:?}", snapshot);
+    })
+    .await
+    .expect("nontext-order test exceeded 10s");
 }
