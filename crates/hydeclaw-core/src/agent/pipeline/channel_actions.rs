@@ -131,8 +131,17 @@ pub async fn execute_yaml_channel_action(
     tracing::info!(tool = %tool.name, bytes = data_bytes.len(), "channel action: got binary data");
 
     // --- Save image/media to uploads/ for UI display ---
+    // Phase 64 SEC-03: signed URL — key via HKDF from master, TTL from config.
     let file_marker = if ca.action == "send_photo" {
-        match ph::save_binary_to_uploads(&ctx.cfg.workspace_dir, &data_bytes, "image").await {
+        let upload_key = ctx.tex.secrets.get_upload_hmac_key();
+        let ttl_secs = ctx.cfg.app_config.uploads.signed_url_ttl_secs;
+        match ph::save_binary_to_uploads(
+            &ctx.cfg.workspace_dir,
+            &data_bytes,
+            "image",
+            &upload_key,
+            ttl_secs,
+        ).await {
             Ok((url, media_type)) => {
                 let meta = serde_json::json!({"url": url, "mediaType": media_type});
                 Some(format!("{}{}", crate::agent::engine::FILE_PREFIX, meta))

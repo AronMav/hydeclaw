@@ -1,6 +1,6 @@
 use axum::{
     Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
     routing::{get, post},
@@ -8,7 +8,21 @@ use axum::{
 use serde_json::json;
 
 use super::super::AppState;
-use crate::gateway::clusters::{AgentCore, ConfigServices};
+use crate::gateway::clusters::{AgentCore, AuthServices, ConfigServices};
+use crate::uploads::{verify_signed_url, SignedUploadQuery, UploadSignatureError};
+
+/// Query extractor for `?sig=&exp=`. Kept as a local `#[derive(Deserialize)]`
+/// struct so axum's `Query<T>` picks it up without leaking `SignedUploadQuery`
+/// (which is deliberately not `Deserialize`) into the leaf `uploads` module.
+///
+/// Declared `pub(crate)` so the clippy `private_interfaces` lint is satisfied —
+/// `api_media_serve` is itself `pub(crate)` and its signature mentions
+/// `Query<MediaQuery>`.
+#[derive(serde::Deserialize)]
+pub(crate) struct MediaQuery {
+    sig: Option<String>,
+    exp: Option<u64>,
+}
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -77,14 +91,54 @@ pub(crate) async fn api_media_upload(
     Json(json!({"url": url, "filename": filename, "size": data.len()})).into_response()
 }
 
-/// GET /uploads/{filename} — serve uploaded files (public, no auth)
+/// GET /uploads/{filename} — serve uploaded files.
+///
+/// Phase 64 SEC-03: HMAC-signed URL enforcement.
+///   * `cfg.uploads.require_signature = true`  → 403 when `?sig=&exp=` missing
+///   * `cfg.uploads.require_signature = false` (v0.19.0 grace) → unsigned OK,
+///     but a PRESENT signature is still validated (tampered → 403, expired → 410).
+///
+/// Signature payload contract: `HMAC-SHA256("{filename}:{exp}", upload_key)`
+/// with `upload_key = SecretsManager::get_upload_hmac_key()` (HKDF-derived).
 pub(crate) async fn api_media_serve(
     State(agents): State<AgentCore>,
+    State(cfg): State<ConfigServices>,
+    State(auth): State<AuthServices>,
     Path(filename): Path<String>,
+    Query(q): Query<MediaQuery>,
 ) -> impl IntoResponse {
     // Prevent path traversal
     if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
         return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    // Phase 64 SEC-03: signature gate (runs BEFORE filesystem read to prevent
+    // oracle attacks via NOT_FOUND timing).
+    let require = cfg.config.uploads.require_signature;
+    let sq = SignedUploadQuery { sig: q.sig.clone(), exp: q.exp };
+    if require || sq.sig.is_some() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let key = auth.secrets.get_upload_hmac_key();
+        match verify_signed_url(&filename, &sq, &key, now) {
+            Ok(()) => {}
+            Err(UploadSignatureError::Expired) => {
+                return StatusCode::GONE.into_response();
+            }
+            Err(UploadSignatureError::Invalid) => {
+                return StatusCode::FORBIDDEN.into_response();
+            }
+            Err(UploadSignatureError::Missing) => {
+                // Only reach here when require_signature=true (sq.sig.is_some()
+                // wouldn't return Missing). Grace mode is handled by the outer
+                // `if require || sq.sig.is_some()` gate skipping the verify call.
+                if require {
+                    return StatusCode::FORBIDDEN.into_response();
+                }
+            }
+        }
     }
 
     let workspace_dir = agents.deps.read().await.workspace_dir.clone();

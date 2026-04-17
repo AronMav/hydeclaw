@@ -59,6 +59,38 @@ pub struct AppConfig {
     /// Phase 62 RES-05 graceful-shutdown drain tuning (drain timeout).
     #[serde(default)]
     pub shutdown: ShutdownConfig,
+    /// Phase 64 SEC-03 upload URL signing config.
+    #[serde(default)]
+    pub uploads: UploadsConfig,
+}
+
+// ── UploadsConfig (Phase 64 SEC-03) ───────────────────────────────────────────
+
+/// Signed-URL configuration for `GET /uploads/*`.
+///
+/// Grace period: `require_signature=false` in v0.19.0 so existing clients that
+/// fetched unsigned URLs keep working. Flip to `true` in v0.19.1.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct UploadsConfig {
+    /// TTL for signed `/uploads` URLs (seconds). Default: 24 h (86_400 s).
+    #[serde(default = "default_signed_url_ttl")]
+    pub signed_url_ttl_secs: u64,
+    /// v0.19.0 grace period: accept unsigned URLs. Flip to `true` in v0.19.1
+    /// to enforce HMAC verification on every request.
+    #[serde(default = "default_require_signature")]
+    pub require_signature: bool,
+}
+
+fn default_signed_url_ttl() -> u64 { 86_400 }
+fn default_require_signature() -> bool { false }
+
+impl Default for UploadsConfig {
+    fn default() -> Self {
+        Self {
+            signed_url_ttl_secs: default_signed_url_ttl(),
+            require_signature: default_require_signature(),
+        }
+    }
 }
 
 // ── BackupConfig ──────────────────────────────────────────────────────────────
@@ -1368,6 +1400,47 @@ model = "m2.5"
         assert_eq!(cfg.max_tool_concurrency, 10);
         assert_eq!(cfg.request_timeout_secs, 180);
         assert_eq!(cfg.max_agent_turns, 5);
+    }
+
+    // ── 4d. UploadsConfig defaults (Phase 64 SEC-03) ──
+
+    #[test]
+    fn uploads_config_defaults() {
+        let cfg = UploadsConfig::default();
+        assert_eq!(cfg.signed_url_ttl_secs, 86_400);
+        assert!(!cfg.require_signature, "v0.19.0 grace period keeps this false");
+    }
+
+    #[test]
+    fn uploads_config_parses_custom_values() {
+        let toml_str = r#"
+[gateway]
+listen = "0.0.0.0:18789"
+
+[database]
+url = "postgres://localhost/test"
+
+[uploads]
+signed_url_ttl_secs = 3600
+require_signature = true
+"#;
+        let cfg: AppConfig = toml::from_str(toml_str).expect("parse");
+        assert_eq!(cfg.uploads.signed_url_ttl_secs, 3600);
+        assert!(cfg.uploads.require_signature);
+    }
+
+    #[test]
+    fn uploads_config_missing_section_uses_defaults() {
+        let toml_str = r#"
+[gateway]
+listen = "0.0.0.0:18789"
+
+[database]
+url = "postgres://localhost/test"
+"#;
+        let cfg: AppConfig = toml::from_str(toml_str).expect("parse");
+        assert_eq!(cfg.uploads.signed_url_ttl_secs, 86_400);
+        assert!(!cfg.uploads.require_signature);
     }
 
     // ── 4a. AgentSettings max_agent_turns defaults to None ──

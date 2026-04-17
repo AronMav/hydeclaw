@@ -28,6 +28,11 @@ pub struct SecretsManager {
     cipher: Arc<ChaCha20Poly1305>,
     db: PgPool,
     cache: Arc<RwLock<HashMap<(String, String), String>>>,
+    /// Phase 64 SEC-03: retained for HKDF-based key derivation (e.g. upload HMAC).
+    /// NEVER exposed publicly — every accessor MUST return a DERIVED key and the
+    /// raw bytes must not leave this module. Adding a `pub fn master_key_bytes()`
+    /// getter would defeat the HKDF domain-separation invariant.
+    master_key_bytes: [u8; 32],
 }
 
 /// Plaintext secret for portable backup (decrypted, re-encrypted on restore).
@@ -70,6 +75,11 @@ impl SecretsManager {
                 key_bytes.len()
             );
         }
+        // Phase 64 SEC-03: copy bytes into fixed array BEFORE cipher construction
+        // so the ChaCha20Poly1305 constructor doesn't consume them.
+        let mut master_key_bytes = [0u8; 32];
+        master_key_bytes.copy_from_slice(&key_bytes);
+
         let cipher = ChaCha20Poly1305::new_from_slice(&key_bytes)
             .map_err(|e| anyhow::anyhow!("failed to create cipher: {e}"))?;
 
@@ -77,6 +87,7 @@ impl SecretsManager {
             cipher: Arc::new(cipher),
             db,
             cache: Arc::new(RwLock::new(HashMap::new())),
+            master_key_bytes,
         })
     }
 
@@ -90,7 +101,19 @@ impl SecretsManager {
             cipher: Arc::new(cipher),
             db,
             cache: Arc::new(RwLock::new(HashMap::new())),
+            master_key_bytes: [0u8; 32],
         }
+    }
+
+    /// Phase 64 SEC-03: derive a 32-byte HMAC key for upload URL signing.
+    ///
+    /// HKDF-SHA256 expands the master key with `info = b"uploads-v1"` so
+    /// future key rotation (e.g. `"uploads-v2"` or sibling domains like
+    /// `"session-v1"`) never reuses the same derived key. The raw master
+    /// bytes NEVER leave this module — this accessor returns the HKDF
+    /// output, not the master itself.
+    pub fn get_upload_hmac_key(&self) -> [u8; 32] {
+        crate::uploads::derive_upload_key(&self.master_key_bytes)
     }
 
     /// Load all secrets from DB into cache. Called once at startup.
@@ -380,5 +403,42 @@ impl SecretsManager {
 
         tracing::info!(scope = %scope, "deleted all secrets for scope");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Phase 64 SEC-03: master_key_bytes retention + HKDF accessor contract.
+    ///
+    ///  * Same master key must produce the same derived upload HMAC key
+    ///    (determinism so signed URLs round-trip across restarts).
+    ///  * Different master keys must produce different derived keys
+    ///    (no leakage of a fixed constant).
+    ///  * HKDF expansion must NOT equal the input ikm (would defeat the
+    ///    domain separation — if `derive_upload_key(k) == k` the master
+    ///    would be leaking directly into the HMAC key, re-using the AEAD
+    ///    key as an HMAC key).
+    #[tokio::test]
+    async fn upload_hmac_key_derivation_is_deterministic_and_distinct() {
+        let hex_a = "00".repeat(32);
+        let hex_b = "01".repeat(32);
+        // `connect_lazy` requires a tokio runtime even if it never actually
+        // connects — hence the `#[tokio::test]` wrapper.
+        let db_a = PgPool::connect_lazy("postgres://invalid").unwrap();
+        let db_b = PgPool::connect_lazy("postgres://invalid").unwrap();
+        let sm_a = SecretsManager::new(&hex_a, db_a).unwrap();
+        let sm_b = SecretsManager::new(&hex_b, db_b).unwrap();
+
+        let k_a1 = sm_a.get_upload_hmac_key();
+        let k_a2 = sm_a.get_upload_hmac_key();
+        let k_b = sm_b.get_upload_hmac_key();
+
+        assert_eq!(k_a1, k_a2, "same master key must yield same HKDF output");
+        assert_ne!(k_a1, k_b, "different master keys must yield different HKDF output");
+        // Sanity: HKDF output of all-zero ikm must be nonzero after expand —
+        // otherwise we'd be returning the raw master instead of the HKDF okm.
+        assert_ne!(k_a1, [0u8; 32], "HKDF expand(all-zero ikm) must be nonzero");
     }
 }

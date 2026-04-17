@@ -203,11 +203,24 @@ async fn br_post(
 
 // ── Media helpers ───────────────────────────────────────────────
 
-/// Save binary data to workspace/uploads/ and return (public_url, media_type).
+/// Save binary data to workspace/uploads/ and return (signed_url, media_type).
+///
+/// Phase 64 SEC-03: the returned URL is HMAC-signed with a TTL so agent-emitted
+/// media (Telegram send_photo, send_voice) cannot be enumerated or replayed
+/// indefinitely. `upload_key` is the HKDF-derived per-domain key obtained via
+/// `SecretsManager::get_upload_hmac_key()`; callers MUST NOT pass raw master
+/// bytes here. `ttl_secs` is sourced from `[uploads] signed_url_ttl_secs` in
+/// hydeclaw.toml (default 24 h).
+///
+/// The URL is relative (`/uploads/{uuid}.{ext}?sig=…&exp=…`) so the UI and
+/// channel adapters append it to their own base. GET /uploads verifies the
+/// signature; see `crate::gateway::handlers::media::api_media_serve`.
 pub async fn save_binary_to_uploads(
     workspace_dir: &str,
     data: &[u8],
     hint: &str,
+    upload_key: &[u8; 32],
+    ttl_secs: u64,
 ) -> Result<(String, String)> {
     let uploads_dir = std::path::PathBuf::from(workspace_dir).join("uploads");
     tokio::fs::create_dir_all(&uploads_dir).await?;
@@ -220,8 +233,9 @@ pub async fn save_binary_to_uploads(
 
     tokio::fs::write(&path, data).await?;
 
-    let url = format!("/uploads/{}", filename);
-    tracing::info!(url = %url, media_type = %media_type, bytes = data.len(), "saved media to uploads");
+    // Phase 64 SEC-03: mint signed URL. Empty base → relative "/uploads/{file}?...".
+    let url = crate::uploads::mint_signed_url("", &filename, upload_key, ttl_secs);
+    tracing::info!(url = %url, media_type = %media_type, bytes = data.len(), "saved signed media to uploads");
     Ok((url, media_type))
 }
 
