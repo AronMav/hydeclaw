@@ -278,6 +278,18 @@ impl AgentEngine {
                     // terminates cleanly. StreamEvent::Error is reserved for top-level handle_sse
                     // failures (caught in chat.rs spawned task).
                     tracing::error!(error = %e, iteration, "SSE LLM call failed, returning fallback");
+                    // Task 19: persist partial_text from cancel-class LlmCallError before
+                    // surfacing the error, so cancellation never loses work already
+                    // produced. Only variants whose `partial_text()` returns a non-empty
+                    // string are persisted (ConnectTimeout/RequestTimeout carry none).
+                    persist_partial_if_any(
+                        &self.cfg().db,
+                        session_id,
+                        &self.cfg().agent.name,
+                        last_msg_id,
+                        &e,
+                    )
+                    .await;
                     let fallback = error_classify::format_user_error(&e);
                     if event_tx.send(StreamEvent::TextDelta(fallback.clone())).is_err() {
                         tracing::debug!("SSE event channel closed, engine continues for DB save");
@@ -622,6 +634,68 @@ impl AgentEngine {
         Ok(assistant_msg_id)
     }
 }
+
+/// Task 19: persist `partial_text` from a cancel-class `LlmCallError` before
+/// the error is surfaced, so cancellation never loses work already produced.
+///
+/// Behavior:
+/// * Downcasts `e` to `LlmCallError`. If the downcast fails, does nothing.
+/// * Only persists when `partial_text()` returns `Some` AND the string is
+///   non-empty. Variants without partial text (ConnectTimeout, RequestTimeout,
+///   Network, Server5xx, SchemaError, AuthError) are ignored — those are
+///   failover-worthy and the next route produces the final content.
+/// * `abort_reason()` supplies the stable short identifier written to
+///   `messages.abort_reason` (see migration 024).
+/// * DB insert failures are logged but do not mask the original LLM error —
+///   the caller still bubbles `e` up unchanged.
+///
+/// Shared by the SSE path (`engine_sse::handle_sse`) and the non-SSE path
+/// (`engine_execution::handle_with_status`).
+pub(super) async fn persist_partial_if_any(
+    db: &sqlx::PgPool,
+    session_id: uuid::Uuid,
+    agent_name: &str,
+    parent_message_id: uuid::Uuid,
+    e: &anyhow::Error,
+) {
+    let Some(llm_err) = e.downcast_ref::<crate::agent::providers::LlmCallError>() else {
+        return;
+    };
+    let (Some(partial), Some(reason)) = (llm_err.partial_text(), llm_err.abort_reason()) else {
+        return;
+    };
+    if partial.is_empty() {
+        return;
+    }
+    if let Err(persist_err) = crate::db::sessions::insert_assistant_partial(
+        db,
+        session_id,
+        Some(agent_name),
+        partial,
+        Some(reason),
+        Some(parent_message_id),
+    )
+    .await
+    {
+        // Persistence failure must never mask the LLM error. Log and drop.
+        tracing::warn!(
+            session_id = %session_id,
+            agent = %agent_name,
+            abort_reason = reason,
+            error = %persist_err,
+            "failed to persist partial assistant message on cancel; original LLM error still propagates"
+        );
+    } else {
+        tracing::info!(
+            session_id = %session_id,
+            agent = %agent_name,
+            abort_reason = reason,
+            bytes = partial.len().min(crate::db::sessions::MAX_PARTIAL_BYTES),
+            "persisted partial assistant message before surfacing cancel-class LLM error"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Regression guards for code review 2026-04-17. Terminal/identifier

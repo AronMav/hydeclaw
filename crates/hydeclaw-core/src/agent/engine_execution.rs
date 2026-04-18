@@ -204,6 +204,18 @@ impl AgentEngine {
                         }
                     }
                     tracing::error!(error = %e, iteration, "LLM call failed, returning fallback");
+                    // Task 19: persist partial_text from cancel-class LlmCallError before
+                    // surfacing. See engine_sse.rs for the matching hook in the streaming
+                    // path; the two share `persist_partial_if_any` mounted in the
+                    // `engine::sse_impl` submodule (path-included leaf).
+                    super::sse_impl::persist_partial_if_any(
+                        &self.cfg().db,
+                        session_id,
+                        &self.cfg().agent.name,
+                        last_msg_id,
+                        &e,
+                    )
+                    .await;
                     final_response = error_classify::format_user_error(&e);
                     break;
                 }

@@ -1045,8 +1045,73 @@ pub async fn save_message_branched(
     Ok(id)
 }
 
+/// Maximum bytes persisted for a partial assistant message produced before
+/// a cancel-class `LlmCallError` surfaced. Spec §5.
+pub const MAX_PARTIAL_BYTES: usize = 256 * 1024;
+
+/// Truncate `content` to at most `MAX_PARTIAL_BYTES`, respecting UTF-8
+/// char boundaries (never returns a slice that splits a codepoint).
+///
+/// Exposed as a pure helper so the truncation invariant can be unit-tested
+/// without a live database.
+pub fn truncate_partial(content: &str) -> &str {
+    if content.len() <= MAX_PARTIAL_BYTES {
+        return content;
+    }
+    // Walk back from the cap to the nearest char boundary so we never
+    // return a slice that splits a multi-byte UTF-8 codepoint.
+    let mut end = MAX_PARTIAL_BYTES;
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    &content[..end]
+}
+
+/// Persist a partial assistant message produced before a cancel-class
+/// `LlmCallError` surfaced. `content` is truncated to `MAX_PARTIAL_BYTES`.
+///
+/// `abort_reason` should come from `LlmCallError::abort_reason()` — stable
+/// short identifiers: `connect_timeout` | `inactivity` | `request_timeout`
+/// | `max_duration` | `user_cancelled` | `shutdown_drain`. Changing these
+/// strings breaks historical rows (see migration 024).
+///
+/// Inserts a row with `role = 'assistant'`, `status = 'aborted'`. The caller
+/// is responsible for deciding whether to call this — only variants whose
+/// `partial_text()` returns `Some` and is non-empty should be persisted.
+pub async fn insert_assistant_partial(
+    db: &PgPool,
+    session_id: Uuid,
+    agent_id: Option<&str>,
+    content: &str,
+    abort_reason: Option<&str>,
+    parent_message_id: Option<Uuid>,
+) -> Result<Uuid> {
+    let truncated = truncate_partial(content);
+    let id = Uuid::new_v4();
+    // `status = 'aborted'` is the same stable string as `db::usage::STATUS_ABORTED`
+    // (see migration 025). Not referenced here as a Rust constant because the
+    // `db` lib-facade (src/lib.rs) re-exports `db::sessions` as a leaf module
+    // without `db::usage`; pulling usage into sessions would cascade the lib
+    // surface. The schema pins the literal on the DB side.
+    sqlx::query(
+        "INSERT INTO messages (id, session_id, role, content, agent_id, status, abort_reason, parent_message_id) \
+         VALUES ($1, $2, 'assistant', $3, $4, 'aborted', $5, $6)",
+    )
+    .bind(id)
+    .bind(session_id)
+    .bind(truncated)
+    .bind(agent_id)
+    .bind(abort_reason)
+    .bind(parent_message_id)
+    .execute(db)
+    .await?;
+    Ok(id)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::{truncate_partial, MAX_PARTIAL_BYTES};
+
     #[test]
     fn message_row_has_thinking_blocks_field() {
         let _ = |row: super::MessageRow| {
@@ -1060,5 +1125,40 @@ mod tests {
             let _: Option<uuid::Uuid> = row.parent_message_id;
             let _: Option<uuid::Uuid> = row.branch_from_message_id;
         };
+    }
+
+    #[test]
+    fn truncate_partial_caps_at_256_kib() {
+        let content = "a".repeat(MAX_PARTIAL_BYTES + 100);
+        let out = truncate_partial(&content);
+        assert_eq!(out.len(), MAX_PARTIAL_BYTES);
+    }
+
+    #[test]
+    fn truncate_partial_passes_through_small_content() {
+        let content = "hello world";
+        let out = truncate_partial(content);
+        assert_eq!(out, content);
+    }
+
+    #[test]
+    fn truncate_partial_respects_char_boundary() {
+        // 4-byte codepoint repeated enough times that the raw cap falls
+        // inside a multi-byte sequence; truncation must walk back.
+        let glyph = "😀"; // 4 bytes
+        // Build a string whose length > MAX_PARTIAL_BYTES and where
+        // MAX_PARTIAL_BYTES is NOT a char boundary: 262_144 / 4 = 65_536
+        // (exact multiple — boundary lands cleanly), so we prepend one
+        // ASCII byte to force the boundary off.
+        let mut content = String::with_capacity(MAX_PARTIAL_BYTES + 8);
+        content.push('x'); // 1-byte prefix
+        while content.len() < MAX_PARTIAL_BYTES + 4 {
+            content.push_str(glyph);
+        }
+        let out = truncate_partial(&content);
+        // out.len() must be <= MAX_PARTIAL_BYTES and a valid UTF-8 prefix.
+        assert!(out.len() <= MAX_PARTIAL_BYTES);
+        // Round-tripping through str guarantees valid UTF-8 (panic otherwise).
+        assert!(std::str::from_utf8(out.as_bytes()).is_ok());
     }
 }
