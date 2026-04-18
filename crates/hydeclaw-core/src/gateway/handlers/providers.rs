@@ -148,6 +148,51 @@ fn validate_provider_options(options: Option<&Value>) -> Result<(), String> {
     opts.validate()
 }
 
+/// Pure-options validation for TTS `normalize_provider_id` field:
+/// checks the field is a well-formed UUID if present. DB-backed existence
+/// + type check happens in `validate_tts_options_db`.
+fn validate_tts_options_opts_only(options: &Value) -> Result<(), String> {
+    let id = match options.get("normalize_provider_id") {
+        Some(v) if !v.is_null() => v,
+        _ => return Ok(()),  // missing is fine
+    };
+    let s = id.as_str()
+        .ok_or_else(|| "normalize_provider_id must be a string (uuid)".to_string())?;
+    Uuid::parse_str(s)
+        .map_err(|e| format!("normalize_provider_id is not a valid uuid: {e}"))?;
+    Ok(())
+}
+
+/// Full DB-backed validation: UUID shape + provider exists + category=text.
+/// Called from api_create_provider / api_update_provider when category == "tts".
+async fn validate_tts_options_db(db: &PgPool, options: Option<&Value>) -> Result<(), String> {
+    let Some(opts) = options else { return Ok(()) };
+    validate_tts_options_opts_only(opts)?;
+    let id_str = match opts.get("normalize_provider_id") {
+        Some(v) if !v.is_null() => v.as_str().unwrap_or(""),
+        _ => return Ok(()),
+    };
+    let id = Uuid::parse_str(id_str).expect("already validated above");
+
+    // NB: DB column is `type` (Postgres reserved word handled by sqlx). The Rust
+    // struct ProviderRow renames it to `category`, but ad-hoc queries must use
+    // the actual column name. We compare the string to "text" (the value).
+    let row: Option<(String,)> = sqlx::query_as("SELECT type FROM providers WHERE id = $1")
+        .bind(id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| format!("db error checking normalize_provider_id: {e}"))?;
+    match row {
+        None => Err(format!(
+            "normalize_provider_id {id_str} does not reference an existing provider"
+        )),
+        Some((cat,)) if cat != "text" => Err(format!(
+            "normalize_provider_id {id_str} references a '{cat}' provider, expected 'text'"
+        )),
+        Some(_) => Ok(()),
+    }
+}
+
 pub(crate) async fn api_create_provider(
     State(infra): State<InfraServices>,
     State(auth): State<AuthServices>,
@@ -1031,6 +1076,29 @@ mod tests {
         assert!(!VALID_CAPABILITIES.contains(&"graph_extraction"));
         assert!(!VALID_CAPABILITIES.contains(&"compaction"));
         assert!(!VALID_CAPABILITIES.contains(&"text"));
+    }
+
+    #[test]
+    fn validate_tts_options_accepts_missing_field() {
+        // options without normalize_provider_id is fine
+        let opts = serde_json::json!({"voice": "nova"});
+        let res = validate_tts_options_opts_only(&opts);
+        assert!(res.is_ok(), "missing field should be ok, got {:?}", res);
+    }
+
+    #[test]
+    fn validate_tts_options_rejects_invalid_uuid() {
+        let opts = serde_json::json!({"normalize_provider_id": "not-a-uuid"});
+        let res = validate_tts_options_opts_only(&opts);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("uuid"), "expected uuid error");
+    }
+
+    #[test]
+    fn validate_tts_options_accepts_valid_uuid() {
+        let opts = serde_json::json!({"normalize_provider_id": "00000000-0000-0000-0000-000000000001"});
+        let res = validate_tts_options_opts_only(&opts);
+        assert!(res.is_ok(), "valid uuid should parse ok, got {:?}", res);
     }
 
     #[test]
