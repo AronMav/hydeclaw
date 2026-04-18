@@ -134,6 +134,8 @@ Agent opts in via TOML: `[agent.channel.telegram] enabled = true`
 
 PostgreSQL pgvector. Hybrid search: semantic (halfvec) + FTS. MMR reranking. Two tiers: raw (time-decay) + pinned permanent. Embedding is delegated to Toolgate (`POST /v1/embeddings`), which proxies to the configured embedding backend via the `providers` table. Core never calls Ollama or any embedding service directly. Config: `[memory]` section in `hydeclaw.toml` — no `embed_url`/`embed_model` keys (those are managed through the providers registry). `embed_dim` is auto-detected at startup.
 
+**Text normalization SoT:** canonical chunking lives in `crates/hydeclaw-text/` (used by both core and memory-worker). TTS-specific normalization (numbers→words, English→Cyrillic transliteration) lives in `toolgate/normalize.py` and is **NOT** reused for indexing — it is destructive for embedding/search by design.
+
 ### Secrets (`src/secrets.rs`)
 
 ChaCha20Poly1305 encryption, stored in `secrets` table. Resolution order: `(name, scope)` → `(name, "")` global → env var.
