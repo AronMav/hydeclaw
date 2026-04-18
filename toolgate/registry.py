@@ -217,3 +217,9 @@ class ProviderRegistry:
     def list_providers(self) -> dict[str, ProviderConfig]:
         with self._lock:
             return self.config.providers
+
+    def is_degraded(self) -> bool:
+        """True iff the last successful load produced zero providers.
+        When degraded, capability endpoints should return 503."""
+        with self._lock:
+            return not self._loaded
