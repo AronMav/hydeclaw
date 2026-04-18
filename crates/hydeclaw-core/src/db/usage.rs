@@ -2,6 +2,15 @@ use anyhow::Result;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// Status value for calls aborted without failover retry (max_duration,
+/// user_cancelled, shutdown_drain). Persisted to `usage_log.status`.
+/// Changing this string breaks migration 025's documented enum.
+pub const STATUS_ABORTED: &str = "aborted";
+
+/// Status value for calls aborted WITH failover to a sibling provider.
+/// Partial content was produced before the failover occurred.
+pub const STATUS_ABORTED_FAILOVER: &str = "aborted_failover";
+
 /// Record a single LLM call's token usage.
 pub async fn record_usage(
     db: &PgPool,
@@ -268,5 +277,12 @@ mod tests {
         // deepseek: $0.14/M input + $0.28/M output = $0.42
         let cost = estimate_cost("deepseek", "deepseek-chat", 1_000_000, 1_000_000);
         assert_eq!(cost, Some(0.42));
+    }
+
+    #[test]
+    fn aborted_status_constants_pinned() {
+        // Changing these strings requires migration 025 to be amended.
+        assert_eq!(STATUS_ABORTED, "aborted");
+        assert_eq!(STATUS_ABORTED_FAILOVER, "aborted_failover");
     }
 }
