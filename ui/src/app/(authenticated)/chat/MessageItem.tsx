@@ -32,6 +32,7 @@ import {
 import { ContinuationSeparator } from "@/components/chat/ContinuationSeparator";
 import { StepGroup } from "@/components/chat/StepGroup";
 import { ApprovalCard } from "@/components/chat/ApprovalCard";
+import { abortReasonLabel } from "@/components/chat/abort-reason-label";
 
 
 // ── Parts render cache (PERF-03) ───────────────────────────────────────────
@@ -270,6 +271,11 @@ function AssistantMessage({ message }: { message: ChatMessage }) {
         <div ref={animateRef} className="min-w-0 space-y-3">
           {hasParts ? renderedParts : <EmptyPartView />}
         </div>
+        {message.status === "aborted" && (
+          <p className="mt-2 text-xs italic text-muted-foreground">
+            {abortReasonLabel(message.abortReason)}
+          </p>
+        )}
       </div>
     </div>
   );
