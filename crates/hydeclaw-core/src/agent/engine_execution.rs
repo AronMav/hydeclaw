@@ -193,6 +193,38 @@ impl AgentEngine {
                             fallback_provider = self.create_fallback_provider().await;
                         }
                         if fallback_provider.is_some() {
+                            // Mirror the SSE path (`engine_sse.rs` fallback-switch
+                            // branch): before continuing to the fallback provider,
+                            // persist any partial_text the dying primary call
+                            // carried, bump timeout metrics, and record an
+                            // `aborted_failover` usage row — otherwise channel-
+                            // inbound and scheduled-job runs silently lose
+                            // observability for every engine-level failover
+                            // (the bug closed here was an asymmetry missed by
+                            // commit 59c52f2 which only wired the final-error
+                            // path on the non-SSE side).
+                            if let Some(partial_id) = super::sse_impl::persist_partial_if_any(
+                                &self.cfg().db,
+                                session_id,
+                                &self.cfg().agent.name,
+                                last_msg_id,
+                                &e,
+                            )
+                            .await
+                            {
+                                last_msg_id = partial_id;
+                            }
+                            super::sse_impl::record_llm_timeout_if_typed(&e);
+                            super::sse_impl::record_aborted_usage(
+                                &self.cfg().db,
+                                &self.cfg().agent.name,
+                                self.cfg().provider.name(),
+                                self.cfg().agent.model.as_str(),
+                                session_id,
+                                &e,
+                                super::sse_impl::UsageAbortStatus::AbortedFailover,
+                            )
+                            .await;
                             using_fallback = true;
                             consecutive_failures = 0;
                             tracing::warn!(
@@ -573,5 +605,87 @@ impl AgentEngine {
         );
 
         Ok(final_response)
+    }
+}
+
+#[cfg(test)]
+mod fallback_switch_symmetry_tests {
+    //! Static-text assertions that the engine-level fallback-switch
+    //! branch in `engine_execution.rs` (non-SSE path) calls the same
+    //! observability helpers as the matching branch in `engine_sse.rs`.
+    //!
+    //! Regression origin: commit `59c52f2` claimed "symmetry with the
+    //! SSE path" but only wired the final-error branch on the non-SSE
+    //! side; the fallback-switch branch kept silently `continue`ing
+    //! without persist / timeout / aborted-usage bookkeeping. Channel
+    //! inbound + scheduled-job runs therefore lost partial_text and
+    //! `aborted_failover` usage rows on every engine-level failover.
+    //!
+    //! These tests are fragile by design — they grep file contents —
+    //! because the symmetry is a cross-file invariant that no type
+    //! system catches. If future refactors move the calls, update the
+    //! test patterns rather than removing them.
+    const EXEC: &str = include_str!("engine_execution.rs");
+    const SSE: &str = include_str!("engine_sse.rs");
+
+    fn fallback_switch_slice(src: &str) -> &str {
+        let start = src
+            .find("switching to fallback provider after consecutive failures")
+            .expect("fallback-switch log line not found");
+        // The branch ends at the next `continue;` after the log line.
+        let rel_end = src[start..]
+            .find("continue;")
+            .expect("no `continue;` after fallback log");
+        // Widen the window back a bit so we include the helper calls
+        // that sit BEFORE the log line (both files emit them first).
+        let window_start = start.saturating_sub(2_000);
+        &src[window_start..start + rel_end]
+    }
+
+    #[test]
+    fn both_paths_persist_partial_in_fallback_switch() {
+        let exec_win = fallback_switch_slice(EXEC);
+        let sse_win = fallback_switch_slice(SSE);
+        assert!(
+            exec_win.contains("persist_partial_if_any"),
+            "engine_execution fallback-switch missing persist_partial_if_any",
+        );
+        assert!(
+            sse_win.contains("persist_partial_if_any"),
+            "engine_sse fallback-switch missing persist_partial_if_any",
+        );
+    }
+
+    #[test]
+    fn both_paths_record_llm_timeout_in_fallback_switch() {
+        let exec_win = fallback_switch_slice(EXEC);
+        let sse_win = fallback_switch_slice(SSE);
+        assert!(
+            exec_win.contains("record_llm_timeout_if_typed"),
+            "engine_execution fallback-switch missing record_llm_timeout_if_typed",
+        );
+        assert!(
+            sse_win.contains("record_llm_timeout_if_typed"),
+            "engine_sse fallback-switch missing record_llm_timeout_if_typed",
+        );
+    }
+
+    #[test]
+    fn both_paths_record_aborted_failover_in_fallback_switch() {
+        let exec_win = fallback_switch_slice(EXEC);
+        let sse_win = fallback_switch_slice(SSE);
+        // Both must call record_aborted_usage with the AbortedFailover
+        // variant — the engine-level switch is by definition a failover
+        // regardless of `is_failover_worthy()`.
+        assert!(
+            exec_win.contains("record_aborted_usage")
+                && exec_win.contains("UsageAbortStatus::AbortedFailover"),
+            "engine_execution fallback-switch missing record_aborted_usage(AbortedFailover)",
+        );
+        assert!(
+            sse_win.contains("record_aborted_usage")
+                && sse_win.contains("UsageAbortStatus::AbortedFailover"),
+            "engine_sse fallback-switch missing record_aborted_usage(AbortedFailover)",
+        );
     }
 }
