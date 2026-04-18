@@ -344,6 +344,27 @@ async fn main() -> Result<()> {
     // Migrate legacy providers → named connections (one-time, idempotent)
     crate::agent::providers::migrate_legacy_providers(&db_pool, &mut agent_configs).await;
 
+    // Migrate legacy inline-routing TOMLs → `connection = "<name>"` references
+    // (Tasks 20 + 21 — atomic write, backup, per-agent marker, crash recovery).
+    // Runs once at startup after DB migrations and before agent engines spawn.
+    {
+        let providers_snapshot = crate::db::providers::list_providers(&db_pool)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "providers list failed; TOML migrator will see empty DB");
+                Vec::new()
+            });
+        let agents_dir = std::path::PathBuf::from("config/agents");
+        let migrator = crate::agent::toml_migrator::TomlMigrator {
+            config_dir: &agents_dir,
+            db_providers: &providers_snapshot,
+        };
+        migrator
+            .migrate_all()
+            .await
+            .map_err(|e| anyhow::anyhow!("TOML routing migration failed: {e}"))?;
+    }
+
     // Auto-detect FTS language from first agent's language (if not explicitly configured)
     if cfg.memory.fts_language.is_none()
         && let Some(first) = agent_configs.first() {
