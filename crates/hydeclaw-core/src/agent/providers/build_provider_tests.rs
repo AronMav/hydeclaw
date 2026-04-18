@@ -140,6 +140,40 @@ async fn openai_new_from_row_honors_overrides_and_timeouts() {
 }
 
 #[tokio::test]
+async fn build_provider_rejects_invalid_options_connect_zero() {
+    // Issue A: `build_provider` now validates `ProviderOptions` via
+    // `opts.validate()`. A row with connect_secs = 0 (no upper bound on
+    // connect → unrecoverable) must be rejected with a clear error.
+    let row = make_row(json!({
+        "timeouts": { "connect_secs": 0 }
+    }));
+    let timeouts = TimeoutsConfig::default();
+    let secrets = Arc::new(SecretsManager::new_noop());
+    let cancel = tokio_util::sync::CancellationToken::new();
+
+    let result = build_provider(
+        &row,
+        secrets,
+        &timeouts,
+        cancel,
+        ProviderOverrides::default(),
+    );
+    let err = match result {
+        Ok(_) => panic!("must reject invalid options"),
+        Err(e) => e,
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains("connect_secs"),
+        "error should mention offending field: {msg}"
+    );
+    assert!(
+        msg.contains("invalid options"),
+        "error should be framed as invalid options: {msg}"
+    );
+}
+
+#[tokio::test]
 async fn openai_new_from_row_falls_back_to_defaults_without_overrides() {
     // When `ProviderOverrides::default()` is passed, the constructor must
     // fall back to the last-resort hardcoded defaults (0.7 / None) — NOT

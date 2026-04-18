@@ -404,14 +404,38 @@ impl LlmProvider for GoogleProvider {
 
         let start = std::time::Instant::now();
         let req = self.streaming_client.post(&url).json(&body);
-        let resp = req.send().await?;
+        let resp = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(anyhow::Error::new(super::classify_reqwest_err(
+                    e,
+                    "google",
+                    self.timeouts.connect_secs,
+                    self.timeouts.request_secs,
+                )));
+            }
+        };
 
         if !resp.status().is_success() {
+            let status = resp.status();
+            let code = status.as_u16();
             let retry_after = resp.headers()
                 .get("retry-after")
                 .and_then(|v| v.to_str().ok())
                 .map(std::string::ToString::to_string);
             let err_text = resp.text().await.unwrap_or_default();
+            if code == 401 || code == 403 {
+                return Err(anyhow::Error::new(crate::agent::providers::LlmCallError::AuthError {
+                    provider: "google".to_string(),
+                    status: code,
+                }));
+            }
+            if code >= 500 {
+                return Err(anyhow::Error::new(crate::agent::providers::LlmCallError::Server5xx {
+                    provider: "google".to_string(),
+                    status: code,
+                }));
+            }
             if let Some(ra) = retry_after {
                 anyhow::bail!("google API error (retry-after: {ra}): {err_text}");
             }
@@ -495,10 +519,6 @@ impl LlmProvider for GoogleProvider {
                 },
                 CancelReason::ShutdownDrain => LlmCallError::ShutdownDrain {
                     partial_text: full_content.clone(),
-                },
-                CancelReason::ConnectTimeout { elapsed_secs } => LlmCallError::ConnectTimeout {
-                    provider: self.name().to_string(),
-                    elapsed_secs,
                 },
             };
             return Err(anyhow::Error::new(err));

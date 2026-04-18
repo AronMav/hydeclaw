@@ -32,7 +32,7 @@ pub use timeouts::TimeoutsConfig;
 
 pub mod error;
 #[allow(unused_imports)] // first consumer arrives in Task 12 (build_provider)
-pub use error::{LlmCallError, CancelReason};
+pub use error::{LlmCallError, CancelReason, classify_reqwest_err};
 
 #[cfg(test)]
 mod routing_tests;
@@ -921,6 +921,17 @@ pub fn build_provider(
     let opts: timeouts::ProviderOptions =
         serde_json::from_value(row.options.clone()).unwrap_or_default();
     timeouts::warn_unknown_keys(&row.name, &opts);
+
+    // Validate options on every construction (spec §4.3). Catches malformed
+    // timeouts persisted before validation was wired up OR snuck past the
+    // PUT /api/providers endpoint via a code path that bypasses validation.
+    if let Err(msg) = opts.validate() {
+        anyhow::bail!(
+            "provider `{}` has invalid options: {}",
+            row.name,
+            msg
+        );
+    }
 
     match row.provider_type.as_str() {
         "anthropic" => {

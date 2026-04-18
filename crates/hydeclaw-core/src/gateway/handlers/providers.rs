@@ -133,6 +133,21 @@ pub(crate) struct CreateProviderBody {
     pub api_key: Option<String>,
 }
 
+/// Validate a persisted `options` blob as `ProviderOptions` and enforce
+/// `timeouts` ranges. Returns a 400-ready error string on failure.
+/// Spec §4.3: "validate runs on every load and on every PUT /api/providers write."
+fn validate_provider_options(options: Option<&Value>) -> Result<(), String> {
+    let Some(raw) = options else { return Ok(()) };
+    // Missing `options` or `null` is valid (defaults apply).
+    if raw.is_null() {
+        return Ok(());
+    }
+    let opts: crate::agent::providers::timeouts::ProviderOptions =
+        serde_json::from_value(raw.clone())
+            .map_err(|e| format!("invalid options JSON: {e}"))?;
+    opts.validate()
+}
+
 pub(crate) async fn api_create_provider(
     State(infra): State<InfraServices>,
     State(auth): State<AuthServices>,
@@ -155,6 +170,12 @@ pub(crate) async fn api_create_provider(
     if body.category == "text" && body.default_model.as_ref().is_none_or(std::string::String::is_empty) {
         return (StatusCode::BAD_REQUEST, Json(json!({
             "error": "default_model is required for type=text"
+        }))).into_response();
+    }
+    // Validate ProviderOptions if supplied (timeouts ranges etc.)
+    if let Err(msg) = validate_provider_options(body.options.as_ref()) {
+        return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": format!("invalid options: {msg}")
         }))).into_response();
     }
 
@@ -231,6 +252,12 @@ pub(crate) async fn api_update_provider(
     {
         return (StatusCode::BAD_REQUEST, Json(json!({
             "error": format!("invalid type '{}', must be one of: {}", cat, VALID_TYPES.join(", "))
+        }))).into_response();
+    }
+    // Validate ProviderOptions if supplied (timeouts ranges etc.)
+    if let Err(msg) = validate_provider_options(body.options.as_ref()) {
+        return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": format!("invalid options: {msg}")
         }))).into_response();
     }
 

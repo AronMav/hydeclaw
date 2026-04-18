@@ -453,16 +453,27 @@ impl LlmProvider for OpenAiCompatibleProvider {
         if !api_key.is_empty() {
             req = req.bearer_auth(&api_key);
         }
-        let resp = req.send().await?;
+        let resp = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(anyhow::Error::new(super::classify_reqwest_err(
+                    e,
+                    &self.provider_name,
+                    self.timeouts.connect_secs,
+                    self.timeouts.request_secs,
+                )));
+            }
+        };
 
         if !resp.status().is_success() {
             let status = resp.status();
+            let code = status.as_u16();
             let retry_after = resp.headers()
                 .get("retry-after")
                 .and_then(|v| v.to_str().ok())
                 .map(std::string::ToString::to_string);
             let err_text = resp.text().await.unwrap_or_default();
-            if status.as_u16() == 400 {
+            if code == 400 {
                 let body_preview = serde_json::to_string(&body).unwrap_or_default();
                 let mut end = body_preview.len().min(4000);
                 while end > 0 && !body_preview.is_char_boundary(end) { end -= 1; }
@@ -472,6 +483,20 @@ impl LlmProvider for OpenAiCompatibleProvider {
                     request_body = %truncated,
                     "400 Bad Request (stream) — dumping request body for diagnosis"
                 );
+            }
+            // Typed classification for response status errors: feeds
+            // RoutingProvider failover + AuthError cooldown floor.
+            if code == 401 || code == 403 {
+                return Err(anyhow::Error::new(LlmCallError::AuthError {
+                    provider: self.provider_name.clone(),
+                    status: code,
+                }));
+            }
+            if code >= 500 {
+                return Err(anyhow::Error::new(LlmCallError::Server5xx {
+                    provider: self.provider_name.clone(),
+                    status: code,
+                }));
             }
             if let Some(ra) = retry_after {
                 anyhow::bail!("{} API error (retry-after: {}): {}", self.provider_name, ra, err_text);
@@ -569,10 +594,29 @@ impl LlmProvider for OpenAiCompatibleProvider {
                             }
                         }
                         Err(e) => {
+                            // Issue C (SchemaError): on the FIRST parse failure
+                            // before any text has been streamed, surface a typed
+                            // pre-stream SchemaError so RoutingProvider can fail
+                            // over (at_bytes=0 ⇒ failover-worthy per spec §4.4).
+                            // Once content has already streamed, continue-and-skip
+                            // to preserve the in-progress response (subsequent
+                            // noise like heartbeats also lands here harmlessly).
+                            if full_content.is_empty() {
+                                tracing::warn!(
+                                    provider = %self.provider_name,
+                                    error = %e,
+                                    "SSE parse failed pre-stream, classifying as SchemaError"
+                                );
+                                return Err(anyhow::Error::new(LlmCallError::SchemaError {
+                                    provider: self.provider_name.clone(),
+                                    detail: e.to_string(),
+                                    at_bytes: 0,
+                                }));
+                            }
                             tracing::debug!(
                                 provider = %self.provider_name,
                                 error = %e,
-                                "failed to parse SSE chunk, skipping"
+                                "failed to parse SSE chunk mid-stream, skipping"
                             );
                             continue;
                         }
@@ -604,10 +648,6 @@ impl LlmProvider for OpenAiCompatibleProvider {
                 },
                 CancelReason::ShutdownDrain => LlmCallError::ShutdownDrain {
                     partial_text: full_content.clone(),
-                },
-                CancelReason::ConnectTimeout { elapsed_secs } => LlmCallError::ConnectTimeout {
-                    provider: self.name().to_string(),
-                    elapsed_secs,
                 },
             };
             return Err(anyhow::Error::new(err));

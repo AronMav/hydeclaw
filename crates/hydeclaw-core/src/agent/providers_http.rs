@@ -242,10 +242,6 @@ pub async fn parse_sse_stream(
             CancelReason::ShutdownDrain => LlmCallError::ShutdownDrain {
                 partial_text: partial_text.clone(),
             },
-            CancelReason::ConnectTimeout { elapsed_secs } => LlmCallError::ConnectTimeout {
-                provider: provider_name.to_string(),
-                elapsed_secs,
-            },
         };
         return Err(anyhow::Error::new(err));
     }
