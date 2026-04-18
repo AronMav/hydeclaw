@@ -38,6 +38,18 @@ pub fn set_and_cancel(slot: &CancelSlot, token: &CancellationToken, reason: Canc
     token.cancel();
 }
 
+/// Materializes the "shutdown drain" classification before the root
+/// cancellation token is cancelled. The drain handler MUST call this
+/// helper BEFORE `token.cancel()` so the `cancellable_stream` producer
+/// observes `ShutdownDrain` rather than defaulting to `UserCancelled`
+/// when the external-cancel arm wakes.
+///
+/// Safe to call repeatedly; `OnceCell` semantics mean subsequent calls
+/// are silent no-ops (first winner wins).
+pub fn set_shutdown_drain_reason(slot: &CancelSlot, token: &CancellationToken) {
+    set_and_cancel(slot, token, CancelReason::ShutdownDrain);
+}
+
 use async_stream::stream;
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt};
@@ -87,11 +99,15 @@ where
             tokio::select! {
                 _ = producer_cancel.cancelled() => {
                     // External cancel (user Stop, shutdown drain, or engine-level abort).
-                    // The timers fire via set_and_cancel — if the slot is still empty
-                    // when we wake here, the cancel came from outside the helper and
-                    // we classify it as UserCancelled. ShutdownDrain is a specialization
-                    // that the caller wires separately before the token is cancelled.
-                    let _ = producer_slot.set(CancelReason::UserCancelled);
+                    // Timers fire via `set_and_cancel`, so if the slot already holds a
+                    // reason (InactivityTimeout / MaxDurationExceeded / ShutdownDrain
+                    // via `set_shutdown_drain_reason`) we MUST NOT overwrite it —
+                    // `OnceCell::set` would Err but we keep the guard explicit for
+                    // clarity and for the case where the caller pre-set the slot.
+                    // Only default to UserCancelled when the slot is still empty.
+                    if producer_slot.get().is_none() {
+                        let _ = producer_slot.set(CancelReason::UserCancelled);
+                    }
                     break;
                 }
                 _ = tokio::time::sleep_until(start + max_duration), if max_duration_enabled => {
@@ -128,19 +144,22 @@ where
         }
     });
 
+    // Consumer stream: drains the mpsc without racing `cancel.cancelled()`.
+    // The producer task above is the SOLE writer to `slot`; when it handles
+    // cancel it drops `tx`, and the consumer reads `None` from `rx.recv()`.
+    // That ordering guarantees `slot.get()` is populated by the time the
+    // stream yields EOF to the caller, so downstream providers that read
+    // `slot` after the stream ends never observe the window where the token
+    // was cancelled but the slot had not yet been set. Racing the token
+    // here directly reintroduced that gap (consumer could break before the
+    // producer scheduled) — see commit log for the regression history.
     stream! {
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled() => break,
-                item = rx.recv() => {
-                    match item {
-                        Some(Ok(bytes)) => yield Ok(bytes),
-                        Some(Err(e)) => {
-                            yield Err(e);
-                            break;
-                        }
-                        None => break,
-                    }
+        while let Some(item) = rx.recv().await {
+            match item {
+                Ok(bytes) => yield Ok(bytes),
+                Err(e) => {
+                    yield Err(e);
+                    break;
                 }
             }
         }
@@ -352,5 +371,107 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(400)).await;
         }
         assert!(slot.get().is_none(), "slow consumer must not trigger inactivity");
+    }
+
+    /// Regression: consumer used to race `cancel.cancelled()` in its own
+    /// `select!`, which could break before the producer's cancel arm wrote
+    /// the slot. The provider would then read `slot.get() == None` and
+    /// silently reclassify the user cancel as a successful empty response.
+    /// After the fix the consumer only drains `rx.recv()`, and the producer
+    /// (sole writer) always sets the slot before dropping `tx`.
+    #[tokio::test]
+    async fn producer_writes_slot_before_consumer_sees_eof_on_external_cancel() {
+        // Run the scenario many times to catch intermittent ordering bugs.
+        for _ in 0..32 {
+            let token = CancellationToken::new();
+            let slot = CancelSlot::new();
+            let timeouts = crate::agent::providers::TimeoutsConfig {
+                connect_secs: 10,
+                request_secs: 120,
+                stream_inactivity_secs: 60,
+                stream_max_duration_secs: 3600,
+            };
+            // Source streams forever (pending) — no natural EOF.
+            let inner = chunk_stream(vec![("alpha", Duration::from_millis(10))]);
+            let out = stream_with_cancellation(inner, token.clone(), slot.clone(), timeouts);
+            let mut out = Box::pin(out);
+
+            // Receive the first chunk so the stream is live.
+            let _ = tokio::time::timeout(Duration::from_millis(200), out.next())
+                .await
+                .expect("first chunk must arrive");
+
+            // External cancel from an outside task.
+            token.cancel();
+
+            // Drain the consumer — it must reach EOF (None) because the
+            // producer drops `tx` after setting the slot.
+            while out.next().await.is_some() {}
+
+            // By the time the consumer saw EOF, the slot MUST be populated.
+            assert!(
+                slot.get().is_some(),
+                "producer must have written the slot before consumer EOF"
+            );
+            assert_eq!(
+                slot.get(),
+                Some(CancelReason::UserCancelled),
+                "external cancel without a pre-written slot classifies as UserCancelled"
+            );
+        }
+    }
+
+    /// Regression: the cancel arm used to unconditionally `slot.set(UserCancelled)`
+    /// which, while technically safe (OnceCell::set Err), conveyed the wrong
+    /// intent. The guarded form keeps pre-set reasons (e.g. `ShutdownDrain`
+    /// wired by a drain handler before `token.cancel()`) intact.
+    #[tokio::test]
+    async fn cancel_arm_preserves_pre_set_shutdown_drain() {
+        let token = CancellationToken::new();
+        let slot = CancelSlot::new();
+        let timeouts = crate::agent::providers::TimeoutsConfig {
+            connect_secs: 10,
+            request_secs: 120,
+            stream_inactivity_secs: 60,
+            stream_max_duration_secs: 3600,
+        };
+        let inner = chunk_stream(vec![("x", Duration::from_millis(10))]);
+        let out = stream_with_cancellation(inner, token.clone(), slot.clone(), timeouts);
+        let mut out = Box::pin(out);
+        let _ = tokio::time::timeout(Duration::from_millis(200), out.next())
+            .await
+            .unwrap();
+
+        // Drain handler wires the reason BEFORE cancelling the token.
+        set_shutdown_drain_reason(&slot, &token);
+
+        // Consumer drains naturally; producer should observe token cancelled
+        // but slot already set → skips the UserCancelled default.
+        while out.next().await.is_some() {}
+
+        assert_eq!(
+            slot.get(),
+            Some(CancelReason::ShutdownDrain),
+            "pre-set ShutdownDrain must survive the cancel arm's default"
+        );
+    }
+
+    /// `set_shutdown_drain_reason` is the public helper callers use so they
+    /// don't have to know the slot-before-cancel ordering rule.
+    #[tokio::test]
+    async fn set_shutdown_drain_reason_sets_then_cancels() {
+        let slot = CancelSlot::new();
+        let token = CancellationToken::new();
+
+        let observer_slot = slot.clone();
+        let observer_token = token.clone();
+        let task = tokio::spawn(async move {
+            observer_token.cancelled().await;
+            observer_slot.get()
+        });
+
+        set_shutdown_drain_reason(&slot, &token);
+        let reason = task.await.unwrap();
+        assert_eq!(reason, Some(CancelReason::ShutdownDrain));
     }
 }
