@@ -26,6 +26,13 @@ pub struct OpenAiCompatibleProvider {
     model: ModelOverride,
     temperature: f64,
     max_tokens: Option<u32>,
+    /// Per-provider timeout knobs (connect / request / stream inactivity / stream max).
+    /// Consumed by `stream_with_cancellation` in `chat_stream`.
+    timeouts: super::TimeoutsConfig,
+    /// Cooperative cancellation token shared with the streaming producer task.
+    /// Engine-level shutdown or user cancel flips this; the stream drains and
+    /// `chat_stream` surfaces a typed `LlmCallError`.
+    cancel: tokio_util::sync::CancellationToken,
 }
 
 impl OpenAiCompatibleProvider {
@@ -56,14 +63,16 @@ impl OpenAiCompatibleProvider {
             model: ModelOverride::new(model),
             temperature,
             max_tokens,
+            // Legacy constructors (fallback / CLI build-failure paths) get defaults.
+            // Real runtime wiring flows through `new_from_row` + `build_provider`.
+            timeouts: super::TimeoutsConfig::default(),
+            cancel: tokio_util::sync::CancellationToken::new(),
         }
     }
 
-    /// Task 12 stub: build an `OpenAiCompatibleProvider` from a `ProviderRow`.
-    /// Delegates to `::new(..)` so runtime behavior is identical to the legacy
-    /// `create_provider_from_connection` code path — `timeouts` + `cancel` are
-    /// accepted for signature compatibility but are currently unused; they'll
-    /// be threaded through `stream_with_cancellation` in Task 13.
+    /// Build an `OpenAiCompatibleProvider` from a `ProviderRow`, storing the
+    /// shared `cancel` token + typed `timeouts` so `chat_stream` can thread
+    /// them into `stream_with_cancellation`.
     #[allow(dead_code)] // consumed by super::build_provider
     pub(crate) fn new_from_row(
         row: &crate::db::providers::ProviderRow,
@@ -72,7 +81,6 @@ impl OpenAiCompatibleProvider {
         cancel: tokio_util::sync::CancellationToken,
         opts: super::timeouts::ProviderOptions,
     ) -> anyhow::Result<Self> {
-        let _ = (timeouts, cancel); // Tasks 13-16 consume these
         let meta = super::PROVIDER_TYPES
             .iter()
             .find(|pt| pt.id == row.provider_type);
@@ -106,6 +114,8 @@ impl OpenAiCompatibleProvider {
         }
 
         provider.provider_name = row.provider_type.clone();
+        provider.timeouts = timeouts;
+        provider.cancel = cancel;
         Ok(provider)
     }
 
@@ -439,21 +449,29 @@ impl LlmProvider for OpenAiCompatibleProvider {
         let mut finish_reason: Option<String> = None;
 
         use tokio_stream::StreamExt;
+        use crate::agent::providers::{CancelSlot, LlmCallError, cancellable_stream::stream_with_cancellation};
 
-        let mut byte_stream = resp.bytes_stream();
+        let slot = CancelSlot::new();
+        let byte_stream = stream_with_cancellation(
+            resp.bytes_stream(),
+            self.cancel.clone(),
+            slot.clone(),
+            self.timeouts,
+        );
+        let mut byte_stream = std::pin::pin!(byte_stream);
         'outer: loop {
-            let chunk_result = match tokio::time::timeout(
-                std::time::Duration::from_secs(30),
-                StreamExt::next(&mut byte_stream),
-            ).await {
-                Ok(Some(result)) => result,
-                Ok(None) => break 'outer, // stream ended normally
-                Err(_) => {
-                    tracing::warn!(provider = %self.provider_name, "SSE stream stalled for 30s, using accumulated content");
-                    break 'outer;
+            let chunk_result = match StreamExt::next(&mut byte_stream).await {
+                Some(r) => r,
+                None => break 'outer, // stream ended (either clean EOF or cancelled — slot tells us which)
+            };
+            let chunk_bytes = match chunk_result {
+                Ok(b) => b,
+                Err(e) => {
+                    // Bubble as anyhow wrapping typed Network variant — Task 17 routing
+                    // can downcast to LlmCallError and decide failover.
+                    return Err(anyhow::Error::new(LlmCallError::from(e)));
                 }
             };
-            let chunk_bytes = chunk_result?;
             buffer.push_str(&String::from_utf8_lossy(&chunk_bytes));
 
             while let Some(line_end) = buffer.find('\n') {
@@ -521,6 +539,38 @@ impl LlmProvider for OpenAiCompatibleProvider {
                     }
                 }
             }
+        }
+
+        // Stream exited. If cancellation fired, surface the typed reason with
+        // the partial text we already streamed — callers can downcast to
+        // `LlmCallError` and either persist a partial assistant turn
+        // (user_cancelled / shutdown_drain / max_duration / inactivity) or
+        // treat it as failover-worthy (see `LlmCallError::is_failover_worthy`).
+        if let Some(reason) = slot.get() {
+            use crate::agent::providers::error::CancelReason;
+            let err = match reason {
+                CancelReason::InactivityTimeout { silent_secs } => LlmCallError::InactivityTimeout {
+                    provider: self.name().to_string(),
+                    silent_secs,
+                    partial_text: full_content.clone(),
+                },
+                CancelReason::MaxDurationExceeded { elapsed_secs } => LlmCallError::MaxDurationExceeded {
+                    provider: self.name().to_string(),
+                    elapsed_secs,
+                    partial_text: full_content.clone(),
+                },
+                CancelReason::UserCancelled => LlmCallError::UserCancelled {
+                    partial_text: full_content.clone(),
+                },
+                CancelReason::ShutdownDrain => LlmCallError::ShutdownDrain {
+                    partial_text: full_content.clone(),
+                },
+                CancelReason::ConnectTimeout { elapsed_secs } => LlmCallError::ConnectTimeout {
+                    provider: self.name().to_string(),
+                    elapsed_secs,
+                },
+            };
+            return Err(anyhow::Error::new(err));
         }
 
         let elapsed = start.elapsed();
