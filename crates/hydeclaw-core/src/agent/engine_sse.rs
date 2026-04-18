@@ -250,6 +250,33 @@ impl AgentEngine {
                             fallback_provider = self.create_fallback_provider().await;
                         }
                         if fallback_provider.is_some() {
+                            // Issue D: the engine-level fallback-provider switch
+                            // is distinct from RoutingProvider failover. Before
+                            // switching to the fallback, persist any partial_text
+                            // carried by the dying call's typed LlmCallError (and
+                            // record an aborted_failover usage row) so work
+                            // produced by the primary isn't lost when we re-ask
+                            // the fallback.
+                            if let Some(partial_id) = persist_partial_if_any(
+                                &self.cfg().db,
+                                session_id,
+                                &self.cfg().agent.name,
+                                last_msg_id,
+                                &e,
+                            )
+                            .await
+                            {
+                                last_msg_id = partial_id;
+                            }
+                            record_aborted_usage(
+                                &self.cfg().db,
+                                &self.cfg().agent.name,
+                                self.cfg().provider.name(),
+                                self.cfg().agent.model.as_str(),
+                                session_id,
+                                &e,
+                            )
+                            .await;
                             using_fallback = true;
                             consecutive_failures = 0;
                             tracing::warn!(
@@ -298,6 +325,20 @@ impl AgentEngine {
                     {
                         last_msg_id = partial_id;
                     }
+                    // Issue B: record aborted/aborted_failover usage row so the
+                    // STATUS_ABORTED* constants have runtime writers (spec §4.6).
+                    // The provider here is the one currently in use (primary or
+                    // engine-level fallback, since this path runs after the
+                    // fallback-switch block above).
+                    record_aborted_usage(
+                        &self.cfg().db,
+                        &self.cfg().agent.name,
+                        if using_fallback { "fallback" } else { self.cfg().provider.name() },
+                        self.cfg().agent.model.as_str(),
+                        session_id,
+                        &e,
+                    )
+                    .await;
                     let fallback = error_classify::format_user_error(&e);
                     if event_tx.send(StreamEvent::TextDelta(fallback.clone())).is_err() {
                         tracing::debug!("SSE event channel closed, engine continues for DB save");
@@ -711,6 +752,73 @@ pub(super) async fn persist_partial_if_any(
             );
             None
         }
+    }
+}
+
+/// Issue B: record an `aborted` / `aborted_failover` row in `usage_log` when
+/// an LLM call is terminated before it could complete naturally (spec §4.6).
+///
+/// - `aborted_failover`: the error is failover-worthy AND the typed
+///   `LlmCallError` carried non-empty `partial_text`. Tokens were produced
+///   by the primary provider before a sibling was attempted.
+/// - `aborted`: the error is non-failover-worthy OR there is no partial text,
+///   but the call still resulted in some token emission before termination.
+/// - If the error is neither a typed LlmCallError nor carries partial text,
+///   no row is written (the call produced nothing to bill for).
+///
+/// Token count is estimated as `partial_text.len() / 4` (rough bytes-per-token
+/// heuristic for pre-tokenizer failures). Input tokens are left as 0 since the
+/// call was aborted before usage headers arrived.
+///
+/// The write is fire-and-forget — DB failures are logged at debug level so
+/// they never mask the caller's LLM error handling path.
+pub(super) async fn record_aborted_usage(
+    db: &sqlx::PgPool,
+    agent_name: &str,
+    provider_name: &str,
+    model: &str,
+    session_id: uuid::Uuid,
+    e: &anyhow::Error,
+) {
+    use crate::db::usage::{STATUS_ABORTED, STATUS_ABORTED_FAILOVER};
+    let Some(llm_err) = e.downcast_ref::<crate::agent::providers::LlmCallError>() else {
+        return;
+    };
+    let partial = llm_err.partial_text().unwrap_or("");
+    let is_failover = llm_err.is_failover_worthy() && !partial.is_empty();
+    let status = if is_failover { STATUS_ABORTED_FAILOVER } else { STATUS_ABORTED };
+    let est_output_tokens = (partial.len() / 4).min(u32::MAX as usize) as u32;
+    if let Err(err) = sqlx::query(
+        "INSERT INTO usage_log (agent_id, provider, model, input_tokens, output_tokens, session_id, status) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    )
+    .bind(agent_name)
+    .bind(provider_name)
+    .bind(model)
+    .bind(0_i32)
+    .bind(est_output_tokens as i32)
+    .bind(session_id)
+    .bind(status)
+    .execute(db)
+    .await
+    {
+        tracing::debug!(
+            session_id = %session_id,
+            agent = %agent_name,
+            provider = %provider_name,
+            status = %status,
+            error = %err,
+            "failed to record aborted usage row (non-fatal)"
+        );
+    } else {
+        tracing::debug!(
+            session_id = %session_id,
+            agent = %agent_name,
+            provider = %provider_name,
+            status = %status,
+            est_output_tokens,
+            "recorded aborted usage row"
+        );
     }
 }
 
