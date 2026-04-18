@@ -341,7 +341,9 @@ async fn main() -> Result<()> {
     }
     tracing::info!(agents = agent_configs.len(), "agent configs loaded");
 
-    // Migrate legacy providers → named connections (one-time, idempotent)
+    // Migrate legacy providers → named connections (one-time, idempotent).
+    // This mutates both the DB (inserts provider rows) AND the in-memory +
+    // on-disk agent TOMLs (sets `provider_connection`).
     crate::agent::providers::migrate_legacy_providers(&db_pool, &mut agent_configs).await;
 
     // Migrate legacy inline-routing TOMLs → `connection = "<name>"` references
@@ -364,6 +366,18 @@ async fn main() -> Result<()> {
             .await
             .map_err(|e| anyhow::anyhow!("TOML routing migration failed: {e}"))?;
     }
+
+    // Issue E: the TOML migrator above may have rewritten agent TOMLs on disk
+    // (e.g. hoisting legacy inline-routing into `connection = "<name>"`). The
+    // `agent_configs` we loaded at the start of this block predates those
+    // rewrites, so every engine spawned from it would consume unmigrated data
+    // until the next restart. Re-read the configs now that both migrators have
+    // settled the on-disk representation.
+    agent_configs = config::load_agent_configs("config/agents")?;
+    tracing::info!(
+        agents = agent_configs.len(),
+        "agent configs re-loaded after TOML migration"
+    );
 
     // Auto-detect FTS language from first agent's language (if not explicitly configured)
     if cfg.memory.fts_language.is_none()
