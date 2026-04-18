@@ -91,10 +91,9 @@ function ScrollToBottomButton({
   onClick,
   ariaLabel,
 }: {
-  /** Driven by `autoFollow === "off"` — not by layout proximity.
-   * Appears only after the user explicitly scrolled away from the
-   * tail (wheel / touch / keyboard). Transient layout flips during
-   * rapid streaming do NOT toggle this. */
+  /** Driven by `!isAtTail` — sentinel IO geometrically confirms the
+   * viewport has left the tail. Clears automatically when the user
+   * scrolls back to the bottom (IO fires true). */
   visible: boolean;
   isStreaming: boolean;
   newTokenCount: number;
