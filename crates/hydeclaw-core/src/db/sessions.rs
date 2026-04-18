@@ -250,7 +250,7 @@ pub async fn load_messages(
         Some(lim) => {
             sqlx::query_as::<_, MessageRow>(
                 "SELECT * FROM (\
-                   SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks, parent_message_id, branch_from_message_id \
+                   SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks, parent_message_id, branch_from_message_id, abort_reason \
                    FROM messages WHERE session_id = $1 \
                    ORDER BY created_at DESC LIMIT $2\
                  ) sub ORDER BY created_at ASC",
@@ -262,7 +262,7 @@ pub async fn load_messages(
         }
         None => {
             sqlx::query_as::<_, MessageRow>(
-                "SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks, parent_message_id, branch_from_message_id \
+                "SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks, parent_message_id, branch_from_message_id, abort_reason \
                  FROM messages WHERE session_id = $1 \
                  ORDER BY created_at ASC",
             )
@@ -294,6 +294,12 @@ pub struct MessageRow {
     pub parent_message_id: Option<Uuid>,
     #[sqlx(default)]
     pub branch_from_message_id: Option<Uuid>,
+    /// Abort reason for messages with status='aborted'. NULL for completed
+    /// messages. Stable identifiers pinned in `LlmCallError::abort_reason()`:
+    /// connect_timeout | inactivity | request_timeout | max_duration |
+    /// user_cancelled | shutdown_drain.
+    #[sqlx(default)]
+    pub abort_reason: Option<String>,
 }
 
 /// Insert or update a streaming assistant message (called every ~2s during LLM response).
@@ -826,7 +832,7 @@ pub async fn export_session(db: &PgPool, session_id: Uuid) -> sqlx::Result<Optio
 
     // 2. Fetch all messages ordered by created_at ASC
     let messages = sqlx::query_as::<_, MessageRow>(
-        "SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks, parent_message_id, branch_from_message_id \
+        "SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks, parent_message_id, branch_from_message_id, abort_reason \
          FROM messages WHERE session_id = $1 \
          ORDER BY created_at ASC",
     )
@@ -931,10 +937,10 @@ pub async fn load_branch_messages(
     // Use a recursive CTE to walk the parent chain from leaf to root
     let rows = sqlx::query_as::<_, MessageRow>(
         "WITH RECURSIVE chain AS (\
-           SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks, parent_message_id, branch_from_message_id \
+           SELECT id, role, content, tool_calls, tool_call_id, created_at, agent_id, feedback, edited_at, status, thinking_blocks, parent_message_id, branch_from_message_id, abort_reason \
            FROM messages WHERE id = $1 AND session_id = $2 \
            UNION ALL \
-           SELECT m.id, m.role, m.content, m.tool_calls, m.tool_call_id, m.created_at, m.agent_id, m.feedback, m.edited_at, m.status, m.thinking_blocks, m.parent_message_id, m.branch_from_message_id \
+           SELECT m.id, m.role, m.content, m.tool_calls, m.tool_call_id, m.created_at, m.agent_id, m.feedback, m.edited_at, m.status, m.thinking_blocks, m.parent_message_id, m.branch_from_message_id, m.abort_reason \
            FROM messages m INNER JOIN chain c ON m.id = c.parent_message_id WHERE m.session_id = $2\
          ) SELECT * FROM chain ORDER BY created_at ASC",
     )
