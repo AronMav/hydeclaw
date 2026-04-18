@@ -1,22 +1,19 @@
 """Embedding endpoint - proxies to active embedding provider."""
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 import logging
+
+from dependencies import require_provider
 
 log = logging.getLogger(__name__)
 router = APIRouter()
 
 
 @router.post("/v1/embeddings")
-async def embeddings(request: Request):
-    registry = request.app.state.registry
-    provider = registry.get_active("embedding")
-    if provider is None:
-        return JSONResponse(
-            status_code=503,
-            content={"error": "no active embedding provider"},
-        )
-
+async def embeddings(
+    request: Request,
+    provider=Depends(require_provider("embedding")),
+):
     body = await request.json()
     texts = body.get("input", [])
     model = body.get("model")

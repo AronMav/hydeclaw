@@ -16,17 +16,36 @@
 import { describe, it, expect, vi } from "vitest";
 import { attachUserScrollUpDetection } from "../user-scroll-detection";
 
-/** Minimal EventTarget-like stand-in so we don't need jsdom just for this. */
+/** Minimal EventTarget-like stand-in so we don't need jsdom just for this.
+ *
+ * Matches the structural `EventTargetLike` signature that the helper
+ * expects (addEventListener / removeEventListener with
+ * `EventListenerOrEventListenerObject`). The stub only uses the
+ * callable form because the helper never passes an object listener. */
 function makeScroller() {
-  const listeners = new Map<string, Set<(e: Event) => void>>();
+  const listeners = new Map<string, Set<EventListener>>();
   return {
-    addEventListener: vi.fn((type: string, fn: (e: Event) => void) => {
-      if (!listeners.has(type)) listeners.set(type, new Set());
-      listeners.get(type)!.add(fn);
-    }),
-    removeEventListener: vi.fn((type: string, fn: (e: Event) => void) => {
-      listeners.get(type)?.delete(fn);
-    }),
+    addEventListener: vi.fn(
+      (
+        type: string,
+        fn: EventListenerOrEventListenerObject,
+        _options?: boolean | AddEventListenerOptions,
+      ) => {
+        if (typeof fn !== "function") return;
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type)!.add(fn);
+      },
+    ),
+    removeEventListener: vi.fn(
+      (
+        type: string,
+        fn: EventListenerOrEventListenerObject,
+        _options?: boolean | EventListenerOptions,
+      ) => {
+        if (typeof fn !== "function") return;
+        listeners.get(type)?.delete(fn);
+      },
+    ),
     fire: (type: string, event: Event) => {
       for (const fn of listeners.get(type) ?? []) fn(event);
     },

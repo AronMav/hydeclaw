@@ -29,9 +29,9 @@ def require_provider(capability: str):
 def degraded_response(exc: _DegradedResponse) -> JSONResponse:
     """Build the 503 JSON response for a `_DegradedResponse`."""
     hint = (
-        f"Core API is unreachable — configure a {exc.capability} provider once Core recovers."
+        f"Core API is unreachable — {exc.capability} endpoints will resume once Core recovers"
         if exc.degraded
-        else f"configure a {exc.capability} provider in Core UI"
+        else f"no {exc.capability} provider is active — configure one in Core UI"
     )
     return JSONResponse(
         status_code=503,

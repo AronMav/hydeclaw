@@ -83,7 +83,7 @@ async def test_stt_endpoint_returns_structured_503_when_degraded(monkeypatch):
     body = resp.json()
     assert body["error"] == "no_stt_provider"
     assert body["degraded"] is True
-    assert "provider" in body["hint"].lower()
+    assert "core" in body["hint"].lower() or "recover" in body["hint"].lower()
 
 
 @pytest.mark.asyncio
@@ -101,3 +101,22 @@ async def test_tts_endpoint_also_uses_structured_503(monkeypatch):
         resp = client.post("/v1/audio/speech", json={"input": "test"})
     assert resp.status_code == 503
     assert resp.json()["error"] == "no_tts_provider"
+
+
+@pytest.mark.asyncio
+async def test_embedding_endpoint_uses_structured_503(monkeypatch):
+    """Embedding endpoint must also return structured 503 (was using inline error before fix)."""
+    async def _empty_load():
+        return ProvidersConfig()
+
+    monkeypatch.setattr("registry.aload_config", _empty_load)
+    import importlib
+    import app as app_module
+    importlib.reload(app_module)
+
+    with TestClient(app_module.app) as client:
+        resp = client.post("/v1/embeddings", json={"input": "hello"})
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["error"] == "no_embedding_provider"
+    assert body["degraded"] is True

@@ -11,6 +11,12 @@ import { RoleAvatar } from "./ChatThread";
 import { MessageItem } from "./MessageItem";
 import { runScrollToBottom } from "./scroll-to-bottom";
 import { attachUserScrollUpDetection } from "./user-scroll-detection";
+import {
+  INITIAL_AUTO_FOLLOW,
+  nextAutoFollow,
+  type AutoFollowEvent,
+  type AutoFollowState,
+} from "./auto-follow-fsm";
 import { AgentTransitionDivider } from "@/components/chat/AgentTransitionDivider";
 import { useAuthStore } from "@/stores/auth-store";
 import { useSessions } from "@/lib/queries";
@@ -85,19 +91,23 @@ function ThinkingMessage() {
 // ── Scroll-to-bottom button ─────────────────────────────────────────────────
 
 function ScrollToBottomButton({
-  isAtBottom,
+  visible,
   isStreaming,
   newTokenCount,
   onClick,
   ariaLabel,
 }: {
-  isAtBottom: boolean;
+  /** Driven by `autoFollow === "off"` — not by layout proximity.
+   * Appears only after the user explicitly scrolled away from the
+   * tail (wheel / touch / keyboard). Transient layout flips during
+   * rapid streaming do NOT toggle this. */
+  visible: boolean;
   isStreaming: boolean;
   newTokenCount: number;
   onClick: () => void;
   ariaLabel: string;
 }) {
-  if (isAtBottom) return null;
+  if (!visible) return null;
 
   const badge = newTokenCount > 99 ? "99+" : newTokenCount > 0 ? String(newTokenCount) : null;
 
@@ -185,11 +195,31 @@ export function MessageList({
   const { t } = useTranslation();
   const turnLimitMessage = useTurnLimitMessage();
   const virtuosoRef = useRef<VirtuosoHandle>(null);
-  const [isAtBottom, setIsAtBottom] = useState(true);
-  const isAtBottomRef = useRef(true);
-  // Track whether user manually scrolled up (wheel/touch) vs content growth pushing us up
-  const userScrolledUpRef = useRef(false);
-  // Track tokens received while user is scrolled up (SCRL-03)
+
+  // ── Auto-follow FSM ────────────────────────────────────────────────────────
+  // Single source of truth for "should the viewport chase the tail?".
+  // Decoupled from `isAtBottom` (layout measurement) — only user intent
+  // events transition off, only explicit rejoin actions transition on.
+  // See `./auto-follow-fsm.ts` + 2026-04-18-auto-follow-fsm-design.md.
+  const [autoFollow, setAutoFollow] = useState<AutoFollowState>(INITIAL_AUTO_FOLLOW);
+  const autoFollowRef = useRef<AutoFollowState>(INITIAL_AUTO_FOLLOW);
+  const dispatchAutoFollow = useCallback((event: AutoFollowEvent) => {
+    const prev = autoFollowRef.current;
+    const next = nextAutoFollow(prev, event);
+    if (next === prev) return;
+    // Update ref synchronously so Virtuoso callbacks / ResizeObserver
+    // reading `autoFollowRef` in the same tick see the latest value.
+    // React state update re-renders consumers that depend on `autoFollow`.
+    autoFollowRef.current = next;
+    setAutoFollow(next);
+  }, []);
+
+  // `isAtBottom` remains as a layout-proximity indicator, used ONLY to
+  // reset the missed-token badge when the user physically catches up
+  // to the tail. It no longer gates auto-scroll behavior.
+  const [, setIsAtBottom] = useState(true);
+
+  // Track tokens received while auto-follow is off (SCRL-03).
   const [missedTokens, setMissedTokens] = useState(0);
   const missedTokensRef = useRef(0); // shadow ref to avoid stale closure in effect
 
@@ -240,8 +270,11 @@ export function MessageList({
 
     const ro = new ResizeObserver(() => {
       const newHeight = scroller.scrollHeight;
-      if (newHeight > prevHeight && isAtBottomRef.current && !userScrolledUpRef.current) {
-        // Content grew and we were at bottom → scroll down
+      if (newHeight > prevHeight && autoFollowRef.current === "on") {
+        // Content grew and auto-follow is on → chase the tail.
+        // Note: we DO NOT check `isAtBottom` here. Under rapid streaming
+        // that signal flips false while Virtuoso is still catching up;
+        // gating on it froze the scroll mid-stream.
         requestAnimationFrame(() => {
           virtuosoRef.current?.scrollToIndex({ index: virtualItemsLenRef.current - 1, behavior: "auto" });
         });
@@ -261,7 +294,7 @@ export function MessageList({
     // for user scrolls when streaming content grew faster than scroll
     // animation. See `./user-scroll-detection.ts` for the full contract.
     const detachInput = attachUserScrollUpDetection(scroller, () => {
-      userScrolledUpRef.current = true;
+      dispatchAutoFollow({ type: "user_scroll_up" });
     });
 
     return () => {
@@ -270,12 +303,12 @@ export function MessageList({
     };
   }, []); // Stable effect — reads current length from ref
 
-  // ── SCRL-03: count tokens that arrived while user was scrolled up ────────────
+  // ── SCRL-03: count tokens that arrived while auto-follow is off ────────────
   const prevPartsLenRef = useRef(0);
   useEffect(() => {
     // Compute total parts across all live messages (proxy for token arrivals)
     const totalParts = virtualItems.reduce((acc, m) => acc + m.parts.length, 0);
-    if (totalParts > prevPartsLenRef.current && userScrolledUpRef.current) {
+    if (totalParts > prevPartsLenRef.current && autoFollowRef.current === "off") {
       const delta = totalParts - prevPartsLenRef.current;
       missedTokensRef.current += delta;
       setMissedTokens(missedTokensRef.current);
@@ -288,14 +321,12 @@ export function MessageList({
   useEffect(() => {
     if (prevSessionIdRef.current !== activeSessionId) {
       prevSessionIdRef.current = activeSessionId;
-      userScrolledUpRef.current = false;
-      isAtBottomRef.current = true;
-      setIsAtBottom(true);
+      dispatchAutoFollow({ type: "session_switched" });
       // Wait for Virtuoso to process new data, then scroll to absolute bottom
       const t = setTimeout(() => virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: "smooth" }), 200);
       return () => clearTimeout(t);
     }
-  }, [activeSessionId]);
+  }, [activeSessionId, dispatchAutoFollow]);
 
   // Force scroll when stream starts (user submitted a message)
   const prevStreamingRef = useRef(isStreaming);
@@ -303,21 +334,20 @@ export function MessageList({
     const streamJustStarted = !prevStreamingRef.current && isStreaming;
     prevStreamingRef.current = isStreaming;
     if (streamJustStarted && virtualItems.length > 0) {
-      userScrolledUpRef.current = false;
+      dispatchAutoFollow({ type: "stream_started" });
       missedTokensRef.current = 0;
       setMissedTokens(0);
       virtuosoRef.current?.scrollToIndex({ index: virtualItems.length - 1, behavior: "smooth" });
     }
-  }, [isStreaming, virtualItems.length]);
+  }, [isStreaming, virtualItems.length, dispatchAutoFollow]);
 
   const scrollToBottom = useCallback(() => {
+    dispatchAutoFollow({ type: "user_requested_tail" });
     runScrollToBottom(virtuosoRef.current);
-    isAtBottomRef.current = true;
-    setIsAtBottom(true);
     // SCRL-03: reset missed token counter
     missedTokensRef.current = 0;
     setMissedTokens(0);
-  }, []);
+  }, [dispatchAutoFollow]);
 
   const virtuosoComponents = useMemo(() => ({
     Header: () => <VirtuosoHeader hiddenCount={hiddenCount} onLoadEarlier={onLoadEarlier} />,
@@ -352,25 +382,18 @@ export function MessageList({
         alignToBottom
         skipAnimationFrameInResizeObserver
         followOutput={() => {
-          // During streaming: always follow unless user explicitly scrolled up.
+          // Single source of truth: auto-follow FSM. No branching on
+          // `isStreaming` or `isAtBottom` — intent alone decides.
           // Use "auto" (instant) not "smooth" — smooth animation lags behind rapid token updates.
-          if (isStreaming && !userScrolledUpRef.current) return "auto";
-          // Not streaming: follow only if at bottom
-          return isAtBottomRef.current ? "smooth" : false;
+          return autoFollowRef.current === "on" ? "auto" : false;
         }}
         atBottomStateChange={(atBottom) => {
-          isAtBottomRef.current = atBottom;
           setIsAtBottom(atBottom);
           if (atBottom) {
-            // User caught up to the live tail — clear any earlier
-            // "abandoned auto-follow" flag and reset the missed-token
-            // counter. `userScrolledUpRef` is now set exclusively by
-            // explicit user input (wheel / touch / PageUp etc.) via
-            // the listeners in the ResizeObserver effect above; we do
-            // NOT flip it here from `atBottom=false` because that
-            // signal fires transiently while Virtuoso itself programmatically
-            // scrolls to catch up with rapid token arrivals.
-            userScrolledUpRef.current = false;
+            // User physically reached the tail (natural scroll catch-up
+            // or programmatic scroll settled). Rejoin auto-follow and
+            // clear the missed-token badge.
+            dispatchAutoFollow({ type: "reached_tail" });
             missedTokensRef.current = 0;
             setMissedTokens(0);
           }
@@ -422,7 +445,7 @@ export function MessageList({
       />
 
       <ScrollToBottomButton
-        isAtBottom={isAtBottom}
+        visible={autoFollow === "off"}
         isStreaming={isStreaming}
         newTokenCount={missedTokens}
         onClick={scrollToBottom}
