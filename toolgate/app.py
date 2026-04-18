@@ -47,6 +47,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+from dependencies import _DegradedResponse, degraded_response
+
+
+@app.exception_handler(_DegradedResponse)
+async def _degraded_exception_handler(_request, exc: _DegradedResponse):
+    return degraded_response(exc)
+
+
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")
 INTERNAL_NETWORK = os.environ.get("INTERNAL_NETWORK", "127.0.0.0/8")
 TRUSTED_PROXIES = os.environ.get("TRUSTED_PROXIES", "")

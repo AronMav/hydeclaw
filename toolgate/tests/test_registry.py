@@ -60,3 +60,44 @@ async def test_health_reports_degraded_and_capabilities(monkeypatch):
     assert body["loaded_providers"] == 0
     assert set(body["capabilities"].keys()) == {"stt", "tts", "vision", "imagegen", "embedding"}
     assert all(v is False for v in body["capabilities"].values())
+
+
+@pytest.mark.asyncio
+async def test_stt_endpoint_returns_structured_503_when_degraded(monkeypatch):
+    """When no STT provider is active, /transcribe-url returns structured 503.
+    Exercises require_provider() — which all capability endpoints route through."""
+    async def _empty_load():
+        return ProvidersConfig()
+
+    monkeypatch.setattr("registry.aload_config", _empty_load)
+    import importlib
+    import app as app_module
+    importlib.reload(app_module)
+
+    with TestClient(app_module.app) as client:
+        resp = client.post(
+            "/transcribe-url",
+            json={"audio_url": "http://example/x.mp3"},
+        )
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["error"] == "no_stt_provider"
+    assert body["degraded"] is True
+    assert "provider" in body["hint"].lower()
+
+
+@pytest.mark.asyncio
+async def test_tts_endpoint_also_uses_structured_503(monkeypatch):
+    """Verify the shared dependency produces correct capability-scoped error for TTS too."""
+    async def _empty_load():
+        return ProvidersConfig()
+
+    monkeypatch.setattr("registry.aload_config", _empty_load)
+    import importlib
+    import app as app_module
+    importlib.reload(app_module)
+
+    with TestClient(app_module.app) as client:
+        resp = client.post("/v1/audio/speech", json={"input": "test"})
+    assert resp.status_code == 503
+    assert resp.json()["error"] == "no_tts_provider"
