@@ -1,4 +1,5 @@
 use crate::tasks::MemoryTask;
+use hydeclaw_text::split_text;
 use sqlx::PgPool;
 use serde_json::json;
 
@@ -351,40 +352,10 @@ async fn embed_and_insert(
     Ok(())
 }
 
-/// Simple text splitter (mirrors core chunker).
-fn split_text(text: &str, max_chars: usize, overlap: usize) -> Vec<String> {
-    if text.len() <= max_chars {
-        return vec![text.to_string()];
-    }
-    let overlap = overlap.min(max_chars / 2);
-    let mut chunks = Vec::new();
-    let mut start = 0;
-    while start < text.len() {
-        let mut end = (start + max_chars).min(text.len());
-        while end > start && !text.is_char_boundary(end) { end -= 1; }
-        if end >= text.len() {
-            chunks.push(text[start..].to_string());
-            break;
-        }
-        let slice = &text[start..end];
-        let split_at = ["\n\n", "\n", ". "]
-            .iter()
-            .find_map(|sep| slice.rfind(sep).filter(|&p| p > 0).map(|p| start + p + sep.len()))
-            .unwrap_or(end);
-        chunks.push(text[start..split_at].to_string());
-        let new_start = split_at.saturating_sub(overlap);
-        start = if new_start > start { new_start } else { split_at };
-        while start < text.len() && !text.is_char_boundary(start) { start += 1; }
-    }
-    chunks.retain(|c| !c.is_empty());
-    if chunks.is_empty() { chunks.push(String::new()); }
-    chunks
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::split_text;
 
     #[tokio::test]
     async fn collect_skips_excluded_dirs() {
@@ -414,58 +385,4 @@ mod tests {
         assert_eq!(files.len(), 2);
     }
 
-    #[test]
-    fn test_split_short_text() {
-        let text = "Hello world";
-        let chunks = split_text(text, 100, 10);
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0], text);
-    }
-
-    #[test]
-    fn test_split_long_text() {
-        // Build a text longer than max_chars
-        let text = "a".repeat(200);
-        let chunks = split_text(&text, 50, 10);
-        assert!(chunks.len() > 1, "expected multiple chunks for long text");
-        // Every chunk should be non-empty
-        for chunk in &chunks {
-            assert!(!chunk.is_empty());
-        }
-    }
-
-    #[test]
-    fn test_split_empty() {
-        let chunks = split_text("", 100, 10);
-        assert_eq!(chunks, vec![""]);
-    }
-
-    #[test]
-    fn test_split_utf8_boundary() {
-        // "Привет" is 2 bytes per char (Cyrillic), total 12 bytes for 6 chars
-        let text = "Привет мир! ".repeat(20); // ~240 bytes
-        // max_chars = 50 sits in the middle of a multibyte char boundary area
-        let chunks = split_text(&text, 50, 10);
-        // The function must not panic and all chunks must be valid UTF-8
-        for chunk in &chunks {
-            assert!(std::str::from_utf8(chunk.as_bytes()).is_ok());
-        }
-    }
-
-    #[test]
-    fn test_split_overlap() {
-        // Use paragraph separators so the splitter can find natural break points
-        let para = "word ".repeat(100); // 500 chars per para
-        let text = format!("{}\n\n{}", para, para);
-        let chunks = split_text(&text, 600, 100);
-        // With overlap, later chunks should share some content with earlier ones
-        if chunks.len() >= 2 {
-            let end_of_first = &chunks[0][chunks[0].len().saturating_sub(100)..];
-            let start_of_second = &chunks[1][..chunks[1].len().min(200)];
-            assert!(
-                start_of_second.contains(end_of_first.trim()),
-                "expected overlap between chunks"
-            );
-        }
-    }
 }
