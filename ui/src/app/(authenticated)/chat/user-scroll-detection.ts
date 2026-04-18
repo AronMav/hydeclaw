@@ -1,25 +1,43 @@
 /**
  * User-initiated scroll-up detection for the chat Virtuoso scroller.
  *
- * Context: auto-follow during streaming is gated on
- * `!userScrolledUpRef.current`. The flag must flip to `true` ONLY when
- * the user actually scrolls up, never when Virtuoso programmatically
- * scrolls to catch up with rapid token arrivals.
+ * Context: auto-follow is gated on the FSM in `./auto-follow-fsm.ts`.
+ * The FSM must transition `on → off` ONLY when the user actually pulls
+ * the viewport away from the live tail, never when Virtuoso or the
+ * ResizeObserver path does a programmatic catch-up scroll.
  *
- * The previous implementation used Virtuoso's `isScrolling(false)` callback
- * with a "am I at bottom right now?" check. That signal fires for BOTH
- * user scrolls and programmatic follow-output scrolls — under rapid
- * streaming it transiently reports `isAtBottom=false` during programmatic
- * catch-up, falsely marking the flag and freezing auto-follow.
+ * History:
+ * 1. First attempt: Virtuoso's `isScrolling(false)` + "am I at bottom?"
+ *    — false positives during rapid streaming because the at-bottom
+ *    signal flipped while programmatic follow was still catching up.
+ * 2. Second attempt: wheel / touch / keyboard input-event detection —
+ *    false positives from macOS touchpad inertia-tail (tiny negative
+ *    deltaY events after the user stops), from `keydown` bubbling
+ *    when focus landed on a button inside a message, and from
+ *    touch-move smoothing on iOS.
+ * 3. Current: raw `scroll` event + net `scrollTop` delta. A negative
+ *    delta beyond a small threshold means the viewport actually moved
+ *    UP — that is the ground truth for user scroll-up regardless of
+ *    modality (wheel, touchpad, keyboard, scrollbar drag, pinch, etc).
+ *    Programmatic scrolls (Virtuoso follow-output, ResizeObserver
+ *    scroll-to-bottom, manual scroll-to-bottom button) only ever
+ *    INCREASE scrollTop, so they cannot fire a false positive.
  *
- * The reliable signal is raw input events (wheel / touch / keyboard) on
- * the scroller. We listen passively so we never block the actual scroll.
- *
- * Exported as a pure function so the contract is unit-testable without a
- * full component render (see `__tests__/user-scroll-detection.test.ts`).
+ * Exported as a pure function so the contract is unit-testable without
+ * a full component render (see
+ * `__tests__/user-scroll-detection.test.ts`).
  */
 
-type EventTargetLike = {
+/** Minimum scrollTop decrease (in pixels) that counts as a deliberate
+ * user scroll-up. Anything smaller is treated as jitter — browser
+ * subpixel rounding, overflow-anchor adjustments, layout reflow during
+ * rapid streaming. 10 px is smaller than a single wheel tick on every
+ * platform so a real wheel-up always clears this; large enough to
+ * swallow the 1–2 px noise from anchor-based content growth. */
+const SCROLL_UP_THRESHOLD_PX = 10;
+
+type ScrollerLike = {
+  scrollTop: number;
   addEventListener: (
     type: string,
     listener: EventListenerOrEventListenerObject,
@@ -32,55 +50,26 @@ type EventTargetLike = {
   ) => void;
 };
 
-/** Keys that scroll the content up and therefore signal user intent to
- * leave the live tail. `PageDown` / `ArrowDown` / `End` scroll DOWN and
- * must not trip the flag. */
-const SCROLL_UP_KEYS = new Set(["PageUp", "ArrowUp", "Home"]);
-
-/** Minimum finger travel (px) to register a touch-scroll as user intent.
- * Below this threshold we ignore jitter from a stationary touch. */
-const TOUCH_SCROLL_THRESHOLD_PX = 5;
-
-/** Attach input listeners that call `onUserScrolledUp` when the user
- * explicitly scrolls up via wheel, touch-drag, or keyboard. Returns a
- * teardown function that removes all listeners. */
+/** Attach a `scroll` listener that calls `onUserScrolledUp` when the
+ * viewport's `scrollTop` decreases by more than the jitter threshold.
+ * Returns a teardown function that removes the listener. */
 export function attachUserScrollUpDetection(
-  scroller: EventTargetLike,
+  scroller: ScrollerLike,
   onUserScrolledUp: () => void,
 ): () => void {
-  const onWheel = (e: Event) => {
-    const we = e as WheelEvent;
-    if (we.deltaY < 0) onUserScrolledUp();
-  };
-
-  let touchStartY: number | null = null;
-  const onTouchStart = (e: Event) => {
-    const te = e as TouchEvent;
-    touchStartY = te.touches[0]?.clientY ?? null;
-  };
-  const onTouchMove = (e: Event) => {
-    const te = e as TouchEvent;
-    const y = te.touches[0]?.clientY ?? null;
-    if (touchStartY !== null && y !== null && y > touchStartY + TOUCH_SCROLL_THRESHOLD_PX) {
-      // Finger moved DOWN the screen, which scrolls content UP.
+  let prevTop = scroller.scrollTop;
+  const onScroll = () => {
+    const newTop = scroller.scrollTop;
+    if (newTop < prevTop - SCROLL_UP_THRESHOLD_PX) {
       onUserScrolledUp();
     }
+    prevTop = newTop;
   };
-
-  const onKeyDown = (e: Event) => {
-    const ke = e as KeyboardEvent;
-    if (SCROLL_UP_KEYS.has(ke.key)) onUserScrolledUp();
-  };
-
-  scroller.addEventListener("wheel", onWheel, { passive: true });
-  scroller.addEventListener("touchstart", onTouchStart, { passive: true });
-  scroller.addEventListener("touchmove", onTouchMove, { passive: true });
-  scroller.addEventListener("keydown", onKeyDown);
-
+  scroller.addEventListener("scroll", onScroll, { passive: true });
   return () => {
-    scroller.removeEventListener("wheel", onWheel);
-    scroller.removeEventListener("touchstart", onTouchStart);
-    scroller.removeEventListener("touchmove", onTouchMove);
-    scroller.removeEventListener("keydown", onKeyDown);
+    scroller.removeEventListener("scroll", onScroll);
   };
 }
+
+/** Exported for tests that want to assert the exact threshold. */
+export const SCROLL_UP_DETECTION_THRESHOLD_PX = SCROLL_UP_THRESHOLD_PX;

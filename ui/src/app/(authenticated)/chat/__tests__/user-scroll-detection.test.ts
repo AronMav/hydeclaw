@@ -1,30 +1,33 @@
 /**
- * Regression tests: during rapid token streaming the previous
- * `isScrolling(false)` + "am I at bottom?" heuristic mistook Virtuoso's
- * own programmatic follow-output scrolls for user scrolls and froze
- * auto-follow partway through long replies. The fix is the pure helper
- * in `../user-scroll-detection.ts` which watches raw input events only —
- * wheel, touch-drag, keyboard. Programmatic `scrollTo` / `scrollToIndex`
- * calls do NOT dispatch wheel/touch/key events, so they cannot falsely
- * trip the flag.
+ * Regression tests for the scroll-delta-based user-scroll-up detector.
  *
- * These tests pin the contract end-to-end: every input that scrolls
- * content UP calls the callback; every input that scrolls DOWN or sideways
- * does NOT.
+ * Contract (see `../user-scroll-detection.ts`):
+ *   - A `scroll` event whose `scrollTop` decreased by more than
+ *     SCROLL_UP_DETECTION_THRESHOLD_PX calls `onUserScrolledUp`.
+ *   - Any positive delta (scrolling down, including programmatic
+ *     follow-output catch-ups) does NOT fire.
+ *   - Sub-threshold negative jitter (browser subpixel rounding,
+ *     overflow-anchor adjustments during content growth) does NOT fire.
+ *
+ * The previous input-typed detector (wheel/touch/keyboard) was too
+ * lenient — macOS touchpad inertia tails fired tiny negative `deltaY`
+ * wheel events after the user stopped scrolling, falsely dropping
+ * auto-follow. The scroll-delta approach is the ground truth
+ * regardless of input modality.
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { attachUserScrollUpDetection } from "../user-scroll-detection";
+import {
+  attachUserScrollUpDetection,
+  SCROLL_UP_DETECTION_THRESHOLD_PX,
+} from "../user-scroll-detection";
 
-/** Minimal EventTarget-like stand-in so we don't need jsdom just for this.
- *
- * Matches the structural `EventTargetLike` signature that the helper
- * expects (addEventListener / removeEventListener with
- * `EventListenerOrEventListenerObject`). The stub only uses the
- * callable form because the helper never passes an object listener. */
-function makeScroller() {
+/** EventTarget-like stand-in with a mutable `scrollTop` so tests can
+ * drive the detector without jsdom layout. */
+function makeScroller(initialTop = 0) {
   const listeners = new Map<string, Set<EventListener>>();
   return {
+    scrollTop: initialTop,
     addEventListener: vi.fn(
       (
         type: string,
@@ -46,146 +49,105 @@ function makeScroller() {
         listeners.get(type)?.delete(fn);
       },
     ),
-    fire: (type: string, event: Event) => {
-      for (const fn of listeners.get(type) ?? []) fn(event);
+    fire: (type: string) => {
+      for (const fn of listeners.get(type) ?? []) fn(new Event(type));
     },
     hasListener: (type: string) => (listeners.get(type)?.size ?? 0) > 0,
   };
 }
 
-describe("attachUserScrollUpDetection — wheel", () => {
-  it("fires onUserScrolledUp when wheel deltaY is negative (scroll up)", () => {
-    const scroller = makeScroller();
+describe("attachUserScrollUpDetection — scroll-delta contract", () => {
+  it("fires when scrollTop decreases by more than the threshold", () => {
+    const scroller = makeScroller(1_000);
     const cb = vi.fn();
     attachUserScrollUpDetection(scroller, cb);
-    scroller.fire("wheel", { deltaY: -10 } as unknown as WheelEvent);
+    scroller.scrollTop = 1_000 - SCROLL_UP_DETECTION_THRESHOLD_PX - 5;
+    scroller.fire("scroll");
     expect(cb).toHaveBeenCalledTimes(1);
-  });
-
-  it("does NOT fire on downward wheel (deltaY positive)", () => {
-    const scroller = makeScroller();
-    const cb = vi.fn();
-    attachUserScrollUpDetection(scroller, cb);
-    scroller.fire("wheel", { deltaY: 10 } as unknown as WheelEvent);
-    expect(cb).not.toHaveBeenCalled();
-  });
-
-  it("does NOT fire on zero-deltaY wheel (horizontal-only scroll)", () => {
-    const scroller = makeScroller();
-    const cb = vi.fn();
-    attachUserScrollUpDetection(scroller, cb);
-    scroller.fire("wheel", { deltaY: 0, deltaX: -50 } as unknown as WheelEvent);
-    expect(cb).not.toHaveBeenCalled();
-  });
-});
-
-describe("attachUserScrollUpDetection — touch", () => {
-  function touch(clientY: number): TouchEvent {
-    return { touches: [{ clientY } as Touch] } as unknown as TouchEvent;
-  }
-
-  it("fires when finger moves DOWN the screen by more than threshold (content scrolls up)", () => {
-    const scroller = makeScroller();
-    const cb = vi.fn();
-    attachUserScrollUpDetection(scroller, cb);
-    scroller.fire("touchstart", touch(100));
-    scroller.fire("touchmove", touch(140)); // finger moved 40px down → scroll up
-    expect(cb).toHaveBeenCalledTimes(1);
-  });
-
-  it("does NOT fire when finger moves UP the screen (content scrolls down)", () => {
-    const scroller = makeScroller();
-    const cb = vi.fn();
-    attachUserScrollUpDetection(scroller, cb);
-    scroller.fire("touchstart", touch(100));
-    scroller.fire("touchmove", touch(40)); // finger moved 60px up → scroll down
-    expect(cb).not.toHaveBeenCalled();
   });
 
   it("does NOT fire on sub-threshold jitter", () => {
-    const scroller = makeScroller();
+    const scroller = makeScroller(1_000);
     const cb = vi.fn();
     attachUserScrollUpDetection(scroller, cb);
-    scroller.fire("touchstart", touch(100));
-    scroller.fire("touchmove", touch(103)); // 3px — below the 5px threshold
+    // Decrease by half the threshold — below the floor.
+    scroller.scrollTop = 1_000 - Math.floor(SCROLL_UP_DETECTION_THRESHOLD_PX / 2);
+    scroller.fire("scroll");
     expect(cb).not.toHaveBeenCalled();
   });
 
-  it("does NOT fire if touchmove arrives without a prior touchstart", () => {
-    const scroller = makeScroller();
+  it("does NOT fire when scrollTop increases (programmatic follow)", () => {
+    const scroller = makeScroller(1_000);
     const cb = vi.fn();
     attachUserScrollUpDetection(scroller, cb);
-    scroller.fire("touchmove", touch(200));
+    // Virtuoso's programmatic follow-output / ResizeObserver scroll-to-bottom
+    // drives scrollTop UP toward the tail. Must never trip.
+    scroller.scrollTop = 5_000;
+    scroller.fire("scroll");
     expect(cb).not.toHaveBeenCalled();
   });
-});
 
-describe("attachUserScrollUpDetection — keyboard", () => {
-  function key(k: string): KeyboardEvent {
-    return { key: k } as unknown as KeyboardEvent;
-  }
-
-  it("fires on PageUp / ArrowUp / Home", () => {
-    for (const k of ["PageUp", "ArrowUp", "Home"]) {
-      const scroller = makeScroller();
-      const cb = vi.fn();
-      attachUserScrollUpDetection(scroller, cb);
-      scroller.fire("keydown", key(k));
-      expect(cb, `${k} must trip the flag`).toHaveBeenCalledTimes(1);
-    }
-  });
-
-  it("does NOT fire on scroll-DOWN keys", () => {
-    for (const k of ["PageDown", "ArrowDown", "End"]) {
-      const scroller = makeScroller();
-      const cb = vi.fn();
-      attachUserScrollUpDetection(scroller, cb);
-      scroller.fire("keydown", key(k));
-      expect(cb, `${k} must NOT trip the flag`).not.toHaveBeenCalled();
-    }
-  });
-
-  it("does NOT fire on unrelated keys (Enter, letter input)", () => {
-    for (const k of ["Enter", "a", "Tab", " "]) {
-      const scroller = makeScroller();
-      const cb = vi.fn();
-      attachUserScrollUpDetection(scroller, cb);
-      scroller.fire("keydown", key(k));
-      expect(cb).not.toHaveBeenCalled();
-    }
-  });
-});
-
-describe("attachUserScrollUpDetection — programmatic scrolls are immune", () => {
-  it("does not fire when no wheel/touch/key events are dispatched", () => {
-    // This is the regression guard: scrollTo / scrollToIndex / programmatic
-    // scroll do NOT dispatch wheel, touch, or keydown events — only `scroll`
-    // events (which this helper intentionally does NOT listen for). A
-    // `scroll` event firing must be a no-op for user-scroll-up detection.
-    const scroller = makeScroller();
+  it("does NOT fire when scrollTop is unchanged", () => {
+    const scroller = makeScroller(2_000);
     const cb = vi.fn();
     attachUserScrollUpDetection(scroller, cb);
-    scroller.fire("scroll", new Event("scroll"));
+    scroller.fire("scroll"); // no position change
     expect(cb).not.toHaveBeenCalled();
-    // And the helper never registered a `scroll` listener — double-check.
-    expect(scroller.hasListener("scroll")).toBe(false);
   });
-});
 
-describe("attachUserScrollUpDetection — teardown", () => {
-  it("removes all registered listeners", () => {
-    const scroller = makeScroller();
+  it("rebaselines between events — repeated small backward steps don't sum up falsely", () => {
+    // Three separate tiny jitter-scale decreases must not be aggregated
+    // into one trip — each scroll event is evaluated against the
+    // immediately-preceding scrollTop, not an old baseline.
+    const scroller = makeScroller(2_000);
+    const cb = vi.fn();
+    attachUserScrollUpDetection(scroller, cb);
+    const step = Math.floor(SCROLL_UP_DETECTION_THRESHOLD_PX / 2);
+    for (let i = 1; i <= 3; i += 1) {
+      scroller.scrollTop = 2_000 - step * i;
+      scroller.fire("scroll");
+    }
+    expect(cb).not.toHaveBeenCalled();
+  });
+
+  it("fires again on subsequent real scroll-ups", () => {
+    // Idempotency of the detector — firing on every threshold crossing,
+    // not just once per attach. The FSM de-dups via its own idempotent
+    // `off` state; the detector stays stateless-per-event.
+    const scroller = makeScroller(5_000);
+    const cb = vi.fn();
+    attachUserScrollUpDetection(scroller, cb);
+    scroller.scrollTop = 4_000;
+    scroller.fire("scroll");
+    scroller.scrollTop = 3_000;
+    scroller.fire("scroll");
+    expect(cb).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores non-scroll events entirely", () => {
+    // No wheel / keydown / touch listeners are registered — only `scroll`.
+    // A wheel event with negative deltaY (which the old detector treated
+    // as ground truth and falsely tripped on inertia tails) must have no
+    // effect here.
+    const scroller = makeScroller(1_000);
+    const cb = vi.fn();
+    attachUserScrollUpDetection(scroller, cb);
+    expect(scroller.hasListener("wheel")).toBe(false);
+    expect(scroller.hasListener("keydown")).toBe(false);
+    expect(scroller.hasListener("touchmove")).toBe(false);
+    scroller.fire("wheel");
+    scroller.fire("keydown");
+    scroller.fire("touchmove");
+    expect(cb).not.toHaveBeenCalled();
+  });
+
+  it("teardown removes the scroll listener", () => {
+    const scroller = makeScroller(1_000);
     const cb = vi.fn();
     const detach = attachUserScrollUpDetection(scroller, cb);
     detach();
-    scroller.fire("wheel", { deltaY: -50 } as unknown as WheelEvent);
-    scroller.fire("keydown", { key: "PageUp" } as unknown as KeyboardEvent);
-    scroller.fire("touchstart", {
-      touches: [{ clientY: 100 } as Touch],
-    } as unknown as TouchEvent);
-    scroller.fire("touchmove", {
-      touches: [{ clientY: 300 } as Touch],
-    } as unknown as TouchEvent);
+    scroller.scrollTop = 10;
+    scroller.fire("scroll");
     expect(cb).not.toHaveBeenCalled();
   });
 });

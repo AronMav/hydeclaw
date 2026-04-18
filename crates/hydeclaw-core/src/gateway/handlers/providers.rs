@@ -315,13 +315,21 @@ pub(crate) async fn api_update_provider(
             "error": format!("invalid options: {msg}")
         }))).into_response();
     }
-    // Phase: toolgate-config-sot — for updates, category may be absent from
-    // body. Read the current row to determine whether TTS validation applies.
-    let needs_tts_check = {
-        let current: Option<(String,)> = sqlx::query_as(
-            "SELECT type FROM providers WHERE id = $1"
-        ).bind(id).fetch_optional(&infra.db).await.ok().flatten();
-        matches!(current, Some((ref c,)) if c == "tts")
+    // Compute the EFFECTIVE category after this update would apply.
+    // If body.category is supplied, that wins. Otherwise look up the
+    // current row. We only validate TTS options when the row would be
+    // (or remain) a TTS provider.
+    let needs_tts_check = match body.category.as_deref() {
+        Some(cat) => cat == "tts",
+        None => {
+            let current = sqlx::query_as::<_, (String,)>(
+                "SELECT type FROM providers WHERE id = $1"
+            ).bind(id).fetch_optional(&infra.db).await
+                .inspect_err(|e| tracing::warn!(error = %e,
+                    "pre-check SELECT type failed; skipping TTS validation"))
+                .ok().flatten();
+            matches!(current, Some((ref c,)) if c == "tts")
+        }
     };
     if needs_tts_check
         && let Some(opts) = body.options.as_ref()
