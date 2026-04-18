@@ -175,45 +175,43 @@ mod tests {
 
     #[test]
     fn validate_rejects_connect_zero() {
-        let mut cfg = TimeoutsConfig::default();
-        cfg.connect_secs = 0;
+        let cfg = TimeoutsConfig { connect_secs: 0, ..Default::default() };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("connect_secs"), "{err}");
     }
 
     #[test]
     fn validate_rejects_connect_over_120() {
-        let mut cfg = TimeoutsConfig::default();
-        cfg.connect_secs = 121;
-        assert!(cfg.validate().is_err());
+        let cfg = TimeoutsConfig { connect_secs: 121, ..Default::default() };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("connect_secs"), "{err}");
     }
 
     #[test]
     fn validate_accepts_request_zero() {
-        let mut cfg = TimeoutsConfig::default();
-        cfg.request_secs = 0;
+        let cfg = TimeoutsConfig { request_secs: 0, ..Default::default() };
         assert!(cfg.validate().is_ok());
     }
 
     #[test]
     fn validate_rejects_request_over_3600() {
-        let mut cfg = TimeoutsConfig::default();
-        cfg.request_secs = 3601;
-        assert!(cfg.validate().is_err());
+        let cfg = TimeoutsConfig { request_secs: 3601, ..Default::default() };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("request_secs"), "{err}");
     }
 
     #[test]
     fn validate_rejects_stream_max_over_7200() {
-        let mut cfg = TimeoutsConfig::default();
-        cfg.stream_max_duration_secs = 7201;
-        assert!(cfg.validate().is_err());
+        let cfg = TimeoutsConfig { stream_max_duration_secs: 7201, ..Default::default() };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("stream_max_duration_secs"), "{err}");
     }
 
     #[test]
     fn validate_rejects_stream_inactivity_over_3600() {
-        let mut cfg = TimeoutsConfig::default();
-        cfg.stream_inactivity_secs = 3601;
-        assert!(cfg.validate().is_err());
+        let cfg = TimeoutsConfig { stream_inactivity_secs: 3601, ..Default::default() };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("stream_inactivity_secs"), "{err}");
     }
 
     #[test]
