@@ -86,6 +86,12 @@ where
 
             tokio::select! {
                 _ = producer_cancel.cancelled() => {
+                    // External cancel (user Stop, shutdown drain, or engine-level abort).
+                    // The timers fire via set_and_cancel — if the slot is still empty
+                    // when we wake here, the cancel came from outside the helper and
+                    // we classify it as UserCancelled. ShutdownDrain is a specialization
+                    // that the caller wires separately before the token is cancelled.
+                    let _ = producer_slot.set(CancelReason::UserCancelled);
                     break;
                 }
                 _ = tokio::time::sleep_until(start + max_duration), if max_duration_enabled => {
