@@ -187,19 +187,20 @@ describe("tail-sentinel integration — Harness", () => {
   });
 
   it("missed-token counter resets when isAtTail transitions false → true", () => {
-    // Reproduce the MessageList pattern: a separate effect watches
-    // isAtTail and resets the counter. Proves that the idiomatic
-    // split (pure updater + dependent effect) works.
+    // Prove the `useEffect([isAtTail])` reset path: simulate a token
+    // accrual while the user is away from the tail, then re-enter and
+    // confirm the counter is cleared.
     function MissedTokensHarness({
+      bumpRef,
       onBadge,
     }: {
+      bumpRef: React.MutableRefObject<(() => void) | null>;
       onBadge: (value: number) => void;
     }) {
       const scrollerRef = useRef<HTMLDivElement>(null);
       const [sentinelEl, setSentinelEl] = useState<HTMLDivElement | null>(null);
       const [isAtTail, setIsAtTail] = useState(true);
-      const [missed, setMissed] = useState(5); // pre-seed
-      const missedRef = useRef(5);
+      const [missed, setMissed] = useState(0);
 
       useEffect(() => {
         const scroller = scrollerRef.current;
@@ -212,10 +213,12 @@ describe("tail-sentinel integration — Harness", () => {
 
       useEffect(() => {
         if (isAtTail) {
-          missedRef.current = 0;
           setMissed(0);
         }
       }, [isAtTail]);
+
+      // Expose a bump function the test can call while `isAtTail` is false.
+      bumpRef.current = () => setMissed((m) => m + 1);
 
       onBadge(missed);
       return (
@@ -225,20 +228,29 @@ describe("tail-sentinel integration — Harness", () => {
       );
     }
 
+    const bumpRef: React.MutableRefObject<(() => void) | null> = { current: null };
     let lastBadge = -1;
-    render(<MissedTokensHarness onBadge={(v) => { lastBadge = v; }} />);
-    // Initial badge is 5 seeded, but `isAtTail` starts true so the
-    // reset effect immediately fires and zeroes it.
+    render(
+      <MissedTokensHarness
+        bumpRef={bumpRef}
+        onBadge={(v) => { lastBadge = v; }}
+      />,
+    );
+    // Initial mount reset: badge starts at 0 (isAtTail=true triggers reset effect).
     expect(lastBadge).toBe(0);
 
-    // User leaves the tail — badge stays at 0 (no growth in this harness).
+    // User leaves tail.
     act(() => { MockIntersectionObserver.last().fire(false); });
     expect(lastBadge).toBe(0);
 
-    // Simulate a missed-token accrual while away (directly set state in test-only path).
-    // Skipped here — covered by production code; this test only verifies the RESET path.
+    // Three tokens arrive while away — badge accrues.
+    act(() => { bumpRef.current!(); });
+    act(() => { bumpRef.current!(); });
+    act(() => { bumpRef.current!(); });
+    expect(lastBadge).toBe(3);
 
-    // User re-enters tail — effect fires with isAtTail=true — reset runs.
+    // User re-enters tail — reset effect must fire and zero the badge.
+    // Without the `useEffect([isAtTail])` reset, this would stay at 3.
     act(() => { MockIntersectionObserver.last().fire(true); });
     expect(lastBadge).toBe(0);
   });
