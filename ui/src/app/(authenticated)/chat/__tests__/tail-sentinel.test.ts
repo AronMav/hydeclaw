@@ -150,4 +150,18 @@ describe("attachTailSentinel", () => {
 
     expect(MockIntersectionObserver.last().options?.rootMargin).toBe("50px 0px");
   });
+
+  it("does not invoke the callback when the observer fires with an empty batch", () => {
+    const scroller = document.createElement("div");
+    const sentinel = document.createElement("div");
+    const cb = vi.fn();
+    attachTailSentinel(scroller, sentinel, cb);
+
+    // Simulate the browser firing with no entries (pathological but
+    // well-defined per spec). The `if (entry)` guard must short-circuit.
+    const io = MockIntersectionObserver.last();
+    io.callback([], io as unknown as IntersectionObserver);
+
+    expect(cb).not.toHaveBeenCalled();
+  });
 });

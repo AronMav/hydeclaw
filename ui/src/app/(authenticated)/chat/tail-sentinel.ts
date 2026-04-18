@@ -43,9 +43,11 @@ export function attachTailSentinel(
 ): () => void {
   const observer = new IntersectionObserver(
     (entries) => {
-      for (const entry of entries) {
-        onTailStateChange(entry.isIntersecting);
-      }
+      // We observe exactly one sentinel per attach, so we only care
+      // about the first (and only) entry. Reading [0] explicitly
+      // makes that invariant self-documenting.
+      const entry = entries[0];
+      if (entry) onTailStateChange(entry.isIntersecting);
     },
     {
       root: scroller,
