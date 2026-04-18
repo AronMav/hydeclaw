@@ -34,6 +34,9 @@ pub mod error;
 #[allow(unused_imports)] // first consumer arrives in Task 12 (build_provider)
 pub use error::{LlmCallError, CancelReason};
 
+#[cfg(test)]
+mod routing_tests;
+
 pub mod cancellable_stream;
 #[allow(unused_imports)] // first consumer arrives in Task 9 (stream_with_cancellation)
 pub use cancellable_stream::{CancelSlot, set_and_cancel};
@@ -1031,12 +1034,65 @@ impl RoutingProvider {
         map.insert(name.to_string(), std::time::Instant::now() + duration);
     }
 
-    /// Classify error and apply appropriate cooldown. Returns the computed cooldown duration.
-    fn handle_provider_error(&self, e: &anyhow::Error, provider_name: &str, max_cooldown: std::time::Duration) {
+    /// Classify error and apply appropriate cooldown.
+    ///
+    /// Returns `true` if the error is failover-worthy (caller should try next
+    /// route), `false` if the error should bubble up immediately (preserving
+    /// any `partial_text` carried by the typed `LlmCallError`).
+    ///
+    /// Resolution order:
+    /// 1. Downcast to `LlmCallError` and honor `is_failover_worthy()`.
+    ///    - `AuthError` failover is disabled per the typed predicate, but
+    ///      when the error is classified via the legacy string path we still
+    ///      apply the 300s cooldown floor documented in spec §4.6.
+    /// 2. If the downcast fails, fall back to the legacy string-based
+    ///    classification. Untyped errors are treated as failover-worthy to
+    ///    preserve historical behavior.
+    fn handle_provider_error(
+        &self,
+        e: &anyhow::Error,
+        provider_name: &str,
+        route_cooldown: std::time::Duration,
+    ) -> bool {
+        if let Some(llm_err) = e.downcast_ref::<LlmCallError>() {
+            if !llm_err.is_failover_worthy() {
+                tracing::warn!(
+                    provider = %provider_name,
+                    error = %e,
+                    "route failed with non-failover-worthy error — bubbling up"
+                );
+                return false;
+            }
+            let cd = match llm_err {
+                LlmCallError::AuthError { .. } => {
+                    std::time::Duration::from_secs(route_cooldown.as_secs().max(300))
+                }
+                _ => route_cooldown.max(std::time::Duration::from_secs(1)),
+            };
+            tracing::warn!(
+                provider = %provider_name,
+                error = %e,
+                cooldown_secs = cd.as_secs(),
+                "route failed (typed), attempting next"
+            );
+            self.set_cooldown(provider_name, cd);
+            return true;
+        }
+
+        // Untyped error: legacy string-based classification.
         let class = super::error_classify::classify(e);
-        let cd = super::error_classify::cooldown_duration(&class).min(max_cooldown);
-        tracing::warn!(provider = %provider_name, error = %e, error_class = ?class, cooldown_secs = cd.as_secs(), "provider failed");
-        if !cd.is_zero() { self.set_cooldown(provider_name, cd); }
+        let cd = super::error_classify::cooldown_duration(&class).min(route_cooldown);
+        tracing::warn!(
+            provider = %provider_name,
+            error = %e,
+            error_class = ?class,
+            cooldown_secs = cd.as_secs(),
+            "route failed (untyped), attempting next"
+        );
+        if !cd.is_zero() {
+            self.set_cooldown(provider_name, cd);
+        }
+        true
     }
 
     /// Get all route entries that could serve as fallbacks (not on cooldown, not excluded).
@@ -1045,6 +1101,31 @@ impl RoutingProvider {
             .iter()
             .filter(|e| e.key != exclude_key && !self.is_on_cooldown(&e.key))
             .collect()
+    }
+
+    /// Test-only constructor for `RoutingProvider` — builds a routing chain from
+    /// a list of `(key, provider, cooldown_secs)` tuples without going through
+    /// `build_provider` / DB resolution. Used by unit tests for the failover
+    /// predicate wiring.
+    ///
+    /// Every entry is installed with condition `"default"` so `select_route`
+    /// matches on the first one (same behavior the production `always`
+    /// condition would give for a single-route chain).
+    #[cfg(test)]
+    pub(crate) fn new_for_test(routes: Vec<(String, Arc<dyn LlmProvider>, u64)>) -> Self {
+        let entries = routes
+            .into_iter()
+            .map(|(key, provider, cooldown_secs)| RouteEntry {
+                condition: "default".to_string(),
+                key,
+                provider,
+                cooldown_duration: std::time::Duration::from_secs(cooldown_secs.max(1)),
+            })
+            .collect();
+        Self {
+            routes: entries,
+            cooldowns: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
     }
 }
 
@@ -1106,7 +1187,10 @@ impl LlmProvider for RoutingProvider {
             match primary.provider.chat(messages, tools).await {
                 Ok(resp) => return Ok(resp),
                 Err(e) => {
-                    self.handle_provider_error(&e, &primary_key, primary_cooldown);
+                    if !self.handle_provider_error(&e, &primary_key, primary_cooldown) {
+                        // Non-failover-worthy: bubble up with `partial_text` intact.
+                        return Err(e);
+                    }
                 }
             }
         }
@@ -1120,7 +1204,9 @@ impl LlmProvider for RoutingProvider {
                     return Ok(resp);
                 }
                 Err(e) => {
-                    self.handle_provider_error(&e, &fb.key, fb.cooldown_duration);
+                    if !self.handle_provider_error(&e, &fb.key, fb.cooldown_duration) {
+                        return Err(e);
+                    }
                 }
             }
         }
@@ -1169,11 +1255,14 @@ impl LlmProvider for RoutingProvider {
                             "streaming: mid-stream failure, partial output already sent — cannot failover");
                         return Err(e);
                     }
-                    let class = super::error_classify::classify(&e);
-                    let cd = super::error_classify::cooldown_duration(&class).min(primary_cooldown);
-                    tracing::warn!(provider = %primary_display, error = %e, error_class = ?class,
+                    // Downcast to typed error; non-failover-worthy errors bubble up
+                    // (preserving `partial_text`); failover-worthy errors apply
+                    // cooldown and fall through to the fallback chain.
+                    if !self.handle_provider_error(&e, &primary_key, primary_cooldown) {
+                        return Err(e);
+                    }
+                    tracing::warn!(provider = %primary_display,
                         "streaming: primary failed before first chunk, trying fallback chain");
-                    if !cd.is_zero() { self.set_cooldown(&primary_key, cd); }
                 }
             }
         }
@@ -1187,10 +1276,9 @@ impl LlmProvider for RoutingProvider {
                     return Ok(resp);
                 }
                 Err(e) => {
-                    let class = super::error_classify::classify(&e);
-                    let cd = super::error_classify::cooldown_duration(&class).min(fb.cooldown_duration);
-                    tracing::warn!(provider = %fb.provider.name(), error = %e, error_class = ?class, "streaming fallback also failed");
-                    if !cd.is_zero() { self.set_cooldown(&fb.key, cd); }
+                    if !self.handle_provider_error(&e, &fb.key, fb.cooldown_duration) {
+                        return Err(e);
+                    }
                 }
             }
         }
