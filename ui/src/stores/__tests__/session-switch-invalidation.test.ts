@@ -217,19 +217,8 @@ describe("session switch invalidates React Query cache", () => {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-function defaultAgentState() {
-  return {
-    activeSessionId: null,
-    messageSource: { mode: "new-chat" as const },
-    streamError: null,
-    connectionPhase: "idle" as const,
-    connectionError: null,
-    streamGeneration: 0,
-    reconnectAttempt: 0,
-    thinkingLevel: 0,
-    forceNewSession: false,
-    selectedBranches: {},
-    renderLimit: 100,
-    turnLimitMessage: null,
-  };
-}
+// Import the canonical factory so this test cannot drift from AgentState.
+// Using the real emptyAgentState() keeps the shape in sync with chat-types.ts
+// whenever new fields are added — TypeScript regresses would fail at import.
+import { emptyAgentState } from "@/stores/chat-types";
+const defaultAgentState = emptyAgentState;
