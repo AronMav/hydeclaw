@@ -38,6 +38,97 @@ pub fn set_and_cancel(slot: &CancelSlot, token: &CancellationToken, reason: Canc
     token.cancel();
 }
 
+use async_stream::stream;
+use bytes::Bytes;
+use futures_util::{Stream, StreamExt};
+use std::time::Duration;
+
+use super::timeouts::TimeoutsConfig;
+
+/// Wrap an inner byte stream with cancellation + inactivity-timer.
+///
+/// Implementation detail: a background producer task drains `inner` into an
+/// internal mpsc channel so that the inactivity timer fires even when no
+/// consumer is actively polling the returned stream. Task 10 extends this
+/// with max-duration and further decouples the producer from the caller.
+pub fn stream_with_cancellation<S>(
+    mut inner: S,
+    cancel: CancellationToken,
+    slot: CancelSlot,
+    timeouts: TimeoutsConfig,
+) -> impl Stream<Item = Result<Bytes, reqwest::Error>>
+where
+    S: Stream<Item = Result<Bytes, reqwest::Error>> + Unpin + Send + 'static,
+{
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(8);
+    let producer_cancel = cancel.clone();
+    let producer_slot = slot.clone();
+    let inactivity_secs = timeouts.stream_inactivity_secs;
+    let inactivity = Duration::from_secs(inactivity_secs.max(1));
+    let inactivity_enabled = inactivity_secs > 0;
+
+    tokio::spawn(async move {
+        loop {
+            let next = async {
+                if inactivity_enabled {
+                    match tokio::time::timeout(inactivity, inner.next()).await {
+                        Ok(v) => v.map(Ok),
+                        Err(_) => Some(Err(())),
+                    }
+                } else {
+                    inner.next().await.map(Ok)
+                }
+            };
+
+            tokio::select! {
+                _ = producer_cancel.cancelled() => {
+                    break;
+                }
+                v = next => {
+                    match v {
+                        Some(Ok(Ok(bytes))) => {
+                            if tx.send(Ok(bytes)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(Ok(Err(e))) => {
+                            let _ = tx.send(Err(e)).await;
+                            break;
+                        }
+                        Some(Err(())) => {
+                            set_and_cancel(
+                                &producer_slot,
+                                &producer_cancel,
+                                CancelReason::InactivityTimeout { silent_secs: inactivity_secs },
+                            );
+                            break;
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+    });
+
+    stream! {
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                item = rx.recv() => {
+                    match item {
+                        Some(Ok(bytes)) => yield Ok(bytes),
+                        Some(Err(e)) => {
+                            yield Err(e);
+                            break;
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +192,72 @@ mod tests {
             h.await.unwrap();
         }
         assert!(slot.get().is_some());
+    }
+
+    use bytes::Bytes;
+    use futures_util::StreamExt;
+    use std::time::Duration;
+    use tokio_stream::wrappers::ReceiverStream;
+
+    fn chunk_stream(chunks: Vec<(&'static str, Duration)>) -> impl futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Unpin {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(8);
+        tokio::spawn(async move {
+            for (s, d) in chunks {
+                tokio::time::sleep(d).await;
+                if tx.send(Ok(Bytes::from(s))).await.is_err() { return; }
+            }
+            // Keep `tx` alive so the stream stays open (source silent, not ended).
+            // The inactivity timer is what should drive cancellation, not EOF.
+            futures_util::future::pending::<()>().await;
+        });
+        ReceiverStream::new(rx)
+    }
+
+    #[tokio::test]
+    async fn inactivity_timer_fires_when_source_silent() {
+        let token = CancellationToken::new();
+        let slot = CancelSlot::new();
+        let timeouts = crate::agent::providers::TimeoutsConfig {
+            connect_secs: 10,
+            request_secs: 120,
+            stream_inactivity_secs: 1,      // 1s to keep test fast
+            stream_max_duration_secs: 3600, // effectively off
+        };
+        let inner = chunk_stream(vec![
+            ("hello", Duration::from_millis(100)),
+            // Then nothing — source stays silent.
+        ]);
+        let mut out = Box::pin(stream_with_cancellation(inner, token.clone(), slot.clone(), timeouts));
+
+        // First chunk arrives.
+        let first = tokio::time::timeout(Duration::from_millis(500), out.next()).await.unwrap();
+        assert!(matches!(first, Some(Ok(_))));
+
+        // Now wait for inactivity to trigger cancellation.
+        tokio::time::timeout(Duration::from_secs(3), token.cancelled()).await
+            .expect("token must be cancelled after stream_inactivity_secs");
+
+        assert!(matches!(slot.get(), Some(CancelReason::InactivityTimeout { silent_secs: _ })));
+    }
+
+    #[tokio::test]
+    async fn inactivity_timer_resets_on_each_chunk() {
+        let token = CancellationToken::new();
+        let slot = CancelSlot::new();
+        let timeouts = crate::agent::providers::TimeoutsConfig {
+            connect_secs: 10,
+            request_secs: 120,
+            stream_inactivity_secs: 1,
+            stream_max_duration_secs: 3600,
+        };
+        // 5 chunks, each 400 ms apart — each arrives well under the 1 s limit.
+        let inner = chunk_stream((0..5).map(|_| ("x", Duration::from_millis(400))).collect());
+        let mut out = Box::pin(stream_with_cancellation(inner, token.clone(), slot.clone(), timeouts));
+
+        for _ in 0..5 {
+            let item = tokio::time::timeout(Duration::from_secs(2), out.next()).await.unwrap();
+            assert!(matches!(item, Some(Ok(_))));
+        }
+        assert!(slot.get().is_none(), "timer must not have fired");
     }
 }

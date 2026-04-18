@@ -41,6 +41,9 @@ tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
 futures-util = "0.3"
 async-stream = "0.3"
+# `bytes` is transitively pulled by reqwest/tokio; expose directly so
+# stream helpers can name `bytes::Bytes` in public signatures.
+bytes = "1"
 
 # URL parsing
 url = { workspace = true }
