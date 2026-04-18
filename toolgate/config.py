@@ -1,6 +1,5 @@
 """Configuration management for toolgate providers."""
 
-import json
 import logging
 import os
 import asyncio
@@ -30,39 +29,12 @@ class ProvidersConfig(BaseModel):
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
 
 
-def _seed_from_env() -> ProvidersConfig:
-    """Create default config from legacy environment variables."""
-    whisper_url = os.environ.get("WHISPER_URL", "http://localhost:8300/v1")
-    vision_url = os.environ.get("VISION_URL", "https://ollama.com/v1")
-    vision_model = os.environ.get("VISION_MODEL", "qwen3.5:397b-cloud")
-    ollama_api_key = os.environ.get("OLLAMA_API_KEY", "")
-
-    return ProvidersConfig(
-        active={"stt": "local-whisper", "vision": "local-ollama", "tts": None, "imagegen": None},
-        providers={
-            "local-whisper": ProviderConfig(
-                type="stt",
-                driver="whisper-local",
-                base_url=whisper_url,
-                model="Systran/faster-whisper-large-v3",
-            ),
-            "local-ollama": ProviderConfig(
-                type="vision",
-                driver="ollama",
-                base_url=vision_url,
-                model=vision_model,
-                api_key=ollama_api_key or None,
-            ),
-        },
-    )
-
-
 async def _aload_config_from_api() -> ProvidersConfig | None:
     """Try to load config from Core API (GET /api/media-config) asynchronously.
 
     Returns the parsed ProvidersConfig on success, or None if unavailable.
     """
-    core_url = CORE_API_URL
+    core_url = os.environ.get("CORE_API_URL", CORE_API_URL)
     if not core_url:
         return None
     # Read token at call time (not import time)
@@ -120,8 +92,9 @@ def load_config_from_api_sync() -> ProvidersConfig | None:
 
 
 async def aload_config() -> ProvidersConfig:
-    """Load config from Core API with retry. Falls back to env vars if API unavailable.
-    No disk file needed — Core API is the single source of truth."""
+    """Load config from Core API with retry.
+    Returns empty ProvidersConfig if Core is unreachable after all retries.
+    No env fallback — Core API is the single source of truth."""
     for attempt in range(5):
         config = await _aload_config_from_api()
         if config is not None:
@@ -131,5 +104,8 @@ async def aload_config() -> ProvidersConfig:
             _log.info("Core API not ready, retrying in %ds (attempt %d/5)...", wait, attempt + 1)
             await asyncio.sleep(wait)
 
-    _log.warning("Core API unavailable after 5 attempts — seeding from environment variables")
-    return _seed_from_env()
+    _log.error(
+        "Core API unavailable after 5 attempts — starting in DEGRADED mode (no providers). "
+        "Capability endpoints will return 503 until Core becomes reachable."
+    )
+    return ProvidersConfig()
