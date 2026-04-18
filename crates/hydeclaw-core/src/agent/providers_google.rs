@@ -16,6 +16,13 @@ pub struct GoogleProvider {
     model: ModelOverride,
     temperature: f64,
     max_tokens: Option<u32>,
+    /// Per-provider timeout knobs (connect / request / stream inactivity / stream max).
+    /// Consumed by `stream_with_cancellation` in `chat_stream`.
+    timeouts: super::TimeoutsConfig,
+    /// Cooperative cancellation token shared with the streaming producer task.
+    /// Engine-level shutdown or user cancel flips this; the stream drains and
+    /// `chat_stream` surfaces a typed `LlmCallError`.
+    cancel: tokio_util::sync::CancellationToken,
 }
 
 impl GoogleProvider {
@@ -44,12 +51,16 @@ impl GoogleProvider {
             model: ModelOverride::new(model),
             temperature,
             max_tokens,
+            // Legacy `with_options` (test fixtures / fallback) gets defaults.
+            // Real runtime wiring flows through `new_from_row` + `build_provider`.
+            timeouts: super::TimeoutsConfig::default(),
+            cancel: tokio_util::sync::CancellationToken::new(),
         }
     }
 
-    /// Task 12 stub: build a `GoogleProvider` from a `ProviderRow`.
-    /// Delegates to `::with_options(..)` so runtime behavior is identical to
-    /// the legacy `create_provider_from_connection` code path.
+    /// Build a `GoogleProvider` from a `ProviderRow`, storing the shared
+    /// `cancel` token + typed `timeouts` so `chat_stream` can thread them into
+    /// `stream_with_cancellation`.
     #[allow(dead_code)] // consumed by super::build_provider
     pub(crate) fn new_from_row(
         row: &crate::db::providers::ProviderRow,
@@ -58,13 +69,12 @@ impl GoogleProvider {
         cancel: tokio_util::sync::CancellationToken,
         _opts: super::timeouts::ProviderOptions,
     ) -> anyhow::Result<Self> {
-        let _ = (timeouts, cancel); // Tasks 13-16 consume these
         let model = row.default_model.clone().unwrap_or_default();
         let key_env = super::PROVIDER_TYPES
             .iter()
             .find(|pt| pt.id == row.provider_type)
             .map_or("GOOGLE_API_KEY", |pt| pt.default_secret_name);
-        let provider = Self::with_options(
+        let mut provider = Self::with_options(
             model,
             0.7,
             None,
@@ -74,6 +84,8 @@ impl GoogleProvider {
             None,
         )
         .with_credential_scope(row.id.to_string());
+        provider.timeouts = timeouts;
+        provider.cancel = cancel;
         Ok(provider)
     }
 
@@ -388,9 +400,23 @@ impl LlmProvider for GoogleProvider {
         let mut thinking_filter = crate::agent::thinking::ThinkingFilter::new();
 
         use tokio_stream::StreamExt;
-        let mut byte_stream = resp.bytes_stream();
+        use crate::agent::providers::{CancelSlot, LlmCallError, cancellable_stream::stream_with_cancellation};
+
+        let slot = CancelSlot::new();
+        let byte_stream = stream_with_cancellation(
+            resp.bytes_stream(),
+            self.cancel.clone(),
+            slot.clone(),
+            self.timeouts,
+        );
+        let mut byte_stream = std::pin::pin!(byte_stream);
         while let Some(chunk_result) = StreamExt::next(&mut byte_stream).await {
-            let chunk_bytes = chunk_result?;
+            let chunk_bytes = match chunk_result {
+                Ok(b) => b,
+                Err(e) => {
+                    return Err(anyhow::Error::new(LlmCallError::from(e)));
+                }
+            };
             buffer.push_str(&String::from_utf8_lossy(&chunk_bytes));
 
             while let Some(line_end) = buffer.find('\n') {
@@ -423,6 +449,35 @@ impl LlmProvider for GoogleProvider {
                             }
                         }
             }
+        }
+
+        // Stream exited. Surface typed cancellation reason with partial text,
+        // so Task 17 routing can downcast and decide failover / persistence.
+        if let Some(reason) = slot.get() {
+            use crate::agent::providers::error::CancelReason;
+            let err = match reason {
+                CancelReason::InactivityTimeout { silent_secs } => LlmCallError::InactivityTimeout {
+                    provider: self.name().to_string(),
+                    silent_secs,
+                    partial_text: full_content.clone(),
+                },
+                CancelReason::MaxDurationExceeded { elapsed_secs } => LlmCallError::MaxDurationExceeded {
+                    provider: self.name().to_string(),
+                    elapsed_secs,
+                    partial_text: full_content.clone(),
+                },
+                CancelReason::UserCancelled => LlmCallError::UserCancelled {
+                    partial_text: full_content.clone(),
+                },
+                CancelReason::ShutdownDrain => LlmCallError::ShutdownDrain {
+                    partial_text: full_content.clone(),
+                },
+                CancelReason::ConnectTimeout { elapsed_secs } => LlmCallError::ConnectTimeout {
+                    provider: self.name().to_string(),
+                    elapsed_secs,
+                },
+            };
+            return Err(anyhow::Error::new(err));
         }
 
         let elapsed = start.elapsed();
