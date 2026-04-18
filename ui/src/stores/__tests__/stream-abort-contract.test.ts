@@ -125,22 +125,31 @@ describe("abortActiveStream contract", () => {
     void ctrl;
   });
 
-  it("does NOT POST /abort when there is no active controller (no-op)", () => {
+  it("POSTs /abort even when local controller is gone (network-drop recovery)", () => {
+    // Regression: the previous implementation guarded the POST inside
+    // `if (ctrl)`. If a transient network drop tore down the local fetch
+    // while the backend stream was still registered under the sessionId,
+    // user-click-Stop silently became a backend no-op — engine kept
+    // streaming, row stayed `status='streaming'` forever.
+    // Fix: POST fires whenever `activeSessionId` is known.
     const store = makeStore({
       agents: {
         Arty: {
           ...emptyAgentState(),
           activeSessionId: "session-xyz",
+          // NB: connectionPhase stays non-streaming to represent the
+          // "UI thinks it's idle" state after a network drop.
           connectionPhase: "idle",
         },
       },
     });
     const renderer = createStreamingRenderer(store);
 
-    // No prior startStream → no controller → no POST.
+    // No prior startStream → no controller present.
     renderer.abortActiveStream("Arty");
 
-    expect(mockApiPost).not.toHaveBeenCalled();
+    expect(mockApiPost).toHaveBeenCalledTimes(1);
+    expect(mockApiPost).toHaveBeenCalledWith("/api/chat/session-xyz/abort");
   });
 
   it("does NOT POST /abort when activeSessionId is null (cannot target a session)", () => {
@@ -162,6 +171,17 @@ describe("abortActiveStream contract", () => {
     mockApiPost.mockClear();
     renderer.abortActiveStream("Arty");
 
+    expect(mockApiPost).not.toHaveBeenCalled();
+  });
+
+  it("does NOT POST /abort when the store has no entry for the agent", () => {
+    // Edge case: the agent map is empty (first-render before any stream).
+    // Neither controller nor activeSessionId exist → POST must not fire,
+    // local cleanup must not throw.
+    const store = makeStore({ agents: {} });
+    const renderer = createStreamingRenderer(store);
+
+    expect(() => renderer.abortActiveStream("Ghost")).not.toThrow();
     expect(mockApiPost).not.toHaveBeenCalled();
   });
 });

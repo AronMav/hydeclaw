@@ -193,20 +193,23 @@ export function createStreamingRenderer(store: StoreAccess) {
    * error path then persists an aborted message row with
    * `abort_reason='user_cancelled'` and writes an aborted usage_log.
    *
-   * The local fetch abort still runs so UI state transitions to idle
-   * immediately; the backend continues in the background just long
-   * enough to save the aborted row.
+   * The /abort POST fires whenever an `activeSessionId` is known, even
+   * if the local AbortController is already gone (network tear-down,
+   * SSE auto-reconnect race). This matters because the backend stream
+   * may still be registered under the sessionId while the UI has
+   * already disposed of its fetch — without this decoupling, user Stop
+   * becomes a silent no-op server-side and the streaming row stays
+   * `status='streaming'` until the engine finishes naturally.
+   *
+   * `abortLocalOnly` is a no-op if there is no controller; safe to call.
    */
   function abortActiveStream(agent: string) {
-    const ctrl = getAbortCtrl(agent);
-    if (ctrl) {
-      const sid = store.get().agents[agent]?.activeSessionId;
-      if (sid) {
-        apiPost(`/api/chat/${sid}/abort`).catch(() => {
-          // Backend may not have an active stream (already done / not started).
-          // Local abort below still cleans up UI state.
-        });
-      }
+    const sid = store.get().agents[agent]?.activeSessionId;
+    if (sid) {
+      apiPost(`/api/chat/${sid}/abort`).catch(() => {
+        // Backend may not have an active stream (already done / not started).
+        // Local abort below still cleans up UI state.
+      });
     }
     abortLocalOnly(agent);
   }
