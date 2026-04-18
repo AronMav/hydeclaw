@@ -613,31 +613,25 @@ pub(crate) async fn api_chat_sse(
         let mut last_db_flush = std::time::Instant::now();
         let mut session_uuid: Option<uuid::Uuid> = None;
         let flush_interval = std::time::Duration::from_secs(2);
-        // On explicit API cancel (POST /api/chat/{id}/abort) we do NOT hard-abort
-        // `engine_handle` anymore — the CancellationToken cascades through
+        // On explicit API cancel (POST /api/chat/{id}/abort) we do NOT
+        // hard-abort `engine_handle`. The CancellationToken cascades through
         // providers' `stream_with_cancellation` and raises `LlmCallError::
-        // UserCancelled` with the current partial_text. The engine's error path
-        // then persists the aborted message row (status='aborted',
-        // abort_reason='user_cancelled') and writes an aborted usage_log entry.
-        // We need that path to complete, so we keep receiving events until the
-        // engine finishes naturally (within a bounded window).
-        let mut cancel_graceful_deadline: Option<std::time::Instant> = None;
+        // UserCancelled` with the current partial_text. The engine's error
+        // path then persists the aborted message row (status='aborted',
+        // abort_reason='user_cancelled') and writes an aborted usage_log
+        // entry — we must not interrupt that path. The existing
+        // `client_gone_since > 600 s` check below still covers runaway
+        // protection if the engine genuinely wedges.
+        let mut logged_cancel_drain = false;
         while let Some(event) = event_rx.recv().await {
-            // Start a graceful-drain deadline on first observation of cancel.
             if cancel_token.as_ref().is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
-                && cancel_graceful_deadline.is_none()
+                && !logged_cancel_drain
             {
-                // Give the engine up to 5 s to flush its aborted-message save
-                // and emit the final Finish event before we stop draining.
-                cancel_graceful_deadline =
-                    Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
-                tracing::info!(session_id = ?session_id_str, "user cancel received; draining engine events");
-            }
-            if cancel_graceful_deadline.is_some_and(|d| std::time::Instant::now() >= d) {
-                // Engine didn't finish within grace window — last-resort hard abort.
-                tracing::warn!("cancel grace window exceeded, hard-aborting engine");
-                engine_handle.abort();
-                break;
+                logged_cancel_drain = true;
+                tracing::info!(
+                    session_id = ?session_id_str,
+                    "user cancel received; engine will emit aborted message + Finish naturally"
+                );
             }
             // AUDIT:SSE-03 (verified 2026-03-30): Safety net for client disconnect.
             // See stream_registry.rs for full SSE-03 audit. This 10-minute timeout
