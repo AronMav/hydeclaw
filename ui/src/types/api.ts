@@ -126,6 +126,7 @@ export interface MessageRow {
   edited_at: string | null;
   parent_message_id: string | null;
   branch_from_message_id: string | null;
+  abort_reason?: string | null;
 }
 
 export interface CronJob {
@@ -386,6 +387,20 @@ export interface ProviderType {
   supports_model_listing: boolean;
 }
 
+export type TimeoutsConfig = {
+  connect_secs: number;              // 1..=120
+  request_secs: number;              // 0..=3600, 0 = no limit
+  stream_inactivity_secs: number;    // 0..=3600, 0 = no limit
+  stream_max_duration_secs: number;  // 0..=7200, 0 = no limit
+};
+
+export type ProviderOptions = {
+  timeouts?: Partial<TimeoutsConfig>;
+  api_key_envs?: string[];
+  // Unknown fields land here — UI will preserve them on round-trip.
+  [extra: string]: unknown;
+};
+
 export interface Provider {
   id: string;
   name: string;
@@ -396,7 +411,7 @@ export interface Provider {
   has_api_key: boolean;
   api_key: string | null;
   enabled: boolean;
-  options: Record<string, unknown>;
+  options: ProviderOptions;
   notes: string | null;
   created_at: string;
   updated_at: string;
@@ -410,7 +425,7 @@ export interface CreateProviderInput {
   api_key?: string;
   default_model?: string;
   enabled?: boolean;
-  options?: Record<string, unknown>;
+  options?: ProviderOptions;
   notes?: string;
 }
 

@@ -109,11 +109,13 @@ export interface ChatMessage {
   /** Per-message agent identity (for multi-agent sessions). */
   agentId?: string;
   /** Optimistic send status (SSE-03). Undefined means confirmed (from history/sync). */
-  status?: "sending" | "confirmed" | "failed";
+  status?: "sending" | "confirmed" | "failed" | "aborted";
   /** Parent message ID in the tree (null for root/trunk messages). */
   parentMessageId?: string;
   /** The message this branch was forked from (set on fork-created user messages). */
   branchFromMessageId?: string;
+  /** Reason the assistant stream ended early, if any (status === "aborted"). */
+  abortReason?: string | null;
 }
 
 // ── Connection phase FSM (FSM-01) ────────────────────────────────────────────
