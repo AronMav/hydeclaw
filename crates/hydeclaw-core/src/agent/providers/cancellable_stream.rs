@@ -66,6 +66,10 @@ where
     let inactivity_secs = timeouts.stream_inactivity_secs;
     let inactivity = Duration::from_secs(inactivity_secs.max(1));
     let inactivity_enabled = inactivity_secs > 0;
+    let max_duration_secs = timeouts.stream_max_duration_secs;
+    let max_duration = Duration::from_secs(max_duration_secs.max(1));
+    let max_duration_enabled = max_duration_secs > 0;
+    let start = tokio::time::Instant::now();
 
     tokio::spawn(async move {
         loop {
@@ -82,6 +86,14 @@ where
 
             tokio::select! {
                 _ = producer_cancel.cancelled() => {
+                    break;
+                }
+                _ = tokio::time::sleep_until(start + max_duration), if max_duration_enabled => {
+                    set_and_cancel(
+                        &producer_slot,
+                        &producer_cancel,
+                        CancelReason::MaxDurationExceeded { elapsed_secs: max_duration_secs },
+                    );
                     break;
                 }
                 v = next => {
@@ -213,6 +225,22 @@ mod tests {
         ReceiverStream::new(rx)
     }
 
+    /// Like `chunk_stream` but closes `tx` after the last chunk, so `inner.next()`
+    /// returns `None` (clean EOF). Used to test backpressure / consumer-anchored
+    /// scenarios where the network source has completed delivery.
+    fn chunk_stream_ending(chunks: Vec<(&'static str, Duration)>) -> impl futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Unpin {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(8);
+        tokio::spawn(async move {
+            for (s, d) in chunks {
+                tokio::time::sleep(d).await;
+                if tx.send(Ok(Bytes::from(s))).await.is_err() { return; }
+            }
+            // Drop tx — stream EOF. Producer task reads None and exits without
+            // firing the inactivity timer.
+        });
+        ReceiverStream::new(rx)
+    }
+
     #[tokio::test]
     async fn inactivity_timer_fires_when_source_silent() {
         let token = CancellationToken::new();
@@ -259,5 +287,64 @@ mod tests {
             assert!(matches!(item, Some(Ok(_))));
         }
         assert!(slot.get().is_none(), "timer must not have fired");
+    }
+
+    #[tokio::test]
+    async fn max_duration_timer_fires_even_when_stream_is_active() {
+        let token = CancellationToken::new();
+        let slot = CancelSlot::new();
+        let timeouts = crate::agent::providers::TimeoutsConfig {
+            connect_secs: 10,
+            request_secs: 120,
+            stream_inactivity_secs: 60,
+            stream_max_duration_secs: 1, // 1s wall clock
+        };
+        // Chunks every 100 ms for 3 seconds (30 total) — inactivity never fires,
+        // but max_duration must trigger around 1s.
+        let inner = chunk_stream(
+            (0..30).map(|_| ("x", Duration::from_millis(100))).collect()
+        );
+        let out = stream_with_cancellation(inner, token.clone(), slot.clone(), timeouts);
+        let mut out = Box::pin(out);
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while (out.next().await).is_some() {}
+        }).await.ok();
+
+        assert!(matches!(slot.get(), Some(CancelReason::MaxDurationExceeded { elapsed_secs: _ })));
+    }
+
+    #[tokio::test]
+    async fn slow_consumer_does_not_trigger_inactivity() {
+        // Proves §4.5.1: inactivity is anchored to the NETWORK producer,
+        // not the consumer. A slow consumer must NOT see InactivityTimeout
+        // if the network source is still delivering chunks.
+        let token = CancellationToken::new();
+        let slot = CancelSlot::new();
+        let timeouts = crate::agent::providers::TimeoutsConfig {
+            connect_secs: 10,
+            request_secs: 120,
+            stream_inactivity_secs: 1,
+            stream_max_duration_secs: 3600,
+        };
+
+        // Source sends 5 chunks quickly (50 ms apart) then closes cleanly.
+        // This models a finished HTTP response — producer reads None and exits
+        // without firing inactivity.
+        let inner = chunk_stream_ending(
+            (0..5).map(|_| ("x", Duration::from_millis(50))).collect()
+        );
+        let out = stream_with_cancellation(inner, token.clone(), slot.clone(), timeouts);
+        let mut out = Box::pin(out);
+
+        // Consumer is slow — 400 ms per chunk for 5 chunks = 2 s total.
+        // If the timer were anchored to consumer poll_next, it would fire;
+        // it must NOT fire because the producer has long since delivered
+        // all chunks into the mpsc.
+        for _ in 0..5 {
+            let _ = out.next().await;
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        }
+        assert!(slot.get().is_none(), "slow consumer must not trigger inactivity");
     }
 }
