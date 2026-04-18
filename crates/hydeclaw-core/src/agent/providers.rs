@@ -34,6 +34,10 @@ pub mod error;
 #[allow(unused_imports)] // first consumer arrives in Task 12 (build_provider)
 pub use error::{LlmCallError, CancelReason};
 
+pub mod cancellable_stream;
+#[allow(unused_imports)] // first consumer arrives in Task 9 (stream_with_cancellation)
+pub use cancellable_stream::{CancelSlot, set_and_cancel};
+
 /// Pluggable LLM provider trait.
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
