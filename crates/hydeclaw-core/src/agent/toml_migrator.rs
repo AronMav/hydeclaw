@@ -245,6 +245,38 @@ impl<'a> TomlMigrator<'a> {
                 }
             };
 
+            // Issue #5: before silently stripping `api_key_envs`, verify the
+            // route's key pool matches the referenced provider's. A per-route
+            // `api_key_envs` that differs from the provider's
+            // `options.api_key_envs` is a configuration the new architecture
+            // cannot preserve (the provider row is shared by many routes, so
+            // merging distinct pools is ambiguous). Fail loud so operators
+            // reconcile it manually.
+            let route_keys = extract_string_array(tbl.get("api_key_envs"));
+            if !route_keys.is_empty() {
+                let provider_row = self
+                    .db_providers
+                    .iter()
+                    .find(|r| r.name == connection_name);
+                let provider_keys = provider_row
+                    .map(provider_api_key_envs)
+                    .unwrap_or_default();
+                if !key_pools_match(&route_keys, &provider_keys) {
+                    anyhow::bail!(
+                        "agent={agent} route[{i}] has api_key_envs={:?} but \
+                         referenced provider '{connection_name}' has \
+                         api_key_envs={:?}. Per-route key rotation is no \
+                         longer supported. Please either:\n  \
+                         1. Reconfigure the provider to use the correct key \
+                         pool and remove per-route api_key_envs, OR\n  \
+                         2. Create a dedicated provider for this route with \
+                         its own api_key_envs.",
+                        route_keys,
+                        provider_keys,
+                    );
+                }
+            }
+
             tbl.insert(
                 "connection".into(),
                 toml::Value::String(connection_name),
@@ -260,6 +292,47 @@ impl<'a> TomlMigrator<'a> {
 
         Ok(changed)
     }
+}
+
+/// Extract a `Vec<String>` from a TOML array of strings. Returns an empty
+/// vec for `None`, non-array, or arrays containing non-string entries
+/// (they're silently dropped — the caller falls back to the "no route
+/// keys" branch and the strip proceeds without a fail-loud error).
+fn extract_string_array(v: Option<&toml::Value>) -> Vec<String> {
+    v.and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| e.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Read `options.api_key_envs` off a `ProviderRow`. Returns an empty vec
+/// when the column is malformed or the key is absent.
+fn provider_api_key_envs(row: &ProviderRow) -> Vec<String> {
+    row.options
+        .get("api_key_envs")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| e.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Compare two key pools as sets (order-insensitive). Equal iff they
+/// contain the same keys. Used to decide whether route-level
+/// `api_key_envs` can be silently dropped (pools match → safe to strip)
+/// or must trigger a fail-loud error (pools differ → operator must
+/// reconcile).
+fn key_pools_match(a: &[String], b: &[String]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let set_a: std::collections::HashSet<&str> = a.iter().map(String::as_str).collect();
+    b.iter().all(|k| set_a.contains(k.as_str()))
 }
 
 #[cfg(test)]
@@ -452,5 +525,170 @@ cooldown_secs = 60
             err.to_string().contains("mystery"),
             "err should name mystery provider: {err}"
         );
+    }
+
+    /// Helper: fake row with an explicit `api_key_envs` pool in `options`.
+    fn fake_row_with_keys(
+        name: &str,
+        ptype: &str,
+        base_url: &str,
+        keys: &[&str],
+    ) -> ProviderRow {
+        let mut row = fake_row(name, ptype, base_url);
+        row.options = serde_json::json!({
+            "timeouts": {},
+            "api_key_envs": keys,
+        });
+        row
+    }
+
+    /// Issue #5: a route with per-route `api_key_envs` that differ from
+    /// the referenced provider's key pool must trigger a fail-loud error.
+    /// Silently stripping them would lose per-route key rotation.
+    #[tokio::test]
+    async fn mismatched_route_api_key_envs_fails_loud() {
+        let dir = tempdir().unwrap();
+        let agents = dir.path().join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("Arty.toml"),
+            r#"
+[agent]
+name = "Arty"
+provider = "openai"
+model = "m"
+
+[[agent.routing]]
+condition = "default"
+provider = "openai"
+base_url = "http://a"
+api_key_envs = ["KEY_A", "KEY_B"]
+cooldown_secs = 60
+"#,
+        )
+        .unwrap();
+
+        // Provider pool has a different key (KEY_C), mismatch.
+        let rows = vec![fake_row_with_keys(
+            "openai-default",
+            "openai",
+            "http://a",
+            &["KEY_C"],
+        )];
+        let migrator = TomlMigrator {
+            config_dir: &agents,
+            db_providers: &rows,
+        };
+        let err = migrator.migrate_all().await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Arty"),
+            "err should name the agent: {msg}"
+        );
+        assert!(
+            msg.contains("KEY_A") && msg.contains("KEY_B"),
+            "err should list the route's key pool: {msg}"
+        );
+        assert!(
+            msg.contains("KEY_C"),
+            "err should list the provider's key pool: {msg}"
+        );
+        assert!(
+            msg.contains("openai-default"),
+            "err should name the referenced provider: {msg}"
+        );
+        assert!(
+            msg.contains("Create a dedicated provider") || msg.contains("dedicated provider"),
+            "err should include the reconciliation guidance: {msg}"
+        );
+    }
+
+    /// Issue #5: a route with per-route `api_key_envs` that MATCH the
+    /// referenced provider's key pool is safe — the strip removes noise
+    /// rather than losing rotation. Order-insensitive comparison.
+    #[tokio::test]
+    async fn matching_route_api_key_envs_is_stripped_silently() {
+        let dir = tempdir().unwrap();
+        let agents = dir.path().join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let file = agents.join("Arty.toml");
+        std::fs::write(
+            &file,
+            r#"
+[agent]
+name = "Arty"
+provider = "openai"
+model = "m"
+
+[[agent.routing]]
+condition = "default"
+provider = "openai"
+base_url = "http://a"
+api_key_envs = ["KEY_B", "KEY_A"]
+cooldown_secs = 60
+"#,
+        )
+        .unwrap();
+
+        // Same pool, different order — must not trigger fail-loud.
+        let rows = vec![fake_row_with_keys(
+            "openai-default",
+            "openai",
+            "http://a",
+            &["KEY_A", "KEY_B"],
+        )];
+        let migrator = TomlMigrator {
+            config_dir: &agents,
+            db_providers: &rows,
+        };
+        migrator
+            .migrate_all()
+            .await
+            .expect("matching pools must migrate cleanly");
+
+        let content = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            content.contains("connection = \"openai-default\""),
+            "migrated route must reference the provider: {content}"
+        );
+        let rendered_routing = content
+            .split("[[agent.routing]]")
+            .nth(1)
+            .unwrap_or_default();
+        assert!(
+            !rendered_routing.contains("api_key_envs"),
+            "route must no longer carry api_key_envs: {rendered_routing}"
+        );
+    }
+
+    /// Guard helpers — exercise the pure comparison logic independently
+    /// of file I/O so a regression in `key_pools_match` surfaces on its own.
+    #[test]
+    fn key_pools_match_is_order_insensitive() {
+        assert!(key_pools_match(
+            &["A".into(), "B".into()],
+            &["B".into(), "A".into()]
+        ));
+    }
+
+    #[test]
+    fn key_pools_match_detects_different_sizes() {
+        assert!(!key_pools_match(
+            &["A".into()],
+            &["A".into(), "B".into()]
+        ));
+    }
+
+    #[test]
+    fn key_pools_match_detects_disjoint_sets() {
+        assert!(!key_pools_match(
+            &["A".into(), "B".into()],
+            &["C".into(), "D".into()]
+        ));
+    }
+
+    #[test]
+    fn key_pools_match_both_empty_is_true() {
+        assert!(key_pools_match(&[], &[]));
     }
 }
