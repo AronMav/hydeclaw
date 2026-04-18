@@ -26,6 +26,9 @@ use google_impl::messages_to_gemini_format;
 mod claude_cli_impl;
 use claude_cli_impl::ClaudeCliProvider;
 
+pub mod timeouts;
+pub use timeouts::TimeoutsConfig;
+
 /// Pluggable LLM provider trait.
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
