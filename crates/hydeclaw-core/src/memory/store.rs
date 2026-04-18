@@ -295,10 +295,10 @@ impl MemoryStore {
     ) -> Result<String> {
         let lang = self.validated_fts_language()?;
 
-        let chunks = crate::chunker::split_text(
+        let chunks = hydeclaw_text::split_text(
             content,
-            crate::chunker::DEFAULT_CHUNK_SIZE,
-            crate::chunker::DEFAULT_CHUNK_OVERLAP,
+            hydeclaw_text::DEFAULT_CHUNK_SIZE,
+            hydeclaw_text::DEFAULT_CHUNK_OVERLAP,
         );
 
         if chunks.len() == 1 {
@@ -358,7 +358,7 @@ impl MemoryStore {
         // Split: long items use index() with chunking, short items batch-embed
         let mut short_items: Vec<(usize, &str, &str, bool, &str)> = Vec::new();
         for (idx, (content, source, pinned, scope)) in items.iter().enumerate() {
-            if content.len() > crate::chunker::DEFAULT_CHUNK_SIZE {
+            if content.len() > hydeclaw_text::DEFAULT_CHUNK_SIZE {
                 let id = self.index(content, source, *pinned, None, None, scope, agent_id).await
                     .context("failed to index long item in batch")?;
                 ids.push((idx, id));
@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     fn needs_chunking_threshold() {
-        use crate::chunker::{split_text, DEFAULT_CHUNK_SIZE};
+        use hydeclaw_text::{split_text, DEFAULT_CHUNK_SIZE};
         let short = "Hello";
         let long = "A".repeat(DEFAULT_CHUNK_SIZE + 100);
         assert_eq!(split_text(short, DEFAULT_CHUNK_SIZE, 200).len(), 1);

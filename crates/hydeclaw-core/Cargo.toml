@@ -101,6 +101,7 @@ hkdf = "0.12"
 zeroize = { version = "1", features = ["derive"] }
 
 # Internal
+hydeclaw-text = { path = "../hydeclaw-text" }
 hydeclaw-types = { workspace = true }
 
 # OpenTelemetry (optional, behind `otel` feature)

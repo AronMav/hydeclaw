@@ -1,6 +1,5 @@
 mod agent;
 mod channels;
-mod chunker;
 mod config;
 mod containers;
 mod db;
