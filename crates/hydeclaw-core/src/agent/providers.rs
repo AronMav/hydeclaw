@@ -30,6 +30,10 @@ pub mod timeouts;
 #[allow(unused_imports)] // first consumer arrives in Task 2 (ProviderOptions)
 pub use timeouts::TimeoutsConfig;
 
+pub mod error;
+#[allow(unused_imports)] // first consumer arrives in Task 12 (build_provider)
+pub use error::{LlmCallError, CancelReason};
+
 /// Pluggable LLM provider trait.
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
