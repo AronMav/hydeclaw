@@ -109,7 +109,11 @@ export function createStreamingRenderer(store: StoreAccess) {
       clearTimeout(existingTimer);
       setReconnectTimer(agent, null);
     }
-    abortActiveStream(agent);
+    // Local-only cleanup: DO NOT POST /abort here. The previous stream on
+    // the same session id may have already ended, and if we POST /abort
+    // during startup, the backend cancels the stream we are about to start
+    // (same session id → same cancel token).
+    abortLocalOnly(agent);
     update(agent, { streamGeneration: (store.get().agents[agent]?.streamGeneration ?? 0) + 1 });
     const myGeneration = store.get().agents[agent]?.streamGeneration ?? 1;
     const controller = new AbortController();
@@ -161,23 +165,13 @@ export function createStreamingRenderer(store: StoreAccess) {
       });
   }
 
-  /** Abort active stream for an agent and reset status.
-   *
-   * Two-phase cancel:
-   *   1. Fire-and-forget POST /api/chat/{sid}/abort so the backend engine's
-   *      CancellationToken trips. This triggers the producer task in
-   *      `stream_with_cancellation` to set CancelReason::UserCancelled, which
-   *      bubbles up as LlmCallError::UserCancelled with partial_text. The
-   *      engine's error path then calls persist_partial_if_any to write an
-   *      aborted message row (status='aborted', abort_reason='user_cancelled').
-   *   2. Locally abort the fetch so the SSE reader doesn't race with teardown.
-   *
-   * Step 1 MUST happen before step 2 — if we abort the fetch first the TCP
-   * connection drops, the backend engine never learns the client intentionally
-   * cancelled, and the streaming row never transitions to aborted.
+  /** Internal: local abort only (no backend notification). Used by
+   * startStream to clean up lingering fetch controllers before launching
+   * a new stream on the same agent. Calling /abort here would race with
+   * the new stream's registration on the same session id and cancel it
+   * prematurely.
    */
-  function abortActiveStream(agent: string) {
-    // Clear any pending reconnect timer first -- prevents reconnect after abort
+  function abortLocalOnly(agent: string) {
     const timer = getReconnectTimer(agent);
     if (timer) {
       clearTimeout(timer);
@@ -185,19 +179,36 @@ export function createStreamingRenderer(store: StoreAccess) {
     }
     const ctrl = getAbortCtrl(agent);
     if (ctrl) {
-      // Ask the backend to stop first; fire-and-forget.
-      const sid = store.get().agents[agent]?.activeSessionId;
-      if (sid) {
-        apiPost(`/api/chat/${sid}/abort`).catch(() => {
-          // Backend may not have an active stream (already done / not started).
-          // Not an error from the user's point of view — local abort below
-          // still cleans up UI state.
-        });
-      }
       ctrl.abort();
       setAbortCtrl(agent, null);
       update(agent, { connectionPhase: "idle" });
     }
+  }
+
+  /** Public: abort active stream AND notify backend (user Stop).
+   *
+   * Fire-and-forget POST /api/chat/{sid}/abort trips the backend's
+   * CancellationToken, which cascades through `stream_with_cancellation`
+   * into `LlmCallError::UserCancelled { partial_text }`. The engine's
+   * error path then persists an aborted message row with
+   * `abort_reason='user_cancelled'` and writes an aborted usage_log.
+   *
+   * The local fetch abort still runs so UI state transitions to idle
+   * immediately; the backend continues in the background just long
+   * enough to save the aborted row.
+   */
+  function abortActiveStream(agent: string) {
+    const ctrl = getAbortCtrl(agent);
+    if (ctrl) {
+      const sid = store.get().agents[agent]?.activeSessionId;
+      if (sid) {
+        apiPost(`/api/chat/${sid}/abort`).catch(() => {
+          // Backend may not have an active stream (already done / not started).
+          // Local abort below still cleans up UI state.
+        });
+      }
+    }
+    abortLocalOnly(agent);
   }
 
   // ── Reconnect scheduling (SSE-02) ────────────────────────────────────────
@@ -225,7 +236,8 @@ export function createStreamingRenderer(store: StoreAccess) {
   // ── SSE stream handler ──────────────────────────────────────────────────
 
   function startStream(agent: string, sessionId: string | null, messages: ChatMessage[], userText: string, attachments?: Array<any>) {
-    abortActiveStream(agent);
+    // Local-only cleanup for the same reason documented in resumeStream.
+    abortLocalOnly(agent);
     update(agent, { streamGeneration: (store.get().agents[agent]?.streamGeneration ?? 0) + 1 });
     const myGeneration = store.get().agents[agent]?.streamGeneration ?? 1;
     const controller = new AbortController();
