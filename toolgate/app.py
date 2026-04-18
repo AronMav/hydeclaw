@@ -177,10 +177,19 @@ app.include_router(calendar.router)
 @app.get("/health")
 async def health():
     active = {}
+    available = {}
     for cap in CAPABILITIES:
         p = registry.get_active(cap)
         active[cap] = p.name if p else None
-    return {"status": "ok", "active_providers": active}
+        available[cap] = p is not None
+    degraded = registry.is_degraded()
+    return {
+        "status": "degraded" if degraded else "ok",
+        "degraded": degraded,
+        "loaded_providers": len(registry.list_providers()),
+        "capabilities": available,
+        "active_providers": active,
+    }
 
 
 @app.post("/reload")
