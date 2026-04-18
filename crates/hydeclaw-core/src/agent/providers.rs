@@ -27,6 +27,7 @@ mod claude_cli_impl;
 use claude_cli_impl::ClaudeCliProvider;
 
 pub mod timeouts;
+#[allow(unused_imports)] // first consumer arrives in Task 2 (ProviderOptions)
 pub use timeouts::TimeoutsConfig;
 
 /// Pluggable LLM provider trait.
