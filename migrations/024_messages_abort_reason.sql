@@ -7,8 +7,5 @@
 ALTER TABLE messages
     ADD COLUMN IF NOT EXISTS abort_reason TEXT;
 
--- Extend status enum: existing statuses remain valid; new values tolerated
--- by application layer. No CHECK constraint so future variants don't require
--- downtime to add.
 COMMENT ON COLUMN messages.abort_reason IS
-    'LLM call abort reason when status = aborted. NULL otherwise.';
+    'LLM call abort reason when status=aborted. NULL otherwise. Stable identifiers (pinned in LlmCallError::abort_reason): connect_timeout | inactivity | request_timeout | max_duration | user_cancelled | shutdown_drain. Changing these strings breaks historical rows.';
