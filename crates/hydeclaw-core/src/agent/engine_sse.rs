@@ -859,7 +859,7 @@ pub(super) async fn record_aborted_usage(
     e: &anyhow::Error,
     status: UsageAbortStatus,
 ) {
-    use crate::db::usage::{STATUS_ABORTED, STATUS_ABORTED_FAILOVER};
+    use crate::db::usage::{insert_aborted_row, STATUS_ABORTED, STATUS_ABORTED_FAILOVER};
     let Some(llm_err) = e.downcast_ref::<crate::agent::providers::LlmCallError>() else {
         return;
     };
@@ -869,37 +869,33 @@ pub(super) async fn record_aborted_usage(
         UsageAbortStatus::AbortedFailover => STATUS_ABORTED_FAILOVER,
     };
     let est_output_tokens = (partial.len() / 4).min(u32::MAX as usize) as u32;
-    if let Err(err) = sqlx::query(
-        "INSERT INTO usage_log (agent_id, provider, model, input_tokens, output_tokens, session_id, status) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    match insert_aborted_row(
+        db,
+        agent_name,
+        provider_name,
+        model,
+        session_id,
+        est_output_tokens,
+        status,
     )
-    .bind(agent_name)
-    .bind(provider_name)
-    .bind(model)
-    .bind(0_i32)
-    .bind(est_output_tokens as i32)
-    .bind(session_id)
-    .bind(status)
-    .execute(db)
     .await
     {
-        tracing::debug!(
-            session_id = %session_id,
-            agent = %agent_name,
-            provider = %provider_name,
-            status = %status,
-            error = %err,
-            "failed to record aborted usage row (non-fatal)"
-        );
-    } else {
-        tracing::debug!(
+        Ok(()) => tracing::debug!(
             session_id = %session_id,
             agent = %agent_name,
             provider = %provider_name,
             status = %status,
             est_output_tokens,
             "recorded aborted usage row"
-        );
+        ),
+        Err(err) => tracing::debug!(
+            session_id = %session_id,
+            agent = %agent_name,
+            provider = %provider_name,
+            status = %status,
+            error = %err,
+            "failed to record aborted usage row (non-fatal)"
+        ),
     }
 }
 

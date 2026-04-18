@@ -643,28 +643,28 @@ pub(crate) async fn api_chat_sse(
                 );
             }
 
-            let event = if let Some(dl) = cancel_deadline {
-                // Race the engine's next event against the grace deadline.
-                match tokio::time::timeout_at(dl, event_rx.recv()).await {
-                    Ok(Some(ev)) => ev,
-                    Ok(None) => break, // engine finished / channel closed
-                    Err(_) => {
-                        // Grace window exceeded with no event progress — the
-                        // engine is wedged ignoring the cancel token. Force
-                        // an abort so the task / semaphore permit are freed.
-                        tracing::warn!(
-                            session_id = ?session_id_str,
-                            "cancel grace window ({}s) exceeded, hard-aborting engine",
-                            CANCEL_GRACE.as_secs(),
-                        );
-                        engine_handle.abort();
-                        break;
-                    }
-                }
-            } else {
-                match event_rx.recv().await {
-                    Some(ev) => ev,
-                    None => break,
+            // Race the engine's next event against the cancel-grace
+            // deadline (if set). The helper encapsulates the three
+            // outcomes so the logic can be unit-tested in isolation
+            // via `tokio::time::pause()`.
+            use super::cancel_grace::{
+                poll_event_with_cancel_grace, GracePollResult,
+            };
+            let event = match poll_event_with_cancel_grace(&mut event_rx, cancel_deadline).await
+            {
+                GracePollResult::Event(ev) => ev,
+                GracePollResult::Closed => break, // engine finished / channel closed
+                GracePollResult::GraceExceeded => {
+                    // Grace window exceeded with no event progress — the
+                    // engine is wedged ignoring the cancel token. Force
+                    // an abort so the task / semaphore permit are freed.
+                    tracing::warn!(
+                        session_id = ?session_id_str,
+                        "cancel grace window ({}s) exceeded, hard-aborting engine",
+                        CANCEL_GRACE.as_secs(),
+                    );
+                    engine_handle.abort();
+                    break;
                 }
             };
 

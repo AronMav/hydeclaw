@@ -173,6 +173,13 @@ pub mod db {
     #[path = "approvals.rs"]
     pub mod approvals;
 
+    // Post-review fix (2026-04-18): `db::usage` is a leaf module (deps:
+    // anyhow, sqlx, uuid — no `crate::*` references). Exposed so
+    // `tests/integration_aborted_usage.rs` can verify the `insert_aborted_row`
+    // contract against the m025 schema using testcontainers.
+    #[path = "usage.rs"]
+    pub mod usage;
+
     // Phase 62 RES-03: `session_wal` is a leaf module (deps: anyhow, sqlx,
     // uuid, serde_json — no crate::* references). Safe to re-export without
     // cascading the lib surface. Consumed by

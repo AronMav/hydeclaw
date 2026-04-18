@@ -36,6 +36,44 @@ pub async fn record_usage(
     Ok(())
 }
 
+/// Insert a usage_log row marked as aborted (with or without failover).
+///
+/// Pure SQL helper — caller supplies the already-decided `status` string
+/// (use [`STATUS_ABORTED`] / [`STATUS_ABORTED_FAILOVER`]). Separated from
+/// `engine_sse::record_aborted_usage` so the DB contract can be
+/// integration-tested without pulling the engine's `LlmCallError`
+/// downcast logic into the lib facade.
+///
+/// `input_tokens` is always written as `0` for aborted calls (we don't
+/// know the prompt size until the usage headers arrive, which aborts
+/// by definition don't get). `output_tokens` is the caller's estimate —
+/// typically `partial_text.len() / 4` as a rough bytes-per-token
+/// heuristic.
+pub async fn insert_aborted_row(
+    db: &PgPool,
+    agent_id: &str,
+    provider: &str,
+    model: &str,
+    session_id: Uuid,
+    output_tokens: u32,
+    status: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO usage_log (agent_id, provider, model, input_tokens, output_tokens, session_id, status) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    )
+    .bind(agent_id)
+    .bind(provider)
+    .bind(model)
+    .bind(0_i32)
+    .bind(output_tokens as i32)
+    .bind(session_id)
+    .bind(status)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 /// Get total tokens used by an agent today.
 pub async fn get_agent_usage_today(db: &PgPool, agent_id: &str) -> Result<i64> {
     let total: (i64,) = sqlx::query_as(
