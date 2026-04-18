@@ -20,7 +20,8 @@ class MurfTTS:
 
     async def synthesize(self, http: httpx.AsyncClient, text: str,
                          voice: str, model: str | None = None,
-                         response_format: str = "mp3") -> bytes:
+                         response_format: str = "mp3",
+                         registry=None) -> bytes:
         voice_id = voice or self.default_voice_id
 
         format_map = {"mp3": "MP3", "wav": "WAV", "flac": "FLAC", "opus": "OGG"}

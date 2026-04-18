@@ -44,6 +44,7 @@ class TTSProvider(Protocol):
         voice: str,
         model: str | None = None,
         response_format: str = "mp3",
+        registry=None,
     ) -> bytes: ...
 
 

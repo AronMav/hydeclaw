@@ -15,7 +15,8 @@ class OpenAITTS:
 
     async def synthesize(self, http: httpx.AsyncClient, text: str,
                          voice: str, model: str | None = None,
-                         response_format: str = "mp3") -> bytes:
+                         response_format: str = "mp3",
+                         registry=None) -> bytes:
         resp = await http.post(
             f"{self.base_url}/audio/speech",
             headers={"Authorization": f"Bearer {self.api_key}"},

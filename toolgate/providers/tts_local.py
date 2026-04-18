@@ -1,6 +1,17 @@
-"""Local Qwen3-TTS provider."""
+"""Local Qwen3-TTS provider.
+
+Normalize-LLM credentials come from a separate `type=text` provider
+referenced via `options.normalize_provider_id` (UUID). This keeps the
+API key in the encrypted vault instead of plaintext JSONB options."""
+
+import logging
 
 import httpx
+
+from normalize import NormalizeLLMConfig, normalize_text
+
+
+log = logging.getLogger("toolgate.tts_local")
 
 
 class Qwen3TTS:
@@ -13,27 +24,46 @@ class Qwen3TTS:
         opts = options or {}
         self.default_voice = opts.get("voice", "nova")
         self.normalize = opts.get("normalize", False)
-        self.llm_api_url = opts.get("llm_api_url", "")
-        self.llm_api_key = opts.get("llm_api_key", "")
-        self.llm_model = opts.get("llm_model", "MiniMax-M2.5")
+        self.normalize_provider_id: str | None = opts.get("normalize_provider_id") or None
 
-    async def _normalize_text(self, http: httpx.AsyncClient, text: str) -> str:
-        """Normalize Russian text for TTS via LLM (expand abbreviations, numbers, etc.)."""
-        if not self.normalize or not self.llm_api_url:
-            return text
-
-        from normalize import normalize_for_tts
-        return await normalize_for_tts(
-            http, text,
-            api_url=self.llm_api_url,
-            api_key=self.llm_api_key,
-            model=self.llm_model,
-        )
+    def _resolve_llm_config(self, registry) -> NormalizeLLMConfig | None:
+        """Resolve normalize-LLM config from the referenced text provider.
+        Returns None (caller will fall back to pre/post-only normalize) if:
+          - normalize flag is disabled
+          - normalize_provider_id is missing
+          - referenced provider doesn't exist or lacks base_url/api_key"""
+        if not self.normalize:
+            return None
+        if not self.normalize_provider_id:
+            log.warning("normalize=True but no normalize_provider_id configured — "
+                        "skipping LLM transliteration (pre/post only)")
+            return None
+        if registry is None:
+            log.warning("no registry passed to synthesize — cannot resolve "
+                        "normalize_provider_id=%s", self.normalize_provider_id)
+            return None
+        text_provider = registry.get_instance(self.normalize_provider_id)
+        if text_provider is None:
+            log.warning("normalize_provider_id=%s not found in registry — "
+                        "falling back to basic normalize",
+                        self.normalize_provider_id)
+            return None
+        base_url = getattr(text_provider, "base_url", "")
+        api_key = getattr(text_provider, "api_key", "") or ""
+        model = getattr(text_provider, "model", "") or ""
+        if not base_url or not api_key:
+            log.warning("normalize provider %s missing base_url/api_key — "
+                        "falling back to basic normalize",
+                        self.normalize_provider_id)
+            return None
+        return NormalizeLLMConfig(base_url=base_url, api_key=api_key, model=model)
 
     async def synthesize(self, http: httpx.AsyncClient, text: str,
                          voice: str, model: str | None = None,
-                         response_format: str = "mp3") -> bytes:
-        processed = await self._normalize_text(http, text)
+                         response_format: str = "mp3",
+                         registry=None) -> bytes:
+        llm_config = self._resolve_llm_config(registry)
+        processed = await normalize_text(http, text, config=llm_config)
         resolved_voice = voice if voice else self.default_voice
 
         resp = await http.post(

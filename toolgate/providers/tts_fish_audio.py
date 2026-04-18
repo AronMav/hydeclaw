@@ -17,7 +17,8 @@ class FishAudioTTS:
 
     async def synthesize(self, http: httpx.AsyncClient, text: str,
                          voice: str, model: str | None = None,
-                         response_format: str = "mp3") -> bytes:
+                         response_format: str = "mp3",
+                         registry=None) -> bytes:
         voice_id = voice or self.reference_id or ""
         engine = model or self.model
 

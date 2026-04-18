@@ -19,7 +19,8 @@ class ElevenLabsTTS:
 
     async def synthesize(self, http: httpx.AsyncClient, text: str,
                          voice: str, model: str | None = None,
-                         response_format: str = "mp3") -> bytes:
+                         response_format: str = "mp3",
+                         registry=None) -> bytes:
         voice_id = voice or self.default_voice_id
         output_format = "mp3_44100_128" if response_format == "mp3" else "opus_48000_64"
 

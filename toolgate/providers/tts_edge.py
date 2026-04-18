@@ -19,7 +19,8 @@ class EdgeTTS:
 
     async def synthesize(self, http: httpx.AsyncClient, text: str,
                          voice: str, model: str | None = None,
-                         response_format: str = "mp3") -> bytes:
+                         response_format: str = "mp3",
+                         registry=None) -> bytes:
         import edge_tts
 
         voice_name = voice or self.default_voice

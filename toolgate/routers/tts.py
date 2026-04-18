@@ -11,7 +11,6 @@ import httpx
 
 from dependencies import require_provider
 from helpers import log_provider
-from normalize import normalize_text
 
 log = logging.getLogger("toolgate.tts")
 
@@ -79,6 +78,7 @@ async def tts(
         audio_bytes = await provider.synthesize(
             request.app.state.http_client, body.text,
             body.voice or "", body.model, fmt,
+            registry=request.app.state.registry,
         )
         return Response(content=audio_bytes, media_type=_audio_media_type(fmt))
     except httpx.HTTPStatusError as e:
@@ -101,21 +101,17 @@ async def openai_speech(
     request: Request,
     provider=Depends(require_provider("tts")),
 ):
-    """OpenAI-compatible TTS with full Russian text normalization."""
+    """OpenAI-compatible TTS. The provider performs normalization internally
+    (via its configured normalize_provider_id) so the router stays neutral."""
     log_provider(log, provider)
     http = request.app.state.http_client
     text = body.input
-    if text:
-        normalized = await normalize_text(http, text)
-        if normalized != text:
-            log.info("Normalized TTS (%d→%d chars): %s", len(text), len(normalized), normalized[:200])
-        text = normalized
-
     fmt = body.response_format or "mp3"
     try:
         audio_bytes = await provider.synthesize(
             http, text,
             body.voice or "", body.model, fmt,
+            registry=request.app.state.registry,
         )
         return Response(content=audio_bytes, media_type=_audio_media_type(fmt))
     except httpx.HTTPStatusError as e:
