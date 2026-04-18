@@ -561,10 +561,11 @@ Description=HydeClaw Memory Worker
 After=hydeclaw-core.service
 
 [Service]
-Type=simple
+Type=notify
 WorkingDirectory=${ROOT}
 ExecStart=${BINARY_WORKER}
 EnvironmentFile=${ROOT}/.env
+WatchdogSec=300
 Restart=always
 RestartSec=10
 

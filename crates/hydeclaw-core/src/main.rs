@@ -258,8 +258,9 @@ async fn main() -> Result<()> {
 
     tracing::info!(listen = %cfg.gateway.listen, "HydeClaw Core starting...");
 
-    // Auto-install systemd units for watchdog and memory-worker
-    setup_systemd_units();
+    // systemd unit installation is handled by setup.sh (see "Systemd service"
+    // stage). Core no longer writes unit files at runtime — that was a
+    // hot-path side effect that belonged to the installer.
 
     // Config hot-reload watcher
     let shared_config = std::sync::Arc::new(tokio::sync::RwLock::new(cfg.clone()));
@@ -629,79 +630,6 @@ async fn main() -> Result<()> {
 
     tracing::info!("HydeClaw Core shutting down");
     Ok(())
-}
-
-/// Auto-install systemd user units for watchdog and memory-worker if binaries exist.
-fn setup_systemd_units() {
-    let watchdog_binary = std::path::Path::new("hydeclaw-watchdog");
-    if watchdog_binary.exists() {
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_else(|_| "/root".into());
-        let unit_path = std::path::PathBuf::from(&home)
-            .join(".config/systemd/user/hydeclaw-watchdog.service");
-        if !unit_path.exists() {
-            let cwd = std::env::current_dir().unwrap_or_default();
-            let binary_path = cwd.join("hydeclaw-watchdog");
-            let auth_token = std::env::var("HYDECLAW_AUTH_TOKEN").unwrap_or_default();
-            let unit_content = format!(
-                "[Unit]\nDescription=HydeClaw Watchdog\nAfter=network.target\n\n\
-                 [Service]\nType=notify\nWorkingDirectory={cwd}\n\
-                 ExecStart={binary} config/watchdog.toml\n\
-                 Environment=HYDECLAW_AUTH_TOKEN={token}\n\
-                 Environment=RUST_LOG=hydeclaw_watchdog=info\n\
-                 TimeoutStopSec=40\nWatchdogSec=120\nRestart=always\nRestartSec=5\n\n\
-                 [Install]\nWantedBy=default.target\n",
-                cwd = cwd.display(),
-                binary = binary_path.display(),
-                token = auth_token,
-            );
-            if let Some(parent) = unit_path.parent() {
-                std::fs::create_dir_all(parent).ok();
-            }
-            if std::fs::write(&unit_path, &unit_content).is_ok() {
-                tracing::info!("watchdog systemd unit installed at {}", unit_path.display());
-                let _ = std::process::Command::new("systemctl").args(["--user", "daemon-reload"]).status();
-                let _ = std::process::Command::new("systemctl").args(["--user", "enable", "hydeclaw-watchdog"]).status();
-                let _ = std::process::Command::new("systemctl").args(["--user", "start", "hydeclaw-watchdog"]).status();
-                tracing::info!("watchdog service enabled and started");
-            }
-        }
-    }
-
-    let worker_binary = std::path::Path::new("hydeclaw-memory-worker");
-    if worker_binary.exists() {
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_else(|_| "/root".into());
-        let unit_path = std::path::PathBuf::from(&home)
-            .join(".config/systemd/user/hydeclaw-memory-worker.service");
-        if !unit_path.exists() {
-            let cwd = std::env::current_dir().unwrap_or_default();
-            let binary_path = cwd.join("hydeclaw-memory-worker");
-            let unit_content = format!(
-                "[Unit]\nDescription=HydeClaw Memory Worker\nAfter=network.target\n\n\
-                 [Service]\nType=notify\nWorkingDirectory={cwd}\n\
-                 ExecStart={binary} config/hydeclaw.toml\n\
-                 EnvironmentFile={cwd}/.env\n\
-                 Environment=RUST_LOG=hydeclaw_memory_worker=info\n\
-                 TimeoutStopSec=40\nWatchdogSec=300\nRestart=always\nRestartSec=5\n\n\
-                 [Install]\nWantedBy=default.target\n",
-                cwd = cwd.display(),
-                binary = binary_path.display(),
-            );
-            if let Some(parent) = unit_path.parent() {
-                std::fs::create_dir_all(parent).ok();
-            }
-            if std::fs::write(&unit_path, &unit_content).is_ok() {
-                tracing::info!("memory-worker systemd unit installed at {}", unit_path.display());
-                let _ = std::process::Command::new("systemctl").args(["--user", "daemon-reload"]).status();
-                let _ = std::process::Command::new("systemctl").args(["--user", "enable", "hydeclaw-memory-worker"]).status();
-                let _ = std::process::Command::new("systemctl").args(["--user", "start", "hydeclaw-memory-worker"]).status();
-                tracing::info!("memory-worker service enabled and started");
-            }
-        }
-    }
 }
 
 /// Repair sessions interrupted by previous crash (batched loop).
