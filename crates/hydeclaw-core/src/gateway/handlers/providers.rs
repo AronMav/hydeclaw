@@ -223,6 +223,16 @@ pub(crate) async fn api_create_provider(
             "error": format!("invalid options: {msg}")
         }))).into_response();
     }
+    // Phase: toolgate-config-sot — validate cross-reference to text provider
+    // when creating a TTS provider with normalize_provider_id.
+    if body.category == "tts"
+        && let Some(opts) = body.options.as_ref()
+        && let Err(msg) = validate_tts_options_db(&infra.db, Some(opts)).await
+    {
+        return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": format!("invalid TTS options: {msg}")
+        }))).into_response();
+    }
 
     let api_key = body.api_key.clone().filter(|k| !k.is_empty());
     let input = CreateProvider {
@@ -303,6 +313,22 @@ pub(crate) async fn api_update_provider(
     if let Err(msg) = validate_provider_options(body.options.as_ref()) {
         return (StatusCode::BAD_REQUEST, Json(json!({
             "error": format!("invalid options: {msg}")
+        }))).into_response();
+    }
+    // Phase: toolgate-config-sot — for updates, category may be absent from
+    // body. Read the current row to determine whether TTS validation applies.
+    let needs_tts_check = {
+        let current: Option<(String,)> = sqlx::query_as(
+            "SELECT type FROM providers WHERE id = $1"
+        ).bind(id).fetch_optional(&infra.db).await.ok().flatten();
+        matches!(current, Some((ref c,)) if c == "tts")
+    };
+    if needs_tts_check
+        && let Some(opts) = body.options.as_ref()
+        && let Err(msg) = validate_tts_options_db(&infra.db, Some(opts)).await
+    {
+        return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": format!("invalid TTS options: {msg}")
         }))).into_response();
     }
 
