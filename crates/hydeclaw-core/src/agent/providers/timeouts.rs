@@ -49,6 +49,44 @@ pub struct ProviderOptions {
     pub extra: HashMap<String, Value>,
 }
 
+impl TimeoutsConfig {
+    /// Returns human-readable error message if any field is out of range.
+    /// Called on every load and on every PUT /api/providers write.
+    pub fn validate(&self) -> Result<(), String> {
+        if !(1..=120).contains(&self.connect_secs) {
+            return Err(format!(
+                "connect_secs must be in 1..=120 (got {})",
+                self.connect_secs
+            ));
+        }
+        if self.request_secs > 3600 {
+            return Err(format!(
+                "request_secs must be in 0..=3600 (got {})",
+                self.request_secs
+            ));
+        }
+        if self.stream_inactivity_secs > 3600 {
+            return Err(format!(
+                "stream_inactivity_secs must be in 0..=3600 (got {})",
+                self.stream_inactivity_secs
+            ));
+        }
+        if self.stream_max_duration_secs > 7200 {
+            return Err(format!(
+                "stream_max_duration_secs must be in 0..=7200 (got {})",
+                self.stream_max_duration_secs
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl ProviderOptions {
+    pub fn validate(&self) -> Result<(), String> {
+        self.timeouts.validate()
+    }
+}
+
 /// Emit a WARN log when any unknown keys are present. Call on every load.
 pub fn warn_unknown_keys(provider_name: &str, opts: &ProviderOptions) {
     if !opts.extra.is_empty() {
@@ -133,5 +171,66 @@ mod tests {
         let opts: ProviderOptions = serde_json::from_str(input).unwrap();
         assert_eq!(opts.timeouts, TimeoutsConfig::default());
         assert_eq!(opts.extra.get("timeout_secs").and_then(|v| v.as_u64()), Some(120));
+    }
+
+    #[test]
+    fn validate_rejects_connect_zero() {
+        let mut cfg = TimeoutsConfig::default();
+        cfg.connect_secs = 0;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("connect_secs"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_connect_over_120() {
+        let mut cfg = TimeoutsConfig::default();
+        cfg.connect_secs = 121;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_request_zero() {
+        let mut cfg = TimeoutsConfig::default();
+        cfg.request_secs = 0;
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_request_over_3600() {
+        let mut cfg = TimeoutsConfig::default();
+        cfg.request_secs = 3601;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_stream_max_over_7200() {
+        let mut cfg = TimeoutsConfig::default();
+        cfg.stream_max_duration_secs = 7201;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_stream_inactivity_over_3600() {
+        let mut cfg = TimeoutsConfig::default();
+        cfg.stream_inactivity_secs = 3601;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_all_boundary_values() {
+        let cfg = TimeoutsConfig {
+            connect_secs: 1,
+            request_secs: 3600,
+            stream_inactivity_secs: 3600,
+            stream_max_duration_secs: 7200,
+        };
+        assert!(cfg.validate().is_ok());
+        let cfg2 = TimeoutsConfig {
+            connect_secs: 120,
+            request_secs: 0,
+            stream_inactivity_secs: 0,
+            stream_max_duration_secs: 0,
+        };
+        assert!(cfg2.validate().is_ok());
     }
 }
