@@ -587,48 +587,21 @@ pub(crate) async fn api_media_config_export(
 
 // ── Static metadata ─────────────────────────────────────────────────────────
 
+/// Single source of truth for media driver metadata.
+/// Embedded at compile time from config/media-drivers.yaml so the binary
+/// stays self-contained while the YAML remains human-editable in the repo.
+/// Python toolgate reads the same file (or a derived constant) — see registry.py.
+const MEDIA_DRIVERS_YAML: &str = include_str!("../../../../../config/media-drivers.yaml");
+
+static MEDIA_DRIVERS_JSON: LazyLock<Value> = LazyLock::new(|| {
+    let parsed: serde_yaml::Value = serde_yaml::from_str(MEDIA_DRIVERS_YAML)
+        .expect("config/media-drivers.yaml: invalid YAML (compile-time embedded)");
+    serde_json::to_value(&parsed)
+        .expect("config/media-drivers.yaml: cannot convert to JSON")
+});
+
 pub(crate) async fn api_list_media_drivers() -> Json<Value> {
-    Json(json!({
-        "drivers": {
-            "stt": [
-                {"driver": "whisper-local", "label": "Local Whisper (faster-whisper)", "requires_key": false},
-                {"driver": "openai", "label": "OpenAI Whisper", "requires_key": true},
-                {"driver": "groq", "label": "Groq", "requires_key": true},
-                {"driver": "deepgram", "label": "Deepgram", "requires_key": true},
-                {"driver": "google", "label": "Google Gemini", "requires_key": true},
-                {"driver": "mistral", "label": "Mistral (Voxtral)", "requires_key": true},
-                {"driver": "assemblyai", "label": "AssemblyAI (100+ langs)", "requires_key": true},
-            ],
-            "vision": [
-                {"driver": "ollama", "label": "Local Ollama", "requires_key": false},
-                {"driver": "openai", "label": "OpenAI GPT-4o", "requires_key": true},
-                {"driver": "google", "label": "Google Gemini", "requires_key": true},
-                {"driver": "anthropic", "label": "Anthropic Claude", "requires_key": true},
-                {"driver": "replicate", "label": "Replicate (Moondream/LLaVA)", "requires_key": true},
-                {"driver": "qwen", "label": "Qwen2-VL (Alibaba)", "requires_key": true},
-                {"driver": "cloudsight", "label": "CloudSight", "requires_key": true},
-            ],
-            "tts": [
-                {"driver": "openai", "label": "OpenAI TTS", "requires_key": true},
-                {"driver": "elevenlabs", "label": "ElevenLabs", "requires_key": true},
-                {"driver": "edge", "label": "Microsoft Edge TTS (free)", "requires_key": false},
-                {"driver": "qwen3-tts", "label": "Local Qwen3-TTS", "requires_key": false},
-                {"driver": "fish-audio", "label": "Fish Audio (Russian voices)", "requires_key": true},
-                {"driver": "murf", "label": "Murf AI", "requires_key": true},
-            ],
-            "imagegen": [
-                {"driver": "openai", "label": "OpenAI (DALL-E / GPT Image)", "requires_key": true},
-                {"driver": "runware", "label": "Runware (FLUX, SDXL, etc.)", "requires_key": true},
-                {"driver": "stability", "label": "Stability AI (SD3/SD3.5)", "requires_key": true},
-                {"driver": "fal", "label": "fal.ai (FLUX fast)", "requires_key": true},
-                {"driver": "pixazo", "label": "Pixazo", "requires_key": true},
-            ],
-            "embedding": [
-                {"driver": "ollama", "label": "Ollama Embedding", "requires_key": false},
-                {"driver": "openai", "label": "OpenAI Embedding", "requires_key": true},
-            ],
-        }
-    }))
+    Json(MEDIA_DRIVERS_JSON.clone())
 }
 
 pub(crate) async fn api_list_provider_types() -> Json<Value> {
@@ -1110,6 +1083,25 @@ mod tests {
         assert!(!VALID_CAPABILITIES.contains(&"graph_extraction"));
         assert!(!VALID_CAPABILITIES.contains(&"compaction"));
         assert!(!VALID_CAPABILITIES.contains(&"text"));
+    }
+
+    #[test]
+    fn media_drivers_yaml_parses_with_expected_capabilities() {
+        // Forces LazyLock initialization — would panic on bad YAML.
+        let drivers = MEDIA_DRIVERS_JSON.get("drivers").expect("drivers root key");
+        for cap in ["stt", "vision", "tts", "imagegen", "embedding"] {
+            let arr = drivers.get(cap).unwrap_or_else(|| panic!("missing capability {cap}"));
+            let list = arr.as_array().expect("capability must be array");
+            assert!(!list.is_empty(), "capability {cap} has no drivers");
+            for entry in list {
+                assert!(entry.get("driver").and_then(|v| v.as_str()).is_some(),
+                    "missing 'driver' string in {cap} entry: {entry}");
+                assert!(entry.get("label").and_then(|v| v.as_str()).is_some(),
+                    "missing 'label' string in {cap} entry: {entry}");
+                assert!(entry.get("requires_key").and_then(|v| v.as_bool()).is_some(),
+                    "missing 'requires_key' bool in {cap} entry: {entry}");
+            }
+        }
     }
 
     #[test]

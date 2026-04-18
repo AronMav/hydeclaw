@@ -97,49 +97,12 @@ def get_driver_map() -> dict[tuple[str, str], type]:
     return _DRIVER_MAP
 
 
-# Available drivers metadata for the admin UI
-DRIVER_INFO: dict[str, list[dict[str, str]]] = {
-    "stt": [
-        {"driver": "whisper-local", "label": "Local Whisper (faster-whisper)", "requires_key": "false"},
-        {"driver": "openai", "label": "OpenAI Whisper", "requires_key": "true"},
-        {"driver": "groq", "label": "Groq", "requires_key": "true"},
-        {"driver": "deepgram", "label": "Deepgram", "requires_key": "true"},
-        {"driver": "google", "label": "Google Gemini", "requires_key": "true"},
-        {"driver": "mistral", "label": "Mistral (Voxtral)", "requires_key": "true"},
-        {"driver": "assemblyai", "label": "AssemblyAI (100+ langs)", "requires_key": "true"},
-    ],
-    "vision": [
-        {"driver": "ollama", "label": "Local Ollama", "requires_key": "false"},
-        {"driver": "openai", "label": "OpenAI GPT-4o", "requires_key": "true"},
-        {"driver": "google", "label": "Google Gemini", "requires_key": "true"},
-        {"driver": "anthropic", "label": "Anthropic Claude", "requires_key": "true"},
-        {"driver": "replicate", "label": "Replicate (Moondream/LLaVA)", "requires_key": "true"},
-        {"driver": "qwen", "label": "Qwen2-VL (Alibaba)", "requires_key": "true"},
-        {"driver": "cloudsight", "label": "CloudSight", "requires_key": "true"},
-    ],
-    "tts": [
-        {"driver": "openai", "label": "OpenAI TTS", "requires_key": "true"},
-        {"driver": "elevenlabs", "label": "ElevenLabs", "requires_key": "true"},
-        {"driver": "edge", "label": "Microsoft Edge TTS (free)", "requires_key": "false"},
-        {"driver": "qwen3-tts", "label": "Local Qwen3-TTS", "requires_key": "false"},
-        {"driver": "fish-audio", "label": "Fish Audio (Russian voices)", "requires_key": "true"},
-        {"driver": "murf", "label": "Murf AI", "requires_key": "true"},
-    ],
-    "imagegen": [
-        {"driver": "openai", "label": "OpenAI (DALL-E / GPT Image)", "requires_key": "true"},
-        {"driver": "runware", "label": "Runware (FLUX, SDXL, etc.)", "requires_key": "true"},
-        {"driver": "stability", "label": "Stability AI (SD3/SD3.5)", "requires_key": "true"},
-        {"driver": "fal", "label": "fal.ai (FLUX fast)", "requires_key": "true"},
-        {"driver": "pixazo", "label": "Pixazo", "requires_key": "true"},
-    ],
-    "embedding": [
-        {"driver": "ollama", "label": "Ollama Embedding", "requires_key": "false"},
-        {"driver": "openai", "label": "OpenAI Embedding", "requires_key": "true"},
-    ],
-}
-
-# Derived from DRIVER_INFO — the canonical list of provider-based capabilities
-CAPABILITIES = list(DRIVER_INFO.keys())
+# Provider-based capabilities served by toolgate.
+# Driver metadata (label, requires_key, list of drivers per capability) lives in
+# config/media-drivers.yaml — that file is the single source of truth, served to
+# the admin UI by Core via GET /api/media-drivers. Toolgate only needs the
+# capability names internally; do NOT mirror driver metadata here.
+CAPABILITIES = ["stt", "vision", "tts", "imagegen", "embedding"]
 
 # Utility services (no provider abstraction, always available)
 UTILITY_SERVICES = [
