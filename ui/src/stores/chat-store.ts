@@ -80,6 +80,10 @@ export const useChatStore = create<ChatStore>()(
         const participants = get().sessionParticipants[activeSessionId];
         if (participants && participants.includes(name)) {
           ensure(name);
+          // Multi-agent session reuse: the new agent inherits the same
+          // sessionId. Invalidate so React Query refetches the fresh DB
+          // state under the new agent's query context.
+          queryClient.invalidateQueries({ queryKey: qk.sessionMessages(activeSessionId) });
           update(name, {
             activeSessionId,
             messageSource: prevState?.messageSource ?? { mode: "new-chat" },
@@ -91,7 +95,13 @@ export const useChatStore = create<ChatStore>()(
         }
       }
 
-      // User-initiated agent switch — MEM-01: clean up all Maps for previous agent
+      // User-initiated agent switch to a DIFFERENT session (or no shared
+      // session). Invalidate the previous agent's session so returning to
+      // it later shows fresh data.
+      if (activeSessionId) {
+        queryClient.invalidateQueries({ queryKey: qk.sessionMessages(activeSessionId) });
+      }
+      // MEM-01: clean up all Maps for previous agent
       renderer.cleanupAgent(prev);
       update(prev, { connectionPhase: "idle" });
       ensure(name);
@@ -120,6 +130,18 @@ export const useChatStore = create<ChatStore>()(
         return;
       }
 
+      // Invalidate React Query cache for BOTH the previous active session
+      // (its DB state may have changed after the aborted stream wrote partial
+      // assistant text) AND the incoming session. Without this, returning to
+      // a previously-streaming session showed stale cached data — the user's
+      // initial message could be missing if the cache was populated before
+      // the backend saved it. Regression 2026-04-18.
+      const previousSessionId = currentState?.activeSessionId;
+      if (previousSessionId && previousSessionId !== sessionId) {
+        queryClient.invalidateQueries({ queryKey: qk.sessionMessages(previousSessionId) });
+      }
+      queryClient.invalidateQueries({ queryKey: qk.sessionMessages(sessionId) });
+
       renderer.abortActiveStream(agent);
 
       update(agent, {
@@ -129,8 +151,6 @@ export const useChatStore = create<ChatStore>()(
         renderLimit: 100,
       });
       saveLastSession(agent, sessionId);
-      // Data fetching is handled by useSessionMessages() React Query hook in assistant-runtime.tsx
-      // Polling for in-progress sessions is handled by refetchInterval in useSessionMessages
     },
 
     selectSessionById: (agent: string, sessionId: string) => {
@@ -138,6 +158,12 @@ export const useChatStore = create<ChatStore>()(
       set({ currentAgent: agent });
       ensure(agent);
       // Abort any active stream for this agent
+      const currentState = get().agents[agent];
+      const previousSessionId = currentState?.activeSessionId;
+      if (previousSessionId && previousSessionId !== sessionId) {
+        queryClient.invalidateQueries({ queryKey: qk.sessionMessages(previousSessionId) });
+      }
+      queryClient.invalidateQueries({ queryKey: qk.sessionMessages(sessionId) });
       renderer.abortActiveStream(agent);
       update(agent, {
         activeSessionId: sessionId,
@@ -146,11 +172,18 @@ export const useChatStore = create<ChatStore>()(
         connectionPhase: "idle",
       });
       saveLastSession(agent, sessionId);
-      // Data fetching handled by useSessionMessages() React Query hook
     },
 
     newChat: () => {
       const agent = get().currentAgent;
+      // Invalidate the departing session's React Query cache — the aborted
+      // stream may have written partial assistant text to DB that the cache
+      // does not reflect. Without this, returning to that session via the
+      // sidebar shows stale data.
+      const previousSessionId = get().agents[agent]?.activeSessionId;
+      if (previousSessionId) {
+        queryClient.invalidateQueries({ queryKey: qk.sessionMessages(previousSessionId) });
+      }
       renderer.abortActiveStream(agent);
       update(agent, {
         activeSessionId: null,
