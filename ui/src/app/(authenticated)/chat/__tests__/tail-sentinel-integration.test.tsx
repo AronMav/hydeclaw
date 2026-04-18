@@ -254,4 +254,140 @@ describe("tail-sentinel integration — Harness", () => {
     act(() => { MockIntersectionObserver.last().fire(true); });
     expect(lastBadge).toBe(0);
   });
+
+  it("shouldFollow stays true during brief sentinel flicker (<1500ms)", async () => {
+    // Reproduce the Virtuoso-catchup-lag scenario: sentinel briefly
+    // leaves the tail zone (IO false), then re-enters (IO true)
+    // within the debounce window. shouldFollow must NOT flip to
+    // false during this flicker.
+    vi.useFakeTimers();
+    function DebounceHarness({ onState }: { onState: (s: { shouldFollow: boolean }) => void }) {
+      const scrollerRef = useRef<HTMLDivElement>(null);
+      const [sentinelEl, setSentinelEl] = useState<HTMLDivElement | null>(null);
+      const [isAtTail, setIsAtTail] = useState(true);
+      const [shouldFollow, setShouldFollow] = useState(true);
+      const isAtTailRef = useRef(true);
+      const shouldFollowRef = useRef(true);
+
+      useEffect(() => {
+        const scroller = scrollerRef.current;
+        if (!scroller || !sentinelEl) return;
+        const detach = attachTailSentinel(scroller, sentinelEl, (atTail) => {
+          isAtTailRef.current = atTail;
+          setIsAtTail((prev) => (prev === atTail ? prev : atTail));
+        });
+        return detach;
+      }, [sentinelEl]);
+
+      useEffect(() => {
+        if (isAtTail) {
+          if (!shouldFollowRef.current) {
+            shouldFollowRef.current = true;
+            setShouldFollow(true);
+          }
+          return;
+        }
+        if (!shouldFollowRef.current) return;
+        const timer = window.setTimeout(() => {
+          if (!isAtTailRef.current) {
+            shouldFollowRef.current = false;
+            setShouldFollow(false);
+          }
+        }, 1500);
+        return () => clearTimeout(timer);
+      }, [isAtTail]);
+
+      onState({ shouldFollow });
+      return (
+        <div ref={scrollerRef}>
+          <div ref={setSentinelEl} />
+        </div>
+      );
+    }
+
+    let last: { shouldFollow: boolean } = { shouldFollow: true };
+    render(<DebounceHarness onState={(s) => { last = s; }} />);
+    expect(last.shouldFollow).toBe(true);
+
+    // Sentinel leaves tail (Virtuoso lag).
+    act(() => { MockIntersectionObserver.last().fire(false); });
+    expect(last.shouldFollow).toBe(true);
+
+    // 500ms elapses — still within debounce.
+    act(() => { vi.advanceTimersByTime(500); });
+    expect(last.shouldFollow).toBe(true);
+
+    // Sentinel returns before 1500ms — debounce canceled.
+    act(() => { MockIntersectionObserver.last().fire(true); });
+    expect(last.shouldFollow).toBe(true);
+
+    // Run full timer queue — confirm nothing pending.
+    act(() => { vi.advanceTimersByTime(2000); });
+    expect(last.shouldFollow).toBe(true);
+
+    vi.useRealTimers();
+  });
+
+  it("shouldFollow flips false after sentinel absent for ≥1500ms", () => {
+    // User-intent confirmation: sustained absence from tail flips
+    // shouldFollow to false. This is what drives followOutput off
+    // and stops the ResizeObserver pin.
+    vi.useFakeTimers();
+    function DebounceHarness({ onState }: { onState: (s: { shouldFollow: boolean }) => void }) {
+      const scrollerRef = useRef<HTMLDivElement>(null);
+      const [sentinelEl, setSentinelEl] = useState<HTMLDivElement | null>(null);
+      const [isAtTail, setIsAtTail] = useState(true);
+      const [shouldFollow, setShouldFollow] = useState(true);
+      const isAtTailRef = useRef(true);
+      const shouldFollowRef = useRef(true);
+
+      useEffect(() => {
+        const scroller = scrollerRef.current;
+        if (!scroller || !sentinelEl) return;
+        const detach = attachTailSentinel(scroller, sentinelEl, (atTail) => {
+          isAtTailRef.current = atTail;
+          setIsAtTail((prev) => (prev === atTail ? prev : atTail));
+        });
+        return detach;
+      }, [sentinelEl]);
+
+      useEffect(() => {
+        if (isAtTail) {
+          if (!shouldFollowRef.current) {
+            shouldFollowRef.current = true;
+            setShouldFollow(true);
+          }
+          return;
+        }
+        if (!shouldFollowRef.current) return;
+        const timer = window.setTimeout(() => {
+          if (!isAtTailRef.current) {
+            shouldFollowRef.current = false;
+            setShouldFollow(false);
+          }
+        }, 1500);
+        return () => clearTimeout(timer);
+      }, [isAtTail]);
+
+      onState({ shouldFollow });
+      return (
+        <div ref={scrollerRef}>
+          <div ref={setSentinelEl} />
+        </div>
+      );
+    }
+
+    let last: { shouldFollow: boolean } = { shouldFollow: true };
+    render(<DebounceHarness onState={(s) => { last = s; }} />);
+
+    act(() => { MockIntersectionObserver.last().fire(false); });
+    act(() => { vi.advanceTimersByTime(1600); });
+    expect(last.shouldFollow).toBe(false);
+
+    // Re-entering tail restores shouldFollow.
+    act(() => { MockIntersectionObserver.last().fire(true); });
+    expect(last.shouldFollow).toBe(true);
+
+    vi.useRealTimers();
+  });
 });

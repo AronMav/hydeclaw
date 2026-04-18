@@ -206,6 +206,15 @@ export function MessageList({
    * bound to a detached element. */
   const [sentinelEl, setSentinelEl] = useState<HTMLDivElement | null>(null);
 
+  /** User-intent state: "should the viewport chase new content?".
+   * Separate from `isAtTail` because Virtuoso's catch-up lag can
+   * transiently move the sentinel out of the tail zone during
+   * streaming; we don't want that to kill auto-follow. This state
+   * flips off only after a sustained absence from the tail (see
+   * debounce effect below). */
+  const [shouldFollow, setShouldFollow] = useState<boolean>(true);
+  const shouldFollowRef = useRef<boolean>(true);
+
   // Track tokens received while auto-follow is off (SCRL-03).
   const [missedTokens, setMissedTokens] = useState(0);
   const missedTokensRef = useRef(0); // shadow ref to avoid stale closure in effect
@@ -292,6 +301,74 @@ export function MessageList({
     }
   }, [isAtTail]);
 
+  // Derive user-intent `shouldFollow` from sentinel `isAtTail` with
+  // a debounce. Sentinel flicker during Virtuoso catch-up lag is
+  // absorbed by the 1500 ms window. Explicit user actions (button,
+  // session switch, stream start) force `shouldFollow` true
+  // independently of this effect.
+  const LEFT_TAIL_DEBOUNCE_MS = 1500;
+  useEffect(() => {
+    if (isAtTail) {
+      if (!shouldFollowRef.current) {
+        shouldFollowRef.current = true;
+        setShouldFollow(true);
+      }
+      return;
+    }
+    // isAtTail=false: might be Virtuoso lag, might be user intent.
+    // Wait and see. If already disabled, no action needed.
+    if (!shouldFollowRef.current) return;
+    const timer = window.setTimeout(() => {
+      if (!isAtTailRef.current) {
+        shouldFollowRef.current = false;
+        setShouldFollow(false);
+      }
+    }, LEFT_TAIL_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [isAtTail]);
+
+  // Content-growth pin: during streaming, tokens grow the last
+  // message without adding list items, so Virtuoso's `followOutput`
+  // never fires. Observe scroller's scrollHeight directly and pin
+  // the viewport to the tail when it grows — gated on user intent
+  // (shouldFollow), NOT on sentinel state (isAtTail), to avoid the
+  // feedback deadlock where transient lag kills the chase.
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    let cancelled = false;
+    let ro: ResizeObserver | null = null;
+    let attempts = 0;
+
+    const tryAttach = () => {
+      if (cancelled) return;
+      const scroller = container.querySelector(
+        "[data-virtuoso-scroller]",
+      ) as HTMLElement | null;
+      if (!scroller) {
+        if (attempts++ < 10) {
+          requestAnimationFrame(tryAttach);
+        }
+        return;
+      }
+      let prevHeight = scroller.scrollHeight;
+      ro = new ResizeObserver(() => {
+        const newHeight = scroller.scrollHeight;
+        if (newHeight > prevHeight && shouldFollowRef.current) {
+          scroller.scrollTop = scroller.scrollHeight;
+        }
+        prevHeight = newHeight;
+      });
+      ro.observe(scroller);
+    };
+    tryAttach();
+
+    return () => {
+      cancelled = true;
+      ro?.disconnect();
+    };
+  }, []);
+
   // ── SCRL-03: count tokens that arrived while user is away from tail ────────
   const prevPartsLenRef = useRef(0);
   useEffect(() => {
@@ -310,6 +387,8 @@ export function MessageList({
   useEffect(() => {
     if (prevSessionIdRef.current !== activeSessionId) {
       prevSessionIdRef.current = activeSessionId;
+      shouldFollowRef.current = true;
+      setShouldFollow(true);
       const t = setTimeout(
         () => virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: "smooth" }),
         200,
@@ -326,6 +405,8 @@ export function MessageList({
     const streamJustStarted = !prevStreamingRef.current && isStreaming;
     prevStreamingRef.current = isStreaming;
     if (streamJustStarted && virtualItems.length > 0) {
+      shouldFollowRef.current = true;
+      setShouldFollow(true);
       missedTokensRef.current = 0;
       setMissedTokens(0);
       virtuosoRef.current?.scrollToIndex({
@@ -337,6 +418,8 @@ export function MessageList({
   }, [isStreaming, virtualItems.length]);
 
   const scrollToBottom = useCallback(() => {
+    shouldFollowRef.current = true;
+    setShouldFollow(true);
     runScrollToBottom(virtuosoRef.current);
     // Sentinel IO will flip isAtTail to true on settle. Reset the
     // badge immediately so the UI feels responsive.
@@ -386,7 +469,7 @@ export function MessageList({
         defaultItemHeight={120}
         alignToBottom
         skipAnimationFrameInResizeObserver
-        followOutput={() => (isAtTailRef.current ? "auto" : false)}
+        followOutput={() => (shouldFollowRef.current ? "auto" : false)}
         atBottomThreshold={100}
         initialTopMostItemIndex={messages.length > 0 ? messages.length - 1 : 0}
         increaseViewportBy={{ top: 500, bottom: 200 }}
