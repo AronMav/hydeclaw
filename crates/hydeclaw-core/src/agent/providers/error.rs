@@ -14,15 +14,15 @@ use thiserror::Error;
 pub enum CancelReason {
     InactivityTimeout { silent_secs: u64 },
     MaxDurationExceeded { elapsed_secs: u64 },
-    // These two variants are pattern-matched by every HTTP provider but are
-    // currently only constructed by unit tests — the user-cancel path and
-    // shutdown-drain path (spec §5) do not yet call `set_and_cancel` with
-    // these reasons; the outer `cancel.cancelled()` arm in
-    // `cancellable_stream` breaks without setting a slot reason. Silence the
-    // dead_code lint so the enum remains complete for the forthcoming
-    // wire-up without failing `-D warnings`.
-    #[allow(dead_code)]
+    // `UserCancelled` is written to the slot by the `cancellable_stream`
+    // producer task's external-cancel arm (guarded: only if the slot is
+    // still empty). Triggered by `POST /api/chat/{sid}/abort` from the UI
+    // Stop button, which fires the session's `CancellationToken`.
     UserCancelled,
+    // `ShutdownDrain` is written by the public `set_shutdown_drain_reason`
+    // helper, which a future shutdown handler will call BEFORE cancelling
+    // the root token. No runtime caller today — `#[allow(dead_code)]`
+    // keeps the variant in the match surface so all providers compile.
     #[allow(dead_code)]
     ShutdownDrain,
 }
@@ -96,9 +96,15 @@ impl From<reqwest::Error> for LlmCallError {
 /// launch point in every HTTP provider (OpenAI, Anthropic, Google, HTTP).
 ///
 /// Mapping (spec §4.3 / §4.4):
-/// - `is_connect()` → `ConnectTimeout` (treats slow-TCP-handshake failures
-///   uniformly; `elapsed_secs` defaults to configured `connect_secs` since
-///   reqwest does not expose the actual elapsed time).
+/// - `is_connect()` → `ConnectTimeout`. Note: `reqwest::Error::is_connect()`
+///   is true for ANY connect-layer failure — slow TCP handshake, refused
+///   (ECONNREFUSED), DNS failure, unreachable host. The variant is named
+///   `ConnectTimeout` because the hot-path case is a handshake that
+///   exceeded `connect_secs`; for fast-fail cases (refused, DNS) the
+///   variant still carries `elapsed_secs = connect_secs` as an upper
+///   bound since reqwest does not expose the actual elapsed time. All of
+///   these are failover-worthy and semantically equivalent at the
+///   routing layer, so the naming imprecision does not change behavior.
 /// - `is_timeout()` → `RequestTimeout` (the outer reqwest request timeout
 ///   fired — this is distinct from stream inactivity, which surfaces via
 ///   `CancelSlot`).
