@@ -225,6 +225,31 @@ impl AgentEngine {
                         last_msg_id = partial_id;
                     }
                     super::sse_impl::record_llm_timeout_if_typed(&e);
+                    // Symmetry with the SSE path: channel-inbound / scheduled-job
+                    // runs must also write aborted usage_log rows, otherwise
+                    // `STATUS_ABORTED*` observability is silently missing for
+                    // everything except the UI-driven chat flow.
+                    let abort_status = if e
+                        .downcast_ref::<crate::agent::providers::LlmCallError>()
+                        .is_some_and(|err| {
+                            err.is_failover_worthy()
+                                && !err.partial_text().unwrap_or("").is_empty()
+                        })
+                    {
+                        super::sse_impl::UsageAbortStatus::AbortedFailover
+                    } else {
+                        super::sse_impl::UsageAbortStatus::Aborted
+                    };
+                    super::sse_impl::record_aborted_usage(
+                        &self.cfg().db,
+                        &self.cfg().agent.name,
+                        self.cfg().provider.name(),
+                        self.cfg().agent.model.as_str(),
+                        session_id,
+                        &e,
+                        abort_status,
+                    )
+                    .await;
                     final_response = error_classify::format_user_error(&e);
                     break;
                 }

@@ -46,6 +46,11 @@ pub fn set_and_cancel(slot: &CancelSlot, token: &CancellationToken, reason: Canc
 ///
 /// Safe to call repeatedly; `OnceCell` semantics mean subsequent calls
 /// are silent no-ops (first winner wins).
+///
+/// `#[allow(dead_code)]`: no runtime caller today — this helper ships with
+/// the public contract + test coverage in place so the eventual
+/// `shutdown::drain_active_streams` handler has a typed entrypoint.
+#[allow(dead_code)]
 pub fn set_shutdown_drain_reason(slot: &CancelSlot, token: &CancellationToken) {
     set_and_cancel(slot, token, CancelReason::ShutdownDrain);
 }

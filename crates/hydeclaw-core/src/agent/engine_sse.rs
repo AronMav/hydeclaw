@@ -269,6 +269,11 @@ impl AgentEngine {
                                 last_msg_id = partial_id;
                             }
                             record_llm_timeout_if_typed(&e);
+                            // Engine-level fallback-switch: we ARE failing over to a
+                            // sibling provider regardless of `is_failover_worthy()`.
+                            // Label explicitly so mid-stream SchemaError / AuthError /
+                            // other non-failover-worthy errors don't get mislabeled
+                            // as `aborted` when the switch actually occurred.
                             record_aborted_usage(
                                 &self.cfg().db,
                                 &self.cfg().agent.name,
@@ -276,6 +281,7 @@ impl AgentEngine {
                                 self.cfg().agent.model.as_str(),
                                 session_id,
                                 &e,
+                                UsageAbortStatus::AbortedFailover,
                             )
                             .await;
                             using_fallback = true;
@@ -331,16 +337,43 @@ impl AgentEngine {
                     record_llm_timeout_if_typed(&e);
                     // Issue B: record aborted/aborted_failover usage row so the
                     // STATUS_ABORTED* constants have runtime writers (spec §4.6).
-                    // The provider here is the one currently in use (primary or
-                    // engine-level fallback, since this path runs after the
-                    // fallback-switch block above).
+                    //
+                    // Provider name: if we are currently using the engine-level
+                    // fallback provider, use its real name (preserves per-provider
+                    // dashboards) rather than the literal "fallback" placeholder.
+                    //
+                    // Status: the final-error path either bubbles the call up
+                    // (no failover) or we already took the fallback-switch branch
+                    // above. Here we classify based on whether the error itself
+                    // is failover-worthy AND carried partial_text — consistent
+                    // with the previous heuristic for the non-switch path.
+                    let active_provider_name: &str = if using_fallback {
+                        fallback_provider
+                            .as_ref()
+                            .map(|p| p.name())
+                            .unwrap_or("fallback")
+                    } else {
+                        self.cfg().provider.name()
+                    };
+                    let abort_status = if e
+                        .downcast_ref::<crate::agent::providers::LlmCallError>()
+                        .is_some_and(|err| {
+                            err.is_failover_worthy()
+                                && !err.partial_text().unwrap_or("").is_empty()
+                        })
+                    {
+                        UsageAbortStatus::AbortedFailover
+                    } else {
+                        UsageAbortStatus::Aborted
+                    };
                     record_aborted_usage(
                         &self.cfg().db,
                         &self.cfg().agent.name,
-                        if using_fallback { "fallback" } else { self.cfg().provider.name() },
+                        active_provider_name,
                         self.cfg().agent.model.as_str(),
                         session_id,
                         &e,
+                        abort_status,
                     )
                     .await;
                     let fallback = error_classify::format_user_error(&e);
@@ -780,16 +813,36 @@ pub(super) fn record_llm_timeout_if_typed(e: &anyhow::Error) {
     }
 }
 
+/// Explicit status for `record_aborted_usage`. Callers declare intent
+/// rather than having the helper infer from the error's failover-worthy
+/// flag — the engine-level fallback-switch path is an actual failover
+/// for ANY error class (including non-failover-worthy ones like
+/// mid-stream SchemaError and AuthError), so the previous inference
+/// could mislabel those rows as plain `aborted`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum UsageAbortStatus {
+    /// Call was terminated without attempting a sibling provider.
+    /// Examples: user cancel, shutdown drain, MaxDurationExceeded.
+    Aborted,
+    /// Call was terminated AND a sibling provider (route or engine-level
+    /// fallback) was attempted. Examples: routing failover, engine-level
+    /// fallback-switch after `consecutive_failures >= max`.
+    AbortedFailover,
+}
+
 /// Issue B: record an `aborted` / `aborted_failover` row in `usage_log` when
 /// an LLM call is terminated before it could complete naturally (spec §4.6).
 ///
-/// - `aborted_failover`: the error is failover-worthy AND the typed
-///   `LlmCallError` carried non-empty `partial_text`. Tokens were produced
-///   by the primary provider before a sibling was attempted.
-/// - `aborted`: the error is non-failover-worthy OR there is no partial text,
-///   but the call still resulted in some token emission before termination.
-/// - If the error is neither a typed LlmCallError nor carries partial text,
-///   no row is written (the call produced nothing to bill for).
+/// Caller declares `status` explicitly to disambiguate the two scenarios
+/// that previous heuristic conflated:
+///
+/// - `Aborted` — single-path final error. The fix to classify as failover
+///   or not is the caller's responsibility (e.g. the final-error branch
+///   in `handle_sse` uses `llm_err.is_failover_worthy() && !partial.is_empty()`
+///   to choose between the two values).
+/// - `AbortedFailover` — engine-level fallback-switch branches or routing
+///   failover call sites. These always qualify regardless of
+///   `is_failover_worthy()`.
 ///
 /// Token count is estimated as `partial_text.len() / 4` (rough bytes-per-token
 /// heuristic for pre-tokenizer failures). Input tokens are left as 0 since the
@@ -804,14 +857,17 @@ pub(super) async fn record_aborted_usage(
     model: &str,
     session_id: uuid::Uuid,
     e: &anyhow::Error,
+    status: UsageAbortStatus,
 ) {
     use crate::db::usage::{STATUS_ABORTED, STATUS_ABORTED_FAILOVER};
     let Some(llm_err) = e.downcast_ref::<crate::agent::providers::LlmCallError>() else {
         return;
     };
     let partial = llm_err.partial_text().unwrap_or("");
-    let is_failover = llm_err.is_failover_worthy() && !partial.is_empty();
-    let status = if is_failover { STATUS_ABORTED_FAILOVER } else { STATUS_ABORTED };
+    let status = match status {
+        UsageAbortStatus::Aborted => STATUS_ABORTED,
+        UsageAbortStatus::AbortedFailover => STATUS_ABORTED_FAILOVER,
+    };
     let est_output_tokens = (partial.len() / 4).min(u32::MAX as usize) as u32;
     if let Err(err) = sqlx::query(
         "INSERT INTO usage_log (agent_id, provider, model, input_tokens, output_tokens, session_id, status) \
