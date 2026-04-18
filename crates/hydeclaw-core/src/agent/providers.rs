@@ -44,6 +44,72 @@ pub mod cancellable_stream;
 #[allow(unused_imports)] // first consumer arrives in Task 9 (stream_with_cancellation)
 pub use cancellable_stream::{CancelSlot, set_and_cancel};
 
+// ── UnconfiguredProvider sentinel ─────────────────────────────────────────────
+
+/// Sentinel "unconfigured" provider used when no usable LLM backend could be
+/// built for an agent (missing `connection`, missing DB row, `build_provider`
+/// failure, etc.).
+///
+/// It implements `LlmProvider` and returns a classified `LlmCallError::AuthError`
+/// on every `chat()` / `chat_stream()` invocation, which is the closest
+/// semantic match in our typed error enum ("provider is not usable — don't
+/// fail over, don't retry; surface to the user"). `AuthError` is
+/// non-failover-worthy, so `RoutingProvider::handle_provider_error` bubbles
+/// it up with a cooldown floor, preserving a consistent runtime behavior
+/// regardless of how the misconfiguration happened.
+///
+/// Use `UnconfiguredProvider::new(reason)` so the error carries a
+/// human-readable hint (displayed in logs and — via `abort_reason` — to
+/// operators). The `reason` is rendered into the provider name so it shows
+/// up in structured logs and error formatting.
+pub(crate) struct UnconfiguredProvider {
+    reason: String,
+}
+
+impl UnconfiguredProvider {
+    pub(crate) fn new(reason: impl Into<String>) -> Self {
+        Self { reason: reason.into() }
+    }
+
+    fn err(&self) -> anyhow::Error {
+        anyhow::Error::new(LlmCallError::AuthError {
+            provider: format!("unconfigured ({})", self.reason),
+            // 503 mirrors HTTP semantics: "service unavailable / not yet
+            // configured". AuthError is the non-failover-worthy carrier;
+            // the status is advisory.
+            status: 503,
+        })
+    }
+}
+
+#[async_trait]
+impl LlmProvider for UnconfiguredProvider {
+    async fn chat(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        Err(self.err())
+    }
+
+    async fn chat_stream(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolDefinition],
+        _chunk_tx: mpsc::UnboundedSender<String>,
+    ) -> Result<LlmResponse> {
+        Err(self.err())
+    }
+
+    fn name(&self) -> &str {
+        "unconfigured"
+    }
+
+    fn current_model(&self) -> String {
+        "unconfigured".to_string()
+    }
+}
+
 /// Pluggable LLM provider trait.
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
@@ -246,6 +312,34 @@ pub async fn create_routing_provider(
             key,
             provider: p,
             cooldown_duration: std::time::Duration::from_secs(r.cooldown_secs.max(1)),
+        });
+    }
+
+    // Issue #2: if every configured route was skipped (missing `connection`,
+    // missing DB row, or `build_provider` failure), install a sentinel
+    // `UnconfiguredProvider` entry so `select_route` always has something
+    // to return. Without this, the first `chat()` would panic in
+    // `select_route` via `.expect("RoutingProvider has no routes")`.
+    //
+    // The sentinel returns `LlmCallError::AuthError` (classified,
+    // non-failover-worthy) on every call — matching the degraded-path
+    // pattern used by `resolve_provider_for_agent`. Every call now surfaces
+    // a consistent typed error instead of panicking.
+    if entries.is_empty() {
+        tracing::error!(
+            attempted_routes = routes.len(),
+            "RoutingProvider has no usable routes — installing \
+             `unconfigured` sentinel; all LLM calls for this agent will \
+             return a classified error until a working route is added"
+        );
+        let sentinel: Arc<dyn LlmProvider> = Arc::new(UnconfiguredProvider::new(
+            "no usable routes",
+        ));
+        entries.push(RouteEntry {
+            condition: "default".to_string(),
+            key: "unconfigured:sentinel".to_string(),
+            provider: sentinel,
+            cooldown_duration: std::time::Duration::from_secs(1),
         });
     }
 
@@ -1041,7 +1135,7 @@ impl RoutingProvider {
         &self,
         messages: &[hydeclaw_types::Message],
         tools: &[hydeclaw_types::ToolDefinition],
-    ) -> &RouteEntry {
+    ) -> Result<&RouteEntry> {
         let last_user_msg = messages
             .iter()
             .rev()
@@ -1065,14 +1159,21 @@ impl RoutingProvider {
             };
             if matches {
                 tracing::debug!(condition = %entry.condition, "routing condition matched");
-                return entry;
+                return Ok(entry);
             }
         }
 
-        // Last resort: return last route (or first if routes is empty — shouldn't happen)
+        // Last resort: return last route (or first if routes is empty —
+        // shouldn't happen because `create_routing_provider` installs a
+        // sentinel `UnconfiguredProvider` when the route list would
+        // otherwise be empty, so this branch is unreachable in prod.
+        // Belt + suspenders: return an error instead of panicking.
         self.routes.last()
             .or_else(|| self.routes.first())
-            .expect("RoutingProvider has no routes")
+            .ok_or_else(|| anyhow::anyhow!(
+                "RoutingProvider has no routes — this indicates a bug in \
+                 create_routing_provider (sentinel was not installed)"
+            ))
     }
 
     /// Check if a provider is on cooldown.
@@ -1318,7 +1419,7 @@ impl LlmProvider for RoutingProvider {
         messages: &[hydeclaw_types::Message],
         tools: &[hydeclaw_types::ToolDefinition],
     ) -> Result<hydeclaw_types::LlmResponse> {
-        let primary = self.select_route(messages, tools);
+        let primary = self.select_route(messages, tools)?;
         let primary_key = primary.key.clone();
         let primary_display = primary.provider.name().to_string();
         let primary_cooldown = primary.cooldown_duration;
@@ -1403,7 +1504,7 @@ impl LlmProvider for RoutingProvider {
         tools: &[hydeclaw_types::ToolDefinition],
         chunk_tx: tokio::sync::mpsc::UnboundedSender<String>,
     ) -> Result<hydeclaw_types::LlmResponse> {
-        let primary = self.select_route(messages, tools);
+        let primary = self.select_route(messages, tools)?;
         let primary_key = primary.key.clone();
         let primary_display = primary.provider.name().to_string();
         let primary_cooldown = primary.cooldown_duration;

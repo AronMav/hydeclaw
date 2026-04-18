@@ -446,3 +446,76 @@ async fn routing_default_cap_allows_full_chain_when_large() {
         "no cap → all routes exhausted"
     );
 }
+
+// ── Issue #2: zero-route RoutingProvider must not panic ──────────────────────
+
+/// Constructing a `RoutingProvider` with an empty route list and calling
+/// `chat()` MUST return an error, not panic via `.expect(...)`. This is the
+/// belt-and-suspenders test for `select_route` — production code also
+/// guarantees the list is non-empty by installing an `UnconfiguredProvider`
+/// sentinel in `create_routing_provider`, but `select_route` itself must
+/// fail gracefully.
+#[tokio::test]
+async fn routing_with_zero_routes_returns_error_not_panic() {
+    let routing = RoutingProvider::new_for_test(vec![]);
+
+    let err = routing
+        .chat(&[], &[])
+        .await
+        .expect_err("zero-route chat must return an error, not panic");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("no routes") || msg.contains("RoutingProvider"),
+        "error must mention the missing-routes condition: {msg}"
+    );
+}
+
+/// Same guarantee for the streaming path.
+#[tokio::test]
+async fn routing_with_zero_routes_streaming_returns_error_not_panic() {
+    let routing = RoutingProvider::new_for_test(vec![]);
+
+    let (tx, _rx) = mpsc::unbounded_channel::<String>();
+    let err = routing
+        .chat_stream(&[], &[], tx)
+        .await
+        .expect_err("zero-route chat_stream must return an error, not panic");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("no routes") || msg.contains("RoutingProvider"),
+        "error must mention the missing-routes condition: {msg}"
+    );
+}
+
+/// `UnconfiguredProvider` sentinel returns a classified `AuthError` on both
+/// `chat()` and `chat_stream()` so callers see a uniform failure shape.
+#[tokio::test]
+async fn unconfigured_provider_returns_classified_auth_error() {
+    use super::UnconfiguredProvider;
+    let p = UnconfiguredProvider::new("no usable routes");
+
+    let err = p.chat(&[], &[]).await.expect_err("unconfigured must error");
+    let typed = err
+        .downcast_ref::<LlmCallError>()
+        .expect("must be LlmCallError");
+    assert!(
+        matches!(typed, LlmCallError::AuthError { .. }),
+        "unconfigured sentinel must return AuthError, got {typed:?}"
+    );
+    // AuthError is not failover-worthy — callers should bubble up, not
+    // retry against another (non-existent) route.
+    assert!(!typed.is_failover_worthy());
+
+    let (tx, _rx) = mpsc::unbounded_channel::<String>();
+    let err_stream = p
+        .chat_stream(&[], &[], tx)
+        .await
+        .expect_err("unconfigured streaming must error");
+    let typed_stream = err_stream
+        .downcast_ref::<LlmCallError>()
+        .expect("stream must be LlmCallError");
+    assert!(
+        matches!(typed_stream, LlmCallError::AuthError { .. }),
+        "unconfigured streaming sentinel must return AuthError, got {typed_stream:?}"
+    );
+}
