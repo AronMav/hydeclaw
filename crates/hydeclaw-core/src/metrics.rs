@@ -41,7 +41,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, OnceLock, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -126,6 +126,21 @@ pub struct MetricsRegistry {
     /// Checked against [`MAX_UNIQUE_SERIES`] on every new-key insert.
     unique_series: AtomicU64,
 
+    // ── LLM-timeout refactor Task 22 ─────────────────────────────────────
+    /// (provider, kind) → counter. `kind` ∈
+    /// {"connect","request","inactivity","max_duration"}. Incremented by
+    /// `RoutingProvider::handle_provider_error` when an `LlmCallError` of
+    /// that variant is classified. Cardinality is bounded by the finite
+    /// provider set × 4 kinds; no runtime guard is required.
+    llm_timeout_total: RwLock<HashMap<(String, String), AtomicU64>>,
+    /// (from_connection, to_connection, reason) → counter. Incremented
+    /// once per failover decision inside `RoutingProvider` — i.e. whenever
+    /// `handle_provider_error` returns `true` and the caller proceeds to
+    /// the next route. `reason` is a short stable token such as
+    /// "inactivity", "request_timeout", "connect_timeout", "max_duration",
+    /// "5xx", "network", "schema_pre_stream", or "untyped".
+    llm_failover_total: RwLock<HashMap<(String, String, String), AtomicU64>>,
+
     /// Feature-gated OTel instruments. Populated by
     /// [`MetricsRegistry::install_otel_instruments`] after the global
     /// `MeterProvider` is set. `None` on `--no-default-features`.
@@ -144,6 +159,8 @@ impl MetricsRegistry {
             db_query_duration: RwLock::new(HashMap::new()),
             llm_tokens_total: RwLock::new(HashMap::new()),
             unique_series: AtomicU64::new(0),
+            llm_timeout_total: RwLock::new(HashMap::new()),
+            llm_failover_total: RwLock::new(HashMap::new()),
             #[cfg(feature = "otel")]
             otel_instruments: std::sync::OnceLock::new(),
         }
@@ -706,6 +723,117 @@ impl MetricsRegistry {
     }
 }
 
+impl MetricsRegistry {
+    // ── LLM-timeout refactor Task 22 — counter APIs ─────────────────────
+
+    /// Bump `llm_timeout_total{provider, kind}`. `kind` SHOULD be one of
+    /// the four bounded-cardinality tokens: `"connect"`, `"request"`,
+    /// `"inactivity"`, `"max_duration"`. Debug-asserted.
+    pub fn record_llm_timeout(&self, provider: &str, kind: &str) {
+        debug_assert!(
+            matches!(kind, "connect" | "request" | "inactivity" | "max_duration"),
+            "llm_timeout kind must be one of connect|request|inactivity|max_duration, got {kind:?}"
+        );
+        let key = (provider.to_string(), kind.to_string());
+        {
+            let read = self
+                .llm_timeout_total
+                .read()
+                .expect("llm_timeout_total RwLock poisoned");
+            if let Some(counter) = read.get(&key) {
+                counter.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        }
+        let mut write = self
+            .llm_timeout_total
+            .write()
+            .expect("llm_timeout_total RwLock poisoned");
+        write
+            .entry(key)
+            .or_insert_with(|| AtomicU64::new(0))
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Bump `llm_failover_total{from_connection, to_connection, reason}`.
+    /// Recorded at the decision point where `RoutingProvider` proceeds to
+    /// the next route. `reason` is a short stable token (see struct field
+    /// docstring).
+    pub fn record_llm_failover(&self, from_connection: &str, to_connection: &str, reason: &str) {
+        let key = (
+            from_connection.to_string(),
+            to_connection.to_string(),
+            reason.to_string(),
+        );
+        {
+            let read = self
+                .llm_failover_total
+                .read()
+                .expect("llm_failover_total RwLock poisoned");
+            if let Some(counter) = read.get(&key) {
+                counter.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        }
+        let mut write = self
+            .llm_failover_total
+            .write()
+            .expect("llm_failover_total RwLock poisoned");
+        write
+            .entry(key)
+            .or_insert_with(|| AtomicU64::new(0))
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Snapshot `llm_timeout_total` as `{(provider, kind): count}`.
+    pub fn snapshot_llm_timeout_total(&self) -> HashMap<(String, String), u64> {
+        let read = self
+            .llm_timeout_total
+            .read()
+            .expect("llm_timeout_total RwLock poisoned");
+        read.iter()
+            .map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed)))
+            .collect()
+    }
+
+    /// Snapshot `llm_failover_total` as `{(from, to, reason): count}`.
+    pub fn snapshot_llm_failover_total(
+        &self,
+    ) -> HashMap<(String, String, String), u64> {
+        let read = self
+            .llm_failover_total
+            .read()
+            .expect("llm_failover_total RwLock poisoned");
+        read.iter()
+            .map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed)))
+            .collect()
+    }
+}
+
+// ── Process-wide `MetricsRegistry` handle ──────────────────────────────
+// Used by `RoutingProvider::handle_provider_error`, which does not receive
+// the registry through its constructor (the routing chain is built deep
+// inside `create_routing_provider` without `AppState` in scope). The
+// gateway sets this OnceLock immediately after it constructs the shared
+// `Arc<MetricsRegistry>` so every downstream path sees the same counters.
+
+static GLOBAL_METRICS: OnceLock<Arc<MetricsRegistry>> = OnceLock::new();
+
+/// Install the process-wide metrics registry. Idempotent — subsequent
+/// calls are no-ops (first-writer-wins via `OnceLock::set`). Called once
+/// from `main.rs` after the shared `Arc<MetricsRegistry>` is built for
+/// `InfraServices`.
+pub fn install_global(registry: Arc<MetricsRegistry>) {
+    let _ = GLOBAL_METRICS.set(registry);
+}
+
+/// Return the process-wide metrics registry, if one has been installed.
+/// Returns `None` before `install_global` is called (e.g. in unit tests
+/// or during very early startup) so call sites must tolerate absence.
+pub fn global() -> Option<&'static Arc<MetricsRegistry>> {
+    GLOBAL_METRICS.get()
+}
+
 impl Default for MetricsRegistry {
     fn default() -> Self {
         Self::new()
@@ -839,6 +967,42 @@ pub fn build_dashboard_body_with_snapshot(
         .into_iter()
         .collect();
 
+    // LLM-timeout refactor Task 22: expose llm_timeout_total +
+    // llm_failover_total as nested JSON for the health dashboard.
+    // `llm_timeout_total`: {provider: {kind: count}}
+    let mut llm_timeouts: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
+    for ((provider, kind), count) in registry.snapshot_llm_timeout_total() {
+        llm_timeouts.entry(provider).or_default().insert(kind, count);
+    }
+    // `llm_failover_total`: [{from, to, reason, count}] — flat list so
+    // (from, to, reason) triples remain addressable without deep nesting.
+    let mut llm_failovers: Vec<serde_json::Value> = registry
+        .snapshot_llm_failover_total()
+        .into_iter()
+        .map(|((from, to, reason), count)| {
+            serde_json::json!({
+                "from": from,
+                "to": to,
+                "reason": reason,
+                "count": count,
+            })
+        })
+        .collect();
+    // Stable ordering so dashboards don't flicker between calls.
+    llm_failovers.sort_by(|a, b| {
+        let ka = (
+            a["from"].as_str().unwrap_or(""),
+            a["to"].as_str().unwrap_or(""),
+            a["reason"].as_str().unwrap_or(""),
+        );
+        let kb = (
+            b["from"].as_str().unwrap_or(""),
+            b["to"].as_str().unwrap_or(""),
+            b["reason"].as_str().unwrap_or(""),
+        );
+        ka.cmp(&kb)
+    });
+
     serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "active_agents": snap.active_agents,
@@ -855,6 +1019,8 @@ pub fn build_dashboard_body_with_snapshot(
         "sse_events_dropped_total": by_agent,
         "csp_violations": csp_violations,
         "csp_violations_overflow": registry.csp_violations_overflow_count(),
+        "llm_timeout_total": llm_timeouts,
+        "llm_failover_total": llm_failovers,
     })
 }
 
@@ -879,6 +1045,65 @@ mod tests {
         let snap = reg.snapshot_sse_drops();
         assert_eq!(snap.get(&("agent-a".to_string(), "text-delta".to_string())), Some(&3));
         assert_eq!(snap.get(&("agent-b".to_string(), "finish".to_string())), Some(&1));
+    }
+
+    #[test]
+    fn llm_timeout_counter_increments() {
+        let reg = MetricsRegistry::new();
+        reg.record_llm_timeout("openai", "inactivity");
+        reg.record_llm_timeout("openai", "inactivity");
+        reg.record_llm_timeout("openai", "connect");
+        reg.record_llm_timeout("anthropic", "request");
+        let snap = reg.snapshot_llm_timeout_total();
+        assert_eq!(
+            snap.get(&("openai".to_string(), "inactivity".to_string())),
+            Some(&2)
+        );
+        assert_eq!(
+            snap.get(&("openai".to_string(), "connect".to_string())),
+            Some(&1)
+        );
+        assert_eq!(
+            snap.get(&("anthropic".to_string(), "request".to_string())),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn llm_failover_counter_increments() {
+        let reg = MetricsRegistry::new();
+        reg.record_llm_failover("primary:openai", "fallback:anthropic", "inactivity");
+        reg.record_llm_failover("primary:openai", "fallback:anthropic", "inactivity");
+        reg.record_llm_failover("primary:openai", "fallback:google", "5xx");
+        let snap = reg.snapshot_llm_failover_total();
+        assert_eq!(
+            snap.get(&(
+                "primary:openai".to_string(),
+                "fallback:anthropic".to_string(),
+                "inactivity".to_string()
+            )),
+            Some(&2)
+        );
+        assert_eq!(
+            snap.get(&(
+                "primary:openai".to_string(),
+                "fallback:google".to_string(),
+                "5xx".to_string()
+            )),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn global_metrics_is_installable_and_readable() {
+        // Use a fresh registry; do NOT clobber process-wide state across
+        // tests — the OnceLock is first-writer-wins, so if another test
+        // installed one already, that's fine. We verify `install_global`
+        // is callable and `global()` reflects whatever was set (either
+        // this one or a prior one — both are valid Arc<MetricsRegistry>s).
+        let reg = Arc::new(MetricsRegistry::new());
+        install_global(reg.clone());
+        assert!(global().is_some(), "global() must return Some after install");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

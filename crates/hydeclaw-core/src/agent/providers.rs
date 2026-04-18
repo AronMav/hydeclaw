@@ -1036,9 +1036,11 @@ impl RoutingProvider {
 
     /// Classify error and apply appropriate cooldown.
     ///
-    /// Returns `true` if the error is failover-worthy (caller should try next
-    /// route), `false` if the error should bubble up immediately (preserving
-    /// any `partial_text` carried by the typed `LlmCallError`).
+    /// Returns `Some(reason)` if the error is failover-worthy (caller
+    /// should try next route — the returned short string is the label
+    /// suitable for `llm_failover_total{reason=…}`), or `None` if the
+    /// error should bubble up immediately (preserving any `partial_text`
+    /// carried by the typed `LlmCallError`).
     ///
     /// Resolution order:
     /// 1. Downcast to `LlmCallError` and honor `is_failover_worthy()`.
@@ -1048,20 +1050,47 @@ impl RoutingProvider {
     /// 2. If the downcast fails, fall back to the legacy string-based
     ///    classification. Untyped errors are treated as failover-worthy to
     ///    preserve historical behavior.
+    ///
+    /// Side effect: bumps `metrics::MetricsRegistry::record_llm_timeout`
+    /// when the error is one of the four `LlmCallError` timeout variants
+    /// (connect / request / inactivity / max_duration). The failover
+    /// counter itself is bumped by the caller once it knows the target
+    /// route (`from → to`).
     fn handle_provider_error(
         &self,
         e: &anyhow::Error,
         provider_name: &str,
         route_cooldown: std::time::Duration,
-    ) -> bool {
+    ) -> Option<&'static str> {
         if let Some(llm_err) = e.downcast_ref::<LlmCallError>() {
+            // Bump the timeout counter for the four timeout variants,
+            // regardless of failover-worthiness (max_duration is NOT
+            // failover-worthy but is still a timeout we want to count).
+            if let Some(metrics) = crate::metrics::global() {
+                match llm_err {
+                    LlmCallError::ConnectTimeout { provider, .. } => {
+                        metrics.record_llm_timeout(provider, "connect");
+                    }
+                    LlmCallError::RequestTimeout { provider, .. } => {
+                        metrics.record_llm_timeout(provider, "request");
+                    }
+                    LlmCallError::InactivityTimeout { provider, .. } => {
+                        metrics.record_llm_timeout(provider, "inactivity");
+                    }
+                    LlmCallError::MaxDurationExceeded { provider, .. } => {
+                        metrics.record_llm_timeout(provider, "max_duration");
+                    }
+                    _ => {}
+                }
+            }
+
             if !llm_err.is_failover_worthy() {
                 tracing::warn!(
                     provider = %provider_name,
                     error = %e,
                     "route failed with non-failover-worthy error — bubbling up"
                 );
-                return false;
+                return None;
             }
             let cd = match llm_err {
                 LlmCallError::AuthError { .. } => {
@@ -1069,14 +1098,28 @@ impl RoutingProvider {
                 }
                 _ => route_cooldown.max(std::time::Duration::from_secs(1)),
             };
+            let reason: &'static str = match llm_err {
+                LlmCallError::ConnectTimeout { .. } => "connect_timeout",
+                LlmCallError::RequestTimeout { .. } => "request_timeout",
+                LlmCallError::InactivityTimeout { .. } => "inactivity",
+                LlmCallError::Server5xx { .. } => "5xx",
+                LlmCallError::Network(_) => "network",
+                LlmCallError::SchemaError { .. } => "schema_pre_stream",
+                // The remaining typed variants are NOT failover-worthy
+                // (AuthError, MaxDurationExceeded, UserCancelled,
+                // ShutdownDrain) and returned `None` above — unreachable
+                // here, but we provide a stable token for defense.
+                _ => "typed_other",
+            };
             tracing::warn!(
                 provider = %provider_name,
                 error = %e,
                 cooldown_secs = cd.as_secs(),
+                reason = reason,
                 "route failed (typed), attempting next"
             );
             self.set_cooldown(provider_name, cd);
-            return true;
+            return Some(reason);
         }
 
         // Untyped error: legacy string-based classification.
@@ -1092,7 +1135,18 @@ impl RoutingProvider {
         if !cd.is_zero() {
             self.set_cooldown(provider_name, cd);
         }
-        true
+        Some("untyped")
+    }
+
+    /// Record a failover transition. Called at the point where the router
+    /// has decided the current route failed with a failover-worthy error
+    /// and is about to attempt `to_key`. Internally looks up the
+    /// process-wide `MetricsRegistry` via `metrics::global()` and is a
+    /// no-op if none has been installed (e.g. in unit tests).
+    fn record_failover(from_key: &str, to_key: &str, reason: &str) {
+        if let Some(metrics) = crate::metrics::global() {
+            metrics.record_llm_failover(from_key, to_key, reason);
+        }
     }
 
     /// Get all route entries that could serve as fallbacks (not on cooldown, not excluded).
@@ -1181,31 +1235,59 @@ impl LlmProvider for RoutingProvider {
         let primary_cooldown = primary.cooldown_duration;
 
         let primary_skipped = self.is_on_cooldown(&primary_key);
+        // Most recent failover reason carried from the previous failed
+        // route to the next attempt — populated by `handle_provider_error`.
+        // The key of the most recent failed route (source of the next
+        // failover transition). Starts as `primary_key`; the first
+        // transition is recorded as either "primary on cooldown → fallback"
+        // or "primary_failed_error → fallback".
+        let mut pending_reason: Option<&'static str>;
+        let mut last_failed_key = primary_key.clone();
+
         if primary_skipped {
             tracing::debug!(provider = %primary_display, "primary on cooldown, skipping");
+            pending_reason = Some("cooldown");
         } else {
             match primary.provider.chat(messages, tools).await {
                 Ok(resp) => return Ok(resp),
-                Err(e) => {
-                    if !self.handle_provider_error(&e, &primary_key, primary_cooldown) {
+                Err(e) => match self.handle_provider_error(&e, &primary_key, primary_cooldown) {
+                    None => {
                         // Non-failover-worthy: bubble up with `partial_text` intact.
                         return Err(e);
                     }
-                }
+                    Some(reason) => {
+                        pending_reason = Some(reason);
+                    }
+                },
             }
         }
 
-        for fb in self.available_fallbacks(&primary_key) {
-            tracing::info!(provider = %fb.provider.name(), "trying fallback provider");
-            match fb.provider.chat(messages, tools).await {
-                Ok(mut resp) => {
-                    let reason = if primary_skipped { "cooldown" } else { "primary_failed" };
-                    resp.fallback_notice = Some(format!("↪️ {} → {} ({})", primary_display, fb.provider.name(), reason));
-                    return Ok(resp);
+        // `pending_reason` is consumed on the next loop iteration; the last
+        // iteration's reassignment is by design (dead-store is cheap and
+        // keeps the loop body uniform). Silence the unused_assignments lint
+        // for the final-iteration dead store on error.
+        #[allow(unused_assignments)]
+        {
+            for fb in self.available_fallbacks(&primary_key) {
+                // Record failover counter at the transition point.
+                if let Some(reason) = pending_reason.take() {
+                    Self::record_failover(&last_failed_key, &fb.key, reason);
                 }
-                Err(e) => {
-                    if !self.handle_provider_error(&e, &fb.key, fb.cooldown_duration) {
-                        return Err(e);
+                tracing::info!(provider = %fb.provider.name(), "trying fallback provider");
+                match fb.provider.chat(messages, tools).await {
+                    Ok(mut resp) => {
+                        let reason = if primary_skipped { "cooldown" } else { "primary_failed" };
+                        resp.fallback_notice = Some(format!("↪️ {} → {} ({})", primary_display, fb.provider.name(), reason));
+                        return Ok(resp);
+                    }
+                    Err(e) => {
+                        match self.handle_provider_error(&e, &fb.key, fb.cooldown_duration) {
+                            None => return Err(e),
+                            Some(reason) => {
+                                pending_reason = Some(reason);
+                                last_failed_key = fb.key.clone();
+                            }
+                        }
                     }
                 }
             }
@@ -1225,8 +1307,12 @@ impl LlmProvider for RoutingProvider {
         let primary_cooldown = primary.cooldown_duration;
 
         let primary_skipped = self.is_on_cooldown(&primary_key);
+        let mut pending_reason: Option<&'static str>;
+        let mut last_failed_key = primary_key.clone();
+
         if primary_skipped {
             tracing::debug!(provider = %primary_display, "primary on cooldown, skipping for streaming");
+            pending_reason = Some("cooldown");
         } else {
             use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
             let chunks_sent = Arc::new(AtomicBool::new(false));
@@ -1258,8 +1344,11 @@ impl LlmProvider for RoutingProvider {
                     // Downcast to typed error; non-failover-worthy errors bubble up
                     // (preserving `partial_text`); failover-worthy errors apply
                     // cooldown and fall through to the fallback chain.
-                    if !self.handle_provider_error(&e, &primary_key, primary_cooldown) {
-                        return Err(e);
+                    match self.handle_provider_error(&e, &primary_key, primary_cooldown) {
+                        None => return Err(e),
+                        Some(reason) => {
+                            pending_reason = Some(reason);
+                        }
                     }
                     tracing::warn!(provider = %primary_display,
                         "streaming: primary failed before first chunk, trying fallback chain");
@@ -1267,17 +1356,30 @@ impl LlmProvider for RoutingProvider {
             }
         }
 
-        for fb in self.available_fallbacks(&primary_key) {
-            tracing::info!(provider = %fb.provider.name(), "trying streaming fallback provider");
-            match fb.provider.chat_stream(messages, tools, chunk_tx.clone()).await {
-                Ok(mut resp) => {
-                    let reason = if primary_skipped { "cooldown" } else { "primary_failed" };
-                    resp.fallback_notice = Some(format!("↪️ {} → {} ({})", primary_display, fb.provider.name(), reason));
-                    return Ok(resp);
+        // See the `chat` impl for the rationale behind the
+        // `unused_assignments` allow — the last iteration's reassignment
+        // on error is dead-store by design.
+        #[allow(unused_assignments)]
+        {
+            for fb in self.available_fallbacks(&primary_key) {
+                if let Some(reason) = pending_reason.take() {
+                    Self::record_failover(&last_failed_key, &fb.key, reason);
                 }
-                Err(e) => {
-                    if !self.handle_provider_error(&e, &fb.key, fb.cooldown_duration) {
-                        return Err(e);
+                tracing::info!(provider = %fb.provider.name(), "trying streaming fallback provider");
+                match fb.provider.chat_stream(messages, tools, chunk_tx.clone()).await {
+                    Ok(mut resp) => {
+                        let reason = if primary_skipped { "cooldown" } else { "primary_failed" };
+                        resp.fallback_notice = Some(format!("↪️ {} → {} ({})", primary_display, fb.provider.name(), reason));
+                        return Ok(resp);
+                    }
+                    Err(e) => {
+                        match self.handle_provider_error(&e, &fb.key, fb.cooldown_duration) {
+                            None => return Err(e),
+                            Some(reason) => {
+                                pending_reason = Some(reason);
+                                last_failed_key = fb.key.clone();
+                            }
+                        }
                     }
                 }
             }

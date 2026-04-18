@@ -234,6 +234,94 @@ async fn routing_does_not_fail_over_on_auth_error() {
     );
 }
 
+/// LLM-timeout refactor Task 22: when `RoutingProvider` takes the
+/// failover path on an inactivity timeout, both counters (timeout + failover)
+/// are bumped on the process-wide `MetricsRegistry`.
+///
+/// Test isolation note: the `global()` OnceLock is process-wide and tests
+/// run in parallel, so we can't read absolute values. Instead we use
+/// unique provider names ("mock-inactivity-unique-t22" / "fallback-unique-t22")
+/// that no other test touches, guaranteeing a clean baseline.
+#[tokio::test]
+async fn routing_bumps_timeout_and_failover_counters_on_inactivity() {
+    use std::sync::Arc;
+
+    // Provider that returns an InactivityTimeout with a unique provider
+    // name so this test's counter labels are isolated.
+    struct UniqueInactivityProvider;
+    #[async_trait]
+    impl LlmProvider for UniqueInactivityProvider {
+        async fn chat(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+        ) -> anyhow::Result<LlmResponse> {
+            Err(anyhow::Error::new(LlmCallError::InactivityTimeout {
+                provider: "mock-inactivity-unique-t22".into(),
+                silent_secs: 60,
+                partial_text: "".into(),
+            }))
+        }
+        async fn chat_stream(
+            &self,
+            messages: &[Message],
+            tools: &[ToolDefinition],
+            _chunk_tx: mpsc::UnboundedSender<String>,
+        ) -> anyhow::Result<LlmResponse> {
+            self.chat(messages, tools).await
+        }
+        fn name(&self) -> &str {
+            "mock-inactivity-unique-t22"
+        }
+    }
+
+    // Ensure a registry is installed (first-writer-wins; if another test
+    // installed one already, we use that — same Arc<MetricsRegistry>).
+    let registry = Arc::new(crate::metrics::MetricsRegistry::new());
+    crate::metrics::install_global(registry);
+    let metrics = crate::metrics::global()
+        .expect("global metrics installed")
+        .clone();
+
+    let called = Arc::new(AtomicBool::new(false));
+    let primary: Arc<dyn LlmProvider> = Arc::new(UniqueInactivityProvider);
+    let fallback: Arc<dyn LlmProvider> = Arc::new(MockSuccessProvider {
+        called: called.clone(),
+        marker: "from-fallback-t22",
+    });
+
+    let routing = RoutingProvider::new_for_test(vec![
+        ("primary:unique-t22".into(), primary, 60),
+        ("fallback:unique-t22".into(), fallback, 60),
+    ]);
+
+    let resp = routing.chat(&[], &[]).await.expect("failover should succeed");
+    assert_eq!(resp.content, "from-fallback-t22");
+
+    // Unique labels → exact-equality assertion is safe even under parallel
+    // test execution.
+    let timeout_snap = metrics.snapshot_llm_timeout_total();
+    let failover_snap = metrics.snapshot_llm_failover_total();
+
+    assert_eq!(
+        timeout_snap.get(&(
+            "mock-inactivity-unique-t22".to_string(),
+            "inactivity".to_string()
+        )),
+        Some(&1),
+        "llm_timeout_total{{provider=mock-inactivity-unique-t22,kind=inactivity}} must be 1"
+    );
+    assert_eq!(
+        failover_snap.get(&(
+            "primary:unique-t22".to_string(),
+            "fallback:unique-t22".to_string(),
+            "inactivity".to_string()
+        )),
+        Some(&1),
+        "llm_failover_total{{from=primary:unique-t22,to=fallback:unique-t22,reason=inactivity}} must be 1"
+    );
+}
+
 #[tokio::test]
 async fn routing_fails_over_on_streaming_inactivity() {
     let called = Arc::new(AtomicBool::new(false));
