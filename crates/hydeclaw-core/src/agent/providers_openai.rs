@@ -40,7 +40,7 @@ impl OpenAiCompatibleProvider {
         secrets: Arc<SecretsManager>,
         timeout_secs: Option<u64>,
     ) -> Self {
-        let (client, streaming_client) = super::build_provider_clients(timeout_secs);
+        let (client, streaming_client) = super::build_provider_clients_legacy_secs(timeout_secs);
         Self {
             provider_name: provider_name.to_string(),
             client,
@@ -59,6 +59,56 @@ impl OpenAiCompatibleProvider {
         }
     }
 
+    /// Task 12 stub: build an `OpenAiCompatibleProvider` from a `ProviderRow`.
+    /// Delegates to `::new(..)` so runtime behavior is identical to the legacy
+    /// `create_provider_from_connection` code path — `timeouts` + `cancel` are
+    /// accepted for signature compatibility but are currently unused; they'll
+    /// be threaded through `stream_with_cancellation` in Task 13.
+    #[allow(dead_code)] // consumed by super::build_provider
+    pub(crate) fn new_from_row(
+        row: &crate::db::providers::ProviderRow,
+        secrets: Arc<SecretsManager>,
+        timeouts: super::TimeoutsConfig,
+        cancel: tokio_util::sync::CancellationToken,
+        opts: super::timeouts::ProviderOptions,
+    ) -> anyhow::Result<Self> {
+        let _ = (timeouts, cancel); // Tasks 13-16 consume these
+        let meta = super::PROVIDER_TYPES
+            .iter()
+            .find(|pt| pt.id == row.provider_type);
+        let default_base = meta.map_or("", |pt| pt.default_base_url);
+        let key_env = meta.map_or("API_KEY", |pt| pt.default_secret_name);
+
+        let base = row
+            .base_url
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| default_base.to_string());
+        let url = super::resolve_chat_url(&row.provider_type, &base);
+        let model = row.default_model.clone().unwrap_or_default();
+
+        let credential_scope = row.id.to_string();
+
+        let mut provider = Self::new(
+            &row.provider_type,
+            &url,
+            key_env,
+            model,
+            0.7,
+            None,
+            secrets,
+            None,
+        )
+        .with_credential_scope(credential_scope);
+
+        if !opts.api_key_envs.is_empty() {
+            provider = provider.with_keys(opts.api_key_envs);
+        }
+
+        provider.provider_name = row.provider_type.clone();
+        Ok(provider)
+    }
+
     /// Set vault credential scope (provider UUID) for `LLM_CREDENTIALS` lookup.
     pub fn with_credential_scope(mut self, scope: String) -> Self {
         self.credential_scope = Some(scope);
@@ -73,6 +123,9 @@ impl OpenAiCompatibleProvider {
 
     /// Set dynamic base URL resolution from secrets (e.g. "`OLLAMA_URL`").
     /// On each LLM call, resolves the secret and appends `suffix` to form the full URL.
+    /// Kept for future secret-backed URL resolution; no longer called after Task 12
+    /// consolidated provider construction via `build_provider` + `ProviderRow.base_url`.
+    #[allow(dead_code)]
     pub fn with_base_url_env(mut self, env_name: &str, suffix: &str) -> Self {
         self.base_url_env = Some(env_name.to_string());
         self.url_suffix = suffix.to_string();

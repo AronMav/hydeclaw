@@ -433,7 +433,9 @@ pub struct AgentConfig {
 /// Fixed workspace base directory — all agents live under `workspace/{agent_name}/`.
 pub const WORKSPACE_DIR: &str = "workspace";
 
-/// Provider routing rule — one entry in the `[[agent.routing]]` array.
+/// Route entry under `[[agent.routing]]`. References a named DB provider
+/// via `connection` — inline provider fields (provider/base_url/api_key_env/
+/// api_key_envs/prompt_cache/max_tokens) are removed (spec §4.7).
 ///
 /// Rules are evaluated in order. The first matching condition wins.
 /// Supported conditions:
@@ -447,31 +449,34 @@ pub const WORKSPACE_DIR: &str = "workspace";
 /// - `"fallback"` — only used when all higher-priority providers failed
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ProviderRouteConfig {
-    /// Provider name (minimax / openai / ollama / …)
-    pub provider: String,
-    /// Model name for this route
-    pub model: String,
     /// Routing condition: "default" | "short" | "long" | "fallback"
     #[serde(default = "default_condition")]
     pub condition: String,
-    /// Optional `base_url` override (useful for self-hosted Ollama, OpenAI-compatible)
-    pub base_url: Option<String>,
-    /// Optional env var name for API key override (defaults to provider default)
-    pub api_key_env: Option<String>,
-    /// Optional list of env var names for round-robin API key rotation.
-    /// When set, keys are rotated on each request. Overrides `api_key_env`.
+
+    /// Named provider connection (required post-migration).
     #[serde(default)]
-    pub api_key_envs: Vec<String>,
-    /// Temperature override for this route (defaults to agent temperature)
+    pub connection: Option<String>,
+
+    /// Optional model override (overrides the provider's default_model).
+    pub model: Option<String>,
+
+    /// Optional temperature override for this route.
     pub temperature: Option<f64>,
-    /// Enable Anthropic prompt caching (adds `cache_control` to system prompt and tools).
-    #[serde(default)]
-    pub prompt_cache: bool,
-    /// Maximum output tokens for LLM responses. None = provider default.
-    pub max_tokens: Option<u32>,
-    /// Cooldown duration in seconds after provider failure (default: 60).
+
+    /// Cooldown in seconds after a failover-worthy error on this route.
+    /// Minimum 1 (enforced by `validate`).
     #[serde(default = "default_cooldown_secs")]
     pub cooldown_secs: u64,
+}
+
+impl ProviderRouteConfig {
+    #[allow(dead_code)] // consumed by Task 18 routing loader; also exercised by tests below
+    pub fn validate(&self) -> Result<(), String> {
+        if self.cooldown_secs == 0 {
+            return Err("cooldown_secs must be >= 1".into());
+        }
+        Ok(())
+    }
 }
 
 fn default_cooldown_secs() -> u64 { 60 }
@@ -1298,15 +1303,10 @@ model = "m2.5"
                 max_tools_in_context: Some(20),
                 max_history_messages: None,
                 routing: vec![ProviderRouteConfig {
-                    provider: "minimax".into(),
-                    model: "m2.5".into(),
                     condition: "default".into(),
-                    base_url: None,
-                    api_key_env: None,
-                    api_key_envs: vec![],
+                    connection: Some("minimax-default".into()),
+                    model: Some("m2.5".into()),
                     temperature: Some(0.8),
-                    prompt_cache: false,
-                    max_tokens: None,
                     cooldown_secs: 60,
                 }],
                 icon: None,
@@ -1803,16 +1803,43 @@ provider = "minimax"
 model = "m2.5"
 
 [[agent.routing]]
-provider = "openai"
+connection = "openai-default"
 model = "gpt-4"
 "#;
         let cfg: AgentConfig = toml::from_str(toml_str).expect("failed to parse");
         assert_eq!(cfg.agent.routing.len(), 1);
         assert_eq!(cfg.agent.routing[0].condition, "default");
-        assert!(cfg.agent.routing[0].base_url.is_none());
-        assert!(cfg.agent.routing[0].api_key_env.is_none());
-        assert!(cfg.agent.routing[0].api_key_envs.is_empty());
+        assert_eq!(cfg.agent.routing[0].connection.as_deref(), Some("openai-default"));
+        assert_eq!(cfg.agent.routing[0].model.as_deref(), Some("gpt-4"));
         assert!(cfg.agent.routing[0].temperature.is_none());
+    }
+
+    // ── Task 11: new connection-based route tests ──
+
+    #[test]
+    fn route_parses_connection_reference_only() {
+        let toml_src = r#"
+            connection = "ollama-default"
+            model = "minimax-m2.7"
+            condition = "default"
+            cooldown_secs = 60
+        "#;
+        let route: ProviderRouteConfig = toml::from_str(toml_src).unwrap();
+        assert_eq!(route.connection.as_deref(), Some("ollama-default"));
+        assert_eq!(route.model.as_deref(), Some("minimax-m2.7"));
+        assert_eq!(route.cooldown_secs, 60);
+    }
+
+    #[test]
+    fn route_rejects_cooldown_zero_at_validate() {
+        let route = ProviderRouteConfig {
+            condition: "default".into(),
+            connection: Some("p".into()),
+            model: None,
+            temperature: None,
+            cooldown_secs: 0,
+        };
+        assert!(route.validate().is_err());
     }
 
     // ── 23. ToolGroups partial override via TOML ──

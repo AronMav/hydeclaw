@@ -50,10 +50,11 @@ pub async fn start_agent_from_config(
             "using multi-provider routing"
         );
         providers::create_routing_provider(
+            &infra.db,
             &agent_cfg.agent.routing,
             effective_temperature,
             auth.secrets.clone(),
-        )
+        ).await
     };
 
     let channel_router = crate::agent::channel_actions::ChannelActionRouter::new();
@@ -66,19 +67,32 @@ pub async fn start_agent_from_config(
             Ok(Some(provider_name)) => {
                 match crate::db::providers::get_provider_by_name(&infra.db, &provider_name).await {
                     Ok(Some(provider_row)) => {
-                        let p = providers::create_provider_from_connection(
-                            &provider_row,
-                            None,
-                            0.3,
-                            None,
-                            auth.secrets.clone(),
-                            deps.sandbox.clone(),
-                            name,
-                            &deps.workspace_dir,
-                            agent_cfg.agent.base,
-                        ).await;
-                        tracing::info!(agent = %name, provider = %provider_name, "using dedicated compaction provider");
-                        Some(p)
+                        use crate::agent::providers::{build_provider, build_cli_provider, CliContext, timeouts::ProviderOptions};
+                        let opts: ProviderOptions =
+                            serde_json::from_value(provider_row.options.clone()).unwrap_or_default();
+                        let timeouts_cfg = opts.timeouts;
+                        let cancel = tokio_util::sync::CancellationToken::new();
+                        let built: Option<Box<dyn crate::agent::providers::LlmProvider>> =
+                            match provider_row.provider_type.as_str() {
+                                "claude-cli" | "gemini-cli" | "codex-cli" => {
+                                    let ctx = CliContext {
+                                        sandbox: deps.sandbox.clone(),
+                                        agent_name: name,
+                                        workspace_dir: &deps.workspace_dir,
+                                        base: agent_cfg.agent.base,
+                                        secrets: auth.secrets.clone(),
+                                    };
+                                    build_cli_provider(&provider_row, None, ctx).await.ok()
+                                }
+                                _ => build_provider(&provider_row, auth.secrets.clone(), &timeouts_cfg, cancel).ok(),
+                            };
+                        match built {
+                            Some(p) => {
+                                tracing::info!(agent = %name, provider = %provider_name, "using dedicated compaction provider");
+                                Some(Arc::from(p))
+                            }
+                            None => None,
+                        }
                     }
                     _ => None,
                 }

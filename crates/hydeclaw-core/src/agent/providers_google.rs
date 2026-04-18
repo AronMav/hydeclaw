@@ -19,6 +19,7 @@ pub struct GoogleProvider {
 }
 
 impl GoogleProvider {
+    #[allow(dead_code)] // kept for call-sites that will migrate in Tasks 13-16
     pub fn new(model: String, temperature: f64, max_tokens: Option<u32>, secrets: Arc<SecretsManager>) -> Self {
         Self::with_options(model, temperature, max_tokens, secrets, None, None, None)
     }
@@ -32,7 +33,7 @@ impl GoogleProvider {
         api_key_env: Option<String>,
         timeout_secs: Option<u64>,
     ) -> Self {
-        let (client, streaming_client) = super::build_provider_clients(timeout_secs);
+        let (client, streaming_client) = super::build_provider_clients_legacy_secs(timeout_secs);
         Self {
             client,
             streaming_client,
@@ -44,6 +45,36 @@ impl GoogleProvider {
             temperature,
             max_tokens,
         }
+    }
+
+    /// Task 12 stub: build a `GoogleProvider` from a `ProviderRow`.
+    /// Delegates to `::with_options(..)` so runtime behavior is identical to
+    /// the legacy `create_provider_from_connection` code path.
+    #[allow(dead_code)] // consumed by super::build_provider
+    pub(crate) fn new_from_row(
+        row: &crate::db::providers::ProviderRow,
+        secrets: Arc<SecretsManager>,
+        timeouts: super::TimeoutsConfig,
+        cancel: tokio_util::sync::CancellationToken,
+        _opts: super::timeouts::ProviderOptions,
+    ) -> anyhow::Result<Self> {
+        let _ = (timeouts, cancel); // Tasks 13-16 consume these
+        let model = row.default_model.clone().unwrap_or_default();
+        let key_env = super::PROVIDER_TYPES
+            .iter()
+            .find(|pt| pt.id == row.provider_type)
+            .map_or("GOOGLE_API_KEY", |pt| pt.default_secret_name);
+        let provider = Self::with_options(
+            model,
+            0.7,
+            None,
+            secrets,
+            row.base_url.clone(),
+            Some(key_env.to_string()),
+            None,
+        )
+        .with_credential_scope(row.id.to_string());
+        Ok(provider)
     }
 
     /// Set vault credential scope (provider UUID) for `LLM_CREDENTIALS` lookup.

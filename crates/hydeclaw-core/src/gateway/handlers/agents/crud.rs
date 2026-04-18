@@ -397,15 +397,10 @@ pub(crate) async fn api_update_agent(
         if payload.max_tools_in_context.is_none() { payload.max_tools_in_context = a.max_tools_in_context; }
         if payload.routing.is_none() && !a.routing.is_empty() {
             payload.routing = Some(Some(a.routing.iter().map(|r| RoutingRulePayload {
-                provider: r.provider.clone(),
-                model: r.model.clone(),
                 condition: Some(r.condition.clone()),
-                base_url: r.base_url.clone(),
-                api_key_env: r.api_key_env.clone(),
-                api_key_envs: if r.api_key_envs.is_empty() { None } else { Some(r.api_key_envs.clone()) },
+                connection: r.connection.clone(),
+                model: r.model.clone(),
                 temperature: r.temperature,
-                prompt_cache: Some(r.prompt_cache),
-                max_tokens: r.max_tokens,
                 cooldown_secs: Some(r.cooldown_secs),
             }).collect()));
         }

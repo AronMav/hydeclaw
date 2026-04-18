@@ -98,15 +98,10 @@ pub(crate) fn agent_to_detail(cfg: &AgentConfig, is_running: bool, config_dirty:
             "timeout_seconds": ap.timeout_seconds,
         })),
         "routing": a.routing.iter().map(|r| json!({
-            "provider": r.provider,
-            "model": r.model,
             "condition": r.condition,
-            "base_url": r.base_url,
-            "api_key_env": r.api_key_env,
-            "api_key_envs": if r.api_key_envs.is_empty() { None::<&Vec<String>> } else { Some(&r.api_key_envs) },
+            "connection": r.connection,
+            "model": r.model,
             "temperature": r.temperature,
-            "max_tokens": r.max_tokens,
-            "prompt_cache": r.prompt_cache,
             "cooldown_secs": r.cooldown_secs,
         })).collect::<Vec<_>>(),
         "watchdog": a.watchdog.as_ref().map(|w| json!({
@@ -183,15 +178,10 @@ pub(crate) struct ApprovalPayload {
 
 #[derive(Deserialize)]
 pub(crate) struct RoutingRulePayload {
-    pub provider: String,
-    pub model: String,
     pub condition: Option<String>,
-    pub base_url: Option<String>,
-    pub api_key_env: Option<String>,
-    pub api_key_envs: Option<Vec<String>>,
+    pub connection: Option<String>,
+    pub model: Option<String>,
     pub temperature: Option<f64>,
-    pub prompt_cache: Option<bool>,
-    pub max_tokens: Option<u32>,
     pub cooldown_secs: Option<u64>,
 }
 
@@ -295,15 +285,10 @@ pub(crate) fn build_agent_config(name: String, p: AgentCreatePayload) -> AgentCo
             max_tools_in_context: p.max_tools_in_context,
             routing: p.routing.flatten().unwrap_or_default().into_iter().map(|r| {
                 crate::config::ProviderRouteConfig {
-                    provider: r.provider,
-                    model: r.model,
                     condition: r.condition.unwrap_or_else(|| "default".to_string()),
-                    base_url: r.base_url,
-                    api_key_env: r.api_key_env,
-                    api_key_envs: r.api_key_envs.unwrap_or_default(),
+                    connection: r.connection,
+                    model: r.model,
                     temperature: r.temperature,
-                    prompt_cache: r.prompt_cache.unwrap_or(false),
-                    max_tokens: r.max_tokens,
                     cooldown_secs: r.cooldown_secs.unwrap_or(60),
                 }
             }).collect(),

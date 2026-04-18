@@ -43,6 +43,43 @@ impl CliLlmProvider {
             api_key,
         }
     }
+
+    /// Task 12 stub: build a `CliLlmProvider` from a `ProviderRow` + runtime CLI context.
+    /// Delegates to `::new(..)` so behavior is identical to the legacy
+    /// `create_provider_from_connection` code path.
+    #[allow(dead_code)] // consumed by super::build_cli_provider
+    pub(crate) async fn new_from_row(
+        row: &crate::db::providers::ProviderRow,
+        model_override: Option<&str>,
+        ctx: super::CliContext<'_>,
+    ) -> anyhow::Result<Self> {
+        let config = crate::agent::cli_backend::resolve_cli_config(&row.provider_type, &row.options)
+            .ok_or_else(|| anyhow::anyhow!("unknown CLI preset: {}", row.provider_type))?;
+        let model = model_override
+            .map(str::to_string)
+            .or_else(|| row.default_model.clone())
+            .unwrap_or_default();
+
+        // Resolve API key from vault scoped by provider UUID
+        let key_env = config.env_key.clone();
+        let api_key = if let Some(ref k) = key_env {
+            ctx.secrets.get_scoped(k, &row.id.to_string()).await
+        } else {
+            None
+        };
+
+        Ok(Self::new(
+            &row.provider_type,
+            config,
+            model,
+            ctx.sandbox,
+            ctx.agent_name.to_string(),
+            ctx.workspace_dir.to_string(),
+            ctx.base,
+            ctx.secrets,
+            api_key,
+        ))
+    }
 }
 
 #[async_trait]

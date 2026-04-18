@@ -136,106 +136,9 @@ pub(crate) const OPENAI_COMPAT_PROVIDERS: &[(&str, &str, &str)] = &[
     ("perplexity", "https://api.perplexity.ai",      "PERPLEXITY_API_KEY"),
 ];
 
-/// Create a provider from agent config.
-/// API keys are read from `SecretsManager` on each LLM call (hot-reloadable).
-/// `sandbox` + `agent_name` + `workspace_dir` are required for CLI providers (claude-cli, gemini-cli)
-/// that execute inside the agent's Docker container.
-#[allow(clippy::too_many_arguments)]
-pub fn create_provider(
-    provider_name: &str,
-    model: &str,
-    temperature: f64,
-    max_tokens: Option<u32>,
-    secrets: Arc<SecretsManager>,
-    sandbox: Option<Arc<crate::containers::sandbox::CodeSandbox>>,
-    agent_name: &str,
-    workspace_dir: &str,
-    base: bool,
-) -> Arc<dyn LlmProvider> {
-    match provider_name {
-        "anthropic" => Arc::new(AnthropicProvider::new(
-            model.to_string(),
-            temperature,
-            max_tokens,
-            secrets,
-        )),
-        "google" | "gemini" => Arc::new(GoogleProvider::new(
-            model.to_string(),
-            temperature,
-            max_tokens,
-            secrets,
-        )),
-        "claude-cli" | "gemini-cli" | "codex-cli" => {
-            let config = cli_backend::resolve_cli_config(provider_name, &serde_json::Value::Null)
-                .unwrap_or_else(|| {
-                    tracing::error!(provider = %provider_name, "unknown CLI preset — using claude-cli defaults");
-                    cli_backend::preset_to_config(&cli_backend::CLI_PRESETS[1])
-                });
-            Arc::new(ClaudeCliProvider::new(
-                provider_name, config, model.to_string(), sandbox, agent_name.to_string(), workspace_dir.to_string(), base, secrets, None,
-            ))
-        }
-        "openai" => {
-            let base = std::env::var("OPENAI_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com".to_string());
-            let url = resolve_chat_url("openai", &base);
-            Arc::new(OpenAiCompatibleProvider::new(
-                "openai",
-                &url,
-                "OPENAI_API_KEY",
-                model.to_string(),
-                temperature,
-                max_tokens,
-                secrets,
-                None,
-            ))
-        }
-        "ollama" => {
-            // Default URL used when OLLAMA_URL secret is not set
-            let fallback = std::env::var("OLLAMA_URL")
-                .unwrap_or_else(|_| "http://localhost:11434".to_string());
-            let url = resolve_chat_url("ollama", &fallback);
-            Arc::new(OpenAiCompatibleProvider::new(
-                "ollama",
-                &url,
-                "OLLAMA_API_KEY",
-                model.to_string(),
-                temperature,
-                max_tokens,
-                secrets,
-                None,
-            ).with_base_url_env("OLLAMA_URL", "/v1/chat/completions"))
-        }
-        other => {
-            // Check known OpenAI-compatible providers
-            if let Some((_, base_url, key_env)) = OPENAI_COMPAT_PROVIDERS.iter().find(|(n, _, _)| *n == other) {
-                let url = resolve_chat_url(other, base_url);
-                return Arc::new(OpenAiCompatibleProvider::new(
-                    other,
-                    &url,
-                    key_env,
-                    model.to_string(),
-                    temperature,
-                    max_tokens,
-                    secrets,
-                    None,
-                ));
-            }
-            tracing::error!(provider = %other, "unknown provider — treating as generic OpenAI-compatible");
-            let url = resolve_chat_url(other, "");
-            Arc::new(OpenAiCompatibleProvider::new(
-                other,
-                &url,
-                "API_KEY",
-                model.to_string(),
-                temperature,
-                max_tokens,
-                secrets,
-                None,
-            ))
-        }
-    }
-}
+// NOTE: `create_provider` (free-form provider_name path) was removed in Task 12
+// in favor of the unified `build_provider(row, timeouts, cancel)` entry point.
+// Legacy callers now go through DB lookup → ProviderRow → build_provider.
 
 /// Create a CLI provider from a preset with DB option overrides.
 /// Returns `None` if the preset ID is not recognized.
@@ -257,124 +160,69 @@ pub fn create_cli_provider_with_options(
     )))
 }
 
-/// Build a provider from a routing rule entry, falling back to env-based defaults.
-pub fn create_provider_from_route(
-    route: &crate::config::ProviderRouteConfig,
-    default_temperature: f64,
-    secrets: Arc<SecretsManager>,
-) -> Arc<dyn LlmProvider> {
-    let temperature = route.temperature.unwrap_or(default_temperature);
+// NOTE: `create_provider_from_route` was removed in Task 12. Routes now carry
+// only `connection` + overrides — the route factory goes through DB lookup +
+// `build_provider`.
 
-    // Anthropic and Google have native APIs — delegate to their providers
-    match route.provider.as_str() {
-        "anthropic" => {
-            return Arc::new(AnthropicProvider::with_options(
-                route.model.clone(),
-                temperature,
-                route.max_tokens,
-                secrets,
-                route.base_url.clone(),
-                route.api_key_env.clone(),
-                route.prompt_cache,
-                None,
-            ));
-        }
-        "google" | "gemini" => {
-            return Arc::new(GoogleProvider::with_options(
-                route.model.clone(),
-                temperature,
-                route.max_tokens,
-                secrets,
-                route.base_url.clone(),
-                route.api_key_env.clone(),
-                None,
-            ));
-        }
-        "claude-cli" | "gemini-cli" | "codex-cli" => {
-            tracing::error!(provider = %route.provider, "CLI providers cannot be used in routing rules — use as primary provider instead");
-            // Return a dummy provider that always errors
-            return Arc::new(OpenAiCompatibleProvider::new(
-                &route.provider, "http://invalid", "", route.model.clone(), 0.0, None, secrets, None,
-            ));
-        }
-        _ => {}
-    }
-
-    let (url, api_key_name) = match route.provider.as_str() {
-        "openai" => {
-            let default_base = std::env::var("OPENAI_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com".to_string());
-            let base = route.base_url.clone().unwrap_or(default_base);
-            let url = resolve_chat_url("openai", &base);
-            (
-                url,
-                route.api_key_env.clone().unwrap_or_else(|| "OPENAI_API_KEY".to_string()),
-            )
-        }
-        "ollama" => {
-            let default_host = std::env::var("OLLAMA_URL")
-                .unwrap_or_else(|_| "http://localhost:11434".to_string());
-            let base = route.base_url.clone().unwrap_or(default_host);
-            let url = resolve_chat_url("ollama", &base);
-            (url, route.api_key_env.clone().unwrap_or_default())
-        }
-        other => {
-            // Check known OpenAI-compatible providers
-            if let Some((_, default_base, default_key)) = OPENAI_COMPAT_PROVIDERS.iter().find(|(n, _, _)| *n == other) {
-                let base = route.base_url.clone().unwrap_or_else(|| (*default_base).to_string());
-                let url = resolve_chat_url(other, &base);
-                (
-                    url,
-                    route.api_key_env.clone().unwrap_or_else(|| (*default_key).to_string()),
-                )
-            } else {
-                tracing::error!(provider = %other, "unknown provider in routing rule — route will always fail; fix the agent config");
-                return Arc::new(OpenAiCompatibleProvider::new(
-                    other, "http://invalid", "", route.model.clone(), 0.0, None, secrets, None,
-                ));
-            }
-        }
-    };
-
-    let provider = OpenAiCompatibleProvider::new(
-        &route.provider,
-        &url,
-        &api_key_name,
-        route.model.clone(),
-        temperature,
-        route.max_tokens,
-        secrets,
-        None,
-    );
-
-    // Apply round-robin keys if configured
-    if route.api_key_envs.is_empty() {
-        Arc::new(provider)
-    } else {
-        Arc::new(provider.with_keys(route.api_key_envs.clone()))
-    }
-}
-
-/// Create a routing provider from ordered route configs.
-/// Returns a `RoutingProvider` that picks the right backend per request.
-pub fn create_routing_provider(
+/// Create a routing provider from ordered route configs. Each route references a
+/// named DB provider via `connection`; this function resolves each to a
+/// `ProviderRow` and builds a provider via `build_provider`.
+///
+/// Routes with a missing or invalid `connection` are skipped with a log entry.
+pub async fn create_routing_provider(
+    db: &sqlx::PgPool,
     routes: &[crate::config::ProviderRouteConfig],
-    default_temperature: f64,
+    _default_temperature: f64,
     secrets: Arc<SecretsManager>,
 ) -> Arc<dyn LlmProvider> {
-    let entries: Vec<RouteEntry> = routes
-        .iter()
-        .map(|r| {
-            let p = create_provider_from_route(r, default_temperature, secrets.clone());
-            let key = format!("{}:{}", r.condition, p.name());
-            RouteEntry {
-                condition: r.condition.clone(),
-                key,
-                provider: p,
-                cooldown_duration: std::time::Duration::from_secs(r.cooldown_secs),
+    let mut entries: Vec<RouteEntry> = Vec::with_capacity(routes.len());
+    for r in routes {
+        let Some(conn_name) = r.connection.as_deref().filter(|s| !s.is_empty()) else {
+            tracing::warn!(condition = %r.condition, "routing rule has no `connection` — skipping");
+            continue;
+        };
+        let row = match crate::db::providers::get_provider_by_name(db, conn_name).await {
+            Ok(Some(row)) => row,
+            Ok(None) => {
+                tracing::warn!(condition = %r.condition, connection = %conn_name,
+                    "routing rule references missing provider — skipping");
+                continue;
             }
-        })
-        .collect();
+            Err(e) => {
+                tracing::error!(condition = %r.condition, connection = %conn_name, error = %e,
+                    "DB error resolving route connection — skipping");
+                continue;
+            }
+        };
+        let opts: timeouts::ProviderOptions =
+            serde_json::from_value(row.options.clone()).unwrap_or_default();
+        let timeouts_cfg = opts.timeouts;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let p = match build_provider(&row, secrets.clone(), &timeouts_cfg, cancel) {
+            Ok(p) => {
+                let arc: Arc<dyn LlmProvider> = Arc::from(p);
+                arc
+            }
+            Err(e) => {
+                tracing::error!(condition = %r.condition, connection = %conn_name, error = %e,
+                    "failed to build provider from route — skipping");
+                continue;
+            }
+        };
+        // Apply per-route model override
+        if let Some(ref m) = r.model
+            && !m.is_empty()
+        {
+            p.set_model_override(Some(m.clone()));
+        }
+        let key = format!("{}:{}", r.condition, p.name());
+        entries.push(RouteEntry {
+            condition: r.condition.clone(),
+            key,
+            provider: p,
+            cooldown_duration: std::time::Duration::from_secs(r.cooldown_secs.max(1)),
+        });
+    }
 
     Arc::new(RoutingProvider {
         routes: entries,
@@ -854,15 +702,14 @@ pub(crate) async fn resolve_credential(
     None
 }
 
-/// Extract `timeout_secs` from provider options JSONB. Default: 120s. 0 = no timeout.
-fn extract_timeout_secs(options: &serde_json::Value) -> Option<u64> {
-    options.get("timeout_secs").and_then(serde_json::Value::as_u64)
-}
-
-/// Build HTTP clients (request + streaming) with configurable timeout.
+/// Build HTTP clients (request + streaming) with configurable timeout (legacy).
 /// `None` → 120s default, `Some(0)` → no timeout, `Some(n)` → n seconds.
 /// Streaming client never has a request timeout (only `connect_timeout`) — chunks arrive over time.
-pub(crate) fn build_provider_clients(timeout_secs: Option<u64>) -> (reqwest::Client, reqwest::Client) {
+///
+/// Kept as an internal helper for the existing `new`/`with_options` constructors
+/// which still take `Option<u64>`. Tasks 13-16 migrate each provider's constructor
+/// to `TimeoutsConfig` natively — this helper is removed at that point.
+pub(crate) fn build_provider_clients_legacy_secs(timeout_secs: Option<u64>) -> (reqwest::Client, reqwest::Client) {
     let timeout = timeout_secs.unwrap_or(120);
     let mut builder = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10));
@@ -877,87 +724,122 @@ pub(crate) fn build_provider_clients(timeout_secs: Option<u64>) -> (reqwest::Cli
     (client, streaming_client)
 }
 
-/// Create an LLM provider from a named DB connection.
-#[allow(clippy::too_many_arguments)]
-pub async fn create_provider_from_connection(
-    conn: &crate::db::providers::ProviderRow,
-    model_override: Option<&str>,
-    temperature: f64,
-    max_tokens: Option<u32>,
-    secrets: Arc<SecretsManager>,
-    sandbox: Option<Arc<crate::containers::sandbox::CodeSandbox>>,
-    agent_name: &str,
-    workspace_dir: &str,
-    base: bool,
-) -> Arc<dyn LlmProvider> {
-    let model = model_override.unwrap_or(conn.default_model.as_deref().unwrap_or("")).to_string();
-    let key_env = PROVIDER_TYPES.iter()
-        .find(|pt| pt.id == conn.provider_type)
-        .map_or("", |pt| pt.default_secret_name);
-    let credential_scope = conn.id.to_string();
-    let timeout_secs = extract_timeout_secs(&conn.options);
+/// Build request + streaming HTTP clients from the timeout config.
+/// Request client has both `connect_timeout` and `request_timeout`.
+/// Streaming client has only `connect_timeout` — request body is governed by
+/// `stream_inactivity_secs` / `stream_max_duration_secs` (spec §4.2.1).
+///
+/// Consumers arrive in Tasks 13-16 when each provider's constructor is
+/// migrated to accept `TimeoutsConfig` directly.
+#[allow(dead_code)]
+pub(crate) fn build_provider_clients(timeouts: &TimeoutsConfig) -> (reqwest::Client, reqwest::Client) {
+    let connect = std::time::Duration::from_secs(timeouts.connect_secs);
+    let request_timeout = if timeouts.request_secs == 0 {
+        // 0 = no limit (legacy convention preserved)
+        std::time::Duration::from_secs(u64::MAX / 1000)
+    } else {
+        std::time::Duration::from_secs(timeouts.request_secs)
+    };
+    let request_client = reqwest::Client::builder()
+        .connect_timeout(connect)
+        .timeout(request_timeout)
+        .build()
+        .expect("request client builds");
+    let streaming_client = reqwest::Client::builder()
+        .connect_timeout(connect)
+        .build()
+        .expect("streaming client builds");
+    (request_client, streaming_client)
+}
 
-    match conn.provider_type.as_str() {
-        "anthropic" => Arc::new(AnthropicProvider::with_options(
-            model,
-            temperature,
-            max_tokens,
-            secrets,
-            conn.base_url.clone(),
-            Some(key_env.to_string()),
-            false,
-            timeout_secs,
-        ).with_credential_scope(credential_scope)),
-        "google" | "gemini" => Arc::new(GoogleProvider::with_options(
-            model,
-            temperature,
-            max_tokens,
-            secrets,
-            conn.base_url.clone(),
-            Some(key_env.to_string()),
-            timeout_secs,
-        ).with_credential_scope(credential_scope)),
+/// Single constructor for LLM providers. Unifies the three legacy paths
+/// (`create_provider`, `create_provider_from_connection`, `create_provider_from_route`).
+///
+/// The `timeouts` + `cancel` parameters are stored on each provider and will be
+/// consumed by `stream_with_cancellation` in Tasks 13-16; for now provider
+/// runtime behavior is identical to current code (legacy `request_secs`-only
+/// timeout applied to non-streaming).
+///
+/// The task spec signature `build_provider(row, timeouts, cancel)` is extended
+/// with `secrets` because every HTTP provider resolves API keys against the
+/// vault at call time. Keeping `SecretsManager` as a method-call-time lookup is
+/// the existing design contract; changing it would require rewriting every
+/// provider's runtime path, which is explicitly deferred to Tasks 13-16.
+///
+/// Note: CLI providers (`claude-cli`, `gemini-cli`, `codex-cli`) need a
+/// `CliContext` (sandbox + agent_name + workspace_dir + base) which is NOT
+/// part of `ProviderRow`. Callers that need CLI providers must use
+/// `build_cli_provider` instead. If a CLI `provider_type` is passed here,
+/// `build_provider` returns an error.
+pub fn build_provider(
+    row: &crate::db::providers::ProviderRow,
+    secrets: Arc<SecretsManager>,
+    timeouts: &TimeoutsConfig,
+    cancel: tokio_util::sync::CancellationToken,
+) -> anyhow::Result<Box<dyn LlmProvider>> {
+    // Parse options (typed — unknown keys land in `extra`)
+    let opts: timeouts::ProviderOptions =
+        serde_json::from_value(row.options.clone()).unwrap_or_default();
+    timeouts::warn_unknown_keys(&row.name, &opts);
+
+    match row.provider_type.as_str() {
+        "anthropic" => {
+            let provider = AnthropicProvider::new_from_row(
+                row, secrets, *timeouts, cancel, opts,
+            )?;
+            Ok(Box::new(provider))
+        }
+        "google" | "gemini" => {
+            let provider = GoogleProvider::new_from_row(
+                row, secrets, *timeouts, cancel, opts,
+            )?;
+            Ok(Box::new(provider))
+        }
         "claude-cli" | "gemini-cli" | "codex-cli" => {
-            let config = cli_backend::resolve_cli_config(&conn.provider_type, &conn.options)
-                .unwrap_or_else(|| {
-                    tracing::error!(provider = %conn.provider_type, "unknown CLI preset — using claude-cli defaults");
-                    cli_backend::preset_to_config(&cli_backend::CLI_PRESETS[1])
-                });
-            // Resolve API key from vault scoped by provider UUID (same as HTTP providers)
-            let api_key = secrets.get_scoped(key_env, &credential_scope).await;
-            Arc::new(ClaudeCliProvider::new(
-                &conn.provider_type, config, model, sandbox, agent_name.to_string(), workspace_dir.to_string(), base, secrets, api_key,
-            ))
+            anyhow::bail!(
+                "build_provider: CLI provider_type `{}` requires a CliContext; use build_cli_provider instead",
+                row.provider_type
+            );
         }
-        "openai" => {
-            let base = conn.base_url.as_deref().unwrap_or("https://api.openai.com");
-            let url = resolve_chat_url("openai", base);
-            Arc::new(OpenAiCompatibleProvider::new(
-                "openai", &url, key_env, model, temperature, max_tokens, secrets, timeout_secs,
-            ).with_credential_scope(credential_scope))
-        }
-        "ollama" => {
-            let base = conn.base_url.as_deref().unwrap_or("http://localhost:11434");
-            let url = resolve_chat_url("ollama", base);
-            Arc::new(OpenAiCompatibleProvider::new(
-                "ollama", &url, key_env, model, temperature, max_tokens, secrets, timeout_secs,
-            ).with_credential_scope(credential_scope))
-        }
-        other => {
-            let default_base = default_base_url_for_type(other);
-            let base = conn.base_url.as_deref()
-                .unwrap_or(if default_base.is_empty() { "https://api.minimax.io" } else { default_base });
-            let url = resolve_chat_url(other, base);
-            Arc::new(OpenAiCompatibleProvider::new(
-                other, &url, key_env, model, temperature, max_tokens, secrets, timeout_secs,
-            ).with_credential_scope(credential_scope))
+        // Everything else (openai, ollama, custom-http, and generic OpenAI-compatible) → OpenAiCompatibleProvider
+        _ => {
+            let provider = OpenAiCompatibleProvider::new_from_row(
+                row, secrets, *timeouts, cancel, opts,
+            )?;
+            Ok(Box::new(provider))
         }
     }
 }
 
+/// Context required to build a CLI provider (claude-cli / gemini-cli / codex-cli).
+/// These providers execute an external binary inside the agent's Docker sandbox
+/// (or on host for privileged `base` agents) and need runtime information that's
+/// not part of `ProviderRow`.
+pub struct CliContext<'a> {
+    pub sandbox: Option<Arc<crate::containers::sandbox::CodeSandbox>>,
+    pub agent_name: &'a str,
+    pub workspace_dir: &'a str,
+    pub base: bool,
+    pub secrets: Arc<SecretsManager>,
+}
+
+/// Build a CLI-backed LLM provider. Companion to `build_provider` for CLI types.
+pub async fn build_cli_provider(
+    row: &crate::db::providers::ProviderRow,
+    model_override: Option<&str>,
+    ctx: CliContext<'_>,
+) -> anyhow::Result<Box<dyn LlmProvider>> {
+    let provider = ClaudeCliProvider::new_from_row(row, model_override, ctx).await?;
+    Ok(Box::new(provider))
+}
+
 /// Resolve LLM provider for an agent from a named connection in the DB.
 /// The agent MUST have `provider_connection` set (auto-migrated at startup).
-/// Falls back to legacy `provider` field only if named connection lookup fails.
+///
+/// Returns a sentinel "unconfigured" provider if no usable connection is found.
+/// Post-Task 12: no more free-form `provider`-field fallback path — that was the
+/// job of the removed `create_provider` function; the legacy migration runs
+/// before `resolve_provider_for_agent` (see `migrate_legacy_providers`).
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_provider_for_agent(
     db: &sqlx::PgPool,
@@ -972,11 +854,11 @@ pub async fn resolve_provider_for_agent(
 ) -> Arc<dyn LlmProvider> {
     if let Some(conn_name) = agent.provider_connection.as_deref().filter(|s| !s.is_empty()) {
         match crate::db::providers::get_provider_by_name(db, conn_name).await {
-            Ok(Some(conn)) if conn.category == "text" => {
+            Ok(Some(row)) if row.category == "text" || row.category == "llm" => {
                 tracing::debug!(agent = %agent_name, connection = %conn_name, "using named LLM provider");
                 let model_override = if agent.model.is_empty() { None } else { Some(agent.model.as_str()) };
-                return create_provider_from_connection(
-                    &conn,
+                return resolve_provider_from_row(
+                    &row,
                     model_override,
                     temperature,
                     max_tokens,
@@ -987,41 +869,87 @@ pub async fn resolve_provider_for_agent(
                     base,
                 ).await;
             }
-            Ok(Some(conn)) => {
-                tracing::warn!(agent = %agent_name, connection = %conn_name, category = %conn.category,
-                    "named provider is not type=text, falling back to legacy provider");
+            Ok(Some(row)) => {
+                tracing::warn!(agent = %agent_name, connection = %conn_name, category = %row.category,
+                    "named provider is not type=text/llm, calls will fail");
             }
             Ok(None) => {
                 tracing::warn!(agent = %agent_name, connection = %conn_name,
-                    "named provider connection not found in DB, falling back to legacy provider");
+                    "named provider connection not found in DB");
             }
             Err(e) => {
                 tracing::error!(agent = %agent_name, error = %e,
-                    "DB error resolving provider connection, falling back to legacy provider");
+                    "DB error resolving provider connection");
             }
         }
     }
 
-    // Legacy fallback — kept for backward compatibility during migration window.
-    // NOTE: vault-scoped keys (PROVIDER_CREDENTIALS) are not consulted here.
-    // This path is only reached when provider_connection is not set and DB lookup fails.
-    if agent.provider.is_empty() {
-        tracing::error!(agent = %agent_name, "legacy provider field is empty — no usable LLM provider configured; calls will fail");
-        return Arc::new(OpenAiCompatibleProvider::new(
-            "unconfigured", "http://invalid", "", agent.model.clone(), temperature, max_tokens, secrets, None,
-        ));
+    tracing::error!(agent = %agent_name, "no usable LLM provider configured; calls will fail");
+    let _ = (temperature, max_tokens); // not consumed via fallback path
+    Arc::new(OpenAiCompatibleProvider::new(
+        "unconfigured", "http://invalid", "", agent.model.clone(), 0.0, None, secrets, None,
+    ))
+}
+
+/// Internal dispatch: build a provider from a DB row, applying per-agent model
+/// override. Uses `build_provider` for HTTP providers, `build_cli_provider` for
+/// CLI providers.
+#[allow(clippy::too_many_arguments)]
+async fn resolve_provider_from_row(
+    row: &crate::db::providers::ProviderRow,
+    model_override: Option<&str>,
+    _temperature: f64,
+    _max_tokens: Option<u32>,
+    secrets: Arc<SecretsManager>,
+    sandbox: Option<Arc<crate::containers::sandbox::CodeSandbox>>,
+    agent_name: &str,
+    workspace_dir: &str,
+    base: bool,
+) -> Arc<dyn LlmProvider> {
+    let opts: timeouts::ProviderOptions =
+        serde_json::from_value(row.options.clone()).unwrap_or_default();
+    let timeouts_cfg = opts.timeouts;
+    let cancel = tokio_util::sync::CancellationToken::new();
+
+    let provider: Box<dyn LlmProvider> = match row.provider_type.as_str() {
+        "claude-cli" | "gemini-cli" | "codex-cli" => {
+            let ctx = CliContext {
+                sandbox,
+                agent_name,
+                workspace_dir,
+                base,
+                secrets: secrets.clone(),
+            };
+            match build_cli_provider(row, model_override, ctx).await {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::error!(agent = %agent_name, error = %e, "failed to build CLI provider");
+                    Box::new(OpenAiCompatibleProvider::new(
+                        &row.provider_type, "http://invalid", "", row.default_model.clone().unwrap_or_default(), 0.0, None, secrets, None,
+                    ))
+                }
+            }
+        }
+        _ => {
+            match build_provider(row, secrets.clone(), &timeouts_cfg, cancel) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::error!(provider = %row.name, error = %e, "failed to build provider");
+                    Box::new(OpenAiCompatibleProvider::new(
+                        &row.provider_type, "http://invalid", "", row.default_model.clone().unwrap_or_default(), 0.0, None, secrets, None,
+                    ))
+                }
+            }
+        }
+    };
+
+    let arc: Arc<dyn LlmProvider> = Arc::from(provider);
+    if let Some(m) = model_override
+        && !m.is_empty()
+    {
+        arc.set_model_override(Some(m.to_string()));
     }
-    create_provider(
-        &agent.provider,
-        &agent.model,
-        temperature,
-        max_tokens,
-        secrets,
-        sandbox,
-        agent_name,
-        workspace_dir,
-        base,
-    )
+    arc
 }
 
 // ── RoutingProvider ───────────────────────────────────────────────────────────

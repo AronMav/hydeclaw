@@ -41,8 +41,8 @@ pub async fn create_fallback_provider(
     db: &sqlx::PgPool,
     fallback_provider_name: Option<&str>,
     agent_name: &str,
-    temperature: f64,
-    max_tokens: Option<u32>,
+    _temperature: f64,
+    _max_tokens: Option<u32>,
     secrets: Arc<crate::secrets::SecretsManager>,
     sandbox: Option<Arc<crate::containers::sandbox::CodeSandbox>>,
     workspace_dir: &str,
@@ -51,19 +51,42 @@ pub async fn create_fallback_provider(
     let fb_name = fallback_provider_name?;
     match crate::db::providers::get_provider_by_name(db, fb_name).await {
         Ok(Some(row)) => {
-            let p = crate::agent::providers::create_provider_from_connection(
-                &row,
-                None,
-                temperature,
-                max_tokens,
-                secrets,
-                sandbox,
-                agent_name,
-                workspace_dir,
-                base,
-            )
-            .await;
-            Some(p)
+            use crate::agent::providers::{build_provider, build_cli_provider, CliContext};
+            let opts: crate::agent::providers::timeouts::ProviderOptions =
+                serde_json::from_value(row.options.clone()).unwrap_or_default();
+            let timeouts_cfg = opts.timeouts;
+            let cancel = tokio_util::sync::CancellationToken::new();
+
+            let provider_box: Box<dyn LlmProvider> = match row.provider_type.as_str() {
+                "claude-cli" | "gemini-cli" | "codex-cli" => {
+                    let ctx = CliContext {
+                        sandbox,
+                        agent_name,
+                        workspace_dir,
+                        base,
+                        secrets: secrets.clone(),
+                    };
+                    match build_cli_provider(&row, None, ctx).await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            tracing::warn!(agent = %agent_name, fallback_provider = %fb_name, error = %e,
+                                "failed to build fallback CLI provider");
+                            return None;
+                        }
+                    }
+                }
+                _ => {
+                    match build_provider(&row, secrets, &timeouts_cfg, cancel) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            tracing::warn!(agent = %agent_name, fallback_provider = %fb_name, error = %e,
+                                "failed to build fallback provider");
+                            return None;
+                        }
+                    }
+                }
+            };
+            Some(Arc::from(provider_box))
         }
         Ok(None) => {
             tracing::warn!(
