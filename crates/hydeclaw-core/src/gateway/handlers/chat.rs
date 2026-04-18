@@ -614,25 +614,60 @@ pub(crate) async fn api_chat_sse(
         let mut session_uuid: Option<uuid::Uuid> = None;
         let flush_interval = std::time::Duration::from_secs(2);
         // On explicit API cancel (POST /api/chat/{id}/abort) we do NOT
-        // hard-abort `engine_handle`. The CancellationToken cascades through
-        // providers' `stream_with_cancellation` and raises `LlmCallError::
-        // UserCancelled` with the current partial_text. The engine's error
-        // path then persists the aborted message row (status='aborted',
-        // abort_reason='user_cancelled') and writes an aborted usage_log
-        // entry — we must not interrupt that path. The existing
-        // `client_gone_since > 600 s` check below still covers runaway
-        // protection if the engine genuinely wedges.
+        // hard-abort `engine_handle` immediately. The CancellationToken
+        // cascades through providers' `stream_with_cancellation` and raises
+        // `LlmCallError::UserCancelled` with partial_text; the engine's error
+        // path then persists the aborted message row and writes an aborted
+        // usage_log entry. We give it a bounded window (CANCEL_GRACE) to
+        // finish naturally, then hard-abort if it's wedged. This guards
+        // against tool loops or sync blocks that ignore the cancel token
+        // (code_exec, workspace_write, std::sync::Mutex contention) — the
+        // pre-existing `client_gone_since > 600 s` check only ran inside
+        // `event_rx.recv().await`, so a silent wedge bypassed it.
+        const CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
         let mut logged_cancel_drain = false;
-        while let Some(event) = event_rx.recv().await {
-            if cancel_token.as_ref().is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+        let mut cancel_deadline: Option<tokio::time::Instant> = None;
+        loop {
+            // Record the cancel-observation + deadline once.
+            if cancel_token
+                .as_ref()
+                .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
                 && !logged_cancel_drain
             {
                 logged_cancel_drain = true;
+                cancel_deadline = Some(tokio::time::Instant::now() + CANCEL_GRACE);
                 tracing::info!(
                     session_id = ?session_id_str,
-                    "user cancel received; engine will emit aborted message + Finish naturally"
+                    "user cancel received; engine has {}s to emit aborted message + Finish",
+                    CANCEL_GRACE.as_secs(),
                 );
             }
+
+            let event = if let Some(dl) = cancel_deadline {
+                // Race the engine's next event against the grace deadline.
+                match tokio::time::timeout_at(dl, event_rx.recv()).await {
+                    Ok(Some(ev)) => ev,
+                    Ok(None) => break, // engine finished / channel closed
+                    Err(_) => {
+                        // Grace window exceeded with no event progress — the
+                        // engine is wedged ignoring the cancel token. Force
+                        // an abort so the task / semaphore permit are freed.
+                        tracing::warn!(
+                            session_id = ?session_id_str,
+                            "cancel grace window ({}s) exceeded, hard-aborting engine",
+                            CANCEL_GRACE.as_secs(),
+                        );
+                        engine_handle.abort();
+                        break;
+                    }
+                }
+            } else {
+                match event_rx.recv().await {
+                    Some(ev) => ev,
+                    None => break,
+                }
+            };
+
             // AUDIT:SSE-03 (verified 2026-03-30): Safety net for client disconnect.
             // See stream_registry.rs for full SSE-03 audit. This 10-minute timeout
             // ensures no hanging tasks if client disconnects and never reconnects.
