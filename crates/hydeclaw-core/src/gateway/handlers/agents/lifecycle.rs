@@ -53,6 +53,8 @@ pub async fn start_agent_from_config(
             &infra.db,
             &agent_cfg.agent.routing,
             effective_temperature,
+            effective_max_tokens,
+            agent_cfg.agent.max_failover_attempts,
             auth.secrets.clone(),
         ).await
     };
@@ -84,7 +86,13 @@ pub async fn start_agent_from_config(
                                     };
                                     build_cli_provider(&provider_row, None, ctx).await.ok()
                                 }
-                                _ => build_provider(&provider_row, auth.secrets.clone(), &timeouts_cfg, cancel).ok(),
+                                _ => build_provider(
+                                    &provider_row,
+                                    auth.secrets.clone(),
+                                    &timeouts_cfg,
+                                    cancel,
+                                    crate::agent::providers::ProviderOverrides::default(),
+                                ).ok(),
                             };
                         match built {
                             Some(p) => {

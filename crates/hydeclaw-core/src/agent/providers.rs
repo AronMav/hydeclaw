@@ -37,6 +37,9 @@ pub use error::{LlmCallError, CancelReason};
 #[cfg(test)]
 mod routing_tests;
 
+#[cfg(test)]
+mod build_provider_tests;
+
 pub mod cancellable_stream;
 #[allow(unused_imports)] // first consumer arrives in Task 9 (stream_with_cancellation)
 pub use cancellable_stream::{CancelSlot, set_and_cancel};
@@ -171,11 +174,22 @@ pub fn create_cli_provider_with_options(
 /// named DB provider via `connection`; this function resolves each to a
 /// `ProviderRow` and builds a provider via `build_provider`.
 ///
+/// `agent_temperature` / `agent_max_tokens` provide agent-level defaults; a
+/// route's `temperature` field (if present) takes precedence. `model` override
+/// comes from the route's `model` field. These are bundled into
+/// `ProviderOverrides` and passed to `build_provider`.
+///
+/// `max_failover_attempts` caps the number of fallback attempts per request
+/// (re-added post-c55b039 / 8d33376 — see issue #9).
+///
 /// Routes with a missing or invalid `connection` are skipped with a log entry.
+#[allow(clippy::too_many_arguments)]
 pub async fn create_routing_provider(
     db: &sqlx::PgPool,
     routes: &[crate::config::ProviderRouteConfig],
-    _default_temperature: f64,
+    agent_temperature: f64,
+    agent_max_tokens: Option<u32>,
+    max_failover_attempts: u32,
     secrets: Arc<SecretsManager>,
 ) -> Arc<dyn LlmProvider> {
     let mut entries: Vec<RouteEntry> = Vec::with_capacity(routes.len());
@@ -201,7 +215,21 @@ pub async fn create_routing_provider(
             serde_json::from_value(row.options.clone()).unwrap_or_default();
         let timeouts_cfg = opts.timeouts;
         let cancel = tokio_util::sync::CancellationToken::new();
-        let p = match build_provider(&row, secrets.clone(), &timeouts_cfg, cancel) {
+        // Route temperature beats agent default; missing route temperature
+        // falls through to `agent_temperature` (which is itself agent → global default).
+        let effective_temperature = r.temperature.unwrap_or(agent_temperature);
+        let model_override = r
+            .model
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let overrides = ProviderOverrides {
+            model: model_override,
+            temperature: Some(effective_temperature),
+            max_tokens: agent_max_tokens,
+            prompt_cache: None,
+        };
+        let p = match build_provider(&row, secrets.clone(), &timeouts_cfg, cancel, overrides) {
             Ok(p) => {
                 let arc: Arc<dyn LlmProvider> = Arc::from(p);
                 arc
@@ -212,12 +240,6 @@ pub async fn create_routing_provider(
                 continue;
             }
         };
-        // Apply per-route model override
-        if let Some(ref m) = r.model
-            && !m.is_empty()
-        {
-            p.set_model_override(Some(m.clone()));
-        }
         let key = format!("{}:{}", r.condition, p.name());
         entries.push(RouteEntry {
             condition: r.condition.clone(),
@@ -230,6 +252,7 @@ pub async fn create_routing_provider(
     Arc::new(RoutingProvider {
         routes: entries,
         cooldowns: std::sync::Mutex::new(std::collections::HashMap::new()),
+        max_failover_attempts,
     })
 }
 
@@ -732,9 +755,8 @@ pub(crate) fn build_provider_clients_legacy_secs(timeout_secs: Option<u64>) -> (
 /// Streaming client has only `connect_timeout` — request body is governed by
 /// `stream_inactivity_secs` / `stream_max_duration_secs` (spec §4.2.1).
 ///
-/// Consumers arrive in Tasks 13-16 when each provider's constructor is
-/// migrated to accept `TimeoutsConfig` directly.
-#[allow(dead_code)]
+/// Consumed by `*::new_from_row` in each provider impl — threaded from
+/// `build_provider(row, timeouts, ...)`.
 pub(crate) fn build_provider_clients(timeouts: &TimeoutsConfig) -> (reqwest::Client, reqwest::Client) {
     let connect = std::time::Duration::from_secs(timeouts.connect_secs);
     let request_timeout = if timeouts.request_secs == 0 {
@@ -755,19 +777,39 @@ pub(crate) fn build_provider_clients(timeouts: &TimeoutsConfig) -> (reqwest::Cli
     (request_client, streaming_client)
 }
 
+/// Per-call overrides threaded from agent/route config into `build_provider`.
+///
+/// `None` fields mean "fall back to the row/options default" — see
+/// `new_from_row` impls for the default chain (hardcoded 0.7 / None / false
+/// are the last-resort fallbacks when neither override nor row supplies a value).
+///
+/// `prompt_cache` is honored only by `AnthropicProvider`; other providers
+/// ignore it.
+#[derive(Debug, Clone, Default)]
+pub struct ProviderOverrides {
+    pub model: Option<String>,
+    pub temperature: Option<f64>,
+    pub max_tokens: Option<u32>,
+    /// Anthropic-only prompt-cache override. `None` → take from
+    /// `ProviderOptions.prompt_cache`; `Some(x)` → force `x`.
+    pub prompt_cache: Option<bool>,
+}
+
 /// Single constructor for LLM providers. Unifies the three legacy paths
 /// (`create_provider`, `create_provider_from_connection`, `create_provider_from_route`).
 ///
-/// The `timeouts` + `cancel` parameters are stored on each provider and will be
-/// consumed by `stream_with_cancellation` in Tasks 13-16; for now provider
-/// runtime behavior is identical to current code (legacy `request_secs`-only
-/// timeout applied to non-streaming).
+/// The `timeouts` + `cancel` parameters are stored on each provider and consumed
+/// by `stream_with_cancellation` in `chat_stream`. Request-side clients are
+/// built via `build_provider_clients(timeouts)` honoring `connect_secs` and
+/// `request_secs` (spec §4.2.1).
+///
+/// `overrides` threads agent-level and route-level settings — temperature,
+/// max_tokens, prompt_cache, model — that are NOT present on `ProviderRow`
+/// (which only carries provider-identity fields).
 ///
 /// The task spec signature `build_provider(row, timeouts, cancel)` is extended
 /// with `secrets` because every HTTP provider resolves API keys against the
-/// vault at call time. Keeping `SecretsManager` as a method-call-time lookup is
-/// the existing design contract; changing it would require rewriting every
-/// provider's runtime path, which is explicitly deferred to Tasks 13-16.
+/// vault at call time.
 ///
 /// Note: CLI providers (`claude-cli`, `gemini-cli`, `codex-cli`) need a
 /// `CliContext` (sandbox + agent_name + workspace_dir + base) which is NOT
@@ -779,6 +821,7 @@ pub fn build_provider(
     secrets: Arc<SecretsManager>,
     timeouts: &TimeoutsConfig,
     cancel: tokio_util::sync::CancellationToken,
+    overrides: ProviderOverrides,
 ) -> anyhow::Result<Box<dyn LlmProvider>> {
     // Parse options (typed — unknown keys land in `extra`)
     let opts: timeouts::ProviderOptions =
@@ -788,13 +831,13 @@ pub fn build_provider(
     match row.provider_type.as_str() {
         "anthropic" => {
             let provider = AnthropicProvider::new_from_row(
-                row, secrets, *timeouts, cancel, opts,
+                row, secrets, *timeouts, cancel, opts, overrides,
             )?;
             Ok(Box::new(provider))
         }
         "google" | "gemini" => {
             let provider = GoogleProvider::new_from_row(
-                row, secrets, *timeouts, cancel, opts,
+                row, secrets, *timeouts, cancel, opts, overrides,
             )?;
             Ok(Box::new(provider))
         }
@@ -807,7 +850,7 @@ pub fn build_provider(
         // Everything else (openai, ollama, custom-http, and generic OpenAI-compatible) → OpenAiCompatibleProvider
         _ => {
             let provider = OpenAiCompatibleProvider::new_from_row(
-                row, secrets, *timeouts, cancel, opts,
+                row, secrets, *timeouts, cancel, opts, overrides,
             )?;
             Ok(Box::new(provider))
         }
@@ -888,7 +931,8 @@ pub async fn resolve_provider_for_agent(
     }
 
     tracing::error!(agent = %agent_name, "no usable LLM provider configured; calls will fail");
-    let _ = (temperature, max_tokens); // not consumed via fallback path
+    let _ = (temperature, max_tokens); // sentinel path; values are consumed
+                                       // on the happy path via resolve_provider_from_row.
     Arc::new(OpenAiCompatibleProvider::new(
         "unconfigured", "http://invalid", "", agent.model.clone(), 0.0, None, secrets, None,
     ))
@@ -897,12 +941,16 @@ pub async fn resolve_provider_for_agent(
 /// Internal dispatch: build a provider from a DB row, applying per-agent model
 /// override. Uses `build_provider` for HTTP providers, `build_cli_provider` for
 /// CLI providers.
+///
+/// `temperature` / `max_tokens` are agent-level settings (after
+/// `[agent.defaults]` fallback) threaded into `ProviderOverrides` so the
+/// HTTP provider's request body carries the correct values (issue #4).
 #[allow(clippy::too_many_arguments)]
 async fn resolve_provider_from_row(
     row: &crate::db::providers::ProviderRow,
     model_override: Option<&str>,
-    _temperature: f64,
-    _max_tokens: Option<u32>,
+    temperature: f64,
+    max_tokens: Option<u32>,
     secrets: Arc<SecretsManager>,
     sandbox: Option<Arc<crate::containers::sandbox::CodeSandbox>>,
     agent_name: &str,
@@ -934,7 +982,13 @@ async fn resolve_provider_from_row(
             }
         }
         _ => {
-            match build_provider(row, secrets.clone(), &timeouts_cfg, cancel) {
+            let overrides = ProviderOverrides {
+                model: model_override.map(str::to_string),
+                temperature: Some(temperature),
+                max_tokens,
+                prompt_cache: None,
+            };
+            match build_provider(row, secrets.clone(), &timeouts_cfg, cancel, overrides) {
                 Ok(p) => p,
                 Err(e) => {
                     tracing::error!(provider = %row.name, error = %e, "failed to build provider");
@@ -972,6 +1026,11 @@ pub struct RoutingProvider {
     routes: Vec<RouteEntry>,
     /// Tracks providers on cooldown (provider name → cooldown expiry).
     cooldowns: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    /// Maximum number of *failover* attempts per request. Does NOT count the
+    /// primary call itself — a value of 3 means "up to 3 fallbacks after
+    /// primary failed". Re-added to prevent unbounded cascading failures
+    /// through long fallback chains (see issue #9 / commit c55b039).
+    max_failover_attempts: u32,
 }
 
 impl RoutingProvider {
@@ -1085,11 +1144,28 @@ impl RoutingProvider {
             }
 
             if !llm_err.is_failover_worthy() {
-                tracing::warn!(
-                    provider = %provider_name,
-                    error = %e,
-                    "route failed with non-failover-worthy error — bubbling up"
-                );
+                // Non-failover-worthy errors bubble up to the caller, but some
+                // typed variants (notably `AuthError`) still deserve a cooldown
+                // to prevent re-hammering the primary with the same credentials.
+                // Issue #8: the 300s floor documented in spec §4.6 was
+                // previously only reachable on the legacy string-classified
+                // path; the typed path short-circuited before `set_cooldown`.
+                if matches!(llm_err, LlmCallError::AuthError { .. }) {
+                    let cd = std::time::Duration::from_secs(route_cooldown.as_secs().max(300));
+                    tracing::warn!(
+                        provider = %provider_name,
+                        error = %e,
+                        cooldown_secs = cd.as_secs(),
+                        "route failed with AuthError — applying 300s cooldown floor (not failing over)"
+                    );
+                    self.set_cooldown(provider_name, cd);
+                } else {
+                    tracing::warn!(
+                        provider = %provider_name,
+                        error = %e,
+                        "route failed with non-failover-worthy error — bubbling up"
+                    );
+                }
                 return None;
             }
             let cd = match llm_err {
@@ -1160,13 +1236,25 @@ impl RoutingProvider {
     /// Test-only constructor for `RoutingProvider` — builds a routing chain from
     /// a list of `(key, provider, cooldown_secs)` tuples without going through
     /// `build_provider` / DB resolution. Used by unit tests for the failover
-    /// predicate wiring.
+    /// predicate wiring. Defaults `max_failover_attempts` to a large value
+    /// (`u32::MAX`) so existing tests exercise the full route list; use
+    /// `new_for_test_with_cap` to verify the cap behavior explicitly.
     ///
     /// Every entry is installed with condition `"default"` so `select_route`
     /// matches on the first one (same behavior the production `always`
     /// condition would give for a single-route chain).
     #[cfg(test)]
     pub(crate) fn new_for_test(routes: Vec<(String, Arc<dyn LlmProvider>, u64)>) -> Self {
+        Self::new_for_test_with_cap(routes, u32::MAX)
+    }
+
+    /// Test-only constructor that lets a test set an explicit
+    /// `max_failover_attempts` cap (see `new_for_test` docs).
+    #[cfg(test)]
+    pub(crate) fn new_for_test_with_cap(
+        routes: Vec<(String, Arc<dyn LlmProvider>, u64)>,
+        max_failover_attempts: u32,
+    ) -> Self {
         let entries = routes
             .into_iter()
             .map(|(key, provider, cooldown_secs)| RouteEntry {
@@ -1179,6 +1267,7 @@ impl RoutingProvider {
         Self {
             routes: entries,
             cooldowns: std::sync::Mutex::new(std::collections::HashMap::new()),
+            max_failover_attempts,
         }
     }
 }
@@ -1266,9 +1355,22 @@ impl LlmProvider for RoutingProvider {
         // iteration's reassignment is by design (dead-store is cheap and
         // keeps the loop body uniform). Silence the unused_assignments lint
         // for the final-iteration dead store on error.
+        //
+        // Issue #9: enforce `max_failover_attempts` cap — stop iterating
+        // once we've attempted N fallbacks, even if more routes remain.
+        // `enumerate` is `usize`; we compare against the u32 cap by casting.
         #[allow(unused_assignments)]
         {
-            for fb in self.available_fallbacks(&primary_key) {
+            let fallbacks = self.available_fallbacks(&primary_key);
+            for (idx, fb) in fallbacks.into_iter().enumerate() {
+                if idx as u32 >= self.max_failover_attempts {
+                    tracing::warn!(
+                        attempts = idx as u32,
+                        cap = self.max_failover_attempts,
+                        "failover cap reached — not trying further routes"
+                    );
+                    break;
+                }
                 // Record failover counter at the transition point.
                 if let Some(reason) = pending_reason.take() {
                     Self::record_failover(&last_failed_key, &fb.key, reason);
@@ -1337,8 +1439,15 @@ impl LlmProvider for RoutingProvider {
                     let _ = forwarder.await;
 
                     if chunks_sent.load(Ordering::Relaxed) {
+                        // Issue #6: mid-stream failure cannot fail over (user
+                        // already received partial content), but the primary
+                        // still deserves a cooldown + metric bump so we don't
+                        // re-hammer it on the next request. Swallow the
+                        // returned "failover reason" — we're not actually
+                        // failing over.
+                        let _ = self.handle_provider_error(&e, &primary_key, primary_cooldown);
                         tracing::warn!(provider = %primary_display, error = %e,
-                            "streaming: mid-stream failure, partial output already sent — cannot failover");
+                            "streaming: mid-stream failure, partial output already sent — cooldown applied, not failing over");
                         return Err(e);
                     }
                     // Downcast to typed error; non-failover-worthy errors bubble up
@@ -1359,9 +1468,20 @@ impl LlmProvider for RoutingProvider {
         // See the `chat` impl for the rationale behind the
         // `unused_assignments` allow — the last iteration's reassignment
         // on error is dead-store by design.
+        //
+        // Issue #9: enforce `max_failover_attempts` cap, same as `chat()`.
         #[allow(unused_assignments)]
         {
-            for fb in self.available_fallbacks(&primary_key) {
+            let fallbacks = self.available_fallbacks(&primary_key);
+            for (idx, fb) in fallbacks.into_iter().enumerate() {
+                if idx as u32 >= self.max_failover_attempts {
+                    tracing::warn!(
+                        attempts = idx as u32,
+                        cap = self.max_failover_attempts,
+                        "streaming failover cap reached — not trying further routes"
+                    );
+                    break;
+                }
                 if let Some(reason) = pending_reason.take() {
                     Self::record_failover(&last_failed_key, &fb.key, reason);
                 }

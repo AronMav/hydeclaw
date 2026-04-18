@@ -344,3 +344,105 @@ async fn routing_fails_over_on_streaming_inactivity() {
     assert_eq!(resp.content, "streamed-fallback");
     assert!(called.load(Ordering::SeqCst));
 }
+
+// ── Issue #9: max_failover_attempts cap ──────────────────────────────────────
+
+/// Counts how many times it's invoked and always returns a failover-worthy error.
+/// Used to prove the cap stops iteration before the full route list is exhausted.
+struct CountingInactivityProvider {
+    calls: Arc<std::sync::atomic::AtomicU32>,
+    tag: &'static str,
+}
+
+#[async_trait]
+impl LlmProvider for CountingInactivityProvider {
+    async fn chat(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err(anyhow::Error::new(LlmCallError::InactivityTimeout {
+            provider: self.tag.to_string(),
+            silent_secs: 60,
+            partial_text: "".into(),
+        }))
+    }
+
+    async fn chat_stream(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        _chunk_tx: mpsc::UnboundedSender<String>,
+    ) -> anyhow::Result<LlmResponse> {
+        self.chat(messages, tools).await
+    }
+
+    fn name(&self) -> &str {
+        self.tag
+    }
+}
+
+#[tokio::test]
+async fn routing_respects_max_failover_attempts_cap() {
+    // 5 routes, all failing; cap = 2 failovers means: primary + 2 fallbacks = 3 total calls.
+    let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+    let make = |tag: &'static str| -> Arc<dyn LlmProvider> {
+        Arc::new(CountingInactivityProvider {
+            calls: calls.clone(),
+            tag,
+        })
+    };
+
+    let routing = RoutingProvider::new_for_test_with_cap(
+        vec![
+            ("r0:cap-test".into(), make("cap-test-0"), 60),
+            ("r1:cap-test".into(), make("cap-test-1"), 60),
+            ("r2:cap-test".into(), make("cap-test-2"), 60),
+            ("r3:cap-test".into(), make("cap-test-3"), 60),
+            ("r4:cap-test".into(), make("cap-test-4"), 60),
+        ],
+        2, // cap: 2 failover attempts after primary
+    );
+
+    let err = routing
+        .chat(&[], &[])
+        .await
+        .expect_err("all routes failing → error");
+    assert!(
+        err.to_string().contains("all providers failed") || err.downcast_ref::<LlmCallError>().is_some(),
+        "expected bail or last typed error, got {err}"
+    );
+
+    // primary (1) + 2 fallbacks = 3 total calls. The cap stops us before r3/r4.
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "max_failover_attempts=2 → primary + 2 fallbacks = 3 calls, no more"
+    );
+}
+
+#[tokio::test]
+async fn routing_default_cap_allows_full_chain_when_large() {
+    // With u32::MAX cap (default of new_for_test), all 4 routes are tried.
+    let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let make = |tag: &'static str| -> Arc<dyn LlmProvider> {
+        Arc::new(CountingInactivityProvider {
+            calls: calls.clone(),
+            tag,
+        })
+    };
+    let routing = RoutingProvider::new_for_test(vec![
+        ("rA:no-cap".into(), make("no-cap-0"), 60),
+        ("rB:no-cap".into(), make("no-cap-1"), 60),
+        ("rC:no-cap".into(), make("no-cap-2"), 60),
+        ("rD:no-cap".into(), make("no-cap-3"), 60),
+    ]);
+    let _ = routing.chat(&[], &[]).await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        4,
+        "no cap → all routes exhausted"
+    );
+}

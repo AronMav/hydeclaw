@@ -45,6 +45,11 @@ pub struct ProviderOptions {
     pub timeouts: TimeoutsConfig,
     #[serde(default)]
     pub api_key_envs: Vec<String>,
+    /// Anthropic-only: enable prompt caching. Ignored by other providers.
+    /// Lives here (instead of on `ProviderRouteConfig`) per spec §4.7
+    /// which removed duplicated per-route provider fields.
+    #[serde(default)]
+    pub prompt_cache: bool,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }

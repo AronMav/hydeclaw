@@ -65,36 +65,63 @@ impl AnthropicProvider {
     /// Build an `AnthropicProvider` from a `ProviderRow`, storing the shared
     /// `cancel` token + typed `timeouts` so `chat_stream` can thread them into
     /// `stream_with_cancellation`.
+    ///
+    /// HTTP clients are built via `build_provider_clients(&timeouts)` honoring
+    /// `connect_secs` / `request_secs` (not the legacy 10s/120s hardcoded values).
+    ///
+    /// `overrides` supplies agent/route-level temperature, max_tokens, model,
+    /// prompt_cache. Resolution order: override → row/opts default → hardcoded
+    /// last-resort. `prompt_cache` reads `ProviderOptions.prompt_cache` when
+    /// the override is `None`.
     #[allow(dead_code)] // consumed by super::build_provider
     pub(crate) fn new_from_row(
         row: &crate::db::providers::ProviderRow,
         secrets: Arc<SecretsManager>,
         timeouts: super::TimeoutsConfig,
         cancel: tokio_util::sync::CancellationToken,
-        _opts: super::timeouts::ProviderOptions,
+        opts: super::timeouts::ProviderOptions,
+        overrides: super::ProviderOverrides,
     ) -> anyhow::Result<Self> {
-        let model = row.default_model.clone().unwrap_or_default();
+        let model = overrides
+            .model
+            .clone()
+            .unwrap_or_else(|| row.default_model.clone().unwrap_or_default());
         let key_env = super::PROVIDER_TYPES
             .iter()
             .find(|pt| pt.id == row.provider_type)
             .map_or("ANTHROPIC_API_KEY", |pt| pt.default_secret_name);
-        let mut provider = Self::with_options(
-            model,
-            0.7,
-            None,
+
+        let (client, streaming_client) = super::build_provider_clients(&timeouts);
+
+        let temperature = overrides.temperature.unwrap_or(0.7);
+        let max_tokens = overrides.max_tokens;
+        let prompt_cache = overrides.prompt_cache.unwrap_or(opts.prompt_cache);
+
+        let provider = Self {
+            client,
+            streaming_client,
+            base_url: row
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.anthropic.com".to_string()),
+            api_key_name: key_env.to_string(),
+            credential_scope: Some(row.id.to_string()),
             secrets,
-            row.base_url.clone(),
-            Some(key_env.to_string()),
-            false,
-            None,
-        )
-        .with_credential_scope(row.id.to_string());
-        provider.timeouts = timeouts;
-        provider.cancel = cancel;
+            model: super::ModelOverride::new(model),
+            temperature,
+            max_tokens,
+            prompt_cache,
+            timeouts,
+            cancel,
+        };
         Ok(provider)
     }
 
     /// Set vault credential scope (provider UUID) for `LLM_CREDENTIALS` lookup.
+    ///
+    /// Now only used by the legacy `with_options` fixture path; `new_from_row`
+    /// builds the struct literally. Kept as a stable fluent API.
+    #[allow(dead_code)]
     pub fn with_credential_scope(mut self, scope: String) -> Self {
         self.credential_scope = Some(scope);
         self

@@ -73,6 +73,13 @@ impl OpenAiCompatibleProvider {
     /// Build an `OpenAiCompatibleProvider` from a `ProviderRow`, storing the
     /// shared `cancel` token + typed `timeouts` so `chat_stream` can thread
     /// them into `stream_with_cancellation`.
+    ///
+    /// HTTP clients are built via `build_provider_clients(&timeouts)` honoring
+    /// `connect_secs` / `request_secs` from the config (not the legacy
+    /// 10s/120s hardcoded values).
+    ///
+    /// `overrides` supplies agent/route-level temperature, max_tokens, model.
+    /// Resolution order: override → row default → hardcoded last-resort.
     #[allow(dead_code)] // consumed by super::build_provider
     pub(crate) fn new_from_row(
         row: &crate::db::providers::ProviderRow,
@@ -80,6 +87,7 @@ impl OpenAiCompatibleProvider {
         timeouts: super::TimeoutsConfig,
         cancel: tokio_util::sync::CancellationToken,
         opts: super::timeouts::ProviderOptions,
+        overrides: super::ProviderOverrides,
     ) -> anyhow::Result<Self> {
         let meta = super::PROVIDER_TYPES
             .iter()
@@ -93,36 +101,68 @@ impl OpenAiCompatibleProvider {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| default_base.to_string());
         let url = super::resolve_chat_url(&row.provider_type, &base);
-        let model = row.default_model.clone().unwrap_or_default();
+        let model = overrides
+            .model
+            .clone()
+            .unwrap_or_else(|| row.default_model.clone().unwrap_or_default());
 
         let credential_scope = row.id.to_string();
 
-        let mut provider = Self::new(
-            &row.provider_type,
-            &url,
-            key_env,
-            model,
-            0.7,
-            None,
+        // Build HTTP clients with configured timeouts (not legacy hardcoded 10s/120s).
+        let (client, streaming_client) = super::build_provider_clients(&timeouts);
+
+        let temperature = overrides.temperature.unwrap_or(0.7);
+        let max_tokens = overrides.max_tokens;
+
+        let mut provider = Self {
+            provider_name: row.provider_type.clone(),
+            client,
+            streaming_client,
+            url,
+            base_url_env: None,
+            url_suffix: String::new(),
+            api_key_name: key_env.to_string(),
+            api_key_names: Vec::new(),
+            key_counter: std::sync::atomic::AtomicUsize::new(0),
+            credential_scope: Some(credential_scope),
             secrets,
-            None,
-        )
-        .with_credential_scope(credential_scope);
+            model: super::ModelOverride::new(model),
+            temperature,
+            max_tokens,
+            timeouts,
+            cancel,
+        };
 
         if !opts.api_key_envs.is_empty() {
             provider = provider.with_keys(opts.api_key_envs);
         }
-
-        provider.provider_name = row.provider_type.clone();
-        provider.timeouts = timeouts;
-        provider.cancel = cancel;
         Ok(provider)
     }
 
     /// Set vault credential scope (provider UUID) for `LLM_CREDENTIALS` lookup.
+    ///
+    /// Now only used by the legacy `new()` callers (CLI/unconfigured fallback
+    /// paths); `new_from_row` builds the struct literally. Kept public for
+    /// external consumers and as a stable fluent API.
+    #[allow(dead_code)]
     pub fn with_credential_scope(mut self, scope: String) -> Self {
         self.credential_scope = Some(scope);
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_temperature(&self) -> f64 {
+        self.temperature
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_max_tokens(&self) -> Option<u32> {
+        self.max_tokens
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_timeouts(&self) -> super::TimeoutsConfig {
+        self.timeouts
     }
 
     /// Create with round-robin API key rotation.

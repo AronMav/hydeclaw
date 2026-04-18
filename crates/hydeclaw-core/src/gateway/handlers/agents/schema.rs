@@ -114,6 +114,7 @@ pub(crate) fn agent_to_detail(cfg: &AgentConfig, is_running: bool, config_dirty:
         "max_history_messages": a.max_history_messages,
         "daily_budget_tokens": a.daily_budget_tokens,
         "max_agent_turns": a.max_agent_turns,
+        "max_failover_attempts": a.max_failover_attempts,
         "is_running": is_running,
         "config_dirty": config_dirty,
     })
@@ -160,6 +161,8 @@ pub(crate) struct AgentCreatePayload {
     pub max_history_messages: Option<usize>,
     pub daily_budget_tokens: Option<u64>,
     pub max_agent_turns: Option<usize>,
+    /// Cap on fallback attempts per request in multi-provider routing (default 3).
+    pub max_failover_attempts: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -326,6 +329,8 @@ pub(crate) fn build_agent_config(name: String, p: AgentCreatePayload) -> AgentCo
             }),
             daily_budget_tokens: p.daily_budget_tokens.unwrap_or(0),
             max_agent_turns: p.max_agent_turns,
+            // Default 3 matches the `#[serde(default)]` on AgentSettings.
+            max_failover_attempts: p.max_failover_attempts.unwrap_or(3),
             base: false,
         },
     }

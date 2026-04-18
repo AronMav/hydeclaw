@@ -543,7 +543,16 @@ pub struct AgentSettings {
     /// Per-agent override for max agent-to-agent turns. None = use global limit.
     #[serde(default)]
     pub max_agent_turns: Option<usize>,
+    /// Maximum number of failover attempts per request when multi-provider
+    /// routing is configured. Does NOT count the primary call — a value of 3
+    /// means "up to 3 fallbacks after primary failed". Cap exists to prevent
+    /// unbounded cascading failures across long fallback chains
+    /// (re-added after commit c55b039 → 8d33376 regression).
+    #[serde(default = "default_max_failover_attempts")]
+    pub max_failover_attempts: u32,
 }
+
+fn default_max_failover_attempts() -> u32 { 3 }
 
 /// Per-agent hooks configuration (TOML: `[agent.hooks]`).
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
@@ -1319,6 +1328,7 @@ model = "m2.5"
                 hooks: None,
                 daily_budget_tokens: 0,
                 max_agent_turns: None,
+                max_failover_attempts: default_max_failover_attempts(),
             },
         };
 
@@ -1389,6 +1399,7 @@ model = "m2.5"
                 hooks: None,
                 daily_budget_tokens: 0,
                 max_agent_turns: None,
+                max_failover_attempts: default_max_failover_attempts(),
             },
         };
 

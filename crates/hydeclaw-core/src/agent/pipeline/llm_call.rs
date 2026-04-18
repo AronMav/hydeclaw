@@ -76,7 +76,16 @@ pub async fn create_fallback_provider(
                     }
                 }
                 _ => {
-                    match build_provider(&row, secrets, &timeouts_cfg, cancel) {
+                    // Fallback provider uses the row's default model/tuning —
+                    // per-agent temperature/max_tokens are carried by the
+                    // primary provider (which this falls back from).
+                    match build_provider(
+                        &row,
+                        secrets,
+                        &timeouts_cfg,
+                        cancel,
+                        crate::agent::providers::ProviderOverrides::default(),
+                    ) {
                         Ok(p) => p,
                         Err(e) => {
                             tracing::warn!(agent = %agent_name, fallback_provider = %fb_name, error = %e,

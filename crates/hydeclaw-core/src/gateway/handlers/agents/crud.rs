@@ -450,6 +450,19 @@ pub(crate) async fn api_update_agent(
     if cfg.agent.max_agent_turns.is_none() {
         cfg.agent.max_agent_turns = existing_cfg.agent.max_agent_turns;
     }
+    // max_failover_attempts is a u32 with serde default 3 — cannot distinguish
+    // "absent in payload" from "explicit 3" post-deserialization, but the
+    // schema builder sets 3 only when the payload field is `None`, so
+    // preserving the existing value when payload has the default is safe
+    // (same reasoning as `base`).
+    // Note: there's no way to override back to 3 once a non-3 value is set
+    // except via direct TOML edit — acceptable since this is an operator-level
+    // stability knob.
+    if cfg.agent.max_failover_attempts == 3
+        && existing_cfg.agent.max_failover_attempts != 3
+    {
+        cfg.agent.max_failover_attempts = existing_cfg.agent.max_failover_attempts;
+    }
     // daily_budget_tokens: 0 means "no budget" — always honor explicit value from payload
     let toml_str = match cfg.to_toml() {
         Ok(s) => s,
