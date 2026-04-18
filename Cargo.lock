@@ -1244,6 +1244,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "hydeclaw-text"
+version = "0.19.5"
+
+[[package]]
 name = "hydeclaw-types"
 version = "0.19.5"
 dependencies = [
