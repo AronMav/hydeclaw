@@ -268,6 +268,7 @@ impl AgentEngine {
                             {
                                 last_msg_id = partial_id;
                             }
+                            record_llm_timeout_if_typed(&e);
                             record_aborted_usage(
                                 &self.cfg().db,
                                 &self.cfg().agent.name,
@@ -325,6 +326,9 @@ impl AgentEngine {
                     {
                         last_msg_id = partial_id;
                     }
+                    // Always bump `llm_timeout_total` for the four timeout variants,
+                    // even on the single-route path that bypasses RoutingProvider.
+                    record_llm_timeout_if_typed(&e);
                     // Issue B: record aborted/aborted_failover usage row so the
                     // STATUS_ABORTED* constants have runtime writers (spec §4.6).
                     // The provider here is the one currently in use (primary or
@@ -752,6 +756,27 @@ pub(super) async fn persist_partial_if_any(
             );
             None
         }
+    }
+}
+
+/// Bump `llm_timeout_total{provider, kind}` when the engine catches a
+/// timeout-class `LlmCallError`. Single-route agents bypass `RoutingProvider`
+/// entirely, so the counter was previously only populated when failover fired
+/// — this helper closes that observability gap.
+pub(super) fn record_llm_timeout_if_typed(e: &anyhow::Error) {
+    let Some(llm_err) = e.downcast_ref::<crate::agent::providers::LlmCallError>() else {
+        return;
+    };
+    let Some(metrics) = crate::metrics::global() else {
+        return;
+    };
+    use crate::agent::providers::LlmCallError::*;
+    match llm_err {
+        ConnectTimeout { provider, .. } => metrics.record_llm_timeout(provider, "connect"),
+        RequestTimeout { provider, .. } => metrics.record_llm_timeout(provider, "request"),
+        InactivityTimeout { provider, .. } => metrics.record_llm_timeout(provider, "inactivity"),
+        MaxDurationExceeded { provider, .. } => metrics.record_llm_timeout(provider, "max_duration"),
+        _ => {}
     }
 }
 

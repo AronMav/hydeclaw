@@ -4,7 +4,7 @@
 
 import { parseSSELines, parseSseEvent, parseContentParts } from "@/stores/sse-events";
 import { IncrementalParser } from "@/lib/message-parser";
-import { apiPatch, assertToken } from "@/lib/api";
+import { apiPatch, apiPost, assertToken } from "@/lib/api";
 import { queryClient } from "@/lib/query-client";
 import { qk } from "@/lib/queries";
 import type { SessionRow } from "@/types/api";
@@ -161,7 +161,21 @@ export function createStreamingRenderer(store: StoreAccess) {
       });
   }
 
-  /** Abort active stream for an agent and reset status. */
+  /** Abort active stream for an agent and reset status.
+   *
+   * Two-phase cancel:
+   *   1. Fire-and-forget POST /api/chat/{sid}/abort so the backend engine's
+   *      CancellationToken trips. This triggers the producer task in
+   *      `stream_with_cancellation` to set CancelReason::UserCancelled, which
+   *      bubbles up as LlmCallError::UserCancelled with partial_text. The
+   *      engine's error path then calls persist_partial_if_any to write an
+   *      aborted message row (status='aborted', abort_reason='user_cancelled').
+   *   2. Locally abort the fetch so the SSE reader doesn't race with teardown.
+   *
+   * Step 1 MUST happen before step 2 — if we abort the fetch first the TCP
+   * connection drops, the backend engine never learns the client intentionally
+   * cancelled, and the streaming row never transitions to aborted.
+   */
   function abortActiveStream(agent: string) {
     // Clear any pending reconnect timer first -- prevents reconnect after abort
     const timer = getReconnectTimer(agent);
@@ -171,6 +185,15 @@ export function createStreamingRenderer(store: StoreAccess) {
     }
     const ctrl = getAbortCtrl(agent);
     if (ctrl) {
+      // Ask the backend to stop first; fire-and-forget.
+      const sid = store.get().agents[agent]?.activeSessionId;
+      if (sid) {
+        apiPost(`/api/chat/${sid}/abort`).catch(() => {
+          // Backend may not have an active stream (already done / not started).
+          // Not an error from the user's point of view — local abort below
+          // still cleans up UI state.
+        });
+      }
       ctrl.abort();
       setAbortCtrl(agent, null);
       update(agent, { connectionPhase: "idle" });

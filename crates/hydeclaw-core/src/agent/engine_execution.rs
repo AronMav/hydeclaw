@@ -224,6 +224,7 @@ impl AgentEngine {
                     {
                         last_msg_id = partial_id;
                     }
+                    super::sse_impl::record_llm_timeout_if_typed(&e);
                     final_response = error_classify::format_user_error(&e);
                     break;
                 }

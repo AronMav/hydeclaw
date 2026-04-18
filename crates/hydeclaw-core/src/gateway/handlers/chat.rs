@@ -613,9 +613,29 @@ pub(crate) async fn api_chat_sse(
         let mut last_db_flush = std::time::Instant::now();
         let mut session_uuid: Option<uuid::Uuid> = None;
         let flush_interval = std::time::Duration::from_secs(2);
+        // On explicit API cancel (POST /api/chat/{id}/abort) we do NOT hard-abort
+        // `engine_handle` anymore — the CancellationToken cascades through
+        // providers' `stream_with_cancellation` and raises `LlmCallError::
+        // UserCancelled` with the current partial_text. The engine's error path
+        // then persists the aborted message row (status='aborted',
+        // abort_reason='user_cancelled') and writes an aborted usage_log entry.
+        // We need that path to complete, so we keep receiving events until the
+        // engine finishes naturally (within a bounded window).
+        let mut cancel_graceful_deadline: Option<std::time::Instant> = None;
         while let Some(event) = event_rx.recv().await {
-            // Abort engine on explicit cancel via API
-            if cancel_token.as_ref().is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+            // Start a graceful-drain deadline on first observation of cancel.
+            if cancel_token.as_ref().is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+                && cancel_graceful_deadline.is_none()
+            {
+                // Give the engine up to 5 s to flush its aborted-message save
+                // and emit the final Finish event before we stop draining.
+                cancel_graceful_deadline =
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
+                tracing::info!(session_id = ?session_id_str, "user cancel received; draining engine events");
+            }
+            if cancel_graceful_deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                // Engine didn't finish within grace window — last-resort hard abort.
+                tracing::warn!("cancel grace window exceeded, hard-aborting engine");
                 engine_handle.abort();
                 break;
             }
