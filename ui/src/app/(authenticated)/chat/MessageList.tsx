@@ -9,6 +9,7 @@ import { BarsLoader } from "@/components/ui/loader";
 import { RoleAvatar } from "./ChatThread";
 
 import { MessageItem } from "./MessageItem";
+import { runScrollToBottom } from "./scroll-to-bottom";
 import { AgentTransitionDivider } from "@/components/chat/AgentTransitionDivider";
 import { useAuthStore } from "@/stores/auth-store";
 import { useSessions } from "@/lib/queries";
@@ -297,17 +298,7 @@ export function MessageList({
   }, [isStreaming, virtualItems.length]);
 
   const scrollToBottom = useCallback(() => {
-    // `scrollToIndex({index: "LAST"})` scrolls to the TOP of the last item —
-    // for a long assistant message that lands at the message's beginning,
-    // not the bottom. Use `align: "end"` to anchor the item's bottom to
-    // the viewport, then fall back to absolute-top scroll for the container
-    // so we really end up at the very bottom (ThinkingMessage, footer, etc).
-    virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "smooth" });
-    // After the layout settles, force an absolute scroll to max so any
-    // trailing footer / streaming indicator becomes visible.
-    setTimeout(() => {
-      virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: "smooth" });
-    }, 120);
+    runScrollToBottom(virtuosoRef.current);
     isAtBottomRef.current = true;
     setIsAtBottom(true);
     // SCRL-03: reset missed token counter
