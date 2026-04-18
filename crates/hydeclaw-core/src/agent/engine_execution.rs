@@ -208,14 +208,22 @@ impl AgentEngine {
                     // surfacing. See engine_sse.rs for the matching hook in the streaming
                     // path; the two share `persist_partial_if_any` mounted in the
                     // `engine::sse_impl` submodule (path-included leaf).
-                    super::sse_impl::persist_partial_if_any(
+                    //
+                    // Issue #7: when a partial row is written, advance `last_msg_id`
+                    // to its id so the final assistant-error row (saved below after
+                    // the loop) hangs off the partial, keeping the thread linear
+                    // under m012 branching.
+                    if let Some(partial_id) = super::sse_impl::persist_partial_if_any(
                         &self.cfg().db,
                         session_id,
                         &self.cfg().agent.name,
                         last_msg_id,
                         &e,
                     )
-                    .await;
+                    .await
+                    {
+                        last_msg_id = partial_id;
+                    }
                     final_response = error_classify::format_user_error(&e);
                     break;
                 }

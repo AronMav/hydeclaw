@@ -282,14 +282,22 @@ impl AgentEngine {
                     // surfacing the error, so cancellation never loses work already
                     // produced. Only variants whose `partial_text()` returns a non-empty
                     // string are persisted (ConnectTimeout/RequestTimeout carry none).
-                    persist_partial_if_any(
+                    //
+                    // Issue #7: when a partial row is written, chain the subsequent
+                    // assistant-error message to it (not to `last_msg_id`) so the
+                    // two rows are linear under m012 branching (user → partial →
+                    // error) rather than siblings of the user message.
+                    if let Some(partial_id) = persist_partial_if_any(
                         &self.cfg().db,
                         session_id,
                         &self.cfg().agent.name,
                         last_msg_id,
                         &e,
                     )
-                    .await;
+                    .await
+                    {
+                        last_msg_id = partial_id;
+                    }
                     let fallback = error_classify::format_user_error(&e);
                     if event_tx.send(StreamEvent::TextDelta(fallback.clone())).is_err() {
                         tracing::debug!("SSE event channel closed, engine continues for DB save");
@@ -639,15 +647,21 @@ impl AgentEngine {
 /// the error is surfaced, so cancellation never loses work already produced.
 ///
 /// Behavior:
-/// * Downcasts `e` to `LlmCallError`. If the downcast fails, does nothing.
+/// * Downcasts `e` to `LlmCallError`. If the downcast fails, returns `None`.
 /// * Only persists when `partial_text()` returns `Some` AND the string is
 ///   non-empty. Variants without partial text (ConnectTimeout, RequestTimeout,
-///   Network, Server5xx, SchemaError, AuthError) are ignored — those are
+///   Network, Server5xx, SchemaError, AuthError) return `None` — those are
 ///   failover-worthy and the next route produces the final content.
 /// * `abort_reason()` supplies the stable short identifier written to
 ///   `messages.abort_reason` (see migration 024).
 /// * DB insert failures are logged but do not mask the original LLM error —
-///   the caller still bubbles `e` up unchanged.
+///   the caller still bubbles `e` up unchanged, and this helper returns
+///   `None` in that case.
+///
+/// Returns `Some(partial_message_id)` when a row was successfully inserted so
+/// the caller can thread it into subsequent `save_message_ex` calls as the
+/// parent — this prevents the partial + the follow-up error message from
+/// becoming siblings of the user message under m012 branching (issue #7).
 ///
 /// Shared by the SSE path (`engine_sse::handle_sse`) and the non-SSE path
 /// (`engine_execution::handle_with_status`).
@@ -657,17 +671,15 @@ pub(super) async fn persist_partial_if_any(
     agent_name: &str,
     parent_message_id: uuid::Uuid,
     e: &anyhow::Error,
-) {
-    let Some(llm_err) = e.downcast_ref::<crate::agent::providers::LlmCallError>() else {
-        return;
-    };
+) -> Option<uuid::Uuid> {
+    let llm_err = e.downcast_ref::<crate::agent::providers::LlmCallError>()?;
     let (Some(partial), Some(reason)) = (llm_err.partial_text(), llm_err.abort_reason()) else {
-        return;
+        return None;
     };
     if partial.is_empty() {
-        return;
+        return None;
     }
-    if let Err(persist_err) = crate::db::sessions::insert_assistant_partial(
+    match crate::db::sessions::insert_assistant_partial(
         db,
         session_id,
         Some(agent_name),
@@ -677,22 +689,28 @@ pub(super) async fn persist_partial_if_any(
     )
     .await
     {
-        // Persistence failure must never mask the LLM error. Log and drop.
-        tracing::warn!(
-            session_id = %session_id,
-            agent = %agent_name,
-            abort_reason = reason,
-            error = %persist_err,
-            "failed to persist partial assistant message on cancel; original LLM error still propagates"
-        );
-    } else {
-        tracing::info!(
-            session_id = %session_id,
-            agent = %agent_name,
-            abort_reason = reason,
-            bytes = partial.len().min(crate::db::sessions::MAX_PARTIAL_BYTES),
-            "persisted partial assistant message before surfacing cancel-class LLM error"
-        );
+        Ok(partial_id) => {
+            tracing::info!(
+                session_id = %session_id,
+                agent = %agent_name,
+                abort_reason = reason,
+                bytes = partial.len().min(crate::db::sessions::MAX_PARTIAL_BYTES),
+                partial_message_id = %partial_id,
+                "persisted partial assistant message before surfacing cancel-class LLM error"
+            );
+            Some(partial_id)
+        }
+        Err(persist_err) => {
+            // Persistence failure must never mask the LLM error. Log and drop.
+            tracing::warn!(
+                session_id = %session_id,
+                agent = %agent_name,
+                abort_reason = reason,
+                error = %persist_err,
+                "failed to persist partial assistant message on cancel; original LLM error still propagates"
+            );
+            None
+        }
     }
 }
 
