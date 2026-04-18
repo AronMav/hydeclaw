@@ -170,6 +170,62 @@ describe("convertHistory — message identity", () => {
     ]);
   });
 
+  it("propagates abort_reason and aborted status from row", () => {
+    // When backend persists a partial assistant row (status='aborted',
+    // abort_reason=<stable id>), convertHistory must surface both on the
+    // ChatMessage so <AssistantMessage>'s footer lights up on history load.
+    const rows: MessageRow[] = [
+      makeRow({
+        id: "m1",
+        agent_id: "Agent1",
+        content: "partial",
+        status: "aborted",
+        abort_reason: "inactivity",
+      }),
+    ];
+
+    const messages = convertHistory(rows);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].status).toBe("aborted");
+    expect(messages[0].abortReason).toBe("inactivity");
+  });
+
+  it("non-aborted rows do not set status or abortReason", () => {
+    // Sanity: a plain finished row must not carry the abort markers, else
+    // the footer would render unconditionally on every history load.
+    const rows: MessageRow[] = [
+      makeRow({ id: "a1", agent_id: "Agent1", content: "hello", status: "finished" }),
+    ];
+
+    const messages = convertHistory(rows);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].status).toBeUndefined();
+    expect(messages[0].abortReason).toBeUndefined();
+  });
+
+  it("aborted row with null abort_reason still marks status", () => {
+    // Back-compat: historical rows inserted before abort_reason was plumbed
+    // may have status='aborted' with a NULL reason. We still mark the
+    // message as aborted so the footer can render a generic label.
+    const rows: MessageRow[] = [
+      makeRow({
+        id: "m1",
+        agent_id: "Agent1",
+        content: "partial",
+        status: "aborted",
+        abort_reason: null,
+      }),
+    ];
+
+    const messages = convertHistory(rows);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].status).toBe("aborted");
+    expect(messages[0].abortReason).toBeNull();
+  });
+
   it("parity with tool grouping structure", () => {
     const rows: MessageRow[] = [
       makeRow({

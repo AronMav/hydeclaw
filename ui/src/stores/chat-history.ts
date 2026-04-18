@@ -72,6 +72,11 @@ export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean, s
       }
 
       if (lastAssistantMsg) messages.push(lastAssistantMsg);
+      // Map DB `status = 'aborted'` (+ stable `abort_reason`) to store fields
+      // consumed by the AssistantMessage footer. Other DB statuses ("streaming",
+      // "finished", ...) are not represented in ChatMessage.status; they're
+      // either filtered above or treated as confirmed.
+      const isAborted = m.status === "aborted";
       lastAssistantMsg = {
         id: m.id,
         role: "assistant",
@@ -80,6 +85,8 @@ export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean, s
         agentId: assistantAgentId,
         parentMessageId: m.parent_message_id ?? undefined,
         branchFromMessageId: m.branch_from_message_id ?? undefined,
+        status: isAborted ? "aborted" : undefined,
+        abortReason: isAborted ? (m.abort_reason ?? null) : undefined,
       };
     } else if (m.role === "tool" && m.tool_call_id) {
       // Tool result block — always attach to the latest assistant message
