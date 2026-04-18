@@ -8,7 +8,6 @@ import httpx
 from pydantic import BaseModel, Field
 
 CORE_API_URL = os.environ.get("CORE_API_URL", "http://127.0.0.1:18789")
-CORE_AUTH_TOKEN = os.environ.get("HYDECLAW_AUTH_TOKEN", os.environ.get("AUTH_TOKEN", ""))
 
 _log = logging.getLogger("toolgate.config")
 
@@ -60,16 +59,16 @@ async def _aload_config_from_api() -> ProvidersConfig | None:
             return config
         else:
             _log.warning(
-                "Core API /api/media-config returned status %d — falling back to disk",
+                "Core API /api/media-config returned status %d — will retry",
                 resp.status_code,
             )
     except Exception as e:
-        _log.warning("Failed to load config from Core API: %s — falling back to disk", e)
+        _log.warning("Failed to load config from Core API: %s — will retry", e)
     return None
 
 def load_config_from_api_sync() -> ProvidersConfig | None:
     """Synchronous fallback for lazy loading."""
-    core_url = CORE_API_URL
+    core_url = os.environ.get("CORE_API_URL", CORE_API_URL)
     if not core_url:
         return None
     auth_token = os.environ.get("HYDECLAW_AUTH_TOKEN", os.environ.get("AUTH_TOKEN", ""))

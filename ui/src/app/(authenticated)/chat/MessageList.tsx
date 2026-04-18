@@ -10,6 +10,7 @@ import { RoleAvatar } from "./ChatThread";
 
 import { MessageItem } from "./MessageItem";
 import { runScrollToBottom } from "./scroll-to-bottom";
+import { attachUserScrollUpDetection } from "./user-scroll-detection";
 import { AgentTransitionDivider } from "@/components/chat/AgentTransitionDivider";
 import { useAuthStore } from "@/stores/auth-store";
 import { useSessions } from "@/lib/queries";
@@ -254,7 +255,19 @@ export function MessageList({
       ro.observe(listContainer);
     }
 
-    return () => ro.disconnect();
+    // Detect user-initiated scroll-up via raw input events (wheel /
+    // touch / keyboard). The previous `isScrolling(false)` + "at bottom?"
+    // heuristic mistook Virtuoso's own programmatic follow-output scrolls
+    // for user scrolls when streaming content grew faster than scroll
+    // animation. See `./user-scroll-detection.ts` for the full contract.
+    const detachInput = attachUserScrollUpDetection(scroller, () => {
+      userScrolledUpRef.current = true;
+    });
+
+    return () => {
+      ro.disconnect();
+      detachInput();
+    };
   }, []); // Stable effect — reads current length from ref
 
   // ── SCRL-03: count tokens that arrived while user was scrolled up ────────────
@@ -349,17 +362,17 @@ export function MessageList({
           isAtBottomRef.current = atBottom;
           setIsAtBottom(atBottom);
           if (atBottom) {
+            // User caught up to the live tail — clear any earlier
+            // "abandoned auto-follow" flag and reset the missed-token
+            // counter. `userScrolledUpRef` is now set exclusively by
+            // explicit user input (wheel / touch / PageUp etc.) via
+            // the listeners in the ResizeObserver effect above; we do
+            // NOT flip it here from `atBottom=false` because that
+            // signal fires transiently while Virtuoso itself programmatically
+            // scrolls to catch up with rapid token arrivals.
             userScrolledUpRef.current = false;
-            // SCRL-03: reset missed token counter when user naturally reaches bottom
             missedTokensRef.current = 0;
             setMissedTokens(0);
-          }
-        }}
-        isScrolling={(scrolling) => {
-          // Detect user-initiated scroll-up during streaming
-          // When scrolling stops and we're not at bottom during streaming = user scrolled up
-          if (!scrolling && isStreaming && !isAtBottomRef.current) {
-            userScrolledUpRef.current = true;
           }
         }}
         atBottomThreshold={100}
