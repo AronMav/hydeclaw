@@ -10,13 +10,7 @@ import { RoleAvatar } from "./ChatThread";
 
 import { MessageItem } from "./MessageItem";
 import { runScrollToBottom } from "./scroll-to-bottom";
-import { attachUserScrollUpDetection } from "./user-scroll-detection";
-import {
-  INITIAL_AUTO_FOLLOW,
-  nextAutoFollow,
-  type AutoFollowEvent,
-  type AutoFollowState,
-} from "./auto-follow-fsm";
+import { attachTailSentinel } from "./tail-sentinel";
 import { AgentTransitionDivider } from "@/components/chat/AgentTransitionDivider";
 import { useAuthStore } from "@/stores/auth-store";
 import { useSessions } from "@/lib/queries";
@@ -196,28 +190,20 @@ export function MessageList({
   const turnLimitMessage = useTurnLimitMessage();
   const virtuosoRef = useRef<VirtuosoHandle>(null);
 
-  // ── Auto-follow FSM ────────────────────────────────────────────────────────
-  // Single source of truth for "should the viewport chase the tail?".
-  // Decoupled from `isAtBottom` (layout measurement) — only user intent
-  // events transition off, only explicit rejoin actions transition on.
-  // See `./auto-follow-fsm.ts` + 2026-04-18-auto-follow-fsm-design.md.
-  const [autoFollow, setAutoFollow] = useState<AutoFollowState>(INITIAL_AUTO_FOLLOW);
-  const autoFollowRef = useRef<AutoFollowState>(INITIAL_AUTO_FOLLOW);
-  const dispatchAutoFollow = useCallback((event: AutoFollowEvent) => {
-    const prev = autoFollowRef.current;
-    const next = nextAutoFollow(prev, event);
-    if (next === prev) return;
-    // Update ref synchronously so Virtuoso callbacks / ResizeObserver
-    // reading `autoFollowRef` in the same tick see the latest value.
-    // React state update re-renders consumers that depend on `autoFollow`.
-    autoFollowRef.current = next;
-    setAutoFollow(next);
-  }, []);
-
-  // `isAtBottom` remains as a layout-proximity indicator, used ONLY to
-  // reset the missed-token badge when the user physically catches up
-  // to the tail. It no longer gates auto-scroll behavior.
-  const [, setIsAtBottom] = useState(true);
+  // ── Tail-sentinel auto-follow ──────────────────────────────────────────────
+  // Single source of truth for "is the viewport at the tail?".
+  // Driven exclusively by IntersectionObserver on a 1 px sentinel in
+  // Virtuoso's Footer. See `./tail-sentinel.ts` and
+  // 2026-04-18-tail-sentinel-auto-follow-design.md.
+  const [isAtTail, setIsAtTail] = useState<boolean>(true);
+  /** Ref mirror: Virtuoso's `followOutput` callback is invoked outside
+   * React's render cycle and must read the most recent value
+   * synchronously. */
+  const isAtTailRef = useRef<boolean>(true);
+  /** Ref to the sentinel element. Wired into Virtuoso's Footer via a
+   * ref callback so the IO effect can observe it once the Footer
+   * mounts. */
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
 
   // Track tokens received while auto-follow is off (SCRL-03).
   const [missedTokens, setMissedTokens] = useState(0);
@@ -246,71 +232,67 @@ export function MessageList({
     return [...messages, thinkingItem];
   }, [messages, showThinking]);
 
-  // ── ResizeObserver-based scroll anchoring ──────────────────────────────────
-  // Instead of counting parts.length or virtualItems.length, observe the actual
-  // content height. When it grows and user was at bottom → auto-scroll.
-  // This is the pattern used by assistant-ui and Vercel AI SDK.
+  // ── IntersectionObserver: sentinel → isAtTail ──────────────────────────────
+  // Watches a 1 px sentinel inside Virtuoso's Footer. Replaces the
+  // previous ResizeObserver + input-event detectors, which were all
+  // derived from scrollTop and broke under Virtuoso's virtualization.
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
 
-    // Find the Virtuoso scroller element (first child with overflow)
-    const scroller = container.querySelector("[data-virtuoso-scroller]") as HTMLElement | null;
-    if (!scroller) return;
+    let cancelled = false;
+    let detach: (() => void) | null = null;
+    let attempts = 0;
 
-    // SCRL-01: Enable CSS overflow-anchor so the browser pins the viewport
-    // to the bottom item while new tokens append during streaming.
-    scroller.style.overflowAnchor = "auto";
-
-    let prevHeight = scroller.scrollHeight;
-
-    const ro = new ResizeObserver(() => {
-      const newHeight = scroller.scrollHeight;
-      if (newHeight > prevHeight && autoFollowRef.current === "on") {
-        // Content grew and auto-follow is on → pin viewport to the
-        // absolute bottom. Direct `scrollTop = scrollHeight` bypasses
-        // Virtuoso's render-cycle lag: under rapid streaming, calling
-        // `scrollToIndex({index: last})` lands at the TOP of the last
-        // item (no `align: "end"`), and as the message body grows the
-        // tail drifts further below the viewport. Once the drift plus
-        // overflow-anchor jitter crosses SCROLL_UP_THRESHOLD_PX the
-        // detector mistakes it for a user scroll-up and kills follow.
-        // Setting scrollTop directly produces a POSITIVE delta in the
-        // detector (newTop > prevTop), so it can never misfire.
-        scroller.scrollTop = scroller.scrollHeight;
+    const tryAttach = () => {
+      if (cancelled) return;
+      const scroller = container.querySelector(
+        "[data-virtuoso-scroller]",
+      ) as HTMLElement | null;
+      const sentinel = sentinelRef.current;
+      if (!scroller || !sentinel) {
+        // Virtuoso may not have mounted yet. Retry up to 10 frames
+        // (~160 ms). If still missing, log once and bail — Virtuoso's
+        // own followOutput default keeps the UI usable.
+        if (attempts++ < 10) {
+          requestAnimationFrame(tryAttach);
+        } else {
+          // eslint-disable-next-line no-console
+          console.warn(
+            "tail-sentinel: scroller or sentinel not found after 10 frames",
+          );
+        }
+        return;
       }
-      prevHeight = newHeight;
-    });
-
-    // Observe the list container (Virtuoso renders items here)
-    const listContainer = scroller.querySelector("[data-viewport-type='element']") as HTMLElement | null;
-    if (listContainer) {
-      ro.observe(listContainer);
-    }
-
-    // Detect user-initiated scroll-up via raw input events (wheel /
-    // touch / keyboard). The previous `isScrolling(false)` + "at bottom?"
-    // heuristic mistook Virtuoso's own programmatic follow-output scrolls
-    // for user scrolls when streaming content grew faster than scroll
-    // animation. See `./user-scroll-detection.ts` for the full contract.
-    const detachInput = attachUserScrollUpDetection(scroller, () => {
-      dispatchAutoFollow({ type: "user_scroll_up" });
-    });
+      detach = attachTailSentinel(scroller, sentinel, (atTail) => {
+        isAtTailRef.current = atTail;
+        setIsAtTail((prev) => {
+          if (prev === atTail) return prev;
+          // Re-entering the tail after being away resets the
+          // missed-token badge.
+          if (atTail && !prev) {
+            missedTokensRef.current = 0;
+            setMissedTokens(0);
+          }
+          return atTail;
+        });
+      });
+    };
+    tryAttach();
 
     return () => {
-      ro.disconnect();
-      detachInput();
+      cancelled = true;
+      detach?.();
     };
-  }, []); // Stable effect — reads current length from ref
+  }, []);
 
-  // ── SCRL-03: count tokens that arrived while auto-follow is off ────────────
+  // ── SCRL-03: count tokens that arrived while user is away from tail ────────
   const prevPartsLenRef = useRef(0);
   useEffect(() => {
-    // Compute total parts across all live messages (proxy for token arrivals)
     const totalParts = virtualItems.reduce((acc, m) => acc + m.parts.length, 0);
-    if (totalParts > prevPartsLenRef.current && autoFollowRef.current === "off") {
+    if (totalParts > prevPartsLenRef.current && !isAtTailRef.current) {
       const delta = totalParts - prevPartsLenRef.current;
       missedTokensRef.current += delta;
       setMissedTokens(missedTokensRef.current);
@@ -318,42 +300,59 @@ export function MessageList({
     prevPartsLenRef.current = totalParts;
   }, [virtualItems]);
 
-  // Force scroll to bottom on session switch.
+  // Force scroll to bottom on session switch. Sentinel IO will flip
+  // isAtTail back to true once the scroll settles.
   const prevSessionIdRef = useRef(activeSessionId);
   useEffect(() => {
     if (prevSessionIdRef.current !== activeSessionId) {
       prevSessionIdRef.current = activeSessionId;
-      dispatchAutoFollow({ type: "session_switched" });
-      // Wait for Virtuoso to process new data, then scroll to absolute bottom
-      const t = setTimeout(() => virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: "smooth" }), 200);
+      const t = setTimeout(
+        () => virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: "smooth" }),
+        200,
+      );
       return () => clearTimeout(t);
     }
-  }, [activeSessionId, dispatchAutoFollow]);
+  }, [activeSessionId]);
 
-  // Force scroll when stream starts (user submitted a message)
+  // Force scroll when stream starts (user submitted a message).
+  // Sentinel IO will flip isAtTail back to true once the scroll
+  // settles — no manual state dispatch needed.
   const prevStreamingRef = useRef(isStreaming);
   useEffect(() => {
     const streamJustStarted = !prevStreamingRef.current && isStreaming;
     prevStreamingRef.current = isStreaming;
     if (streamJustStarted && virtualItems.length > 0) {
-      dispatchAutoFollow({ type: "stream_started" });
       missedTokensRef.current = 0;
       setMissedTokens(0);
-      virtuosoRef.current?.scrollToIndex({ index: virtualItems.length - 1, align: "end", behavior: "smooth" });
+      virtuosoRef.current?.scrollToIndex({
+        index: virtualItems.length - 1,
+        align: "end",
+        behavior: "smooth",
+      });
     }
-  }, [isStreaming, virtualItems.length, dispatchAutoFollow]);
+  }, [isStreaming, virtualItems.length]);
 
   const scrollToBottom = useCallback(() => {
-    dispatchAutoFollow({ type: "user_requested_tail" });
     runScrollToBottom(virtuosoRef.current);
-    // SCRL-03: reset missed token counter
+    // Sentinel IO will flip isAtTail to true on settle. Reset the
+    // badge immediately so the UI feels responsive.
     missedTokensRef.current = 0;
     setMissedTokens(0);
-  }, [dispatchAutoFollow]);
+  }, []);
 
   const virtuosoComponents = useMemo(() => ({
     Header: () => <VirtuosoHeader hiddenCount={hiddenCount} onLoadEarlier={onLoadEarlier} />,
-    Footer: () => <VirtuosoFooter turnLimitMessage={turnLimitMessage} />,
+    Footer: () => (
+      <>
+        <VirtuosoFooter turnLimitMessage={turnLimitMessage} />
+        <div
+          ref={sentinelRef}
+          aria-hidden="true"
+          data-testid="tail-sentinel"
+          style={{ height: 1, width: "100%" }}
+        />
+      </>
+    ),
   }), [hiddenCount, onLoadEarlier, turnLimitMessage]);
 
   // Loading state — show skeletons while history is being fetched
@@ -383,23 +382,7 @@ export function MessageList({
         defaultItemHeight={120}
         alignToBottom
         skipAnimationFrameInResizeObserver
-        followOutput={() => {
-          // Single source of truth: auto-follow FSM. No branching on
-          // `isStreaming` or `isAtBottom` — intent alone decides.
-          // Use "auto" (instant) not "smooth" — smooth animation lags behind rapid token updates.
-          return autoFollowRef.current === "on" ? "auto" : false;
-        }}
-        atBottomStateChange={(atBottom) => {
-          setIsAtBottom(atBottom);
-          if (atBottom) {
-            // User physically reached the tail (natural scroll catch-up
-            // or programmatic scroll settled). Rejoin auto-follow and
-            // clear the missed-token badge.
-            dispatchAutoFollow({ type: "reached_tail" });
-            missedTokensRef.current = 0;
-            setMissedTokens(0);
-          }
-        }}
+        followOutput={() => (isAtTailRef.current ? "auto" : false)}
         atBottomThreshold={100}
         initialTopMostItemIndex={messages.length > 0 ? messages.length - 1 : 0}
         increaseViewportBy={{ top: 500, bottom: 200 }}
@@ -447,7 +430,7 @@ export function MessageList({
       />
 
       <ScrollToBottomButton
-        visible={autoFollow === "off"}
+        visible={!isAtTail}
         isStreaming={isStreaming}
         newTokenCount={missedTokens}
         onClick={scrollToBottom}
