@@ -251,8 +251,6 @@ export function MessageList({
   // content height. When it grows and user was at bottom → auto-scroll.
   // This is the pattern used by assistant-ui and Vercel AI SDK.
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const virtualItemsLenRef = useRef(virtualItems.length);
-  virtualItemsLenRef.current = virtualItems.length;
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -271,13 +269,17 @@ export function MessageList({
     const ro = new ResizeObserver(() => {
       const newHeight = scroller.scrollHeight;
       if (newHeight > prevHeight && autoFollowRef.current === "on") {
-        // Content grew and auto-follow is on → chase the tail.
-        // Note: we DO NOT check `isAtBottom` here. Under rapid streaming
-        // that signal flips false while Virtuoso is still catching up;
-        // gating on it froze the scroll mid-stream.
-        requestAnimationFrame(() => {
-          virtuosoRef.current?.scrollToIndex({ index: virtualItemsLenRef.current - 1, behavior: "auto" });
-        });
+        // Content grew and auto-follow is on → pin viewport to the
+        // absolute bottom. Direct `scrollTop = scrollHeight` bypasses
+        // Virtuoso's render-cycle lag: under rapid streaming, calling
+        // `scrollToIndex({index: last})` lands at the TOP of the last
+        // item (no `align: "end"`), and as the message body grows the
+        // tail drifts further below the viewport. Once the drift plus
+        // overflow-anchor jitter crosses SCROLL_UP_THRESHOLD_PX the
+        // detector mistakes it for a user scroll-up and kills follow.
+        // Setting scrollTop directly produces a POSITIVE delta in the
+        // detector (newTop > prevTop), so it can never misfire.
+        scroller.scrollTop = scroller.scrollHeight;
       }
       prevHeight = newHeight;
     });
@@ -337,7 +339,7 @@ export function MessageList({
       dispatchAutoFollow({ type: "stream_started" });
       missedTokensRef.current = 0;
       setMissedTokens(0);
-      virtuosoRef.current?.scrollToIndex({ index: virtualItems.length - 1, behavior: "smooth" });
+      virtuosoRef.current?.scrollToIndex({ index: virtualItems.length - 1, align: "end", behavior: "smooth" });
     }
   }, [isStreaming, virtualItems.length, dispatchAutoFollow]);
 
