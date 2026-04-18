@@ -8,21 +8,26 @@ Post-processing (<1ms): strip Latin chars, fix punctuation
 """
 
 import logging
-import os
 import re
 import time
+from dataclasses import dataclass
 
 import httpx
 
 log = logging.getLogger("normalize")
 
-# ── Configuration (from environment) ──
+# ── Configuration ──
 
-LLM_API_URL = os.environ.get("LLM_API_URL", "https://api.minimax.io/v1/chat/completions")
-LLM_API_KEY = os.environ.get("MINIMAX_API_KEY", "")
-LLM_MODEL = os.environ.get("LLM_MODEL", "MiniMax-M2.5")
-LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "60"))
-SKIP_LLM = os.environ.get("TTS_SKIP_LLM", "").lower() in ("1", "true", "yes")
+
+@dataclass(frozen=True)
+class NormalizeLLMConfig:
+    """Config for LLM-based English→Cyrillic transliteration step.
+    Passed in by the caller (e.g. Qwen3TTS) who resolves it from the
+    provider registry. None = skip LLM step."""
+    base_url: str
+    api_key: str
+    model: str
+    timeout: int = 60
 
 # ── Russian number-to-words ──
 
@@ -236,29 +241,23 @@ _LLM_SYSTEM_PROMPT = """\
 async def normalize_via_llm(
     http: httpx.AsyncClient,
     text: str,
-    api_url: str | None = None,
-    api_key: str | None = None,
-    model: str | None = None,
+    config: NormalizeLLMConfig | None,
 ) -> str | None:
-    """Transliterate English words to Cyrillic via LLM. Returns None if skipped/failed."""
-    key = api_key or LLM_API_KEY
-    if not key:
-        log.warning("LLM API key not set, skipping LLM normalization")
+    """Transliterate English words to Cyrillic via LLM.
+    Returns None if skipped (no config, no API key, no Latin chars, or error)."""
+    if config is None or not config.api_key:
         return None
     if not re.search(r"[a-zA-Z]", text):
         log.info("No Latin chars, skipping LLM")
         return None
 
-    url = api_url or LLM_API_URL
-    mdl = model or LLM_MODEL
-
     try:
         t0 = time.monotonic()
         resp = await http.post(
-            url,
-            headers={"Authorization": f"Bearer {key}"},
+            config.base_url,
+            headers={"Authorization": f"Bearer {config.api_key}"},
             json={
-                "model": mdl,
+                "model": config.model,
                 "messages": [
                     {"role": "system", "content": _LLM_SYSTEM_PROMPT},
                     {"role": "user", "content": text},
@@ -267,7 +266,7 @@ async def normalize_via_llm(
                 "max_tokens": max(len(text) * 3, 400),
                 "tools": [],
             },
-            timeout=float(LLM_TIMEOUT),
+            timeout=float(config.timeout),
         )
         resp.raise_for_status()
         data = resp.json()
@@ -298,28 +297,16 @@ async def normalize_via_llm(
 async def normalize_text(
     http: httpx.AsyncClient,
     text: str,
-    api_url: str | None = None,
-    api_key: str | None = None,
-    model: str | None = None,
-    skip_llm: bool | None = None,
+    config: NormalizeLLMConfig | None = None,
 ) -> str:
-    """Full normalization pipeline: pre_process -> LLM transliteration -> post_process."""
+    """Full normalization pipeline: pre_process -> LLM transliteration -> post_process.
+    If config is None, the LLM step is skipped (pre + post only)."""
     text = pre_process(text)
-    should_skip = skip_llm if skip_llm is not None else SKIP_LLM
-    if not should_skip:
-        llm_result = await normalize_via_llm(http, text, api_url, api_key, model)
-        if llm_result:
+    if config is not None:
+        llm_result = await normalize_via_llm(http, text, config)
+        if llm_result is not None:
             text = llm_result
     text = post_process(text)
     return text
 
 
-async def normalize_for_tts(
-    http: httpx.AsyncClient,
-    text: str,
-    api_url: str,
-    api_key: str,
-    model: str,
-) -> str:
-    """Backward-compatible wrapper used by tts_local.py provider."""
-    return await normalize_text(http, text, api_url, api_key, model)
