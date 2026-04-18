@@ -199,10 +199,12 @@ export function MessageList({
    * React's render cycle and must read the most recent value
    * synchronously. */
   const isAtTailRef = useRef<boolean>(true);
-  /** Ref to the sentinel element. Wired into Virtuoso's Footer via a
-   * ref callback so the IO effect can observe it once the Footer
-   * mounts. */
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  /** DOM node of the sentinel element, exposed as state so the IO
+   * effect re-attaches whenever Virtuoso remounts its Footer
+   * (e.g., on parent re-render with unstable `components` memo
+   * inputs). Using a ref alone would leave the IntersectionObserver
+   * bound to a detached element. */
+  const [sentinelEl, setSentinelEl] = useState<HTMLDivElement | null>(null);
 
   // Track tokens received while auto-follow is off (SCRL-03).
   const [missedTokens, setMissedTokens] = useState(0);
@@ -235,11 +237,16 @@ export function MessageList({
   // Watches a 1 px sentinel inside Virtuoso's Footer. Replaces the
   // previous ResizeObserver + input-event detectors, which were all
   // derived from scrollTop and broke under Virtuoso's virtualization.
+  //
+  // Effect depends on `sentinelEl` (not just a ref) so that if
+  // Virtuoso remounts the Footer — which happens whenever parent
+  // props passed into `virtuosoComponents` are unstable — the new
+  // DOM node triggers a re-attach of the IntersectionObserver.
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
-    if (!container) return;
+    if (!container || !sentinelEl) return;
 
     let cancelled = false;
     let detach: (() => void) | null = null;
@@ -250,33 +257,20 @@ export function MessageList({
       const scroller = container.querySelector(
         "[data-virtuoso-scroller]",
       ) as HTMLElement | null;
-      const sentinel = sentinelRef.current;
-      if (!scroller || !sentinel) {
-        // Virtuoso may not have mounted yet. Retry up to 10 frames
-        // (~160 ms). If still missing, log once and bail — Virtuoso's
-        // own followOutput default keeps the UI usable.
+      if (!scroller) {
         if (attempts++ < 10) {
           requestAnimationFrame(tryAttach);
         } else {
           // eslint-disable-next-line no-console
           console.warn(
-            "tail-sentinel: scroller or sentinel not found after 10 frames",
+            "tail-sentinel: scroller not found after 10 frames",
           );
         }
         return;
       }
-      detach = attachTailSentinel(scroller, sentinel, (atTail) => {
+      detach = attachTailSentinel(scroller, sentinelEl, (atTail) => {
         isAtTailRef.current = atTail;
-        setIsAtTail((prev) => {
-          if (prev === atTail) return prev;
-          // Re-entering the tail after being away resets the
-          // missed-token badge.
-          if (atTail && !prev) {
-            missedTokensRef.current = 0;
-            setMissedTokens(0);
-          }
-          return atTail;
-        });
+        setIsAtTail((prev) => (prev === atTail ? prev : atTail));
       });
     };
     tryAttach();
@@ -285,7 +279,18 @@ export function MessageList({
       cancelled = true;
       detach?.();
     };
-  }, []);
+  }, [sentinelEl]);
+
+  // Reset the missed-token badge when the user re-enters the tail.
+  // Separated from the IO callback to keep the `setIsAtTail` updater
+  // pure (React 19's strict-mode purity check flags nested setState
+  // calls from inside another updater).
+  useEffect(() => {
+    if (isAtTail) {
+      missedTokensRef.current = 0;
+      setMissedTokens(0);
+    }
+  }, [isAtTail]);
 
   // ── SCRL-03: count tokens that arrived while user is away from tail ────────
   const prevPartsLenRef = useRef(0);
@@ -345,7 +350,7 @@ export function MessageList({
       <>
         <VirtuosoFooter turnLimitMessage={turnLimitMessage} />
         <div
-          ref={sentinelRef}
+          ref={setSentinelEl}
           aria-hidden="true"
           data-testid="tail-sentinel"
           style={{ height: 1, width: "100%" }}
