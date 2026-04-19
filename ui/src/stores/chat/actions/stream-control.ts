@@ -5,21 +5,12 @@
 
 import type { ActionDeps } from "../../chat-store";
 import { isActivePhase, emptyAgentState, getLiveMessages } from "../../chat-types";
-import type { AgentState, ChatMessage, TextPart } from "../../chat-types";
+import type { ChatMessage, TextPart } from "../../chat-types";
 import { getCachedHistoryMessages } from "../../chat-history";
 import { apiPost } from "@/lib/api";
 
 export function createStreamActions(deps: ActionDeps) {
   const { get, set, renderer } = deps;
-
-  // ── Internal helpers (mirroring store-level update) ─────────────────────
-
-  function update(agent: string, patch: Partial<AgentState>) {
-    set((draft: any) => {
-      if (!draft.agents[agent]) draft.agents[agent] = emptyAgentState();
-      Object.assign(draft.agents[agent], patch);
-    });
-  }
 
   // ── Stream-control actions ───────────────────────────────────────────────
 
@@ -47,14 +38,9 @@ export function createStreamActions(deps: ActionDeps) {
 
     stopStream: () => {
       const agent = get().currentAgent;
-      // Clear any pending reconnect timer — user abort must not trigger reconnect
-      const stopTimer = renderer.getReconnectTimer(agent);
-      if (stopTimer) {
-        clearTimeout(stopTimer);
-        renderer.setReconnectTimer(agent, null);
-      }
-      renderer.getAbortCtrl(agent)?.abort();
-      update(agent, { connectionPhase: "idle" });
+      // abortLocalOnly clears the reconnect timer, aborts the session's
+      // AbortSignal, and lands connectionPhase: "idle" via StreamSession.dispose().
+      renderer.abortLocalOnly(agent);
     },
 
     resumeStream: (agent: string, sessionId: string) => renderer.resumeStream(agent, sessionId),
