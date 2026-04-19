@@ -26,6 +26,7 @@ import type {
   AgentState,
 } from "./chat-types";
 import { getCachedRawMessages, resolveActivePath } from "./chat-history";
+import { streamSessionManager } from "./stream-session";
 
 // ── Store access interface ─────────────────────────────────────────────────
 // Uses `any` for store shape to avoid circular dependency with ChatStore.
@@ -113,6 +114,17 @@ export function createStreamingRenderer(store: StoreAccess) {
     // the same session id may have already ended, and if we POST /abort
     // during startup, the backend cancels the stream we are about to start
     // (same session id → same cancel token).
+
+    // Shadow run of StreamSession (Task 3.3) — created BEFORE the legacy
+    // generation bump so that its bump (N→N+1) is immediately superseded by
+    // the legacy bump (N+1→N+2). Legacy captures myGeneration = N+2 and its
+    // writes check against N+2 — internally consistent. The shadow session
+    // holds gen=N+1 (stale after this point); it has no write call-sites yet
+    // so that staleness is harmless. Removed in Task 3.6 together with the
+    // legacy _abortControllers / _reconnectTimers maps.
+    const _shadowSession = streamSessionManager.start(agent);
+    void _shadowSession;
+
     abortLocalOnly(agent);
     update(agent, { streamGeneration: (store.get().agents[agent]?.streamGeneration ?? 0) + 1 });
     const myGeneration = store.get().agents[agent]?.streamGeneration ?? 1;
@@ -262,6 +274,16 @@ export function createStreamingRenderer(store: StoreAccess) {
   // ── SSE stream handler ──────────────────────────────────────────────────
 
   function startStream(agent: string, sessionId: string | null, messages: ChatMessage[], userText: string, attachments?: Array<any>) {
+    // Shadow run of StreamSession (Task 3.3) — created BEFORE the legacy
+    // generation bump so that its bump (N→N+1) is immediately superseded by
+    // the legacy bump (N+1→N+2). Legacy captures myGeneration = N+2 and its
+    // writes check against N+2 — internally consistent. The shadow session
+    // holds gen=N+1 (stale after this point); it has no write call-sites yet
+    // so that staleness is harmless. Removed in Task 3.6 together with the
+    // legacy _abortControllers / _reconnectTimers maps.
+    const _shadowSession = streamSessionManager.start(agent);
+    void _shadowSession;
+
     // Local-only cleanup for the same reason documented in resumeStream.
     abortLocalOnly(agent);
     update(agent, { streamGeneration: (store.get().agents[agent]?.streamGeneration ?? 0) + 1 });
