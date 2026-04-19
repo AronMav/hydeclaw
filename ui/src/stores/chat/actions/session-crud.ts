@@ -10,6 +10,7 @@ import { qk } from "@/lib/queries";
 import { apiDelete, apiPatch } from "@/lib/api";
 import { saveLastSession } from "../../chat-persistence";
 import { getCachedHistoryMessages } from "../../chat-history";
+import { selectIsReplayingHistory } from "../../chat-selectors";
 
 export function createSessionCrudActions(deps: ActionDeps) {
   const { get, set, queryClient, renderer } = deps;
@@ -81,7 +82,8 @@ export function createSessionCrudActions(deps: ActionDeps) {
       await apiDelete(`/api/messages/${messageId}`);
       const st = get().agents[agent];
       if (!st) return;
-      if (st.messageSource.mode === "history" && st.activeSessionId) {
+      const store = get();
+      if (selectIsReplayingHistory(store, agent) && st.activeSessionId) {
         // Invalidate React Query cache to reload history
         queryClient.invalidateQueries({ queryKey: qk.sessionMessages(st.activeSessionId) });
       } else {

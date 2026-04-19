@@ -9,6 +9,7 @@ import type { AgentState } from "../../chat-types";
 import { qk } from "@/lib/queries";
 import { saveLastSession, clearLastSessionId } from "../../chat-persistence";
 import { isActivePhase } from "../../chat-types";
+import { selectIsReplayingHistory } from "../../chat-selectors";
 
 export function createNavigationActions(deps: ActionDeps) {
   const { get, set, queryClient, renderer } = deps;
@@ -215,7 +216,8 @@ export function createNavigationActions(deps: ActionDeps) {
       });
 
       // Re-resolve display messages from cached history rows
-      if (st.messageSource.mode === "history" && st.activeSessionId) {
+      const store = get();
+      if (selectIsReplayingHistory(store, agent) && st.activeSessionId) {
         queryClient.invalidateQueries({ queryKey: qk.sessionMessages(st.activeSessionId) });
       }
     },
