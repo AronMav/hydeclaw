@@ -41,3 +41,78 @@ If providers were not pre-created, you can:
 
 See `docs/superpowers/specs/2026-04-18-toolgate-config-sot-design.md` for full
 design context (degraded mode, nested `normalize_provider_id`, etc.).
+
+## v0.20.x → v0.20.next — toolgate primitives refactor
+
+Toolgate's `email`, `calendar`, and `bcs_portfolio` routers are replaced by primitive endpoints:
+
+| Old endpoint | New primitive endpoint |
+|---|---|
+| `POST /email/send` | `POST /primitives/smtp/send` |
+| `GET /email/inbox` | `POST /primitives/imap/fetch` |
+| `GET /email/search` | `POST /primitives/imap/search` |
+| `GET /calendar/today` | `POST /primitives/google_calendar/events/list` |
+| `GET /calendar/upcoming` | `POST /primitives/google_calendar/events/list` |
+| `POST /calendar/create` | `POST /primitives/google_calendar/events/create` |
+| `GET /bcs/portfolio` | `POST /primitives/bcs/portfolio` |
+
+All credentials now flow through the core secrets vault. Before upgrading, add the
+following secrets via `POST /api/secrets` (replace values with your own).
+
+> ⚠ The curl commands below contain plaintext passwords. Run them from a shell
+> with history disabled (`set +o history` in bash, `setopt no_hist_save` in zsh),
+> or clear shell history afterward.
+
+### Secrets to add
+
+```bash
+# SMTP + IMAP — required for email_* tools to function.
+# Ports are hardcoded to standards (587 for SMTP submission, 993 for IMAPS)
+# in the YAML bodies; if you need non-standard ports, edit
+# workspace/tools/email_{send,check,search}.yaml directly.
+curl -sSf -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"SMTP_HOST","scope":"","value":"smtp.gmail.com"}' http://localhost:18789/api/secrets
+curl -sSf -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"IMAP_HOST","scope":"","value":"imap.gmail.com"}' http://localhost:18789/api/secrets
+curl -sSf -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"EMAIL_USER","scope":"","value":"you@gmail.com"}' http://localhost:18789/api/secrets
+curl -sSf -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"EMAIL_PASS","scope":"","value":"YOUR_APP_PASSWORD"}' http://localhost:18789/api/secrets
+
+# Google Calendar — paste the entire service-account JSON as a single string
+GSA_JSON=$(cat /path/to/service-account.json | jq -c .)
+curl -sSf -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"name\":\"GOOGLE_SA_KEY_JSON\",\"scope\":\"\",\"value\":$(echo "$GSA_JSON" | jq -Rs .)}" \
+  http://localhost:18789/api/secrets
+curl -sSf -H "Authorization: Bearer $HYDECLAW_AUTH_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"GOOGLE_CALENDAR_ID","scope":"","value":"primary"}' http://localhost:18789/api/secrets
+
+# BCS — unchanged, only listed for completeness
+# (BCS_REFRESH_TOKEN should already be in the vault)
+```
+
+### What changed
+
+Tools that previously relied on env-var credentials (`EMAIL_USER`, `EMAIL_PASS`,
+`GOOGLE_SA_KEY` as a file path) will now succeed without those env vars set;
+the previous env-based path was non-functional in any default deployment and
+is removed entirely.
+
+### Dependencies
+
+Toolgate now requires `google-api-python-client` and `google-auth`.
+Run `pip install -r toolgate/requirements.txt` on the deploy target (or rely on
+`make deploy` to sync).
+
+### Calendar behavior note
+
+`calendar_today` and `calendar_upcoming` now always query the "next 7 days
+from now" window (previously there was implicit day-start alignment). The
+`days` parameter on `calendar_upcoming` is accepted but ignored — file an
+issue if you need the old behavior back.
+
+### Architectural rationale
+
+See `docs/superpowers/specs/2026-04-19-toolgate-primitives-design.md` for full
+design context (primitives vs integration routers, `${VAR}` templating in
+`body_template`, BCS state carve-out, etc.).
