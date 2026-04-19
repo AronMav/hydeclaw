@@ -69,23 +69,37 @@ async def _refresh(http: httpx.AsyncClient, refresh_token: str) -> str:
     return new_rt or refresh_token
 
 
-def _summarize(data: dict) -> dict:
-    total_rub = 0.0
+def _summarize(raw: list) -> dict:
+    """Compact portfolio: deduplicate by ticker (keep T0), drop noise fields.
+
+    BCS returns each position 4x for T0/T1/T2/T365 settlement terms — keep T0 only.
+    The top-level BCS response is a list, not a dict.
+    """
+    if not isinstance(raw, list):
+        return {"total_rub": 0.0, "positions": []}
+
+    t0 = [p for p in raw if isinstance(p, dict) and p.get("term") == "T0"]
+
     positions = []
-    for p in data.get("positions", []):
-        instr = p.get("instrument", {}) or {}
-        value = p.get("quantity", 0) * p.get("marketPrice", 0.0)
-        total_rub += value
+    total_rub = 0.0
+
+    for p in sorted(t0, key=lambda x: x.get("currentValueRub", 0), reverse=True):
+        value_rub = p.get("currentValueRub", 0)
+        total_rub += value_rub
         positions.append({
-            "ticker": instr.get("ticker"),
-            "name": instr.get("name"),
-            "quantity": p.get("quantity"),
-            "price_rub": p.get("marketPrice"),
-            "value_rub": round(value, 2),
-            "pnl_rub": round(p.get("profitLoss", 0), 2),
+            "ticker": p.get("ticker"),
+            "name": p.get("displayName"),
+            "type": p.get("instrumentType") or p.get("upperType"),
+            "qty": p.get("quantity"),
+            "price": p.get("currentPrice"),
+            "currency": p.get("currency"),
+            "value_rub": round(value_rub, 2),
+            "pnl_rub": round(p.get("unrealizedPL", 0), 2),
+            "pnl_pct": round(p.get("unrealizedPercentPL", 0), 2),
             "daily_pnl_rub": round(p.get("dailyPL", 0), 2),
             "daily_pnl_pct": round(p.get("dailyPercentPL", 0), 2),
         })
+
     return {"total_rub": round(total_rub, 2), "positions": positions}
 
 
