@@ -22,13 +22,13 @@ import { BarsLoader } from "@/components/ui/loader";
 import { MessageActions } from "./MessageActions";
 import { TextPart } from "./parts/TextPart";
 import { ReasoningPart } from "./parts/ReasoningPart";
+import { ToolCallPartView } from "@/components/chat/ToolCallPartView";
+import { FileDataPartView } from "@/components/chat/FileDataPartView";
 import {
   RoleAvatar,
-  ToolCallPartView,
-  FileDataPartView,
   SourceUrlDataPartView,
   RichCardDataPartView,
-} from "./ChatThread";
+} from "./avatar/RoleAvatar";
 import { ContinuationSeparator } from "@/components/chat/ContinuationSeparator";
 import { StepGroup } from "@/components/chat/StepGroup";
 import { ApprovalCard } from "@/components/chat/ApprovalCard";
