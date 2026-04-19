@@ -181,7 +181,20 @@ export function createStreamingRenderer(store: StoreAccess) {
     if (ctrl) {
       ctrl.abort();
       setAbortCtrl(agent, null);
-      update(agent, { connectionPhase: "idle" });
+      // Bump streamGeneration so in-flight SSE chunks that arrive AFTER
+      // `ctrl.abort()` but before the read loop sees `signal.aborted`
+      // are dismissed by the existing `generation === currentGeneration`
+      // guards (see pushUpdate + data-session-id handler). Without this,
+      // a lagging `data-session-id` event clobbers `activeSessionId`
+      // right after the user switched sessions — the new session's
+      // text then appears not to load. This bump matters more since
+      // navigation uses abortLocalOnly (no backend cancel → more
+      // in-flight chunks racing the abort).
+      const currentGen = store.get().agents[agent]?.streamGeneration ?? 0;
+      update(agent, {
+        connectionPhase: "idle",
+        streamGeneration: currentGen + 1,
+      });
     }
   }
 
