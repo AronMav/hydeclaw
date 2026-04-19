@@ -3,7 +3,9 @@ import os
 import httpx
 
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")
-CORE_URL = os.environ.get("CORE_URL", "http://127.0.0.1:18789")
+# Core URL: prefer CORE_API_URL (set by Core's managed_process env_extra),
+# fall back to legacy CORE_URL for backward compat, then localhost default.
+CORE_URL = os.environ.get("CORE_API_URL") or os.environ.get("CORE_URL", "http://127.0.0.1:18789")
 
 # Shared client — reused across all requests (avoids TCP+TLS per call)
 _client = httpx.AsyncClient(timeout=15)
