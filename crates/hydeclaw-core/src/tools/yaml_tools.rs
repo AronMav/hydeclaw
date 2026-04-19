@@ -755,22 +755,7 @@ impl YamlToolDef {
                     .header("Content-Type", "application/json")
                     .body(gql_body.to_string());
             } else if let Some(ref template) = self.body_template {
-                // Process conditionals, then {{param}} substitution
-                let mut body = process_conditionals(template, &params_map);
-                for (name, val) in &params_map {
-                    let val_str = match val {
-                        serde_json::Value::String(s) => s.clone(),
-                        other => other.to_string(),
-                    };
-                    // JSON-escape string values to prevent injection in body templates
-                    let escaped = val_str
-                        .replace('\\', "\\\\")
-                        .replace('"', "\\\"")
-                        .replace('\n', "\\n")
-                        .replace('\r', "\\r")
-                        .replace('\t', "\\t");
-                    body = body.replace(&format!("{{{{{name}}}}}"), &escaped);
-                }
+                let body = render_body_template(template, &params_map, env_resolver).await;
                 builder = builder
                     .header("Content-Type", &self.content_type)
                     .body(body);
@@ -1222,6 +1207,63 @@ fn process_conditionals(template: &str, params: &serde_json::Map<String, serde_j
     result
 }
 
+/// Render a body template: first resolve `${VAR}` secrets via `env_resolver`
+/// (JSON-escaping substituted values for safe embedding in JSON bodies),
+/// then substitute `{{param}}` placeholders with JSON-escaped parameter values.
+///
+/// Note on types: `params_map` is `serde_json::Map`, matching the call site's
+/// `params.as_object().cloned()`. Consistent with `process_conditionals`.
+///
+/// Called from `execute()` on the `body_template` branch. Extracted as a pure
+/// function for testability.
+pub(crate) async fn render_body_template(
+    template: &str,
+    params_map: &serde_json::Map<String, serde_json::Value>,
+    env_resolver: Option<&dyn EnvResolver>,
+) -> String {
+    // JSON-escape a raw string for safe embedding in JSON bodies.
+    fn json_escape(raw: &str) -> String {
+        raw.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+            .replace('\t', "\\t")
+    }
+
+    // Phase 1: resolve ${VAR} secrets, JSON-escaping each substituted value.
+    // We don't reuse `resolve_env_template` because that helper inserts raw
+    // values (safe for HTTP headers, unsafe for JSON bodies where secrets
+    // may contain " or \).
+    let mut after_env = template.to_string();
+    let mut start = 0;
+    while let Some(open) = after_env[start..].find("${") {
+        let abs_open = start + open;
+        let Some(close_rel) = after_env[abs_open..].find('}') else { break };
+        let var_name = &after_env[abs_open + 2..abs_open + close_rel];
+        let raw = resolve_env(var_name, env_resolver).await.unwrap_or_default();
+        let escaped = json_escape(&raw);
+        after_env = format!(
+            "{}{}{}",
+            &after_env[..abs_open],
+            &escaped,
+            &after_env[abs_open + close_rel + 1..]
+        );
+        start = abs_open + escaped.len();
+    }
+
+    // Phase 2: conditionals then {{param}} substitution (existing behavior).
+    let mut body = process_conditionals(&after_env, params_map);
+    for (name, val) in params_map {
+        let val_str = match val {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        let escaped = json_escape(&val_str);
+        body = body.replace(&format!("{{{{{name}}}}}"), &escaped);
+    }
+    body
+}
+
 /// Substitute ${`ENV_VAR`} in a template string, using `EnvResolver` if available.
 async fn resolve_env_template(template: &str, env_resolver: Option<&dyn EnvResolver>) -> String {
     let mut result = template.to_string();
@@ -1474,6 +1516,22 @@ pub fn openapi_security_to_yaml_auth(scheme: &serde_json::Value) -> Option<YamlA
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Test helpers ─────────────────────────────────────────────────────────
+
+    /// Test-only `EnvResolver` backed by an in-memory `HashMap`.
+    /// Named-field form so tests can construct it with
+    /// `MapResolver { map: secrets }`.
+    struct MapResolver {
+        map: HashMap<String, String>,
+    }
+
+    #[async_trait]
+    impl EnvResolver for MapResolver {
+        async fn resolve(&self, key: &str) -> Option<String> {
+            self.map.get(key).cloned()
+        }
+    }
 
     // ── apply_jsonpath ───────────────────────────────────────────────────────
 
@@ -2165,5 +2223,112 @@ graphql:
     fn openapi_unknown_scheme_returns_none() {
         let scheme = serde_json::json!({"type": "openIdConnect"});
         assert!(openapi_security_to_yaml_auth(&scheme).is_none());
+    }
+
+    // ── resolve_env_template smoke (Task 1 Step 1.1) ─────────────────────────
+
+    #[tokio::test]
+    async fn resolve_env_template_handles_multiple_vars() {
+        use std::collections::HashMap;
+        let mut secrets = HashMap::new();
+        secrets.insert("SMTP_HOST".to_string(), "smtp.example.com".to_string());
+        secrets.insert("SMTP_PORT".to_string(), "587".to_string());
+        secrets.insert("EMAIL_USER".to_string(), "user@example.com".to_string());
+        secrets.insert("EMAIL_PASS".to_string(), "s3cret".to_string());
+        let resolver = MapResolver { map: secrets };
+
+        let template = r#"{"server":"${SMTP_HOST}","port":${SMTP_PORT},"user":"${EMAIL_USER}","password":"${EMAIL_PASS}","to":"{{to}}"}"#;
+        let after_env = resolve_env_template(template, Some(&resolver)).await;
+
+        // Every ${VAR} was substituted; {{to}} is left for the next phase.
+        assert!(after_env.contains("smtp.example.com"));
+        assert!(after_env.contains(r#""port":587"#));
+        assert!(after_env.contains("user@example.com"));
+        assert!(after_env.contains("s3cret"));
+        assert!(after_env.contains(r#""to":"{{to}}""#));
+    }
+
+    // ── render_body_template (Task 1 Step 1.4) ───────────────────────────────
+
+    #[tokio::test]
+    async fn render_body_template_resolves_secret_before_params() {
+        use std::collections::HashMap;
+        let mut secrets = HashMap::new();
+        secrets.insert("SMTP_HOST".to_string(), "smtp.test.com".to_string());
+        let resolver = MapResolver { map: secrets };
+
+        let mut params = serde_json::Map::new();
+        params.insert("to".to_string(), serde_json::Value::String("x@y.com".to_string()));
+
+        let template = r#"{"server":"${SMTP_HOST}","to":"{{to}}"}"#;
+        let rendered = render_body_template(template, &params, Some(&resolver)).await;
+
+        let parsed: serde_json::Value = serde_json::from_str(&rendered)
+            .unwrap_or_else(|e| panic!("render did not produce valid JSON: {e} — got: {rendered}"));
+        assert_eq!(parsed["server"], "smtp.test.com");
+        assert_eq!(parsed["to"], "x@y.com");
+    }
+
+    #[tokio::test]
+    async fn render_body_template_missing_secret_is_empty() {
+        use std::collections::HashMap;
+        let resolver = MapResolver { map: HashMap::new() };
+        let params = serde_json::Map::new();
+        let template = r#"{"host":"${MISSING}"}"#;
+        let rendered = render_body_template(template, &params, Some(&resolver)).await;
+        assert_eq!(rendered, r#"{"host":""}"#);
+    }
+
+    #[tokio::test]
+    async fn render_body_template_param_with_quotes_is_escaped() {
+        use std::collections::HashMap;
+        let resolver = MapResolver { map: HashMap::new() };
+        let mut params = serde_json::Map::new();
+        params.insert("body".to_string(), serde_json::Value::String(r#"hello "world""#.to_string()));
+        let template = r#"{"body":"{{body}}"}"#;
+        let rendered = render_body_template(template, &params, Some(&resolver)).await;
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["body"], r#"hello "world""#);
+    }
+
+    #[tokio::test]
+    async fn render_body_template_secret_with_quotes_is_escaped() {
+        // C2 regression test: secrets with JSON special chars must not break the body.
+        use std::collections::HashMap;
+        let mut secrets = HashMap::new();
+        secrets.insert("PASS".to_string(), r#"p@ss"with\backslash"#.to_string());
+        let resolver = MapResolver { map: secrets };
+
+        let params = serde_json::Map::new();
+        let template = r#"{"password":"${PASS}"}"#;
+        let rendered = render_body_template(template, &params, Some(&resolver)).await;
+
+        let parsed: serde_json::Value = serde_json::from_str(&rendered)
+            .unwrap_or_else(|e| panic!("render produced invalid JSON with escaped secret: {e} — got: {rendered}"));
+        assert_eq!(parsed["password"], r#"p@ss"with\backslash"#);
+    }
+
+    #[tokio::test]
+    async fn render_body_template_multiple_secrets_all_resolved() {
+        // I2 regression test: multiple ${VAR} in one template.
+        use std::collections::HashMap;
+        let mut secrets = HashMap::new();
+        secrets.insert("SMTP_HOST".to_string(), "smtp.example.com".to_string());
+        secrets.insert("EMAIL_USER".to_string(), "u@example.com".to_string());
+        secrets.insert("EMAIL_PASS".to_string(), "pw".to_string());
+        secrets.insert("IMAP_HOST".to_string(), "imap.example.com".to_string());
+        let resolver = MapResolver { map: secrets };
+
+        let mut params = serde_json::Map::new();
+        params.insert("to".to_string(), serde_json::Value::String("x@y.com".to_string()));
+
+        let template = r#"{"smtp":"${SMTP_HOST}","imap":"${IMAP_HOST}","user":"${EMAIL_USER}","pass":"${EMAIL_PASS}","to":"{{to}}"}"#;
+        let rendered = render_body_template(template, &params, Some(&resolver)).await;
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["smtp"], "smtp.example.com");
+        assert_eq!(parsed["imap"], "imap.example.com");
+        assert_eq!(parsed["user"], "u@example.com");
+        assert_eq!(parsed["pass"], "pw");
+        assert_eq!(parsed["to"], "x@y.com");
     }
 }
