@@ -2331,4 +2331,40 @@ graphql:
         assert_eq!(parsed["pass"], "pw");
         assert_eq!(parsed["to"], "x@y.com");
     }
+
+    #[tokio::test]
+    async fn render_body_template_conditional_omits_absent_param() {
+        // Regression: calendar_create.yaml had {{description}} leak as literal string
+        // when the agent omitted the optional `description` param. Conditional blocks
+        // must be stripped if the referenced param is absent.
+        use std::collections::HashMap;
+        let resolver = MapResolver { map: HashMap::new() };
+        let mut params = serde_json::Map::new();
+        params.insert("summary".to_string(), serde_json::Value::String("Meet".to_string()));
+        // `description` intentionally absent.
+
+        let template = r#"{"summary":"{{summary}}"{{#if description}},"description":"{{description}}"{{/if}}}"#;
+        let rendered = render_body_template(template, &params, Some(&resolver)).await;
+
+        let parsed: serde_json::Value = serde_json::from_str(&rendered)
+            .unwrap_or_else(|e| panic!("rendered body is not valid JSON: {e} — got: {rendered}"));
+        assert_eq!(parsed["summary"], "Meet");
+        assert!(parsed.get("description").is_none(), "description should be absent, was: {:?}", parsed.get("description"));
+    }
+
+    #[tokio::test]
+    async fn render_body_template_conditional_includes_present_param() {
+        use std::collections::HashMap;
+        let resolver = MapResolver { map: HashMap::new() };
+        let mut params = serde_json::Map::new();
+        params.insert("summary".to_string(), serde_json::Value::String("Meet".to_string()));
+        params.insert("description".to_string(), serde_json::Value::String("Weekly sync".to_string()));
+
+        let template = r#"{"summary":"{{summary}}"{{#if description}},"description":"{{description}}"{{/if}}}"#;
+        let rendered = render_body_template(template, &params, Some(&resolver)).await;
+
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["summary"], "Meet");
+        assert_eq!(parsed["description"], "Weekly sync");
+    }
 }

@@ -16,9 +16,9 @@ body_template: |
     "summary":     "{{summary}}",
     "start":       "{{start}}",
     "end":         "{{end}}",
-    "description": "{{description}}",
-    "location":    "{{location}}",
-    "timezone":    "{{timezone}}"
+    "timezone":    "{{timezone}}"{{#if description}},
+    "description": "{{description}}"{{/if}}{{#if location}},
+    "location":    "{{location}}"{{/if}}
   }
 response_transform: "$.event"
 status: draft
