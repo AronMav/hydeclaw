@@ -301,71 +301,126 @@ export function MessageList({
     }
   }, [isAtTail]);
 
-  // Derive user-intent `shouldFollow` from sentinel `isAtTail` with
-  // a debounce. Sentinel flicker during Virtuoso catch-up lag is
-  // absorbed by the 1500 ms window. Explicit user actions (button,
-  // session switch, stream start) force `shouldFollow` true
-  // independently of this effect.
-  const LEFT_TAIL_DEBOUNCE_MS = 1500;
+  // Restore auto-follow when the user (or a programmatic scroll)
+  // brings the sentinel back into the tail zone. Intent-OFF is
+  // driven by input-event detection below, not by this effect.
   useEffect(() => {
-    if (isAtTail) {
-      if (!shouldFollowRef.current) {
-        shouldFollowRef.current = true;
-        setShouldFollow(true);
-      }
-      return;
+    if (isAtTail && !shouldFollowRef.current) {
+      shouldFollowRef.current = true;
+      setShouldFollow(true);
     }
-    // isAtTail=false: might be Virtuoso lag, might be user intent.
-    // Wait and see. If already disabled, no action needed.
-    if (!shouldFollowRef.current) return;
-    const timer = window.setTimeout(() => {
-      if (!isAtTailRef.current) {
-        shouldFollowRef.current = false;
-        setShouldFollow(false);
-      }
-    }, LEFT_TAIL_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
   }, [isAtTail]);
 
-  // Content-growth pin: during streaming, tokens grow the last
-  // message without adding list items, so Virtuoso's `followOutput`
-  // never fires. Observe scroller's scrollHeight directly and pin
-  // the viewport to the tail when it grows — gated on user intent
-  // (shouldFollow), NOT on sentinel state (isAtTail), to avoid the
-  // feedback deadlock where transient lag kills the chase.
+  // Content-growth pin via rAF polling. ResizeObserver on the
+  // scroller doesn't fire on internal content growth (scrollHeight
+  // changes, but the scroller's own box does not). rAF polling is
+  // the only reliable way to detect intra-item growth during token
+  // streaming regardless of Virtuoso's DOM layout.
+  //
+  // Cost: one integer comparison per frame (∼60 Hz). Writes occur
+  // only when scrollHeight actually grew AND shouldFollow is true.
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
     let cancelled = false;
-    let ro: ResizeObserver | null = null;
-    let attempts = 0;
+    let raf = 0;
+    let prevHeight = 0;
 
-    const tryAttach = () => {
+    const loop = () => {
       if (cancelled) return;
       const scroller = container.querySelector(
         "[data-virtuoso-scroller]",
       ) as HTMLElement | null;
-      if (!scroller) {
-        if (attempts++ < 10) {
-          requestAnimationFrame(tryAttach);
-        }
-        return;
-      }
-      let prevHeight = scroller.scrollHeight;
-      ro = new ResizeObserver(() => {
-        const newHeight = scroller.scrollHeight;
-        if (newHeight > prevHeight && shouldFollowRef.current) {
+      if (scroller) {
+        const h = scroller.scrollHeight;
+        if (h > prevHeight && shouldFollowRef.current) {
           scroller.scrollTop = scroller.scrollHeight;
         }
-        prevHeight = newHeight;
-      });
-      ro.observe(scroller);
+        prevHeight = h;
+      }
+      raf = requestAnimationFrame(loop);
     };
-    tryAttach();
+    raf = requestAnimationFrame(loop);
 
     return () => {
       cancelled = true;
-      ro?.disconnect();
+      cancelAnimationFrame(raf);
+    };
+  }, []);
+
+  // User-intent detection via input events (wheel / touch / key).
+  // Turns shouldFollow OFF when the user meaningfully tries to
+  // scroll away from the tail. Filtering thresholds are tuned to
+  // eliminate macOS trackpad inertia tails (deltaY < 25) and
+  // accidental micro-drags (touch delta < 30 px). Keyboard keys
+  // are restricted to the three "move up" bindings.
+  //
+  // Turning ON is handled by the isAtTail restoration effect above
+  // (user physically reaches the tail → follow resumes) and by the
+  // explicit action handlers (button click, session switch, stream
+  // start). This split keeps the OFF path cheap and fast while
+  // ensuring recovery is always available.
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    let cancelled = false;
+    let attempts = 0;
+
+    let scroller: HTMLElement | null = null;
+    let touchStartY = 0;
+
+    const turnOff = () => {
+      if (shouldFollowRef.current) {
+        shouldFollowRef.current = false;
+        setShouldFollow(false);
+      }
+    };
+
+    const onWheel = (e: WheelEvent) => {
+      // Deliberate wheel-up has deltaY well under -25; trackpad
+      // inertia tails are typically -1 to -5.
+      if (e.deltaY < -25) turnOff();
+    };
+    const onTouchStart = (e: TouchEvent) => {
+      touchStartY = e.touches[0]?.clientY ?? 0;
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      const dy = (e.touches[0]?.clientY ?? 0) - touchStartY;
+      // Finger moved DOWN by > 30 px = content scrolled UP.
+      if (dy > 30) turnOff();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "PageUp" || e.key === "ArrowUp" || e.key === "Home") {
+        turnOff();
+      }
+    };
+
+    const attach = () => {
+      if (cancelled) return;
+      scroller = container.querySelector(
+        "[data-virtuoso-scroller]",
+      ) as HTMLElement | null;
+      if (!scroller) {
+        if (attempts++ < 10) {
+          requestAnimationFrame(attach);
+        }
+        return;
+      }
+      scroller.addEventListener("wheel", onWheel, { passive: true });
+      scroller.addEventListener("touchstart", onTouchStart, { passive: true });
+      scroller.addEventListener("touchmove", onTouchMove, { passive: true });
+      scroller.addEventListener("keydown", onKeyDown);
+    };
+    attach();
+
+    return () => {
+      cancelled = true;
+      if (scroller) {
+        scroller.removeEventListener("wheel", onWheel);
+        scroller.removeEventListener("touchstart", onTouchStart);
+        scroller.removeEventListener("touchmove", onTouchMove);
+        scroller.removeEventListener("keydown", onKeyDown);
+      }
     };
   }, []);
 
