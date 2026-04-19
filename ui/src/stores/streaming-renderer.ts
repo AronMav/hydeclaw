@@ -45,18 +45,12 @@ const RECONNECT_DELAY_BASE_MS = 1000;
 
 export function createStreamingRenderer(store: StoreAccess) {
   // ── CLN-02: Encapsulated non-serializable state ──────────────────────────
-  // AbortController and setTimeout handles are not plain objects -- Immer cannot
-  // proxy or freeze them. They live in private Maps inside the factory closure.
+  // setTimeout handles are not plain objects -- Immer cannot proxy or freeze them.
+  // They live in private Maps inside the factory closure.
+  // AbortController now lives inside StreamSession.signal (Task 3.6).
 
-  const _abortControllers = new Map<string, AbortController | null>();
   const _reconnectTimers = new Map<string, ReturnType<typeof setTimeout> | null>();
 
-  function getAbortCtrl(agent: string): AbortController | null {
-    return _abortControllers.get(agent) ?? null;
-  }
-  function setAbortCtrl(agent: string, ctrl: AbortController | null): void {
-    _abortControllers.set(agent, ctrl);
-  }
   function getReconnectTimer(agent: string): ReturnType<typeof setTimeout> | null {
     return _reconnectTimers.get(agent) ?? null;
   }
@@ -127,9 +121,6 @@ export function createStreamingRenderer(store: StoreAccess) {
     // inside processSSEStream.
     const session = streamSessionManager.start(agent);
 
-    const controller = new AbortController();
-    setAbortCtrl(agent, controller);
-
     // Architecture C: live messages = overlay only (current streaming message).
     // History comes from React Query. No seed needed.
     update(agent, {
@@ -144,7 +135,7 @@ export function createStreamingRenderer(store: StoreAccess) {
     fetch(`/api/chat/${sessionId}/stream`, {
       method: "GET",
       headers: { Authorization: `Bearer ${token}` },
-      signal: controller.signal,
+      signal: session.signal,
     })
       .then((resp) => {
         if (resp.status === 204) {
@@ -153,7 +144,7 @@ export function createStreamingRenderer(store: StoreAccess) {
           // fetch, discard this response. Without the guard a late 204
           // would force messageSource back to the resumed session
           // after the user had already navigated away.
-          if (!session.isCurrent || controller.signal.aborted) {
+          if (!session.isCurrent || session.signal.aborted) {
             return;
           }
           session.write({ connectionPhase: "idle", messageSource: { mode: "history", sessionId } });
@@ -263,9 +254,6 @@ export function createStreamingRenderer(store: StoreAccess) {
     // inside processSSEStream.
     const session = streamSessionManager.start(agent);
 
-    const controller = new AbortController();
-    setAbortCtrl(agent, controller);
-
     const userParts: MessagePart[] = [];
     if (userText) userParts.push({ type: "text", text: userText });
 
@@ -356,7 +344,7 @@ export function createStreamingRenderer(store: StoreAccess) {
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify(body),
-      signal: controller.signal,
+      signal: session.signal,
     })
       .then((resp) => {
         if (resp.status === 401) {
@@ -867,9 +855,7 @@ export function createStreamingRenderer(store: StoreAccess) {
   // ── MEM-01: Agent cleanup ──────────────────────────────────────────────
 
   function cleanupAgent(agent: string) {
-    const ctrl = _abortControllers.get(agent);
-    if (ctrl) ctrl.abort();
-    _abortControllers.delete(agent);
+    // AbortController lifecycle is managed by StreamSession (Task 3.6)
     const timer = _reconnectTimers.get(agent);
     if (timer) clearTimeout(timer);
     _reconnectTimers.delete(agent);
@@ -886,8 +872,6 @@ export function createStreamingRenderer(store: StoreAccess) {
     abortActiveStream,
     abortLocalOnly,
     cleanupAgent,
-    isAgentStreaming: (agent: string) => _abortControllers.has(agent) && _abortControllers.get(agent) !== null,
-    getAbortCtrl,
     getReconnectTimer,
     setReconnectTimer,
     /** Register callback for session ID events (called with agent, sessionId). */
