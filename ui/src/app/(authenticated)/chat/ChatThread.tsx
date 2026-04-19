@@ -2,10 +2,8 @@
 
 import React, { Component, useRef, useEffect, useMemo } from "react";
 import type { ErrorInfo, ReactNode } from "react";
-import { useChatStore, isActivePhase, convertHistory } from "@/stores/chat-store";
-import { mergeLiveOverlay } from "@/stores/chat-overlay-dedup";
+import { useChatStore, isActivePhase } from "@/stores/chat-store";
 import { useVisualViewport } from "@/hooks/use-visual-viewport";
-import type { ChatMessage } from "@/stores/chat-store";
 import { useSessionMessages, useSessions } from "@/lib/queries";
 
 import type { SessionRow } from "@/types/api";
@@ -19,8 +17,11 @@ import { EmptyState } from "./EmptyState";
 import { ReadOnlyFooter } from "./read-only/ReadOnlyFooter";
 import { ErrorBanner } from "./error/ErrorBanner";
 import { ChatComposer } from "./composer/ChatComposer";
-
-const EMPTY_LIVE_MESSAGES: ChatMessage[] = [];
+import { useEngineRunning } from "./hooks/use-engine-running";
+import { useRenderMessages } from "./hooks/use-render-messages";
+import { useIsLive } from "./hooks/use-is-live";
+import { useIsReplayingHistory } from "./hooks/use-is-replaying-history";
+import { useLiveHasContent } from "./hooks/use-live-has-content";
 
 // ── Props ────────────────────────────────────────────────────────────────────
 
@@ -76,7 +77,6 @@ export function ChatThread({
   onRetry,
 }: ChatThreadProps) {
   const keyboardHeight = useVisualViewport();
-  const messageSource = useChatStore((s) => s.agents[s.currentAgent]?.messageSource ?? { mode: "new-chat" as const });
   const currentAgent = useChatStore((s) => s.currentAgent);
   const activeSessionId = useChatStore((s) => s.agents[s.currentAgent]?.activeSessionId ?? null);
   const connectionPhase = useChatStore((s) => s.agents[s.currentAgent]?.connectionPhase ?? "idle");
@@ -88,11 +88,12 @@ export function ChatThread({
   const sessionRunStatus = sessionsData?.sessions?.find((s: { id: string }) => s.id === activeSessionId)?.run_status;
 
   // CRITICAL: We are "running" if we're in an active connection phase OR the DB says so.
-  const engineRunning = !!activeSessionId && (
-    isActivePhase(connectionPhase) ||
-    activeSessionIds.includes(activeSessionId) ||
-    sessionRunStatus === "running"
-  );
+  const engineRunning = useEngineRunning(currentAgent);
+
+  // Derived booleans from message source hooks
+  const isLive = useIsLive(currentAgent);
+  const isHistory = useIsReplayingHistory(currentAgent);
+  const liveHasContent = useLiveHasContent(currentAgent);
 
   // Auto-resume SSE stream ONCE after page reload when engine is still processing.
   // Uses a Set to prevent re-triggering for the same session.
@@ -113,28 +114,16 @@ export function ChatThread({
     activeSessionId,
     engineRunning,
   );
+  // sessionMessagesData used only for showSkeleton — useRenderMessages reads via the cache
+
   const renderLimit = useChatStore((s) => s.agents[s.currentAgent]?.renderLimit ?? 100);
 
-  const liveMessages = messageSource.mode === "live" ? messageSource.messages : EMPTY_LIVE_MESSAGES;
   const loadEarlierMessages = useChatStore((s) => s.loadEarlierMessages);
-
-  const selectedBranches = useChatStore((s) => s.agents[s.currentAgent]?.selectedBranches ?? {});
-
-  // Build the resolved message array for rendering
-  const historyMessages = useMemo(() => {
-    if (!activeSessionId || !sessionMessagesData?.messages) return [];
-    return convertHistory(sessionMessagesData.messages, false, selectedBranches);
-  }, [activeSessionId, sessionMessagesData, selectedBranches]);
 
   // Architecture C: history + SSE overlay. See `chat-overlay-dedup.ts`
   // for the status-independent user-bubble merge (fixes the 2026-04-17
   // "sent message disappears" regression).
-  const sourceMessages = useMemo(() => {
-    if (messageSource.mode !== "live") {
-      return historyMessages;
-    }
-    return mergeLiveOverlay(historyMessages, messageSource.messages);
-  }, [messageSource, historyMessages]);
+  const sourceMessages = useRenderMessages(currentAgent);
 
   // Filter out inter-agent routing messages (internal inter-agent context passed between agents).
   // These have role="user" with content starting with "[Handoff from" or "[Response from".
@@ -163,7 +152,7 @@ export function ChatThread({
   const lastMsg = sourceMessages[sourceMessages.length - 1];
   const hasAssistantContent = lastMsg?.role === "assistant" && lastMsg.parts.length > 0;
   const lastMsgIsOtherAgent = lastMsg?.role === "assistant" && lastMsg.agentId && lastMsg.agentId !== currentAgent;
-  const isLiveOrHistory = messageSource.mode === "live" || messageSource.mode === "history";
+  const isLiveOrHistory = isLive || isHistory;
   const showThinking = isLiveOrHistory
     && !hasAssistantContent
     && !lastMsgIsOtherAgent
@@ -178,10 +167,10 @@ export function ChatThread({
   // loading, leaving the user with a BLANK chat until SSE events arrive. Now
   // we also show the skeleton when live overlay is empty AND history is still
   // loading, so the user sees a proper loading indicator instead of emptiness.
-  const liveIsEmpty = messageSource.mode === "live" && messageSource.messages.length === 0;
+  const liveIsEmpty = isLive && !liveHasContent;
   const showSkeleton =
     historyLoading && !sessionMessagesData &&
-    (messageSource.mode !== "live" || liveIsEmpty);
+    (!isLive || liveIsEmpty);
   if (showSkeleton) {
     return (
       <div className="flex flex-1 flex-col gap-6 p-6 max-w-4xl mx-auto">
@@ -202,7 +191,7 @@ export function ChatThread({
         messages={allMessages}
         isStreaming={isStreaming}
         showThinking={showThinking}
-        isLoadingHistory={historyLoading && liveMessages.length === 0}
+        isLoadingHistory={historyLoading && !liveHasContent}
         emptyState={<EmptyState />}
         hiddenCount={hiddenCount}
         onLoadEarlier={() => loadEarlierMessages(currentAgent)}
@@ -218,7 +207,7 @@ export function ChatThread({
       )}
 
       {/* Error banner */}
-      {streamError && !isReadOnly && messageSource.mode !== "history" && (
+      {streamError && !isReadOnly && !isHistory && (
         <ErrorBanner
           error={streamError}
           hasMessages={hasMessages}
