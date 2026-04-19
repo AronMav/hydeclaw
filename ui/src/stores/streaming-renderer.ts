@@ -138,6 +138,16 @@ export function createStreamingRenderer(store: StoreAccess) {
       .then((resp) => {
         if (resp.status === 204) {
           // No active stream -- engine already finished. Switch to history and refetch.
+          // Guard: if abort fired or a newer stream started during the
+          // fetch, discard this response. Without the guard a late 204
+          // would force messageSource back to the resumed session
+          // after the user had already navigated away.
+          if (
+            controller.signal.aborted ||
+            myGeneration !== (store.get().agents[agent]?.streamGeneration ?? 0)
+          ) {
+            return;
+          }
           update(agent, { connectionPhase: "idle", messageSource: { mode: "history", sessionId } });
           queryClient.invalidateQueries({ queryKey: qk.sessions(agent) });
           queryClient.invalidateQueries({ queryKey: qk.sessionMessages(sessionId) });
@@ -497,6 +507,19 @@ export function createStreamingRenderer(store: StoreAccess) {
             continue;
           }
 
+          // Stale-stream short-circuit: if abort fired or streamGeneration
+          // moved (navigation / new stream), drop any remaining events
+          // buffered inside the current chunk. Individual case-level
+          // guards (data-session-id, pushUpdate) are still in place; this
+          // is the belt-and-suspenders catch for `sync`-terminal and
+          // `error` paths that do unconditional `update(agent, ...)`.
+          if (
+            signal.aborted ||
+            generation !== (store.get().agents[agent]?.streamGeneration ?? 0)
+          ) {
+            continue;
+          }
+
           switch (event.type) {
             case "data-session-id": {
               const sid = event.data.sessionId;
@@ -803,7 +826,22 @@ export function createStreamingRenderer(store: StoreAccess) {
         saveUiState(agent);
       } else if (parts.length > 0) {
         const st = store.get().agents[agent];
-        if (st) {
+        // Only persist partial text if this stream is still the current one.
+        // After `abortLocalOnly` (navigation) bumps streamGeneration, this
+        // write must NOT overwrite `messageSource` — the user is looking
+        // at a different session now and a live-mode overlay from the
+        // previous stream would visually clobber it. The corresponding
+        // `receivedSessionId` guard in the sync-event path at the top of
+        // this function already handles the mid-stream case; this branch
+        // runs on clean abort with buffered parts, so it needs its own
+        // generation check.
+        if (
+          st &&
+          st.streamGeneration === generation &&
+          (!receivedSessionId ||
+            !st.activeSessionId ||
+            st.activeSessionId === receivedSessionId)
+        ) {
           const assistantMsg: ChatMessage = {
             id: assistantId,
             role: "assistant",
