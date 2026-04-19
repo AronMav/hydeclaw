@@ -848,6 +848,7 @@ export function createStreamingRenderer(store: StoreAccess) {
     startStream,
     resumeStream,
     abortActiveStream,
+    abortLocalOnly,
     cleanupAgent,
     isAgentStreaming: (agent: string) => _abortControllers.has(agent) && _abortControllers.get(agent) !== null,
     getAbortCtrl,

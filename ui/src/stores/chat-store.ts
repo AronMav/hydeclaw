@@ -142,7 +142,16 @@ export const useChatStore = create<ChatStore>()(
       }
       queryClient.invalidateQueries({ queryKey: qk.sessionMessages(sessionId) });
 
-      renderer.abortActiveStream(agent);
+      // Local-only abort: tear down the UI fetch so the new session can
+      // render, but DO NOT POST /abort to the backend. A POST here would
+      // cancel the departing session's engine task — if its provider is
+      // slow to acknowledge the cancel, the cancel-grace window exceeds
+      // 30 s and the session gets marked `'interrupted'` in DB. The user
+      // only switched tabs; they did not explicitly Stop. The backend
+      // stream finishes on its own (10-minute SSE safety net covers
+      // worst-case abandonment) and the completed response is waiting
+      // when the user returns.
+      renderer.abortLocalOnly(agent);
 
       update(agent, {
         activeSessionId: sessionId,
@@ -164,7 +173,8 @@ export const useChatStore = create<ChatStore>()(
         queryClient.invalidateQueries({ queryKey: qk.sessionMessages(previousSessionId) });
       }
       queryClient.invalidateQueries({ queryKey: qk.sessionMessages(sessionId) });
-      renderer.abortActiveStream(agent);
+      // See selectSession above — navigation must not cancel the backend.
+      renderer.abortLocalOnly(agent);
       update(agent, {
         activeSessionId: sessionId,
         messageSource: { mode: "history", sessionId },
@@ -176,15 +186,19 @@ export const useChatStore = create<ChatStore>()(
 
     newChat: () => {
       const agent = get().currentAgent;
-      // Invalidate the departing session's React Query cache — the aborted
-      // stream may have written partial assistant text to DB that the cache
-      // does not reflect. Without this, returning to that session via the
-      // sidebar shows stale data.
+      // Invalidate the departing session's React Query cache — the stream
+      // we are detaching from may still write partial assistant text to
+      // DB. Without this, returning to that session via the sidebar shows
+      // stale data.
       const previousSessionId = get().agents[agent]?.activeSessionId;
       if (previousSessionId) {
         queryClient.invalidateQueries({ queryKey: qk.sessionMessages(previousSessionId) });
       }
-      renderer.abortActiveStream(agent);
+      // Local-only abort: starting a new chat does not imply the user
+      // wants to cancel the previous response — they may want to see it
+      // completed when they come back. See selectSession for the full
+      // rationale.
+      renderer.abortLocalOnly(agent);
       update(agent, {
         activeSessionId: null,
         messageSource: { mode: "new-chat" },

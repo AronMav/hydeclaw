@@ -31,6 +31,7 @@ vi.mock("@/stores/streaming-renderer", () => ({
     startStream: vi.fn(),
     resumeStream: vi.fn(),
     abortActiveStream: vi.fn(),
+    abortLocalOnly: vi.fn(),
     cleanupAgent: vi.fn(),
     getAbortCtrl: vi.fn(),
     setAbortCtrl: vi.fn(),
