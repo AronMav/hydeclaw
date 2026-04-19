@@ -4,8 +4,8 @@ import { vi, describe, it, expect, beforeEach } from "vitest";
 // These tests import the draft helper functions that will be exported from
 // ChatThread.tsx. They test localStorage save/restore/clear behavior.
 
-// Import the helpers — these will be added to ChatThread.tsx
-import { saveDraft, loadDraft, clearDraft } from "@/app/(authenticated)/chat/ChatThread";
+// Import the helpers from their new home in the composer module
+import { saveDraft, loadDraft, clearDraft } from "@/app/(authenticated)/chat/composer/ChatComposer";
 
 describe("Draft persistence helpers", () => {
   beforeEach(() => {
