@@ -116,3 +116,33 @@ issue if you need the old behavior back.
 See `docs/superpowers/specs/2026-04-19-toolgate-primitives-design.md` for full
 design context (primitives vs integration routers, `${VAR}` templating in
 `body_template`, BCS state carve-out, etc.).
+
+### calendar_create response shape change
+
+The agent-facing response for `calendar_create` has changed shape (this is a
+breaking change for agent prompts that referenced specific fields):
+
+- **Old**: `{status, id, link, summary, start, end}` (direct from the GET router)
+- **New**: `{id, summary, html_link}` (extracted via `response_transform: $.event`)
+
+Field renames: `link` → `html_link`. Removed: `status`, `start`, `end`, echoed
+`summary`. If your agent prompts or skills read these fields, update them
+before upgrading.
+
+### Known limitations (follow-ups tracked)
+
+- **BCS refresh token error classification**: bad or expired `BCS_REFRESH_TOKEN`
+  now surfaces as 401 from `/primitives/bcs/portfolio` — agents should detect
+  this and prompt for token rotation.
+- **End-to-end automation gap**: there is no automated test that loads a real
+  `workspace/tools/*.yaml`, runs it through core's YAML-tool runtime, and hits
+  a mocked primitive. Manual curl smoke test in Task 11 of the implementation
+  plan covers happy paths. A future integration-test harness would close this
+  gap (tracked as I3 in the plan).
+- **Optional `body_template` params without explicit values**: if the LLM
+  omits an optional parameter (e.g. `html` in `email_send`), its placeholder
+  `{{html}}` is not substituted with the default — the request body becomes
+  invalid JSON and the call fails. This is a pre-existing core behavior (not
+  introduced by the primitives refactor), but now affects more tools. Agents
+  should always pass optional params explicitly until core materialises
+  defaults into the substitution map.

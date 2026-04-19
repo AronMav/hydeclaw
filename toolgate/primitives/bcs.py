@@ -44,7 +44,13 @@ async def _refresh(http: httpx.AsyncClient, refresh_token: str) -> str:
         "refresh_token": refresh_token,
         "client_id": CLIENT_ID,
     })
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        # Surface stale/expired refresh tokens as 401 so the agent can prompt the
+        # user to re-authenticate instead of seeing an opaque 500.
+        status = 401 if 400 <= e.response.status_code < 500 else 502
+        raise HTTPException(status, f"BCS refresh failed: {e.response.text}") from e
     data = resp.json()
     _access_token = data["access_token"]
 

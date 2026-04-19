@@ -86,3 +86,14 @@ def test_bcs_portfolio_refreshes_on_401(client):
     assert resp.status_code == 200
     assert refresh_route.call_count == 2
     assert portfolio_route.call_count == 2
+
+
+@respx.mock
+def test_bcs_portfolio_invalid_refresh_token_returns_401(client):
+    """If Keycloak rejects the refresh_token with 400, primitive returns 401 (not opaque 500)."""
+    respx.post("https://be.broker.ru/trade-api-keycloak/realms/tradeapi/protocol/openid-connect/token").mock(
+        return_value=httpx.Response(400, json={"error": "invalid_grant"})
+    )
+    resp = client.post("/primitives/bcs/portfolio", json={"refresh_token": "STALE_RT"})
+    assert resp.status_code == 401
+    assert "refresh" in resp.json()["detail"].lower()
