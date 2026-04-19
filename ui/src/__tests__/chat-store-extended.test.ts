@@ -305,11 +305,13 @@ describe("STATE-01: history to live transition", () => {
   });
 
   it("chat-store.ts sendMessage uses messageSource (no early viewMode flip)", async () => {
-    // Static analysis: verify the store uses messageSource.mode checks, not viewMode checks
+    // Static analysis: verify the store uses messageSource.mode checks, not viewMode checks.
+    // sendMessage / stopStream / regenerate / regenerateFrom live in stream-control.ts after
+    // the chat-store modularisation (Tasks 1.8-1.10).
     const fs = await import("node:fs");
     const path = await import("node:path");
     const src = fs.readFileSync(
-      path.resolve(__dirname, "../stores/chat-store.ts"),
+      path.resolve(__dirname, "../stores/chat/actions/stream-control.ts"),
       "utf8"
     );
 
@@ -334,9 +336,10 @@ describe("STATE-01: history to live transition", () => {
     );
     expect(regenerateBlock).not.toMatch(/update\(agent,\s*\{\s*viewMode:\s*["']live["']\s*\}/);
 
-    // regenerateFrom block — from "regenerateFrom: " to "renameSession:"
+    // regenerateFrom block — from "regenerateFrom: " to "forkAndRegenerate:"
+    // (renameSession moved to session-crud.ts; forkAndRegenerate is the next action in stream-control.ts)
     const regenerateFromStart = src.indexOf("regenerateFrom: (messageId");
-    const regenerateFromEnd = src.indexOf("renameSession:", regenerateFromStart);
+    const regenerateFromEnd = src.indexOf("forkAndRegenerate:", regenerateFromStart);
     const regenerateFromBlock = src.slice(regenerateFromStart, regenerateFromEnd);
     expect(regenerateFromBlock).not.toMatch(/update\(agent,\s*\{\s*viewMode:\s*["']live["']\s*\}/);
   });
