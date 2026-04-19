@@ -251,10 +251,20 @@ export function MessageList({
   // Virtuoso remounts the Footer — which happens whenever parent
   // props passed into `virtuosoComponents` are unstable — the new
   // DOM node triggers a re-attach of the IntersectionObserver.
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  /** Container DIV exposed as state (not just a ref) so that effects
+   * re-run when it mounts. MessageList has three return paths —
+   * loading-skeleton, empty-state, and main — and the ref is attached
+   * ONLY to the main path's outer DIV. On first mount during a
+   * still-loading session, the loading-skeleton path runs; any
+   * `useEffect(() => { if (!ref.current) return; ... }, [])`
+   * early-returns and never retries, because `[]` deps don't re-fire
+   * when the path switches to main. Converting to a ref-callback +
+   * state ensures every dependent effect re-attaches when the DIV
+   * actually mounts. */
+  const [scrollContainerEl, setScrollContainerEl] = useState<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    const container = scrollContainerRef.current;
+    const container = scrollContainerEl;
     if (!container || !sentinelEl) return;
 
     let cancelled = false;
@@ -288,7 +298,7 @@ export function MessageList({
       cancelled = true;
       detach?.();
     };
-  }, [sentinelEl]);
+  }, [sentinelEl, scrollContainerEl]);
 
   // Reset the missed-token badge when the user re-enters the tail.
   // Separated from the IO callback to keep the `setIsAtTail` updater
@@ -311,32 +321,38 @@ export function MessageList({
     }
   }, [isAtTail]);
 
-  // Content-growth pin via rAF polling. ResizeObserver on the
-  // scroller doesn't fire on internal content growth (scrollHeight
-  // changes, but the scroller's own box does not). rAF polling is
-  // the only reliable way to detect intra-item growth during token
-  // streaming regardless of Virtuoso's DOM layout.
+  // Unconditional rAF tail-pin. Observed during live debugging: Virtuoso
+  // periodically moves `scrollTop` UPWARD even when content is not
+  // growing — its internal scroll-anchoring corrects the viewport when
+  // item size estimates are revised (the last assistant message grows,
+  // Virtuoso repositions other items, adjusts `scrollTop` to preserve
+  // the anchor). A growth-gated pin (`h > prevHeight`) misses these
+  // anchor-only scroll-ups, the viewport drifts above the tail, and the
+  // sentinel leaves the 200 px zone even though no token growth fired.
   //
-  // Cost: one integer comparison per frame (∼60 Hz). Writes occur
-  // only when scrollHeight actually grew AND shouldFollow is true.
+  // Fix: pin every frame whenever `shouldFollow` is true. Setting
+  // `scrollTop = scrollHeight` is a no-op when already at the tail
+  // (browsers clamp to `scrollHeight - clientHeight`) and costs a
+  // single assignment per frame. Virtuoso's anchor correction gets
+  // reverted within 16 ms, so the viewport stays visibly glued to the
+  // tail. The wheel/touch/keyboard input detector below flips
+  // `shouldFollow` OFF synchronously before the next rAF, so user
+  // scroll-up is never fought by this pin.
   useEffect(() => {
-    const container = scrollContainerRef.current;
+    const container = scrollContainerEl;
     if (!container) return;
     let cancelled = false;
     let raf = 0;
-    let prevHeight = 0;
 
     const loop = () => {
       if (cancelled) return;
-      const scroller = container.querySelector(
-        "[data-virtuoso-scroller]",
-      ) as HTMLElement | null;
-      if (scroller) {
-        const h = scroller.scrollHeight;
-        if (h > prevHeight && shouldFollowRef.current) {
+      if (shouldFollowRef.current) {
+        const scroller = container.querySelector(
+          "[data-virtuoso-scroller]",
+        ) as HTMLElement | null;
+        if (scroller) {
           scroller.scrollTop = scroller.scrollHeight;
         }
-        prevHeight = h;
       }
       raf = requestAnimationFrame(loop);
     };
@@ -346,7 +362,7 @@ export function MessageList({
       cancelled = true;
       cancelAnimationFrame(raf);
     };
-  }, []);
+  }, [scrollContainerEl]);
 
   // User-intent detection via input events (wheel / touch / key).
   // Turns shouldFollow OFF when the user meaningfully tries to
@@ -361,7 +377,7 @@ export function MessageList({
   // start). This split keeps the OFF path cheap and fast while
   // ensuring recovery is always available.
   useEffect(() => {
-    const container = scrollContainerRef.current;
+    const container = scrollContainerEl;
     if (!container) return;
     let cancelled = false;
     let attempts = 0;
@@ -422,7 +438,7 @@ export function MessageList({
         scroller.removeEventListener("keydown", onKeyDown);
       }
     };
-  }, []);
+  }, [scrollContainerEl]);
 
   // ── SCRL-03: count tokens that arrived while user is away from tail ────────
   const prevPartsLenRef = useRef(0);
@@ -516,7 +532,7 @@ export function MessageList({
   }
 
   return (
-    <div ref={scrollContainerRef} className="flex flex-1 flex-col pt-14 lg:pt-0 relative">
+    <div ref={setScrollContainerEl} className="flex flex-1 flex-col pt-14 lg:pt-0 relative">
       <Virtuoso
         ref={virtuosoRef}
         data={virtualItems}
