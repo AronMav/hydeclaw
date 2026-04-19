@@ -1,25 +1,20 @@
 name: email_check
 description: "Check incoming mail. Returns the latest messages (subject, sender, date, text snippet)."
-endpoint: "http://localhost:9011/email/inbox"
-method: GET
+endpoint: "http://localhost:9011/primitives/imap/fetch"
+method: POST
 parameters:
-  folder:
-    type: string
-    required: false
-    location: query
-    description: "Folder (INBOX, Sent, Drafts, Spam)"
-    default: "INBOX"
-  limit:
-    type: integer
-    required: false
-    location: query
-    description: "Number of messages"
-    default: 10
-  unread_only:
-    type: boolean
-    required: false
-    location: query
-    description: "Unread only"
-    default: true
+  folder:      { type: string,  required: false, location: body, description: "Folder (INBOX, Sent, Drafts, Spam)", default: "INBOX" }
+  limit:       { type: integer, required: false, location: body, description: "Number of messages", default: 10 }
+  unread_only: { type: boolean, required: false, location: body, description: "Unread only", default: true }
+body_template: |
+  {
+    "server":      "${IMAP_HOST}",
+    "port":        993,
+    "user":        "${EMAIL_USER}",
+    "password":    "${EMAIL_PASS}",
+    "folder":      "{{folder}}",
+    "limit":       {{limit}},
+    "unread_only": {{unread_only}}
+  }
 response_transform: "$.messages"
 status: draft

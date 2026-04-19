@@ -1,24 +1,20 @@
 name: email_search
 description: "Search emails by subject or content."
-endpoint: "http://localhost:9011/email/search"
-method: GET
+endpoint: "http://localhost:9011/primitives/imap/search"
+method: POST
 parameters:
-  query:
-    type: string
-    required: true
-    location: query
-    description: "Search query"
-  folder:
-    type: string
-    required: false
-    location: query
-    description: "Folder"
-    default: "INBOX"
-  limit:
-    type: integer
-    required: false
-    location: query
-    description: "Maximum results"
-    default: 10
+  query:  { type: string,  required: true,  location: body, description: "Search query" }
+  folder: { type: string,  required: false, location: body, description: "Folder", default: "INBOX" }
+  limit:  { type: integer, required: false, location: body, description: "Maximum results", default: 10 }
+body_template: |
+  {
+    "server":   "${IMAP_HOST}",
+    "port":     993,
+    "user":     "${EMAIL_USER}",
+    "password": "${EMAIL_PASS}",
+    "folder":   "{{folder}}",
+    "query":    "{{query}}",
+    "limit":    {{limit}}
+  }
 response_transform: "$.messages"
 status: draft

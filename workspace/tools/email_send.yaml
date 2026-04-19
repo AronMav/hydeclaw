@@ -1,27 +1,21 @@
 name: email_send
 description: "Send an email. ALWAYS confirm with the user before sending: recipient, subject, and body."
-endpoint: "http://localhost:9011/email/send"
+endpoint: "http://localhost:9011/primitives/smtp/send"
 method: POST
 parameters:
-  to:
-    type: string
-    required: true
-    location: body
-    description: "Recipient email address"
-  subject:
-    type: string
-    required: true
-    location: body
-    description: "Email subject"
-  body:
-    type: string
-    required: true
-    location: body
-    description: "Email body text"
-  html:
-    type: boolean
-    required: false
-    location: body
-    description: "Send as HTML"
-    default: false
+  to:      { type: string, required: true,  location: body, description: "Recipient email address" }
+  subject: { type: string, required: true,  location: body, description: "Email subject" }
+  body:    { type: string, required: true,  location: body, description: "Email body text" }
+  html:    { type: boolean, required: false, location: body, description: "Send as HTML", default: false }
+body_template: |
+  {
+    "server":   "${SMTP_HOST}",
+    "port":     587,
+    "user":     "${EMAIL_USER}",
+    "password": "${EMAIL_PASS}",
+    "to":       "{{to}}",
+    "subject":  "{{subject}}",
+    "body":     "{{body}}",
+    "html":     {{html}}
+  }
 status: draft
