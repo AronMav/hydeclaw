@@ -8,3 +8,5 @@ python-docx
 edge-tts
 readability-lxml
 lxml[html_clean]
+google-api-python-client
+google-auth
