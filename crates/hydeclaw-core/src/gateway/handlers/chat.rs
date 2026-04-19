@@ -658,11 +658,36 @@ pub(crate) async fn api_chat_sse(
                     // Grace window exceeded with no event progress — the
                     // engine is wedged ignoring the cancel token. Force
                     // an abort so the task / semaphore permit are freed.
+                    //
+                    // This branch fires ONLY after a user-initiated cancel
+                    // (cancel_deadline is set above only when cancel_token
+                    // is cancelled). Mark the session `'interrupted'`
+                    // BEFORE hard-abort so the UI shows "INTERRUPTED"
+                    // instead of "ERROR" — the engine task's
+                    // `SessionLifecycleGuard` is about to drop, and its
+                    // Drop impl would otherwise mark the session `'failed'`.
+                    // The guard uses `mark_session_run_status_if_running`,
+                    // so once we write `'interrupted'` here the guard's
+                    // update affects 0 rows.
                     tracing::warn!(
                         session_id = ?session_id_str,
                         "cancel grace window ({}s) exceeded, hard-aborting engine",
                         CANCEL_GRACE.as_secs(),
                     );
+                    if let Some(sid) = session_uuid
+                        && let Err(e) = crate::db::sessions::mark_session_run_status_if_running(
+                            &infra.db,
+                            sid,
+                            "interrupted",
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            session_id = %sid,
+                            error = %e,
+                            "failed to mark session interrupted before hard-abort"
+                        );
+                    }
                     engine_handle.abort();
                     break;
                 }

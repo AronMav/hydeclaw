@@ -262,18 +262,41 @@ impl Drop for SessionLifecycleGuard {
             let db = self.db.clone();
             let sid = self.session_id;
             tokio::spawn(async move {
-                if let Err(e) =
-                    crate::db::sessions::set_session_run_status(&db, sid, "failed").await
+                // Conditional update: only transition `'running'` → `'failed'`.
+                // The chat handler's cancel-grace path may have already written
+                // `'interrupted'` before hard-aborting our task — if so, we
+                // must not overwrite that signal. `rows_affected == 0` means
+                // the session is already in a terminal state; skip the WAL
+                // event to keep the log honest.
+                match crate::db::sessions::mark_session_run_status_if_running(
+                    &db,
+                    sid,
+                    "failed",
+                )
+                .await
                 {
-                    tracing::warn!(
+                    Ok(0) => {
+                        // Already terminal — nothing to do.
+                    }
+                    Ok(_) => {
+                        let payload =
+                            serde_json::json!({ "reason": "guard dropped (early exit)" });
+                        if let Err(e) =
+                            crate::db::session_wal::log_event(&db, sid, "failed", Some(&payload))
+                                .await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                session_id = %sid,
+                                "failed to log WAL failed event in Drop guard"
+                            );
+                        }
+                    }
+                    Err(e) => tracing::warn!(
                         error = %e,
                         session_id = %sid,
                         "failed to mark session as failed in Drop guard"
-                    );
-                }
-                let payload = serde_json::json!({ "reason": "guard dropped (early exit)" });
-                if let Err(e) = crate::db::session_wal::log_event(&db, sid, "failed", Some(&payload)).await {
-                    tracing::warn!(error = %e, session_id = %sid, "failed to log WAL failed event in Drop guard");
+                    ),
                 }
             });
         }
