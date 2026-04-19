@@ -1,6 +1,13 @@
 name: calendar_today
-description: "Show today's calendar events. Returns a list of events with subject, time, and location."
-endpoint: "http://localhost:9011/calendar/today"
-method: GET
+description: "Show upcoming calendar events for the next 7 days. Returns subject, start time, end time, and location."
+endpoint: "http://localhost:9011/primitives/google_calendar/events/list"
+method: POST
+parameters: {}
+body_template: |
+  {
+    "sa_key_json": "${GOOGLE_SA_KEY_JSON}",
+    "calendar_id": "${GOOGLE_CALENDAR_ID}",
+    "max_results": 20
+  }
 response_transform: "$.events"
 status: draft
