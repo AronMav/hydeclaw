@@ -3,6 +3,7 @@
 // reconnection logic, and per-agent cleanup (MEM-01, PERF-02).
 
 import { parseSSELines, parseSseEvent } from "./stream/sse-parser";
+import { scheduleReconnect } from "./stream/stream-reconnect";
 import { parseContentParts } from "@/stores/sse-events";
 import { IncrementalParser } from "@/lib/message-parser";
 import { apiPatch, apiPost, assertToken } from "@/lib/api";
@@ -167,11 +168,12 @@ export function createStreamingRenderer(store: StoreAccess) {
         // Guard: if a newer stream started, don't schedule reconnect for the old one
         if (!session.isCurrent) return;
         // Network error during reconnect -- schedule next retry
-        if (reconnectAttempt < MAX_RECONNECT_ATTEMPTS) {
-          scheduleReconnect(agent, session, sessionId, reconnectAttempt);
-        } else {
-          session.write({ connectionPhase: "idle" });
-        }
+        scheduleReconnect(session, sessionId, reconnectAttempt, {
+          resume: (nextAttempt) => resumeStream(agent, sessionId, nextAttempt),
+          maxAttempts: MAX_RECONNECT_ATTEMPTS,
+          baseDelayMs: RECONNECT_DELAY_BASE_MS,
+          setTimer: (handle) => setReconnectTimer(agent, handle),
+        });
       });
   }
 
@@ -220,29 +222,8 @@ export function createStreamingRenderer(store: StoreAccess) {
     abortLocalOnly(agent);
   }
 
-  // ── Reconnect scheduling (SSE-02) ────────────────────────────────────────
-  function scheduleReconnect(agent: string, session: StreamSession, sessionId: string, attempt: number) {
-    if (attempt >= MAX_RECONNECT_ATTEMPTS) {
-      const sid = sessionId ?? store.get().agents[agent]?.activeSessionId;
-      session.write({
-        streamError: "Connection lost after retries",
-        connectionPhase: "error",
-        connectionError: "Connection lost after retries",
-        messageSource: sid ? { mode: "history", sessionId: sid } : { mode: "new-chat" },
-      });
-      return;
-    }
-    session.write({ connectionPhase: "reconnecting", connectionError: null, reconnectAttempt: attempt + 1 });
-    const baseDelay = RECONNECT_DELAY_BASE_MS * Math.pow(2, attempt);
-    const jitter = baseDelay * 0.2 * (Math.random() * 2 - 1); // +/- 20% jitter
-    const delay = Math.max(0, baseDelay + jitter);
-    setReconnectTimer(agent, setTimeout(() => {
-      setReconnectTimer(agent, null);
-      resumeStream(agent, sessionId, attempt + 1);
-    }, delay));
-  }
-
   // ── SSE stream handler ──────────────────────────────────────────────────
+  // Reconnect policy is in stream/stream-reconnect.ts (SSE-02).
 
   function startStream(agent: string, sessionId: string | null, messages: ChatMessage[], userText: string, attachments?: Array<any>) {
     // Local-only cleanup for the same reason documented in resumeStream.
@@ -786,7 +767,12 @@ export function createStreamingRenderer(store: StoreAccess) {
         const isError = store.get().agents[agent]?.connectionPhase === "error";
         const effectiveSessionId = receivedSessionId ?? store.get().agents[agent]?.activeSessionId;
         if (!isError && !receivedFinishEvent && effectiveSessionId) {
-          scheduleReconnect(agent, session, effectiveSessionId, reconnectAttempt);
+          scheduleReconnect(session, effectiveSessionId, reconnectAttempt, {
+            resume: (nextAttempt) => resumeStream(agent, effectiveSessionId, nextAttempt),
+            maxAttempts: MAX_RECONNECT_ATTEMPTS,
+            baseDelayMs: RECONNECT_DELAY_BASE_MS,
+            setTimer: (handle) => setReconnectTimer(agent, handle),
+          });
           return;
         }
 
