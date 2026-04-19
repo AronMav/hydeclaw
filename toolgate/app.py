@@ -169,7 +169,8 @@ async def log_requests(request: Request, call_next):
 
 
 # Mount routers
-from routers import stt, vision, tts, imagegen, embedding, documents, fetch, bcs_portfolio, email, calendar
+from routers import stt, vision, tts, imagegen, embedding, documents, fetch
+from primitives import imap, smtp, google_calendar, bcs
 app.include_router(stt.router)
 app.include_router(vision.router)
 app.include_router(tts.router)
@@ -177,9 +178,10 @@ app.include_router(imagegen.router)
 app.include_router(embedding.router)
 app.include_router(documents.router)
 app.include_router(fetch.router)
-app.include_router(bcs_portfolio.router)
-app.include_router(email.router)
-app.include_router(calendar.router)
+app.include_router(imap.router)
+app.include_router(smtp.router)
+app.include_router(google_calendar.router)
+app.include_router(bcs.router)
 
 
 @app.get("/health")
@@ -215,9 +217,9 @@ async def reload_providers():
 
 
 def _invalidate_router_caches():
-    """Clear cached tokens/state in workspace routers that read secrets."""
+    """Clear cached tokens/state in primitives that read secrets."""
     try:
-        from routers.bcs_portfolio import invalidate_cache
+        from primitives.bcs import invalidate_cache
         invalidate_cache()
     except (ImportError, AttributeError):
         pass
