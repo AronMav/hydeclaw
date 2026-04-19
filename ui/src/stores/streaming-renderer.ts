@@ -391,10 +391,9 @@ export function createStreamingRenderer(store: StoreAccess) {
         if (err.name === "AbortError") return;
         const errMsg = err.message || "Stream failed";
         // SSE-03: Mark the optimistic user message as failed so the UI shows an error indicator.
-        store.set((draft: any) => {
-          const st = draft.agents[agent];
-          if (!st || st.messageSource.mode !== "live") return;
-          const msgs = st.messageSource.messages;
+        session.writeDraft((agentDraft: AgentState) => {
+          if (agentDraft.messageSource.mode !== "live") return;
+          const msgs = (agentDraft.messageSource as any).messages as ChatMessage[];
           for (let i = msgs.length - 1; i >= 0; i--) {
             if (msgs[i].role === "user" && msgs[i].status === "sending") {
               msgs[i].status = "failed";
@@ -449,16 +448,14 @@ export function createStreamingRenderer(store: StoreAccess) {
       const textParts = incrementalParser.snapshot();
       const nonTextParts = parts.filter(p => p.type !== "text" && p.type !== "reasoning");
 
-      store.set((draft: any) => {
-        const st = draft.agents[agent];
-        if (!st) return;
+      session.writeDraft((agentDraft: AgentState) => {
         // Double-check generation inside draft to close race window
-        if (st.streamGeneration !== session.generation) return;
-        if (st.messageSource.mode !== "live") {
-          st.messageSource = { mode: "live", messages: [] };
+        if ((agentDraft as any).streamGeneration !== session.generation) return;
+        if (agentDraft.messageSource.mode !== "live") {
+          agentDraft.messageSource = { mode: "live", messages: [] };
         }
         // Preserve existing overlay messages (e.g. optimistic user msg)
-        const liveMessages = st.messageSource.messages;
+        const liveMessages = (agentDraft.messageSource as any).messages as ChatMessage[];
         const existing = liveMessages.findIndex((m: ChatMessage) => m.id === assistantId);
 
         const allParts = [...nonTextParts, ...textParts] as MessagePart[];
@@ -476,7 +473,7 @@ export function createStreamingRenderer(store: StoreAccess) {
             agentId: currentRespondingAgent ?? undefined,
           });
         }
-        if (st.connectionPhase !== "error") st.connectionPhase = "streaming";
+        if (agentDraft.connectionPhase !== "error") agentDraft.connectionPhase = "streaming";
       });
     }
 
@@ -536,10 +533,9 @@ export function createStreamingRenderer(store: StoreAccess) {
               if (sid && session.isCurrent) {
                 receivedSessionId = sid;
                 // SSE-03: Confirm the optimistic user message
-                store.set((draft: any) => {
-                  const st = draft.agents[agent];
-                  if (!st || st.messageSource.mode !== "live") return;
-                  const msgs = st.messageSource.messages;
+                session.writeDraft((agentDraft: AgentState) => {
+                  if (agentDraft.messageSource.mode !== "live") return;
+                  const msgs = (agentDraft.messageSource as any).messages as ChatMessage[];
                   for (let i = msgs.length - 1; i >= 0; i--) {
                     if (msgs[i].role === "user" && msgs[i].status === "sending") {
                       msgs[i].status = "confirmed";
@@ -705,27 +701,26 @@ export function createStreamingRenderer(store: StoreAccess) {
               // Architecture C: overlay = text only. Tools come from history (DB).
               const syncParts: MessagePart[] = parseContentParts(syncContent || "");
 
-              store.set((draft: any) => {
-                const st = draft.agents[agent];
-                if (!st) return;
+              session.writeDraft((agentDraft: AgentState) => {
                 // Guard: skip sync events for a different session (e.g. agent switch race)
-                if (receivedSessionId && st.activeSessionId && receivedSessionId !== st.activeSessionId) return;
+                if (receivedSessionId && agentDraft.activeSessionId && receivedSessionId !== agentDraft.activeSessionId) return;
 
-                const currentSessionId = st.activeSessionId;
+                const currentSessionId = agentDraft.activeSessionId;
                 const isSameSession = receivedSessionId && currentSessionId === receivedSessionId;
 
-                if (st.messageSource.mode !== "live" && !isSameSession) {
-                  st.messageSource = { mode: "live", messages: [] };
+                if (agentDraft.messageSource.mode !== "live" && !isSameSession) {
+                  agentDraft.messageSource = { mode: "live", messages: [] };
                 }
 
-                const liveMessages = st.messageSource.messages;
-                const existingIdx = liveMessages.findIndex((m: ChatMessage) => m.id === assistantId);
+                // Cast to any[] — sync status uses "streaming"/"complete" values not in ChatMessage.status union
+                const liveMessages = (agentDraft.messageSource as any).messages as any[];
+                const existingIdx = liveMessages.findIndex((m: any) => m.id === assistantId);
 
                 if (existingIdx >= 0) {
                   const existingMsg = liveMessages[existingIdx];
                   // Merge content: keep local text if it's ahead of sync (prevents flicker)
                   // but accept sync if it's significantly different (recon from scratch)
-                  const localTextLen = existingMsg.parts
+                  const localTextLen = (existingMsg.parts as MessagePart[])
                     .filter((p: MessagePart): p is TextPart => p.type === "text")
                     .reduce((acc: number, p: TextPart) => acc + (p.text?.length ?? 0), 0);
                   const syncTextLen = syncParts
@@ -750,10 +745,10 @@ export function createStreamingRenderer(store: StoreAccess) {
                   });
                 }
 
-                if (st.connectionPhase !== "error" && syncStatus !== "done" && syncStatus !== "finished") {
-                  st.connectionPhase = "streaming";
+                if (agentDraft.connectionPhase !== "error" && syncStatus !== "done" && syncStatus !== "finished") {
+                  agentDraft.connectionPhase = "streaming";
                 } else if (syncStatus === "done" || syncStatus === "finished") {
-                  st.connectionPhase = "idle";
+                  agentDraft.connectionPhase = "idle";
                 }
               });
 
@@ -782,11 +777,8 @@ export function createStreamingRenderer(store: StoreAccess) {
               // Mark session as no longer running (don't rely solely on WS agent_processing event)
               if (receivedSessionId) {
                 const sid = receivedSessionId;
-                store.set((draft: any) => {
-                  const st = draft.agents[agent];
-                  if (st) {
-                    st.activeSessionIds = (st.activeSessionIds || []).filter((id: string) => id !== sid);
-                  }
+                session.writeDraft((agentDraft: AgentState) => {
+                  agentDraft.activeSessionIds = (agentDraft.activeSessionIds || []).filter((id: string) => id !== sid);
                 });
               }
               break;
