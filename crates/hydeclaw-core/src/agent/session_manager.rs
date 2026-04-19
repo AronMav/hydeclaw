@@ -276,7 +276,12 @@ impl Drop for SessionLifecycleGuard {
                 .await
                 {
                     Ok(0) => {
-                        // Already terminal — nothing to do.
+                        // Already terminal — the handler (cancel-grace path)
+                        // or another writer set a final status before us.
+                        tracing::debug!(
+                            session_id = %sid,
+                            "guard drop fallback skipped: session already terminal",
+                        );
                     }
                     Ok(_) => {
                         let payload =
