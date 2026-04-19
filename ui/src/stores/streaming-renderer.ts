@@ -27,6 +27,7 @@ import type {
 } from "./chat-types";
 import { getCachedRawMessages, resolveActivePath } from "./chat-history";
 import { streamSessionManager } from "./stream-session";
+import type { StreamSession } from "./stream-session";
 
 // ── Store access interface ─────────────────────────────────────────────────
 // Uses `any` for store shape to avoid circular dependency with ChatStore.
@@ -115,19 +116,17 @@ export function createStreamingRenderer(store: StoreAccess) {
     // during startup, the backend cancels the stream we are about to start
     // (same session id → same cancel token).
 
-    // Shadow run of StreamSession (Task 3.3) — created BEFORE the legacy
-    // generation bump so that its bump (N→N+1) is immediately superseded by
-    // the legacy bump (N+1→N+2). Legacy captures myGeneration = N+2 and its
-    // writes check against N+2 — internally consistent. The shadow session
-    // holds gen=N+1 (stale after this point); it has no write call-sites yet
-    // so that staleness is harmless. Removed in Task 3.6 together with the
-    // legacy _abortControllers / _reconnectTimers maps.
-    const _shadowSession = streamSessionManager.start(agent);
-    void _shadowSession;
-
+    // Local-only cleanup of the previous fetch controller. Removed in Task 3.6
+    // together with the legacy _abortControllers / _reconnectTimers maps.
     abortLocalOnly(agent);
-    update(agent, { streamGeneration: (store.get().agents[agent]?.streamGeneration ?? 0) + 1 });
-    const myGeneration = store.get().agents[agent]?.streamGeneration ?? 1;
+
+    // Create a new StreamSession after abortLocalOnly's generation bump.
+    // streamSessionManager.start() disposes the previous session (bumping
+    // generation once) and creates a new session whose .generation is the
+    // current store value — used as the authoritative generation reference
+    // inside processSSEStream.
+    const session = streamSessionManager.start(agent);
+
     const controller = new AbortController();
     setAbortCtrl(agent, controller);
 
@@ -154,13 +153,10 @@ export function createStreamingRenderer(store: StoreAccess) {
           // fetch, discard this response. Without the guard a late 204
           // would force messageSource back to the resumed session
           // after the user had already navigated away.
-          if (
-            controller.signal.aborted ||
-            myGeneration !== (store.get().agents[agent]?.streamGeneration ?? 0)
-          ) {
+          if (!session.isCurrent || controller.signal.aborted) {
             return;
           }
-          update(agent, { connectionPhase: "idle", messageSource: { mode: "history", sessionId } });
+          session.write({ connectionPhase: "idle", messageSource: { mode: "history", sessionId } });
           queryClient.invalidateQueries({ queryKey: qk.sessions(agent) });
           queryClient.invalidateQueries({ queryKey: qk.sessionMessages(sessionId) });
           return;
@@ -172,17 +168,17 @@ export function createStreamingRenderer(store: StoreAccess) {
         if (!resp.ok) {
           return resp.text().then((t) => { throw new Error(t || `HTTP ${resp.status}`); });
         }
-        return processSSEStream(agent, resp.body!, controller.signal, myGeneration, sessionId, reconnectAttempt);
+        return processSSEStream(agent, resp.body!, session, sessionId, reconnectAttempt);
       })
       .catch((err) => {
         if (err.name === "AbortError") return;
         // Guard: if a newer stream started, don't schedule reconnect for the old one
-        if (myGeneration !== (store.get().agents[agent]?.streamGeneration ?? 0)) return;
+        if (!session.isCurrent) return;
         // Network error during reconnect -- schedule next retry
         if (reconnectAttempt < MAX_RECONNECT_ATTEMPTS) {
-          scheduleReconnect(agent, sessionId, reconnectAttempt);
+          scheduleReconnect(agent, session, sessionId, reconnectAttempt);
         } else {
-          update(agent, { connectionPhase: "idle" });
+          session.write({ connectionPhase: "idle" });
         }
       });
   }
@@ -250,10 +246,10 @@ export function createStreamingRenderer(store: StoreAccess) {
   }
 
   // ── Reconnect scheduling (SSE-02) ────────────────────────────────────────
-  function scheduleReconnect(agent: string, sessionId: string, attempt: number) {
+  function scheduleReconnect(agent: string, session: StreamSession, sessionId: string, attempt: number) {
     if (attempt >= MAX_RECONNECT_ATTEMPTS) {
       const sid = sessionId ?? store.get().agents[agent]?.activeSessionId;
-      update(agent, {
+      session.write({
         streamError: "Connection lost after retries",
         connectionPhase: "error",
         connectionError: "Connection lost after retries",
@@ -261,7 +257,7 @@ export function createStreamingRenderer(store: StoreAccess) {
       });
       return;
     }
-    update(agent, { connectionPhase: "reconnecting", connectionError: null, reconnectAttempt: attempt + 1 });
+    session.write({ connectionPhase: "reconnecting", connectionError: null, reconnectAttempt: attempt + 1 });
     const baseDelay = RECONNECT_DELAY_BASE_MS * Math.pow(2, attempt);
     const jitter = baseDelay * 0.2 * (Math.random() * 2 - 1); // +/- 20% jitter
     const delay = Math.max(0, baseDelay + jitter);
@@ -274,26 +270,22 @@ export function createStreamingRenderer(store: StoreAccess) {
   // ── SSE stream handler ──────────────────────────────────────────────────
 
   function startStream(agent: string, sessionId: string | null, messages: ChatMessage[], userText: string, attachments?: Array<any>) {
-    // Shadow run of StreamSession (Task 3.3) — created BEFORE the legacy
-    // generation bump so that its bump (N→N+1) is immediately superseded by
-    // the legacy bump (N+1→N+2). Legacy captures myGeneration = N+2 and its
-    // writes check against N+2 — internally consistent. The shadow session
-    // holds gen=N+1 (stale after this point); it has no write call-sites yet
-    // so that staleness is harmless. Removed in Task 3.6 together with the
-    // legacy _abortControllers / _reconnectTimers maps.
-    const _shadowSession = streamSessionManager.start(agent);
-    void _shadowSession;
-
     // Local-only cleanup for the same reason documented in resumeStream.
     abortLocalOnly(agent);
-    update(agent, { streamGeneration: (store.get().agents[agent]?.streamGeneration ?? 0) + 1 });
-    const myGeneration = store.get().agents[agent]?.streamGeneration ?? 1;
+
+    // Create a new StreamSession after abortLocalOnly's generation bump.
+    // streamSessionManager.start() disposes the previous session (bumping
+    // generation once) and creates a new session whose .generation is the
+    // current store value — used as the authoritative generation reference
+    // inside processSSEStream.
+    const session = streamSessionManager.start(agent);
+
     const controller = new AbortController();
     setAbortCtrl(agent, controller);
 
     const userParts: MessagePart[] = [];
     if (userText) userParts.push({ type: "text", text: userText });
-    
+
     const apiAttachments: any[] = [];
     if (attachments && attachments.length > 0) {
       for (const att of attachments) {
@@ -303,7 +295,7 @@ export function createStreamingRenderer(store: StoreAccess) {
             url: content.data,
             mediaType: content.mimeType,
           });
-          
+
           apiAttachments.push({
             url: content.data,
             media_type: content.mimeType.startsWith("image/") ? "image" : "document",
@@ -313,7 +305,7 @@ export function createStreamingRenderer(store: StoreAccess) {
         }
       }
     }
-    
+
     if (userParts.length === 0) {
       userParts.push({ type: "text", text: "" });
     }
@@ -393,7 +385,7 @@ export function createStreamingRenderer(store: StoreAccess) {
             throw new Error(t || `HTTP ${resp.status}`);
           });
         }
-        return processSSEStream(agent, resp.body!, controller.signal, myGeneration);
+        return processSSEStream(agent, resp.body!, session);
       })
       .catch((err) => {
         if (err.name === "AbortError") return;
@@ -422,8 +414,7 @@ export function createStreamingRenderer(store: StoreAccess) {
   async function processSSEStream(
     agent: string,
     body: ReadableStream<Uint8Array>,
-    signal: AbortSignal,
-    generation: number,
+    session: StreamSession,
     knownSessionId?: string,
     reconnectAttempt = 0,
   ) {
@@ -451,9 +442,9 @@ export function createStreamingRenderer(store: StoreAccess) {
 
     function pushUpdate() {
       // Guard: stale stream -- a newer stream has started, discard updates
-      if (generation !== (store.get().agents[agent]?.streamGeneration ?? 0)) return;
+      if (!session.isCurrent) return;
       // Guard: don't update store after abort (prevents race with stopStream)
-      if (signal.aborted) return;
+      if (session.signal.aborted) return;
 
       const textParts = incrementalParser.snapshot();
       const nonTextParts = parts.filter(p => p.type !== "text" && p.type !== "reasoning");
@@ -462,7 +453,7 @@ export function createStreamingRenderer(store: StoreAccess) {
         const st = draft.agents[agent];
         if (!st) return;
         // Double-check generation inside draft to close race window
-        if (st.streamGeneration !== generation) return;
+        if (st.streamGeneration !== session.generation) return;
         if (st.messageSource.mode !== "live") {
           st.messageSource = { mode: "live", messages: [] };
         }
@@ -511,7 +502,7 @@ export function createStreamingRenderer(store: StoreAccess) {
 
     try {
       while (true) {
-        if (signal.aborted) break;
+        if (session.signal.aborted) break;
         const { done, value } = await reader.read();
         if (done) break;
 
@@ -534,18 +525,15 @@ export function createStreamingRenderer(store: StoreAccess) {
           // buffered inside the current chunk. Individual case-level
           // guards (data-session-id, pushUpdate) are still in place; this
           // is the belt-and-suspenders catch for `sync`-terminal and
-          // `error` paths that do unconditional `update(agent, ...)`.
-          if (
-            signal.aborted ||
-            generation !== (store.get().agents[agent]?.streamGeneration ?? 0)
-          ) {
+          // `error` paths that do unconditional `session.write(...)`.
+          if (session.signal.aborted || !session.isCurrent) {
             continue;
           }
 
           switch (event.type) {
             case "data-session-id": {
               const sid = event.data.sessionId;
-              if (sid && generation === (store.get().agents[agent]?.streamGeneration ?? 0)) {
+              if (sid && session.isCurrent) {
                 receivedSessionId = sid;
                 // SSE-03: Confirm the optimistic user message
                 store.set((draft: any) => {
@@ -559,7 +547,7 @@ export function createStreamingRenderer(store: StoreAccess) {
                     }
                   }
                 });
-                update(agent, { activeSessionId: sid });
+                session.write({ activeSessionId: sid });
                 // saveLastSession is called from chat-store.ts via the callback
                 _onSessionId?.(agent, sid);
 
@@ -567,9 +555,9 @@ export function createStreamingRenderer(store: StoreAccess) {
                 const sessionsData = queryClient.getQueryData<{ sessions: SessionRow[] }>(
                   qk.sessions(agent)
                 );
-                const session = sessionsData?.sessions.find(s => s.id === sid);
-                if (session?.participants) {
-                  store.get().updateSessionParticipants(sid, session.participants);
+                const cachedSession = sessionsData?.sessions.find(s => s.id === sid);
+                if (cachedSession?.participants) {
+                  store.get().updateSessionParticipants(sid, cachedSession.participants);
                 }
               }
               break;
@@ -729,10 +717,10 @@ export function createStreamingRenderer(store: StoreAccess) {
                 if (st.messageSource.mode !== "live" && !isSameSession) {
                   st.messageSource = { mode: "live", messages: [] };
                 }
-                
+
                 const liveMessages = st.messageSource.messages;
                 const existingIdx = liveMessages.findIndex((m: ChatMessage) => m.id === assistantId);
-                
+
                 if (existingIdx >= 0) {
                   const existingMsg = liveMessages[existingIdx];
                   // Merge content: keep local text if it's ahead of sync (prevents flicker)
@@ -747,7 +735,7 @@ export function createStreamingRenderer(store: StoreAccess) {
                   if (syncTextLen > localTextLen || Math.abs(syncTextLen - localTextLen) > 50) {
                      existingMsg.parts = syncParts;
                   }
-                  
+
                   if (existingMsg.status !== "complete") {
                     existingMsg.status = (syncStatus === "done" || syncStatus === "finished") ? "complete" : "streaming";
                   }
@@ -761,7 +749,7 @@ export function createStreamingRenderer(store: StoreAccess) {
                     status: (syncStatus === "done" || syncStatus === "finished") ? "complete" : "streaming",
                   });
                 }
-                
+
                 if (st.connectionPhase !== "error" && syncStatus !== "done" && syncStatus !== "finished") {
                   st.connectionPhase = "streaming";
                 } else if (syncStatus === "done" || syncStatus === "finished") {
@@ -772,7 +760,7 @@ export function createStreamingRenderer(store: StoreAccess) {
               if (syncStatus === "finished" || syncStatus === "error" || syncStatus === "interrupted") {
                 const errorText = syncStatus === "error" ? (event.error ?? null) : null;
                 const newPhase: ConnectionPhase = syncStatus === "error" ? "error" : "idle";
-                update(agent, {
+                session.write({
                   streamError: errorText,
                   connectionPhase: newPhase,
                   connectionError: errorText,
@@ -807,9 +795,9 @@ export function createStreamingRenderer(store: StoreAccess) {
             case "error": {
               const errText = event.errorText;
               if (errText.includes("turn limit") || errText.includes("cycle detected")) {
-                update(agent, { turnLimitMessage: errText });
+                session.write({ turnLimitMessage: errText });
               } else {
-                update(agent, {
+                session.write({
                   streamError: errText,
                   connectionPhase: "error",
                   connectionError: errText,
@@ -827,19 +815,19 @@ export function createStreamingRenderer(store: StoreAccess) {
         pushUpdate();
       }
       flushText();
-      if (!signal.aborted) {
+      if (!session.signal.aborted) {
         if (parts.length > 0) pushUpdate();
 
         // SSE-02: Detect connection drop (stream ended without finish event).
         const isError = store.get().agents[agent]?.connectionPhase === "error";
         const effectiveSessionId = receivedSessionId ?? store.get().agents[agent]?.activeSessionId;
         if (!isError && !receivedFinishEvent && effectiveSessionId) {
-          scheduleReconnect(agent, effectiveSessionId, reconnectAttempt);
+          scheduleReconnect(agent, session, effectiveSessionId, reconnectAttempt);
           return;
         }
 
         if (!isError) {
-          update(agent, {
+          session.write({
             connectionPhase: "idle",
             connectionError: null,
             reconnectAttempt: 0,
@@ -859,7 +847,7 @@ export function createStreamingRenderer(store: StoreAccess) {
         // generation check.
         if (
           st &&
-          st.streamGeneration === generation &&
+          session.isCurrent &&
           (!receivedSessionId ||
             !st.activeSessionId ||
             st.activeSessionId === receivedSessionId)
@@ -877,13 +865,13 @@ export function createStreamingRenderer(store: StoreAccess) {
             existing >= 0
               ? currentMessages.map((m: ChatMessage, i: number) => (i === existing ? assistantMsg : m))
               : [...currentMessages, assistantMsg];
-          update(agent, { messageSource: { mode: "live", messages: updated } });
+          session.write({ messageSource: { mode: "live", messages: updated } });
         }
       }
     }
 
     // Save and invalidate React Query caches, switch to history mode
-    if (!signal.aborted) {
+    if (!session.signal.aborted) {
       if (receivedSessionId) {
         _onSessionId?.(agent, receivedSessionId);
       }
@@ -893,7 +881,7 @@ export function createStreamingRenderer(store: StoreAccess) {
         queryClient.invalidateQueries({ queryKey: qk.sessionMessages(completedSessionId) });
         // Switch to history mode so UI renders from DB rows via convertHistory —
         // identical to what the user sees after F5 reload.
-        update(agent, { messageSource: { mode: "history", sessionId: completedSessionId } });
+        session.write({ messageSource: { mode: "history", sessionId: completedSessionId } });
       }
     }
   }
