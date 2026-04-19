@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef, useState, useEffect, useCallback, useMemo, type ReactNode } from "react";
+import React, { useRef, useState, useEffect, useMemo, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useChatStore } from "@/stores/chat-store";
 import type { ChatMessage } from "@/stores/chat-store";
@@ -9,14 +9,7 @@ import { BarsLoader } from "@/components/ui/loader";
 import { RoleAvatar } from "./ChatThread";
 
 import { MessageItem } from "./MessageItem";
-import { runScrollToBottom } from "./scroll-to-bottom";
-import { attachUserScrollUpDetection } from "./user-scroll-detection";
-import {
-  INITIAL_AUTO_FOLLOW,
-  nextAutoFollow,
-  type AutoFollowEvent,
-  type AutoFollowState,
-} from "./auto-follow-fsm";
+import { useChatAutoscroll } from "./use-chat-autoscroll";
 import { AgentTransitionDivider } from "@/components/chat/AgentTransitionDivider";
 import { useAuthStore } from "@/stores/auth-store";
 import { useSessions } from "@/lib/queries";
@@ -26,13 +19,6 @@ import { useTranslation } from "@/hooks/use-translation";
 
 // ── Animation suppression ──────────────────────────────────────────────────
 
-/**
- * Stream-aware animation gating:
- * - During active streaming (isStreaming=true): NO entrance animations on any message
- * - On history load: NO animations (messages are not "new")
- * - After stream completes: only very recent messages get a brief entrance animation
- *   (detected by: message was created within 2s AND streaming just stopped)
- */
 function isNewMessage(msg: ChatMessage): boolean {
   if (!msg.createdAt) return false;
   return Date.now() - new Date(msg.createdAt).getTime() < 2000;
@@ -67,19 +53,18 @@ function MessageListSkeleton() {
 
 function ThinkingMessage() {
   const currentAgent = useChatStore((s) => s.currentAgent);
-  const displayAgent = currentAgent;
   const agentIcons = useAuthStore((s) => s.agentIcons);
-  const agentIconUrl = displayAgent && agentIcons[displayAgent] ? `/uploads/${agentIcons[displayAgent]}` : null;
+  const agentIconUrl = currentAgent && agentIcons[currentAgent] ? `/uploads/${agentIcons[currentAgent]}` : null;
 
   return (
     <div className="flex gap-3 py-5 md:py-6 border-t border-border/30 dark:border-border/20 animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out">
       <span className="message-avatar">
-        <RoleAvatar role="assistant" iconUrl={agentIconUrl} agentName={displayAgent} />
+        <RoleAvatar role="assistant" iconUrl={agentIconUrl} agentName={currentAgent} />
       </span>
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <div className="message-header min-h-[18px] flex items-center">
           <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">
-            {displayAgent}
+            {currentAgent}
           </span>
         </div>
         <BarsLoader size="sm" className="text-muted-foreground/40 pt-0.5" />
@@ -97,10 +82,6 @@ function ScrollToBottomButton({
   onClick,
   ariaLabel,
 }: {
-  /** Driven by `autoFollow === "off"` — not by layout proximity.
-   * Appears only after the user explicitly scrolled away from the
-   * tail (wheel / touch / keyboard). Transient layout flips during
-   * rapid streaming do NOT toggle this. */
   visible: boolean;
   isStreaming: boolean;
   newTokenCount: number;
@@ -108,7 +89,6 @@ function ScrollToBottomButton({
   ariaLabel: string;
 }) {
   if (!visible) return null;
-
   const badge = newTokenCount > 99 ? "99+" : newTokenCount > 0 ? String(newTokenCount) : null;
 
   return (
@@ -132,7 +112,7 @@ function ScrollToBottomButton({
   );
 }
 
-// ── Virtuoso Header / Footer ───────────────────────────────────────────────
+// ── Header / Footer ────────────────────────────────────────────────────────
 
 function VirtuosoHeader({ hiddenCount, onLoadEarlier }: { hiddenCount: number; onLoadEarlier: () => void }) {
   const { t } = useTranslation();
@@ -167,12 +147,6 @@ function VirtuosoFooter({ turnLimitMessage }: { turnLimitMessage: string | null 
   );
 }
 
-// ── Turn limit selector ───────────────────────────────────────────────────
-
-function useTurnLimitMessage() {
-  return useChatStore((s) => s.agents[s.currentAgent]?.turnLimitMessage ?? null);
-}
-
 // ── Main MessageList component ──────────────────────────────────────────────
 
 export function MessageList({
@@ -193,47 +167,36 @@ export function MessageList({
   onLoadEarlier: () => void;
 }) {
   const { t } = useTranslation();
-  const turnLimitMessage = useTurnLimitMessage();
-  const virtuosoRef = useRef<VirtuosoHandle>(null);
-
-  // ── Auto-follow FSM ────────────────────────────────────────────────────────
-  // Single source of truth for "should the viewport chase the tail?".
-  // Decoupled from `isAtBottom` (layout measurement) — only user intent
-  // events transition off, only explicit rejoin actions transition on.
-  // See `./auto-follow-fsm.ts` + 2026-04-18-auto-follow-fsm-design.md.
-  const [autoFollow, setAutoFollow] = useState<AutoFollowState>(INITIAL_AUTO_FOLLOW);
-  const autoFollowRef = useRef<AutoFollowState>(INITIAL_AUTO_FOLLOW);
-  const dispatchAutoFollow = useCallback((event: AutoFollowEvent) => {
-    const prev = autoFollowRef.current;
-    const next = nextAutoFollow(prev, event);
-    if (next === prev) return;
-    // Update ref synchronously so Virtuoso callbacks / ResizeObserver
-    // reading `autoFollowRef` in the same tick see the latest value.
-    // React state update re-renders consumers that depend on `autoFollow`.
-    autoFollowRef.current = next;
-    setAutoFollow(next);
-  }, []);
-
-  // `isAtBottom` remains as a layout-proximity indicator, used ONLY to
-  // reset the missed-token badge when the user physically catches up
-  // to the tail. It no longer gates auto-scroll behavior.
-  const [, setIsAtBottom] = useState(true);
-
-  // Track tokens received while auto-follow is off (SCRL-03).
-  const [missedTokens, setMissedTokens] = useState(0);
-  const missedTokensRef = useRef(0); // shadow ref to avoid stale closure in effect
-
-  // Hoist session data so individual UserMessage components don't each subscribe
   const currentAgent = useChatStore((s) => s.currentAgent);
-  const activeSessionId = useChatStore((s) => s.agents[s.currentAgent]?.activeSessionId ?? null);
+  const activeSessionId = useChatStore((s) => s.agents[currentAgent]?.activeSessionId ?? null);
+  const turnLimitMessage = useChatStore((s) => s.agents[currentAgent]?.turnLimitMessage ?? null);
+
+  // ── Auto-follow logic ─────────────────────────────────────────────────────
+  const {
+    virtuosoRef,
+    setSentinelEl,
+    setScrollerEl,
+    isAtTail,
+    shouldFollow,
+    missedTokens,
+    scrollToBottom,
+    trackNewTokens,
+  } = useChatAutoscroll(isStreaming, activeSessionId);
+
+  // Sync token growth with the autoscroll hook (O(1) tracking)
+  useEffect(() => {
+    if (messages.length > 0) {
+      const last = messages[messages.length - 1];
+      trackNewTokens(last.id, last.parts.length);
+    }
+  }, [messages, trackNewTokens]);
+
+  // Hoist session data
   const { data: sessionsData } = useSessions(currentAgent ?? "");
   const activeSession = sessionsData?.sessions.find((s) => s.id === activeSessionId);
   const sessionChannel = activeSession?.channel;
   const sessionUserId = activeSession?.user_id;
 
-  // Append a virtual "thinking" item so Virtuoso's followOutput auto-scrolls to it.
-  // This is more reliable than rendering in Footer (which is outside the item list).
-  // Must be defined before effects that reference virtualItems.length.
   const THINKING_ID = "__thinking__";
   const virtualItems = useMemo(() => {
     if (!showThinking) return messages;
@@ -246,117 +209,21 @@ export function MessageList({
     return [...messages, thinkingItem];
   }, [messages, showThinking]);
 
-  // ── ResizeObserver-based scroll anchoring ──────────────────────────────────
-  // Instead of counting parts.length or virtualItems.length, observe the actual
-  // content height. When it grows and user was at bottom → auto-scroll.
-  // This is the pattern used by assistant-ui and Vercel AI SDK.
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-
-    // Find the Virtuoso scroller element (first child with overflow)
-    const scroller = container.querySelector("[data-virtuoso-scroller]") as HTMLElement | null;
-    if (!scroller) return;
-
-    // SCRL-01: Enable CSS overflow-anchor so the browser pins the viewport
-    // to the bottom item while new tokens append during streaming.
-    scroller.style.overflowAnchor = "auto";
-
-    let prevHeight = scroller.scrollHeight;
-
-    const ro = new ResizeObserver(() => {
-      const newHeight = scroller.scrollHeight;
-      if (newHeight > prevHeight && autoFollowRef.current === "on") {
-        // Content grew and auto-follow is on → pin viewport to the
-        // absolute bottom. Direct `scrollTop = scrollHeight` bypasses
-        // Virtuoso's render-cycle lag: under rapid streaming, calling
-        // `scrollToIndex({index: last})` lands at the TOP of the last
-        // item (no `align: "end"`), and as the message body grows the
-        // tail drifts further below the viewport. Once the drift plus
-        // overflow-anchor jitter crosses SCROLL_UP_THRESHOLD_PX the
-        // detector mistakes it for a user scroll-up and kills follow.
-        // Setting scrollTop directly produces a POSITIVE delta in the
-        // detector (newTop > prevTop), so it can never misfire.
-        scroller.scrollTop = scroller.scrollHeight;
-      }
-      prevHeight = newHeight;
-    });
-
-    // Observe the list container (Virtuoso renders items here)
-    const listContainer = scroller.querySelector("[data-viewport-type='element']") as HTMLElement | null;
-    if (listContainer) {
-      ro.observe(listContainer);
-    }
-
-    // Detect user-initiated scroll-up via raw input events (wheel /
-    // touch / keyboard). The previous `isScrolling(false)` + "at bottom?"
-    // heuristic mistook Virtuoso's own programmatic follow-output scrolls
-    // for user scrolls when streaming content grew faster than scroll
-    // animation. See `./user-scroll-detection.ts` for the full contract.
-    const detachInput = attachUserScrollUpDetection(scroller, () => {
-      dispatchAutoFollow({ type: "user_scroll_up" });
-    });
-
-    return () => {
-      ro.disconnect();
-      detachInput();
-    };
-  }, []); // Stable effect — reads current length from ref
-
-  // ── SCRL-03: count tokens that arrived while auto-follow is off ────────────
-  const prevPartsLenRef = useRef(0);
-  useEffect(() => {
-    // Compute total parts across all live messages (proxy for token arrivals)
-    const totalParts = virtualItems.reduce((acc, m) => acc + m.parts.length, 0);
-    if (totalParts > prevPartsLenRef.current && autoFollowRef.current === "off") {
-      const delta = totalParts - prevPartsLenRef.current;
-      missedTokensRef.current += delta;
-      setMissedTokens(missedTokensRef.current);
-    }
-    prevPartsLenRef.current = totalParts;
-  }, [virtualItems]);
-
-  // Force scroll to bottom on session switch.
-  const prevSessionIdRef = useRef(activeSessionId);
-  useEffect(() => {
-    if (prevSessionIdRef.current !== activeSessionId) {
-      prevSessionIdRef.current = activeSessionId;
-      dispatchAutoFollow({ type: "session_switched" });
-      // Wait for Virtuoso to process new data, then scroll to absolute bottom
-      const t = setTimeout(() => virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: "smooth" }), 200);
-      return () => clearTimeout(t);
-    }
-  }, [activeSessionId, dispatchAutoFollow]);
-
-  // Force scroll when stream starts (user submitted a message)
-  const prevStreamingRef = useRef(isStreaming);
-  useEffect(() => {
-    const streamJustStarted = !prevStreamingRef.current && isStreaming;
-    prevStreamingRef.current = isStreaming;
-    if (streamJustStarted && virtualItems.length > 0) {
-      dispatchAutoFollow({ type: "stream_started" });
-      missedTokensRef.current = 0;
-      setMissedTokens(0);
-      virtuosoRef.current?.scrollToIndex({ index: virtualItems.length - 1, align: "end", behavior: "smooth" });
-    }
-  }, [isStreaming, virtualItems.length, dispatchAutoFollow]);
-
-  const scrollToBottom = useCallback(() => {
-    dispatchAutoFollow({ type: "user_requested_tail" });
-    runScrollToBottom(virtuosoRef.current);
-    // SCRL-03: reset missed token counter
-    missedTokensRef.current = 0;
-    setMissedTokens(0);
-  }, [dispatchAutoFollow]);
-
   const virtuosoComponents = useMemo(() => ({
     Header: () => <VirtuosoHeader hiddenCount={hiddenCount} onLoadEarlier={onLoadEarlier} />,
-    Footer: () => <VirtuosoFooter turnLimitMessage={turnLimitMessage} />,
-  }), [hiddenCount, onLoadEarlier, turnLimitMessage]);
+    Footer: () => (
+      <>
+        <VirtuosoFooter turnLimitMessage={turnLimitMessage} />
+        <div
+          ref={setSentinelEl}
+          aria-hidden="true"
+          data-testid="tail-sentinel"
+          style={{ height: 1, width: "100%" }}
+        />
+      </>
+    ),
+  }), [hiddenCount, onLoadEarlier, turnLimitMessage, setSentinelEl]);
 
-  // Loading state — show skeletons while history is being fetched
   if (isLoadingHistory && messages.length === 0) {
     return (
       <div className="flex flex-1 flex-col overflow-y-auto pt-14 lg:pt-0">
@@ -365,7 +232,6 @@ export function MessageList({
     );
   }
 
-  // Empty state
   if (messages.length === 0 && !showThinking) {
     return (
       <div className="flex flex-1 flex-col overflow-y-auto pt-14 lg:pt-0">
@@ -375,38 +241,21 @@ export function MessageList({
   }
 
   return (
-    <div ref={scrollContainerRef} className="flex flex-1 flex-col pt-14 lg:pt-0 relative">
+    <div className="flex flex-1 flex-col pt-14 lg:pt-0 relative overflow-hidden">
       <Virtuoso
         ref={virtuosoRef}
+        scrollerRef={(el) => setScrollerEl(el as HTMLElement)}
         data={virtualItems}
-        computeItemKey={(index, item) => item.id}
+        computeItemKey={(_, item) => item.id}
         defaultItemHeight={120}
         alignToBottom
         skipAnimationFrameInResizeObserver
-        followOutput={() => {
-          // Single source of truth: auto-follow FSM. No branching on
-          // `isStreaming` or `isAtBottom` — intent alone decides.
-          // Use "auto" (instant) not "smooth" — smooth animation lags behind rapid token updates.
-          return autoFollowRef.current === "on" ? "auto" : false;
-        }}
-        atBottomStateChange={(atBottom) => {
-          setIsAtBottom(atBottom);
-          if (atBottom) {
-            // User physically reached the tail (natural scroll catch-up
-            // or programmatic scroll settled). Rejoin auto-follow and
-            // clear the missed-token badge.
-            dispatchAutoFollow({ type: "reached_tail" });
-            missedTokensRef.current = 0;
-            setMissedTokens(0);
-          }
-        }}
+        followOutput={() => (shouldFollow ? "auto" : false)}
         atBottomThreshold={100}
         initialTopMostItemIndex={messages.length > 0 ? messages.length - 1 : 0}
         increaseViewportBy={{ top: 500, bottom: 200 }}
         components={virtuosoComponents}
         itemContent={(index, msg) => {
-          // Virtual thinking item — render the thinking indicator as a data item
-          // so Virtuoso's followOutput auto-scrolls to it
           if (msg.id === THINKING_ID) {
             return (
               <div className="mx-auto w-full max-w-4xl px-3 md:px-6 py-2">
@@ -422,19 +271,13 @@ export function MessageList({
             prev.role === "assistant" &&
             msg.role === "assistant" &&
             !!prev.agentId && !!msg.agentId &&
-            prev.agentId !== msg.agentId &&
-            prev.agentId != null &&
-            msg.agentId != null;
+            prev.agentId !== msg.agentId;
 
-          // Only animate messages that arrived AFTER streaming stopped and are very recent.
-          // ALSO animate the first message of a new agent after an agent switch.
           const isNew = (!isStreaming && isNewMessage(msg)) || (showSeparator && isStreaming);
 
           return (
             <div className="mx-auto w-full max-w-4xl px-3 md:px-6">
-              {showSeparator && (
-                <AgentTransitionDivider agentName={msg.agentId!} />
-              )}
+              {showSeparator && <AgentTransitionDivider agentName={msg.agentId!} />}
               <div className={cn(
                 isNew && "animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out",
                 isStreaming && index === virtualItems.length - 1 && msg.role === "assistant" && "streaming-message",
@@ -447,7 +290,7 @@ export function MessageList({
       />
 
       <ScrollToBottomButton
-        visible={autoFollow === "off"}
+        visible={!isAtTail}
         isStreaming={isStreaming}
         newTokenCount={missedTokens}
         onClick={scrollToBottom}

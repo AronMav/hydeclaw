@@ -1,61 +1,28 @@
 /**
- * Pure FSM tests. No React, no DOM — just the transition function.
- * Pins every cell of the transition table documented in
- * `docs/superpowers/specs/2026-04-18-auto-follow-fsm-design.md` §4.2.
+ * Pure-function tests for the collapsed auto-follow FSM.
+ *
+ * The previous 5-event transition table (user_scroll_up,
+ * user_requested_tail, reached_tail, session_switched, stream_started)
+ * was indirect — every event was a proxy for "did the viewport leave
+ * or return to the tail?". With the IntersectionObserver sentinel
+ * signal that question is answered directly, so the FSM reduces to
+ * a one-line derivation.
  */
 
 import { describe, it, expect } from "vitest";
-import {
-  INITIAL_AUTO_FOLLOW,
-  nextAutoFollow,
-  type AutoFollowState,
-  type AutoFollowEvent,
-} from "../auto-follow-fsm";
+import { autoFollowFrom, type AutoFollowState } from "../auto-follow-fsm";
 
-describe("INITIAL_AUTO_FOLLOW", () => {
-  it("starts in `on` so the tail is followed from first render", () => {
-    expect(INITIAL_AUTO_FOLLOW).toBe("on");
-  });
-});
-
-describe("nextAutoFollow — user_scroll_up", () => {
-  it("on + user_scroll_up -> off", () => {
-    expect(
-      nextAutoFollow("on", { type: "user_scroll_up" }),
-    ).toBe<AutoFollowState>("off");
+describe("autoFollowFrom", () => {
+  it("returns 'on' when the viewport is at the tail", () => {
+    expect(autoFollowFrom(true)).toBe<AutoFollowState>("on");
   });
 
-  it("off + user_scroll_up -> off (idempotent)", () => {
-    expect(
-      nextAutoFollow("off", { type: "user_scroll_up" }),
-    ).toBe<AutoFollowState>("off");
+  it("returns 'off' when the viewport is not at the tail", () => {
+    expect(autoFollowFrom(false)).toBe<AutoFollowState>("off");
   });
-});
 
-describe("nextAutoFollow — rejoin-tail events (all -> on)", () => {
-  const rejoinEvents: AutoFollowEvent[] = [
-    { type: "user_requested_tail" },
-    { type: "reached_tail" },
-    { type: "session_switched" },
-    { type: "stream_started" },
-  ];
-
-  for (const event of rejoinEvents) {
-    it(`on + ${event.type} -> on`, () => {
-      expect(nextAutoFollow("on", event)).toBe<AutoFollowState>("on");
-    });
-    it(`off + ${event.type} -> on`, () => {
-      expect(nextAutoFollow("off", event)).toBe<AutoFollowState>("on");
-    });
-  }
-});
-
-describe("nextAutoFollow — determinism", () => {
-  it("returns the same next state for the same (state, event) pair", () => {
-    const snapshots = Array.from({ length: 10 }, () =>
-      nextAutoFollow("off", { type: "reached_tail" }),
-    );
-    expect(new Set(snapshots).size).toBe(1);
-    expect(snapshots[0]).toBe("on");
+  it("is pure — identical inputs yield identical outputs", () => {
+    expect(autoFollowFrom(true)).toBe(autoFollowFrom(true));
+    expect(autoFollowFrom(false)).toBe(autoFollowFrom(false));
   });
 });

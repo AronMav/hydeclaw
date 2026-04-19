@@ -349,6 +349,34 @@ pub async fn set_session_run_status(db: &PgPool, session_id: Uuid, status: &str)
     Ok(())
 }
 
+/// Transition `run_status` from `'running'` to `new_status`. No-op if the
+/// session is already in any terminal state (`'done'`, `'failed'`,
+/// `'interrupted'`, `'timeout'`, `'cancelled'`).
+///
+/// Used on the cancel-grace path in the chat handler to mark sessions
+/// `'interrupted'` when the user aborted a stream that then exceeded the
+/// grace window — this fires BEFORE `engine_handle.abort()` drops the
+/// `SessionLifecycleGuard`, which in turn uses this same helper so its
+/// `'failed'` fallback cannot overwrite an earlier `'interrupted'`.
+///
+/// Returns the number of rows updated (0 if the session was already
+/// terminal, 1 otherwise).
+pub async fn mark_session_run_status_if_running(
+    db: &PgPool,
+    session_id: Uuid,
+    new_status: &str,
+) -> Result<u64> {
+    let rows = sqlx::query(
+        "UPDATE sessions SET run_status = $1 WHERE id = $2 AND run_status = 'running'"
+    )
+        .bind(new_status)
+        .bind(session_id)
+        .execute(db)
+        .await?
+        .rows_affected();
+    Ok(rows)
+}
+
 /// Touch `activity_at` heartbeat — called from `upsert_streaming_message` every ~2s.
 pub async fn touch_session_activity(db: &PgPool, session_id: Uuid) -> Result<()> {
     sqlx::query("UPDATE sessions SET activity_at = NOW() WHERE id = $1")
