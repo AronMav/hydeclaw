@@ -2,7 +2,8 @@
 // Factory module encapsulating SSE stream processing, rAF throttling,
 // reconnection logic, and per-agent cleanup (MEM-01, PERF-02).
 
-import { parseSSELines, parseSseEvent, parseContentParts } from "@/stores/sse-events";
+import { parseSSELines, parseSseEvent } from "./stream/sse-parser";
+import { parseContentParts } from "@/stores/sse-events";
 import { IncrementalParser } from "@/lib/message-parser";
 import { apiPatch, apiPost, assertToken } from "@/lib/api";
 import { queryClient } from "@/lib/query-client";
