@@ -5,9 +5,10 @@ Credentials are passed in the request body. No environment reads, no secret look
 
 import email as email_lib
 import email.header
-import email.utils
 import imaplib
 import logging
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -72,15 +73,16 @@ def _get_text_body(msg) -> str:
     return payload.decode(charset, errors="replace")
 
 
-def _parse_uid(imap: imaplib.IMAP4_SSL, uid: bytes, snippet_len: int = 300) -> dict:
-    """Fetch and parse one message by UID."""
+def _parse_uid(imap: imaplib.IMAP4_SSL, uid, snippet_len: int = 300) -> dict:
+    """Fetch and parse one message by UID. Accepts bytes or str UID."""
+    uid_str = uid.decode() if isinstance(uid, bytes) else str(uid)
     status, data = imap.fetch(uid, "(RFC822)")
     if status != "OK" or not data or not data[0]:
-        return {"uid": uid.decode(), "error": "failed to fetch"}
+        return {"uid": uid_str, "error": "failed to fetch"}
     raw = data[0][1]
     msg = email_lib.message_from_bytes(raw)
     return {
-        "uid": uid.decode() if isinstance(uid, bytes) else str(uid),
+        "uid": uid_str,
         "from": _decode_header(msg.get("From", "")),
         "subject": _decode_header(msg.get("Subject", "")),
         "date": _decode_header(msg.get("Date", "")),
@@ -88,8 +90,17 @@ def _parse_uid(imap: imaplib.IMAP4_SSL, uid: bytes, snippet_len: int = 300) -> d
     }
 
 
-@router.post("/fetch")
-async def fetch(req: ImapFetchRequest):
+@contextmanager
+def _imap_session(req):
+    """Open IMAP connection, login, select folder. Cleans up on exit.
+
+    The ``req`` object must expose ``server``, ``port``, ``user``, ``password``,
+    and ``folder`` attributes (duck-typed; used with both ImapFetchRequest and
+    ImapSearchRequest).
+
+    Raises HTTPException(502) on connect failure, (401) on auth failure,
+    (404) on folder-not-found.
+    """
     try:
         imap = imaplib.IMAP4_SSL(req.server, req.port)
     except OSError as e:
@@ -101,14 +112,31 @@ async def fetch(req: ImapFetchRequest):
         except imaplib.IMAP4.error as e:
             raise HTTPException(401, f"IMAP auth failed: {e}") from e
 
-        imap.select(req.folder)
+        status, _ = imap.select(req.folder)
+        if status != "OK":
+            raise HTTPException(404, f"IMAP folder not found: {req.folder}")
 
+        yield imap
+    finally:
+        try:
+            imap.close()
+        except Exception:
+            pass
+        try:
+            imap.logout()
+        except Exception:
+            pass
+
+
+@router.post("/fetch")
+async def fetch(req: ImapFetchRequest):
+    """Fetch recent messages from an IMAP folder."""
+    with _imap_session(req) as imap:
         criteria_parts = []
         if req.unread_only:
             criteria_parts.append("UNSEEN")
         if req.since_days is not None:
-            from datetime import datetime, timedelta
-            since_date = (datetime.utcnow() - timedelta(days=req.since_days)).strftime("%d-%b-%Y")
+            since_date = (datetime.now(timezone.utc) - timedelta(days=req.since_days)).strftime("%d-%b-%Y")
             criteria_parts.append(f'SINCE "{since_date}"')
         criteria = " ".join(criteria_parts) or "ALL"
 
@@ -121,34 +149,14 @@ async def fetch(req: ImapFetchRequest):
         messages = [_parse_uid(imap, uid) for uid in reversed(uids)]
 
         return {"messages": messages, "count": len(messages)}
-    finally:
-        try:
-            imap.close()
-        except Exception:
-            pass
-        try:
-            imap.logout()
-        except Exception:
-            pass
 
 
 @router.post("/search")
 async def search(req: ImapSearchRequest):
-    try:
-        imap = imaplib.IMAP4_SSL(req.server, req.port)
-    except OSError as e:
-        raise HTTPException(502, f"IMAP connection failed: {e}") from e
-
-    try:
-        try:
-            imap.login(req.user, req.password)
-        except imaplib.IMAP4.error as e:
-            raise HTTPException(401, f"IMAP auth failed: {e}") from e
-
-        imap.select(req.folder)
-
-        # Use IMAP TEXT search; escape double quotes in query
-        safe_query = req.query.replace('"', '\\"')
+    """Full-text search an IMAP folder."""
+    with _imap_session(req) as imap:
+        # RFC 3501 IMAP quoted-string: escape backslash first, then double quote.
+        safe_query = req.query.replace('\\', '\\\\').replace('"', '\\"')
         status, data = imap.search(None, f'TEXT "{safe_query}"')
         if status != "OK":
             raise HTTPException(502, f"IMAP search failed: {status}")
@@ -158,12 +166,3 @@ async def search(req: ImapSearchRequest):
         messages = [_parse_uid(imap, uid) for uid in reversed(uids)]
 
         return {"messages": messages, "count": len(messages)}
-    finally:
-        try:
-            imap.close()
-        except Exception:
-            pass
-        try:
-            imap.logout()
-        except Exception:
-            pass

@@ -98,3 +98,44 @@ def test_imap_search_happy_path(mock_imap_cls, client):
     data = resp.json()
     assert data["count"] >= 1
     mock_imap.search.assert_called_with(None, 'TEXT "invoice"')
+
+
+@patch("primitives.imap.imaplib.IMAP4_SSL")
+def test_imap_fetch_folder_not_found_returns_404(mock_imap_cls, client):
+    """imap.select() returning NO surfaces as 404, not 200 with empty results."""
+    mock_imap = MagicMock()
+    mock_imap_cls.return_value = mock_imap
+    mock_imap.select.return_value = ("NO", [b"folder does not exist"])
+    mock_imap.close.return_value = ("OK", [])
+    mock_imap.logout.return_value = ("BYE", [])
+
+    resp = client.post("/primitives/imap/fetch", json={
+        "server": "imap.test.com", "port": 993,
+        "user": "me@test.com", "password": "secret",
+        "folder": "DoesNotExist",
+    })
+    assert resp.status_code == 404
+    assert "folder" in resp.json()["detail"].lower()
+
+
+@patch("primitives.imap.imaplib.IMAP4_SSL")
+def test_imap_search_escapes_backslash_and_quote(mock_imap_cls, client):
+    """IMAP TEXT search must escape both backslash and double-quote per RFC 3501."""
+    mock_imap = MagicMock()
+    mock_imap_cls.return_value = mock_imap
+    mock_imap.select.return_value = ("OK", [b"1"])
+    mock_imap.search.return_value = ("OK", [b""])
+    mock_imap.close.return_value = ("OK", [])
+    mock_imap.logout.return_value = ("BYE", [])
+
+    resp = client.post("/primitives/imap/search", json={
+        "server": "imap.test.com", "port": 993,
+        "user": "me@test.com", "password": "secret",
+        "query": r'foo\bar"baz',
+        "limit": 5,
+    })
+
+    assert resp.status_code == 200, resp.text
+    # Backslash escaped first, then quote: foo\bar"baz → foo\\bar\"baz
+    expected_criteria = 'TEXT "foo\\\\bar\\"baz"'
+    mock_imap.search.assert_called_with(None, expected_criteria)
