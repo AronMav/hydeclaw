@@ -29,11 +29,17 @@ def test_imap_fetch_happy_path(mock_imap_cls, client):
     mock_imap = MagicMock()
     mock_imap_cls.return_value = mock_imap
     mock_imap.select.return_value = ("OK", [b"1"])
-    mock_imap.search.return_value = ("OK", [b"42"])
-    mock_imap.fetch.return_value = ("OK", [(
-        b"42 (RFC822 {123}",
-        b"From: sender@test.com\r\nSubject: hi\r\nDate: Mon, 1 Apr 2026 10:00:00 +0000\r\n\r\nbody text"
-    )])
+
+    def _uid_side_effect(cmd, *args):
+        if cmd == "search":
+            return ("OK", [b"42"])
+        if cmd == "fetch":
+            return ("OK", [(
+                b"42 (RFC822 {123}",
+                b"From: sender@test.com\r\nSubject: hi\r\nDate: Mon, 1 Apr 2026 10:00:00 +0000\r\n\r\nbody text"
+            )])
+        raise RuntimeError(f"unexpected uid cmd: {cmd}")
+    mock_imap.uid.side_effect = _uid_side_effect
     mock_imap.close.return_value = ("OK", [])
     mock_imap.logout.return_value = ("BYE", [])
 
@@ -80,11 +86,17 @@ def test_imap_search_happy_path(mock_imap_cls, client):
     mock_imap = MagicMock()
     mock_imap_cls.return_value = mock_imap
     mock_imap.select.return_value = ("OK", [b"1"])
-    mock_imap.search.return_value = ("OK", [b"7 11"])
-    mock_imap.fetch.return_value = ("OK", [(
-        b"11 (RFC822 {80}",
-        b"From: a@b.com\r\nSubject: match\r\nDate: Mon, 1 Apr 2026 10:00:00 +0000\r\n\r\nbody"
-    )])
+
+    def _uid_side_effect(cmd, *args):
+        if cmd == "search":
+            return ("OK", [b"7 11"])
+        if cmd == "fetch":
+            return ("OK", [(
+                b"11 (RFC822 {80}",
+                b"From: a@b.com\r\nSubject: match\r\nDate: Mon, 1 Apr 2026 10:00:00 +0000\r\n\r\nbody"
+            )])
+        raise RuntimeError(f"unexpected uid cmd: {cmd}")
+    mock_imap.uid.side_effect = _uid_side_effect
     mock_imap.close.return_value = ("OK", [])
     mock_imap.logout.return_value = ("BYE", [])
 
@@ -97,7 +109,8 @@ def test_imap_search_happy_path(mock_imap_cls, client):
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["count"] >= 1
-    mock_imap.search.assert_called_with(None, 'TEXT "invoice"')
+    # Verify the CHARSET UTF-8 path was attempted with the query as UTF-8 bytes.
+    mock_imap.uid.assert_any_call("search", "CHARSET", "UTF-8", "TEXT", b"invoice")
 
 
 @patch("primitives.imap.imaplib.IMAP4_SSL")
@@ -120,11 +133,11 @@ def test_imap_fetch_folder_not_found_returns_404(mock_imap_cls, client):
 
 @patch("primitives.imap.imaplib.IMAP4_SSL")
 def test_imap_search_escapes_backslash_and_quote(mock_imap_cls, client):
-    """IMAP TEXT search must escape both backslash and double-quote per RFC 3501."""
+    """CHARSET UTF-8 path passes raw UTF-8 bytes; query with special chars must appear in the call args."""
     mock_imap = MagicMock()
     mock_imap_cls.return_value = mock_imap
     mock_imap.select.return_value = ("OK", [b"1"])
-    mock_imap.search.return_value = ("OK", [b""])
+    mock_imap.uid.return_value = ("OK", [b""])
     mock_imap.close.return_value = ("OK", [])
     mock_imap.logout.return_value = ("BYE", [])
 
@@ -136,6 +149,48 @@ def test_imap_search_escapes_backslash_and_quote(mock_imap_cls, client):
     })
 
     assert resp.status_code == 200, resp.text
-    # Backslash escaped first, then quote: foo\bar"baz → foo\\bar\"baz
-    expected_criteria = 'TEXT "foo\\\\bar\\"baz"'
-    mock_imap.search.assert_called_with(None, expected_criteria)
+    # With CHARSET UTF-8 path, args are: ("search", "CHARSET", "UTF-8", "TEXT", query_bytes)
+    # Verify the primitive attempted UTF-8 first with the raw query bytes (no escaping needed).
+    mock_imap.uid.assert_any_call("search", "CHARSET", "UTF-8", "TEXT", b'foo\\bar"baz')
+
+
+def test_imap_fetch_limit_must_be_at_least_1(client):
+    """limit=0 must be rejected by pydantic (prevents Python list[-0:] full-slice quirk)."""
+    resp = client.post("/primitives/imap/fetch", json={
+        "server": "imap.test.com", "port": 993,
+        "user": "me@test.com", "password": "secret",
+        "limit": 0,
+    })
+    assert resp.status_code == 422
+
+
+@patch("primitives.imap.imaplib.IMAP4_SSL")
+def test_imap_search_falls_back_to_ascii_on_charset_error(mock_imap_cls, client):
+    """If server rejects CHARSET UTF-8, primitive retries with ASCII-only."""
+    import imaplib
+    mock_imap = MagicMock()
+    mock_imap_cls.return_value = mock_imap
+    mock_imap.select.return_value = ("OK", [b"1"])
+    mock_imap.close.return_value = ("OK", [])
+    mock_imap.logout.return_value = ("BYE", [])
+
+    def _uid_side_effect(cmd, *args):
+        if cmd == "search" and len(args) >= 2 and args[0] == "CHARSET":
+            # Server rejects CHARSET UTF-8
+            raise imaplib.IMAP4.error("unsupported charset")
+        if cmd == "search":
+            # ASCII fallback
+            return ("OK", [b""])
+        raise RuntimeError(f"unexpected: {cmd} {args}")
+    mock_imap.uid.side_effect = _uid_side_effect
+
+    resp = client.post("/primitives/imap/search", json={
+        "server": "imap.test.com", "port": 993,
+        "user": "me@test.com", "password": "secret",
+        "query": "hello", "limit": 5,
+    })
+
+    assert resp.status_code == 200, resp.text
+    # Verify both attempts happened: first with CHARSET, then without.
+    call_args = [call.args for call in mock_imap.uid.call_args_list]
+    assert any("CHARSET" in c for c in call_args), f"CHARSET attempt missing: {call_args}"

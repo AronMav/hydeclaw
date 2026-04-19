@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 log = logging.getLogger("toolgate.primitives.imap")
 router = APIRouter(prefix="/primitives/imap", tags=["primitives"])
@@ -24,7 +24,7 @@ class ImapFetchRequest(BaseModel):
     user: str
     password: str
     folder: str = "INBOX"
-    limit: int = 10
+    limit: int = Field(default=10, ge=1, le=500)
     unread_only: bool = True
     since_days: Optional[int] = None
 
@@ -36,7 +36,7 @@ class ImapSearchRequest(BaseModel):
     password: str
     folder: str = "INBOX"
     query: str
-    limit: int = 10
+    limit: int = Field(default=10, ge=1, le=500)
 
 
 def _decode_header(raw) -> str:
@@ -74,9 +74,9 @@ def _get_text_body(msg) -> str:
 
 
 def _parse_uid(imap: imaplib.IMAP4_SSL, uid, snippet_len: int = 300) -> dict:
-    """Fetch and parse one message by UID. Accepts bytes or str UID."""
+    """Fetch and parse one message by UID (uses UID-based fetch for stability)."""
     uid_str = uid.decode() if isinstance(uid, bytes) else str(uid)
-    status, data = imap.fetch(uid, "(RFC822)")
+    status, data = imap.uid("fetch", uid, "(RFC822)")
     if status != "OK" or not data or not data[0]:
         return {"uid": uid_str, "error": "failed to fetch"}
     raw = data[0][1]
@@ -130,7 +130,7 @@ def _imap_session(req):
 
 @router.post("/fetch")
 async def fetch(req: ImapFetchRequest):
-    """Fetch recent messages from an IMAP folder."""
+    """Fetch recent messages from an IMAP folder (UID-based for stability)."""
     with _imap_session(req) as imap:
         criteria_parts = []
         if req.unread_only:
@@ -140,7 +140,7 @@ async def fetch(req: ImapFetchRequest):
             criteria_parts.append(f'SINCE "{since_date}"')
         criteria = " ".join(criteria_parts) or "ALL"
 
-        status, data = imap.search(None, criteria)
+        status, data = imap.uid("search", None, criteria)
         if status != "OK":
             raise HTTPException(502, f"IMAP search failed: {status}")
 
@@ -153,11 +153,17 @@ async def fetch(req: ImapFetchRequest):
 
 @router.post("/search")
 async def search(req: ImapSearchRequest):
-    """Full-text search an IMAP folder."""
+    """Full-text search an IMAP folder (UID-based, with UTF-8 charset declaration + ASCII fallback)."""
     with _imap_session(req) as imap:
-        # RFC 3501 IMAP quoted-string: escape backslash first, then double quote.
-        safe_query = req.query.replace('\\', '\\\\').replace('"', '\\"')
-        status, data = imap.search(None, f'TEXT "{safe_query}"')
+        # Try CHARSET UTF-8 first (needed for Cyrillic/non-ASCII on strict servers).
+        try:
+            status, data = imap.uid("search", "CHARSET", "UTF-8", "TEXT", req.query.encode("utf-8"))
+        except imaplib.IMAP4.error:
+            # Server rejected CHARSET UTF-8 — fall back to ASCII-only.
+            safe_query = req.query.encode("ascii", errors="ignore").decode("ascii") or "ALL"
+            safe_query = safe_query.replace('\\', '\\\\').replace('"', '\\"')
+            status, data = imap.uid("search", None, f'TEXT "{safe_query}"')
+
         if status != "OK":
             raise HTTPException(502, f"IMAP search failed: {status}")
 
