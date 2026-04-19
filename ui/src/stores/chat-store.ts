@@ -2,17 +2,18 @@ import { create } from "zustand";
 import { devtools } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 
-import { apiDelete, apiPatch, apiPost } from "@/lib/api";
+import { apiDelete, apiPatch } from "@/lib/api";
 import { queryClient } from "@/lib/query-client";
 import { qk } from "@/lib/queries";
 
-import { isActivePhase, emptyAgentState, getLiveMessages } from "./chat-types";
-import type { ChatMessage, TextPart, AgentState, ChatStore } from "./chat-types";
+import { emptyAgentState, getLiveMessages } from "./chat-types";
+import type { AgentState, ChatStore } from "./chat-types";
 import { getCachedHistoryMessages } from "./chat-history";
 import { createStreamingRenderer } from "./streaming-renderer";
 import type { StreamingRenderer } from "./streaming-renderer";
 import { saveLastSession } from "./chat-persistence";
 import { createNavigationActions } from "./chat/actions/navigation";
+import { createStreamActions } from "./chat/actions/stream-control";
 
 // ── ActionDeps ──────────────────────────────────────────────────────────────
 // Shared dependency bag passed to every action factory.
@@ -40,15 +41,6 @@ export { saveLastSession, getInitialAgent, getLastSessionId } from "./chat-persi
 export const useChatStore = create<ChatStore>()(
   devtools(
     immer((set, get) => {
-  // ── Internal: ensure agent state exists ──
-  function ensure(agent: string): AgentState {
-    const s = get().agents[agent];
-    if (s) return s;
-    const fresh = emptyAgentState();
-    set((draft) => { draft.agents[agent] = fresh; });
-    return fresh;
-  }
-
   function update(agent: string, patch: Partial<AgentState>) {
     set((draft) => {
       if (!draft.agents[agent]) draft.agents[agent] = emptyAgentState();
@@ -65,6 +57,7 @@ export const useChatStore = create<ChatStore>()(
 
   // ── Action factories ─────────────────────────────────────────────────────
   const navigationActions = createNavigationActions({ get, set, queryClient, renderer });
+  const streamActions = createStreamActions({ get, set, queryClient, renderer });
 
   return {
     agents: {},
@@ -79,6 +72,7 @@ export const useChatStore = create<ChatStore>()(
     },
 
     ...navigationActions,
+    ...streamActions,
 
     refreshHistory: (sessionId: string, _agentName?: string) => {
       // Invalidate React Query cache — useSessionMessages will re-fetch
@@ -118,124 +112,6 @@ export const useChatStore = create<ChatStore>()(
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ model }),
       }).catch((e) => { console.warn("[chat] save failed:", e); }); // fail silently — store already updated optimistically
-    },
-
-    resumeStream: (agent: string, sessionId: string) => renderer.resumeStream(agent, sessionId),
-
-    sendMessage: (text: string, attachments?: Array<any>) => {
-      const store = get();
-      const agent = store.currentAgent;
-      const st = store.agents[agent] ?? emptyAgentState();
-
-      if (isActivePhase(st.connectionPhase)) return;
-
-      let sessionId = st.activeSessionId;
-      let seedMessages: ChatMessage[] = [];
-
-      if (st.messageSource.mode === "history") {
-        // Continue from history — get messages from React Query cache.
-        // Do NOT flip messageSource here; startStream sets messageSource atomically.
-        seedMessages = getCachedHistoryMessages(sessionId, st.selectedBranches);
-      } else if (st.messageSource.mode === "live" && st.messageSource.messages.length > 0) {
-        seedMessages = st.messageSource.messages;
-      }
-
-      renderer.startStream(agent, sessionId, seedMessages, text, attachments);
-    },
-
-    stopStream: () => {
-      const agent = get().currentAgent;
-      // Clear any pending reconnect timer — user abort must not trigger reconnect
-      const stopTimer = renderer.getReconnectTimer(agent);
-      if (stopTimer) {
-        clearTimeout(stopTimer);
-        renderer.setReconnectTimer(agent, null);
-      }
-      renderer.getAbortCtrl(agent)?.abort();
-      update(agent, { connectionPhase: "idle" });
-    },
-
-    regenerate: () => {
-      const store = get();
-      const agent = store.currentAgent;
-      const st = store.agents[agent] ?? emptyAgentState();
-
-      // Abort any active stream first
-      if (isActivePhase(st.connectionPhase)) {
-        renderer.abortActiveStream(agent);
-      }
-
-      let sessionId = st.activeSessionId;
-      let messages: ChatMessage[];
-
-      if (st.messageSource.mode === "history") {
-        // Do NOT flip messageSource here; startStream sets messageSource atomically.
-        messages = getCachedHistoryMessages(sessionId, st.selectedBranches);
-      } else {
-        messages = getLiveMessages(st.messageSource);
-      }
-
-      // Remove last assistant message
-      if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
-        messages = messages.slice(0, -1);
-      }
-
-      // Get last user message text
-      const lastUser = [...messages].reverse().find((m) => m.role === "user");
-      if (!lastUser) return;
-      const userText = lastUser.parts
-        .filter((p): p is TextPart => p.type === "text")
-        .map((p) => p.text)
-        .join("\n");
-
-      // Remove last user message too (startStream will re-add it)
-      messages = messages.slice(0, messages.lastIndexOf(lastUser));
-
-      renderer.startStream(agent, sessionId, messages, userText);
-    },
-
-    regenerateFrom: (messageId: string) => {
-      const store = get();
-      const agent = store.currentAgent;
-      const st = store.agents[agent] ?? emptyAgentState();
-
-      if (isActivePhase(st.connectionPhase)) {
-        renderer.abortActiveStream(agent);
-      }
-
-      let sessionId = st.activeSessionId;
-      let messages: ChatMessage[];
-
-      if (st.messageSource.mode === "history") {
-        // Do NOT flip messageSource here; startStream sets messageSource atomically.
-        messages = getCachedHistoryMessages(sessionId, st.selectedBranches);
-      } else {
-        messages = getLiveMessages(st.messageSource);
-      }
-
-      // Find the target user message and truncate everything after it
-      const targetIdx = messages.findIndex((m) => m.id === messageId);
-      if (targetIdx === -1) {
-        // Fallback to normal regenerate if message not found
-        get().regenerate();
-        return;
-      }
-
-      const targetMsg = messages[targetIdx];
-      if (targetMsg.role !== "user") {
-        get().regenerate();
-        return;
-      }
-
-      const userText = targetMsg.parts
-        .filter((p) => p.type === "text")
-        .map((p) => (p as { text: string }).text)
-        .join("\n");
-
-      // Keep only messages before the target (startStream re-adds the user message)
-      const seedMessages = messages.slice(0, targetIdx);
-
-      renderer.startStream(agent, sessionId, seedMessages, userText);
     },
 
     renameSession: async (sessionId: string, title: string) => {
@@ -337,46 +213,6 @@ export const useChatStore = create<ChatStore>()(
       }
     },
 
-    forkAndRegenerate: async (messageId: string, newContent: string) => {
-      const store = get();
-      const agent = store.currentAgent;
-      const st = store.agents[agent] ?? emptyAgentState();
-      const sessionId = st.activeSessionId;
-      if (!sessionId) return;
-
-      try {
-        const resp = await apiPost<{
-          message_id: string;
-          parent_message_id: string;
-          branch_from_message_id: string;
-        }>(`/api/sessions/${sessionId}/fork`, {
-          branch_from_message_id: messageId,
-          content: newContent,
-        });
-
-        const currentSt = get().agents[agent] ?? emptyAgentState();
-        let messages: ChatMessage[];
-        if (currentSt.messageSource.mode === "history") {
-          messages = getCachedHistoryMessages(sessionId, currentSt.selectedBranches);
-        } else {
-          messages = getLiveMessages(currentSt.messageSource);
-        }
-
-        const forkIdx = messages.findIndex((m) => m.id === messageId);
-        const seedMessages = forkIdx >= 0 ? messages.slice(0, forkIdx) : messages;
-
-        set((draft) => {
-          const s = draft.agents[agent];
-          if (s && resp.parent_message_id) {
-            s.selectedBranches[resp.parent_message_id] = resp.message_id;
-          }
-        });
-
-        renderer.startStream(agent, sessionId, seedMessages, newContent);
-      } catch (e) {
-        console.error("[fork] failed:", e);
-      }
-    },
   };
     }),
     { name: "ChatStore", enabled: process.env.NODE_ENV !== "production" },
