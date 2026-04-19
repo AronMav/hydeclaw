@@ -1,0 +1,14 @@
+data: {"type":"data-session-id","data":{"sessionId":"9c079b94-51bf-49da-8eeb-89e77f192a70"},"transient":true}
+
+data: {"type":"start","messageId":"msg_0a4b6d88-7b8e-4628-9293-602e014014c5","agentName":"Arty"}
+
+data: {"type":"text-start","id":"text-1","agentName":"Arty"}
+
+data: {"type":"text-delta","id":"text-1","delta":"\n\nПринято"}
+
+data: {"type":"text-end","id":"text-1"}
+
+data: {"type":"finish","agentName":"Arty"}
+
+data: [DONE]
+

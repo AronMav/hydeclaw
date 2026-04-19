@@ -1,0 +1,22 @@
+data: {"type":"data-session-id","data":{"sessionId":"9c079b94-51bf-49da-8eeb-89e77f192a70"},"transient":true}
+
+data: {"type":"start","messageId":"msg_373d216b-dba6-41d6-91c7-095e512d1201","agentName":"Arty"}
+
+data: {"type":"tool-input-start","toolCallId":"call_function_nnouk8xqokfm_1","toolName":"get_weather","agentName":"Arty"}
+
+data: {"type":"tool-input-delta","toolCallId":"call_function_nnouk8xqokfm_1","inputTextDelta":"{\"current\":\"temperature_2m,wind_speed_10m,relative_humidity_2m,apparent_temperature\",\"latitude\":55.7558,\"longitude\":37.6173}"}
+
+data: {"type":"tool-input-available","toolCallId":"call_function_nnouk8xqokfm_1","toolName":"get_weather","input":{"current":"temperature_2m,wind_speed_10m,relative_humidity_2m,apparent_temperature","latitude":55.7558,"longitude":37.6173}}
+
+data: {"type":"tool-output-available","toolCallId":"call_function_nnouk8xqokfm_1","output":"{\"time\":\"2026-04-19T17:45\",\"interval\":900,\"temperature_2m\":3.2,\"wind_speed_10m\":6.9,\"relative_humidity_2m\":57,\"apparent_temperature\":-0.5}"}
+
+data: {"type":"text-start","id":"text-1","agentName":"Arty"}
+
+data: {"type":"text-delta","id":"text-1","delta":"\n\nТекущая погода в Москве:\n\n- **Температура:** +3.2°C\n- **Ощущается как:** -0.5°C\n- **Ветер:** 6.9 м/с\n- **Влажность:** 57%\n\nПрохладно, ветрено."}
+
+data: {"type":"text-end","id":"text-1"}
+
+data: {"type":"finish","agentName":"Arty"}
+
+data: [DONE]
+
