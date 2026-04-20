@@ -189,33 +189,29 @@ pub async fn execute<S: EventSink>(
             &mut context_chars,
         );
 
-        // 4. Spawn forwarder — accumulates LLM text chunks and emits a single
-        //    TextDelta once the call completes (batched approach from Task 6a).
-        //    NOTE: The engine_sse.rs path streams each chunk individually via
-        //    the EngineEventSender; we batch here since EventSink is not Clone.
-        let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let (partial_tx, partial_rx) = tokio::sync::oneshot::channel::<String>();
-        tokio::spawn(async move {
-            let mut buf = String::new();
-            while let Some(chunk) = chunk_rx.recv().await {
-                buf.push_str(&chunk);
-            }
-            let _ = partial_tx.send(buf);
-        });
-
-        // 5. Call LLM
+        // 4. Call LLM with a forwarder that emits chunks directly to the sink
+        //    as they arrive. No spawned task, no oneshot, no batching — the
+        //    sink stays owned by `execute` and `forward_chunks_into_sink` drives
+        //    a `tokio::select!` over (chunk_rx, llm_fut) so `TextDelta`s land in
+        //    the sink interleaved with the LLM call. Contract pinned by
+        //    `tests::streams_chunks_individually_during_no_tool_turn` and
+        //    `tests::emits_reasoning_text_before_tool_call` below.
+        let (chunk_tx, chunk_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let provider = engine.cfg().provider.as_ref();
-        let llm_result = crate::agent::pipeline::llm_call::chat_stream_with_transient_retry(
+        let llm_fut = crate::agent::pipeline::llm_call::chat_stream_with_transient_retry(
             provider,
             &mut messages,
             &tools,
             chunk_tx,
             engine,
-        )
-        .await;
+        );
 
-        // Drain forwarder to get accumulated text
-        let partial = partial_rx.await.unwrap_or_default();
+        // 5. Drive the LLM future and the chunk forwarder concurrently.
+        let (llm_result, partial, sink_fatal) =
+            forward_chunks_into_sink(llm_fut, chunk_rx, sink).await;
+        if let Some(e) = sink_fatal {
+            return Err(e);
+        }
 
         // 6. Handle LLM result
         //
@@ -275,29 +271,11 @@ pub async fn execute<S: EventSink>(
             });
         }
 
-        // 7. No tool calls → final text response
+        // 7. No tool calls → final text response.
+        //    `partial` has already been streamed chunk-by-chunk to the sink by
+        //    `forward_chunks_into_sink` during the LLM call — do NOT re-emit a
+        //    batched TextDelta here or the UI will duplicate the whole response.
         if response.tool_calls.is_empty() {
-            // Tokens were batched in `partial` — emit as TextDelta
-            if !partial.is_empty() {
-                match sink
-                    .emit(PipelineEvent::Stream(StreamEvent::TextDelta(partial.clone())))
-                    .await
-                {
-                    Ok(()) => {}
-                    Err(SinkError::Closed) => {
-                        return Ok(ExecuteOutcome {
-                            status: ExecuteStatus::Interrupted("sink_closed"),
-                            session_id,
-                            final_text: partial,
-                            thinking_json: None,
-                            messages_len_at_end: messages.len(),
-                        final_parent_msg_id: last_msg_id,
-                        });
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-            }
-
             final_text = partial;
             final_thinking_blocks = response.thinking_blocks.clone();
 
@@ -353,7 +331,15 @@ pub async fn execute<S: EventSink>(
             "executing tool calls (pipeline)"
         );
 
-        // Content already streamed via chunk forwarder. Push to context for LLM.
+        // `partial` has already been streamed to the sink chunk-by-chunk by
+        // `forward_chunks_into_sink` during the LLM call. We push it into the
+        // in-memory `messages` vec and persist it to DB below for LLM-context
+        // replay — we MUST NOT re-emit it to the sink (the UI would render the
+        // reasoning text twice: once live, once duplicated before the tool card).
+        tracing::debug!(
+            bytes = partial.len(),
+            "reasoning text already streamed to sink during LLM call; persisting to DB only"
+        );
         messages.push(Message {
             role: MessageRole::Assistant,
             content: partial.clone(),
@@ -678,28 +664,57 @@ where
     S: EventSink,
     F: std::future::Future<Output = Result<T, E>>,
 {
-    // RED-phase stub: accumulate all chunks and emit a single batched TextDelta
-    // after the LLM future resolves. This mirrors the current execute.rs
-    // behavior (oneshot + spawned aggregator) and fails the per-chunk contract
-    // tests below. Replaced by tokio::select! in the fix commit.
     tokio::pin!(llm_fut);
-    let res = (&mut llm_fut).await;
     let mut partial = String::new();
-    // Close the sender side implicitly has not happened here — but
-    // chat_stream_with_transient_retry drops chunk_tx on return, so recv()
-    // drains to completion.
-    while let Some(chunk) = chunk_rx.recv().await {
-        partial.push_str(&chunk);
-    }
     let mut first_err: Option<anyhow::Error> = None;
-    if !partial.is_empty() {
-        if let Err(e) = sink.emit(PipelineEvent::Stream(StreamEvent::TextDelta(partial.clone()))).await {
-            match e {
-                SinkError::Closed => {}
-                other => first_err = Some(anyhow::Error::new(other)),
+
+    // Emit a single chunk to the sink, updating `partial` and `first_err`.
+    // Swallows `Closed` (forwarding becomes a no-op for future chunks); records
+    // the first non-Closed SinkError so the caller can surface it after the
+    // LLM future resolves. We intentionally do NOT abort the LLM future on sink
+    // errors — that would leak the in-flight provider call.
+    async fn emit_chunk<S: EventSink>(
+        sink: &mut S,
+        chunk: String,
+        partial: &mut String,
+        first_err: &mut Option<anyhow::Error>,
+    ) {
+        partial.push_str(&chunk);
+        match sink.emit(PipelineEvent::Stream(StreamEvent::TextDelta(chunk))).await {
+            Ok(()) | Err(SinkError::Closed) => {}
+            Err(other) if first_err.is_none() => {
+                *first_err = Some(anyhow::Error::new(other));
             }
+            Err(_) => {}
         }
     }
+
+    let res = loop {
+        tokio::select! {
+            // Bias the branch order so we drain pending chunks before polling
+            // llm_fut again — otherwise a fast LLM that ships tokens and
+            // resolves in the same tick could starve the chunk branch.
+            biased;
+            maybe_chunk = chunk_rx.recv() => {
+                match maybe_chunk {
+                    Some(chunk) => emit_chunk(sink, chunk, &mut partial, &mut first_err).await,
+                    None => {
+                        // Sender dropped; llm_fut must be about to resolve.
+                        // Fall through and let the other branch win next tick.
+                    }
+                }
+            }
+            res = &mut llm_fut => {
+                // Drain any buffered chunks that raced past the select! tick
+                // so we don't lose trailing deltas.
+                while let Ok(chunk) = chunk_rx.try_recv() {
+                    emit_chunk(sink, chunk, &mut partial, &mut first_err).await;
+                }
+                break res;
+            }
+        }
+    };
+
     (res, partial, first_err)
 }
 
@@ -764,7 +779,7 @@ mod tests {
             Ok::<LlmResponse, anyhow::Error>(mk_response(vec![]))
         };
 
-        let mut sink = MockSink::new();
+        let sink = MockSink::new();
         // Run the forwarder and the "signal-done" side in parallel.
         let forward = tokio::spawn(async move {
             let mut s = sink;
