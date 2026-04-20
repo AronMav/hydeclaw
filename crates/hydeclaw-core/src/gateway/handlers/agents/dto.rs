@@ -102,6 +102,44 @@ impl AgentDetailDto {
     }
 }
 
+impl AgentInfoDto {
+    pub fn from_config(
+        cfg: &AgentConfig,
+        routing_count: usize,
+        is_running: bool,
+        config_dirty: bool,
+        base: Option<bool>,
+        pending_delete: Option<bool>,
+    ) -> Self {
+        let a = &cfg.agent;
+        Self {
+            name: a.name.clone(),
+            language: a.language.clone(),
+            model: a.model.clone(),
+            provider: a.provider.clone(),
+            provider_connection: a.provider_connection.clone(),
+            fallback_provider: a.fallback_provider.clone(),
+            icon: a.icon.clone(),
+            temperature: a.temperature,
+            has_access: a.access.is_some(),
+            access_mode: a.access.as_ref().map(|ac| ac.mode.clone()),
+            has_heartbeat: a.heartbeat.is_some(),
+            heartbeat_cron: a.heartbeat.as_ref().map(|h| h.cron.clone()),
+            heartbeat_timezone: a.heartbeat.as_ref().and_then(|h| h.timezone.clone()),
+            tool_policy: a.tools.as_ref().map(|t| AgentInfoToolPolicyDto {
+                allow: t.allow.clone(),
+                deny: t.deny.clone(),
+                allow_all: t.allow_all,
+            }),
+            routing_count,
+            is_running,
+            config_dirty,
+            base,
+            pending_delete,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +164,12 @@ mod tests {
         let cfg = load_fixture("SnapshotFull");
         let dto = AgentDetailDto::from_config(&cfg, false, false, None);
         insta::assert_json_snapshot!("agent_detail_snapshot_full", dto);
+    }
+
+    #[test]
+    fn agent_info_dto_snapshot_min() {
+        let cfg = load_fixture("SnapshotMin");
+        let dto = AgentInfoDto::from_config(&cfg, 0, false, false, Some(false), None);
+        insta::assert_json_snapshot!("agent_info_snapshot_min", dto);
     }
 }

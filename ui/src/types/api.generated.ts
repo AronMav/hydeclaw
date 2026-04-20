@@ -34,3 +34,7 @@ voice?: string, };
 export type GitHubRepo = { id: string, agent_id: string, owner: string, repo: string, added_at: string, };
 
 export type AllowlistEntry = { id: string, agent_id: string, tool_pattern: string, created_at: string, created_by: string | null, };
+
+export type AgentInfoToolPolicyDto = { allow: Array<string>, deny: Array<string>, allow_all: boolean, };
+
+export type AgentInfoDto = { name: string, language: string, model: string, provider: string, provider_connection: string | null, fallback_provider: string | null, icon: string | null, temperature: number, has_access: boolean, access_mode: string | null, has_heartbeat: boolean, heartbeat_cron: string | null, heartbeat_timezone: string | null, tool_policy: AgentInfoToolPolicyDto | null, routing_count: number, is_running: boolean, config_dirty: boolean, base?: boolean, pending_delete?: boolean, };

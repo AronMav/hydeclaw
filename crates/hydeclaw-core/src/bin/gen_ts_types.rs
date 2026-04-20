@@ -13,6 +13,7 @@ use hydeclaw_core::dto_export::{
         AgentDetailHeartbeatDto, AgentDetailHooksDto, AgentDetailRoutingDto, AgentDetailSessionDto,
         AgentDetailToolGroupsDto, AgentDetailToolLoopDto, AgentDetailToolsDto,
         AgentDetailWatchdogDto,
+        AgentInfoDto, AgentInfoToolPolicyDto,
     },
     github_dto::GitHubRepo,
     AllowlistEntry,
@@ -42,7 +43,9 @@ fn main() {
         // Phase C: DB-layer typed structs.
         collect_decl::<GitHubRepo>(),
         collect_decl::<AllowlistEntry>(),
-        // Phase A: add more types here as handlers are migrated to typed DTOs.
+        // Phase A Wave 1: AgentInfo DTO tree — nested type first.
+        collect_decl::<AgentInfoToolPolicyDto>(),
+        collect_decl::<AgentInfoDto>(),
     ];
 
     let header = "// @generated — do not edit by hand.\n\

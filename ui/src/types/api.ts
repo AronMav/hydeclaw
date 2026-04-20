@@ -21,27 +21,10 @@ export interface StatsInfo {
   recent_sessions?: { id: string; agent_id: string; channel: string; last_message_at: string; title: string | null }[];
 }
 
-export interface AgentInfo {
-  name: string;
-  language: string;
-  model: string;
-  provider: string;
-  icon: string | null;
-  temperature: number;
-  has_access: boolean;
-  access_mode: string | null;
-  has_heartbeat: boolean;
-  heartbeat_cron: string | null;
-  heartbeat_timezone: string | null;
-  tool_policy: { allow: string[]; deny: string[]; allow_all: boolean } | null;
-  routing_count: number;
-  is_running: boolean;
-  config_dirty: boolean;
-  pending_delete?: boolean;
-  base?: boolean;
-  provider_connection: string | null;
-  fallback_provider?: string | null;
-}
+// AgentInfo is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/gateway/handlers/agents/dto_structs.rs
+// Regenerate: make gen-types
+export type { AgentInfoDto as AgentInfo } from "./api.generated";
 
 export interface RoutingRule {
   provider: string;

@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::gateway::clusters::{AgentCore, AuthServices, InfraServices, ChannelBus, ConfigServices, StatusMonitor};
 use crate::config::AgentConfig;
-use super::dto::AgentDetailDto;
+use super::dto::{AgentDetailDto, AgentInfoDto};
 use super::schema::*;
 use super::lifecycle::start_agent_from_config;
 
@@ -28,7 +28,7 @@ pub(crate) async fn api_agents(State(agents): State<AgentCore>) -> Json<Value> {
     let agents_map = agents.map.read().await;
 
     let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut agents: Vec<Value> = Vec::new();
+    let mut agents: Vec<AgentInfoDto> = Vec::new();
 
     // Disk configs (may or may not be running)
     for cfg in &disk_configs {
@@ -43,30 +43,14 @@ pub(crate) async fn api_agents(State(agents): State<AgentCore>) -> Json<Value> {
             false
         };
 
-        let agent = &cfg.agent;
-        agents.push(json!({
-            "name": name,
-            "language": agent.language,
-            "model": agent.model,
-            "provider": agent.provider,
-            "provider_connection": agent.provider_connection,
-            "icon": agent.icon,
-            "temperature": agent.temperature,
-            "has_access": agent.access.is_some(),
-            "access_mode": agent.access.as_ref().map(|a| &a.mode),
-            "has_heartbeat": agent.heartbeat.is_some(),
-            "heartbeat_cron": agent.heartbeat.as_ref().map(|h| &h.cron),
-            "heartbeat_timezone": agent.heartbeat.as_ref().and_then(|h| h.timezone.as_deref()),
-            "tool_policy": agent.tools.as_ref().map(|t| json!({
-                "allow": t.allow,
-                "deny": t.deny,
-                "allow_all": t.allow_all,
-            })),
-            "routing_count": agent.routing.len(),
-            "is_running": is_running,
-            "config_dirty": config_dirty,
-            "base": agent.base,
-        }));
+        agents.push(AgentInfoDto::from_config(
+            cfg,
+            cfg.agent.routing.len(),
+            is_running,
+            config_dirty,
+            Some(cfg.agent.base),
+            None,
+        ));
     }
 
     // Running engines with no disk config (deleted while running — shouldn't happen with hot delete)
@@ -74,30 +58,14 @@ pub(crate) async fn api_agents(State(agents): State<AgentCore>) -> Json<Value> {
         if seen_names.contains(name) {
             continue;
         }
-        let agent = &handle.engine.cfg().agent;
-        agents.push(json!({
-            "name": name,
-            "language": agent.language,
-            "model": agent.model,
-            "provider": agent.provider,
-            "provider_connection": agent.provider_connection,
-            "icon": agent.icon,
-            "temperature": agent.temperature,
-            "has_access": agent.access.is_some(),
-            "access_mode": agent.access.as_ref().map(|a| &a.mode),
-            "has_heartbeat": agent.heartbeat.is_some(),
-            "heartbeat_cron": agent.heartbeat.as_ref().map(|h| &h.cron),
-            "heartbeat_timezone": agent.heartbeat.as_ref().and_then(|h| h.timezone.as_deref()),
-            "tool_policy": agent.tools.as_ref().map(|t| json!({
-                "allow": t.allow,
-                "deny": t.deny,
-                "allow_all": t.allow_all,
-            })),
-            "routing_count": agent.routing.len(),
-            "is_running": true,
-            "config_dirty": false,
-            "pending_delete": true,
-        }));
+        agents.push(AgentInfoDto::from_config(
+            &AgentConfig { agent: handle.engine.cfg().agent.clone() },
+            handle.engine.cfg().agent.routing.len(),
+            true,
+            false,
+            None,
+            Some(true),
+        ));
     }
 
     Json(json!({ "agents": agents }))

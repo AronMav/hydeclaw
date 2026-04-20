@@ -168,3 +168,43 @@ pub struct AgentDetailDto {
     #[cfg_attr(feature = "ts-gen", ts(optional))]
     pub voice: Option<String>,
 }
+
+// ── AgentInfo DTOs (GET /api/agents) ────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-gen", ts(export))]
+pub struct AgentInfoToolPolicyDto {
+    pub allow: Vec<String>,
+    pub deny: Vec<String>,
+    pub allow_all: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-gen", ts(export))]
+pub struct AgentInfoDto {
+    pub name: String,
+    pub language: String,
+    pub model: String,
+    pub provider: String,
+    pub provider_connection: Option<String>,
+    pub fallback_provider: Option<String>,
+    pub icon: Option<String>,
+    pub temperature: f64,
+    pub has_access: bool,
+    pub access_mode: Option<String>,
+    pub has_heartbeat: bool,
+    pub heartbeat_cron: Option<String>,
+    pub heartbeat_timezone: Option<String>,
+    pub tool_policy: Option<AgentInfoToolPolicyDto>,
+    pub routing_count: usize,
+    pub is_running: bool,
+    pub config_dirty: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-gen", ts(optional))]
+    pub base: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-gen", ts(optional))]
+    pub pending_delete: Option<bool>,
+}
