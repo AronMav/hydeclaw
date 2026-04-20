@@ -133,7 +133,15 @@ function detailToForm(d: AgentDetail): FormState {
     sessionDmScope: d.session?.dm_scope ?? "per-channel-peer",
     sessionTtlDays: String(d.session?.ttl_days ?? 30),
     sessionMaxMessages: String(d.session?.max_messages ?? 0),
-    routing: d.routing || [],
+    // Map AgentDetailRoutingDto (connection field) → RoutingRule (provider field)
+    // for the form editor. The write path (formToPayload) sends back `provider`.
+    routing: (d.routing || []).map((r) => ({
+      provider: r.connection ?? "",
+      model: r.model ?? "",
+      condition: r.condition,
+      temperature: r.temperature ?? null,
+      cooldown_secs: r.cooldown_secs,
+    })),
     voice: d.voice || "",
     icon: d.icon || "",
     approvalEnabled: !!d.approval?.enabled,

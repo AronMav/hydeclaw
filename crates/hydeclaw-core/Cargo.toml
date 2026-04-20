@@ -11,6 +11,11 @@ path = "src/lib.rs"
 name = "hydeclaw-core"
 path = "src/main.rs"
 
+[[bin]]
+name = "gen_ts_types"
+path = "src/bin/gen_ts_types.rs"
+required-features = ["ts-gen"]
+
 [dependencies]
 # Workspace deps
 tokio = { workspace = true }
@@ -107,9 +112,13 @@ opentelemetry_sdk = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 
+# TypeScript codegen (optional, behind `ts-gen` feature)
+ts-rs = { version = "10", optional = true }
+
 [features]
 default = []
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
+ts-gen = ["dep:ts-rs"]
 
 # Systemd watchdog (Linux-only)
 [target.'cfg(target_os = "linux")'.dependencies]

@@ -56,49 +56,10 @@ export interface RoutingRule {
   cooldown_secs?: number;
 }
 
-export interface AgentDetail {
-  name: string;
-  language: string;
-  provider: string;
-  model: string;
-  icon: string | null;
-  temperature: number;
-  max_tokens: number | null;
-  access: { mode: string; owner_id: string | null } | null;
-  heartbeat: { cron: string; timezone: string | null; announce_to: string | null } | null;
-  tools: {
-    allow: string[]; deny: string[]; allow_all: boolean; deny_all_others: boolean;
-    groups: { git: boolean; tool_management: boolean; skill_editing: boolean; session_tools: boolean };
-  } | null;
-  compaction: {
-    enabled: boolean; threshold: number; preserve_tool_calls: boolean;
-    preserve_last_n: number; max_context_tokens: number | null;
-  } | null;
-  session: {
-    dm_scope: string; ttl_days: number; max_messages: number;
-    prune_tool_output_after_turns: number | null;
-  } | null;
-  max_tools_in_context: number | null;
-  tool_loop: {
-    max_iterations: number; compact_on_overflow: boolean; detect_loops: boolean;
-    warn_threshold: number; break_threshold: number; max_consecutive_failures?: number;
-    max_auto_continues?: number;
-  } | null;
-  routing: RoutingRule[];
-  voice?: string;
-  approval?: {
-    enabled: boolean; require_for: string[]; require_for_categories: string[];
-    timeout_seconds: number;
-  } | null;
-  watchdog?: { inactivity_secs: number } | null;
-  hooks?: { log_all_tool_calls: boolean; block_tools: string[] } | null;
-  max_history_messages?: number | null;
-  daily_budget_tokens?: number;
-  is_running: boolean;
-  config_dirty: boolean;
-  provider_connection: string | null;
-  fallback_provider?: string | null;
-}
+// AgentDetail is now generated from Rust DTOs via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/gateway/handlers/agents/dto.rs
+// Regenerate: make gen-types
+export type { AgentDetailDto as AgentDetail } from "./api.generated";
 
 export interface SessionRow {
   id: string;
