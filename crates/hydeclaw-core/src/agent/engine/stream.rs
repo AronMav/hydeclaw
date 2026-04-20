@@ -142,7 +142,6 @@ impl AgentEngine {
                 .unwrap_or_else(|| "http://localhost:9011".to_string());
             crate::agent::pipeline::subagent::enrich_message_text(
                 self.http_client(),
-                self.ssrf_http_client(),
                 &self.cfg().app_config.gateway.listen,
                 &toolgate_url,
                 &self.cfg().agent.language,

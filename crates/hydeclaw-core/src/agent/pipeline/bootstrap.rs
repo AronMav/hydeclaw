@@ -151,7 +151,6 @@ pub async fn bootstrap<S: EventSink>(
         .unwrap_or_else(|| "http://localhost:9011".to_string());
     let enriched_text = crate::agent::pipeline::subagent::enrich_message_text(
         engine.http_client(),
-        engine.ssrf_http_client(),
         &engine.cfg().app_config.gateway.listen,
         &toolgate_url,
         &engine.cfg().agent.language,

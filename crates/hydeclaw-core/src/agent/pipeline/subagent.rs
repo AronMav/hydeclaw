@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 
-use crate::agent::url_tools::{enrich_with_attachments, extract_readable_text, extract_urls};
+use crate::agent::url_tools::{enrich_with_attachments, extract_urls};
 
 /// Tools denied to subagents by default (prevent recursive spawning, destructive operations, and dangerous ops).
 /// workspace_write and workspace_edit are allowed so subagents can write shared state files (SUB-01).
@@ -28,86 +28,123 @@ pub(crate) fn parse_subagent_timeout(s: &str) -> std::time::Duration {
     std::time::Duration::from_secs(120) // default 2m
 }
 
-/// Fetch URL content, extract readable text, truncate for LLM context.
+/// Delegate HTML readability extraction to toolgate's unified `POST /web` endpoint
+/// (`mode: "read"`). Toolgate handles SSRF validation + 2 MiB body cap + readability
+/// extraction via `readability-lxml`, returning `{title, content, url}`.
+///
+/// Returns `Ok("")` when both `title` and `content` are absent (e.g. paywalled page),
+/// `Err` on network failure or non-2xx response. Never panics.
+async fn fetch_via_toolgate_web(
+    http_client: &reqwest::Client,
+    toolgate_url: &str,
+    url: &str,
+    timeout_secs: u64,
+) -> Result<String> {
+    let endpoint = format!("{}/web", toolgate_url.trim_end_matches('/'));
+    let resp = http_client
+        .post(&endpoint)
+        .json(&serde_json::json!({
+            "url": url,
+            "mode": "read",
+            "timeout": timeout_secs,
+        }))
+        .timeout(std::time::Duration::from_secs(timeout_secs + 5))
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("toolgate /web request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("toolgate /web HTTP {status}: {body}");
+    }
+
+    #[derive(serde::Deserialize)]
+    struct WebResp {
+        title: Option<String>,
+        content: Option<String>,
+    }
+    let parsed: WebResp = resp
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("toolgate /web bad JSON: {e}"))?;
+
+    let mut out = String::new();
+    if let Some(t) = parsed.title.as_deref() {
+        let t = t.trim();
+        if !t.is_empty() {
+            out.push_str(&format!("Title: {t}\n"));
+        }
+    }
+    if let Some(c) = parsed.content {
+        out.push_str(&c);
+    }
+    Ok(out)
+}
+
+/// Fetch URL content via toolgate `/web` (readability mode), truncate for LLM context.
 /// Uses 10s timeout to avoid blocking message processing on slow URLs.
 ///
 /// `gateway_listen` is the gateway listen address (e.g. "0.0.0.0:18789") used to
-/// determine whether a URL targets the Core API (exempt from SSRF checks).
+/// short-circuit Core API self-calls (`/api/doctor` etc.) — those bypass toolgate
+/// and use the plain `http_client` directly.
+///
+/// SSRF + size-limit enforcement for external URLs is toolgate's responsibility
+/// (`validate_url_ssrf` + `download_limited(max_bytes=2 MiB)` in `routers/fetch.py`).
 pub async fn fetch_url_content(
     http_client: &reqwest::Client,
-    ssrf_http_client: &reqwest::Client,
+    toolgate_url: &str,
     gateway_listen: &str,
     url: &str,
 ) -> Result<String> {
     // Only allow localhost on Core API port — block access to internal services.
     // Parse port from gateway listen address (e.g. "0.0.0.0:18789" → 18789)
-    let core_port = gateway_listen.rsplit(':').next()
-        .and_then(|p| p.parse::<u16>().ok()).unwrap_or(18789);
+    let core_port = gateway_listen
+        .rsplit(':')
+        .next()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(18789);
     let is_core_api = url.starts_with(&format!("http://localhost:{}", core_port))
         || url.starts_with(&format!("http://127.0.0.1:{}", core_port));
 
-    if !is_core_api {
-        // SSRF protection: scheme + internal blocklist check (sync),
-        // private IP blocking is handled by ssrf_http_client's DNS resolver.
-        crate::tools::ssrf::validate_url_scheme(url)?;
-    }
-
-    let client = if is_core_api { http_client } else { ssrf_http_client };
-    let resp = client
-        .get(url)
-        .header("User-Agent", "HydeClaw/0.1 (link-preview)")
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await?;
-
-    if !resp.status().is_success() {
-        anyhow::bail!("HTTP {}", resp.status());
-    }
-
-    // Skip non-HTML content (PDFs, images, etc.)
-    let ct = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if !ct.contains("text/html") && !ct.contains("text/plain") {
-        anyhow::bail!("non-HTML content: {}", ct);
-    }
-
-    // OOM guard: reject responses larger than 512KB before reading into memory
-    const BODY_LIMIT: u64 = 512 * 1024;
-    if let Some(cl) = resp.content_length()
-        && cl > BODY_LIMIT {
-            anyhow::bail!("response too large ({} bytes, limit {})", cl, BODY_LIMIT);
+    // Core API self-call: bypass toolgate, fetch directly. Toolgate's SSRF guard
+    // would reject the Pi's loopback anyway.
+    let text = if is_core_api {
+        let resp = http_client
+            .get(url)
+            .header("User-Agent", "HydeClaw/0.1 (link-preview)")
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("HTTP {}", resp.status());
         }
-
-    let body = resp.text().await?;
-    // Truncate body if Content-Length was missing/inaccurate
-    let body = if body.len() > BODY_LIMIT as usize {
-        let boundary = body.floor_char_boundary(BODY_LIMIT as usize);
-        body[..boundary].to_string()
+        resp.text().await?
     } else {
-        body
+        fetch_via_toolgate_web(http_client, toolgate_url, url, 10).await?
     };
-
-    // Extract readable content (removes nav, header, footer, ads, etc.)
-    let text = extract_readable_text(&body);
 
     // Truncate to ~4000 bytes for LLM context (safe UTF-8 boundary)
     let truncated = if text.len() > 4000 {
         let boundary = text.floor_char_boundary(4000);
-        format!("{}...\n[truncated, {} characters total]", &text[..boundary], text.chars().count())
+        format!(
+            "{}...\n[truncated, {} characters total]",
+            &text[..boundary],
+            text.chars().count()
+        )
     } else {
         text
     };
 
-    Ok(crate::tools::content_security::wrap_external_content(&truncated, &format!("web_fetch:{}", url)))
+    Ok(crate::tools::content_security::wrap_external_content(
+        &truncated,
+        &format!("web_fetch:{}", url),
+    ))
 }
 
 /// Enrich user text: auto-fetch URLs (max 2), add attachment descriptions.
 pub async fn enrich_message_text(
     http_client: &reqwest::Client,
-    ssrf_http_client: &reqwest::Client,
     gateway_listen: &str,
     toolgate_url: &str,
     agent_language: &str,
@@ -125,7 +162,7 @@ pub async fn enrich_message_text(
 
     let urls: Vec<String> = extract_urls(user_text);
     for url in urls.iter().take(2) {
-        match fetch_url_content(http_client, ssrf_http_client, gateway_listen, url).await {
+        match fetch_url_content(http_client, toolgate_url, gateway_listen, url).await {
             Ok(content) => {
                 tracing::info!(url = %url, len = content.len(), "fetched URL content");
                 enriched.push_str(&format!("\n\n[Content of URL {}]:\n{}", url, content));
@@ -146,9 +183,14 @@ pub async fn enrich_message_text(
 }
 
 /// Fetch a URL and return text content (tool handler).
+///
+/// Delegates HTML readability extraction to toolgate `POST /web` (mode=read) for
+/// all non-core-api URLs. Toolgate handles SSRF validation + 2 MiB body cap.
+/// Core API self-calls (`/api/doctor` on loopback at the configured core port)
+/// bypass toolgate and use `http_client` directly.
 pub async fn handle_web_fetch(
     http_client: &reqwest::Client,
-    ssrf_http_client: &reqwest::Client,
+    toolgate_url: &str,
     gateway_listen: &str,
     args: &serde_json::Value,
 ) -> String {
@@ -167,69 +209,61 @@ pub async fn handle_web_fetch(
     // Only allow localhost on Core API port (18789) — block access to internal services
     // like toolgate (9011), postgres, redis, etc.
     // Parse port from gateway listen address (e.g. "0.0.0.0:18789" → 18789)
-    let core_port = gateway_listen.rsplit(':').next()
-        .and_then(|p| p.parse::<u16>().ok()).unwrap_or(18789);
+    let core_port = gateway_listen
+        .rsplit(':')
+        .next()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(18789);
     let is_core_api = url.starts_with(&format!("http://localhost:{}", core_port))
         || url.starts_with(&format!("http://127.0.0.1:{}", core_port));
 
-    if !is_core_api {
-        // SSRF protection: scheme + internal blocklist (sync);
-        // private IP blocking via ssrf_http_client's DNS resolver.
-        if let Err(e) = crate::tools::ssrf::validate_url_scheme(url) {
-            return format!("Error: {}", e);
+    let text = if is_core_api {
+        // Core API self-call — bypass toolgate, fetch raw body directly.
+        let resp = match http_client
+            .get(url)
+            .header("User-Agent", "HydeClaw/1.0")
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => return format!("Error fetching URL: {}", e),
+        };
+        if !resp.status().is_success() {
+            return format!("HTTP error {}", resp.status());
         }
-    }
-
-    let client = if is_core_api { http_client } else { ssrf_http_client };
-    let resp = match client.get(url)
-        .header("User-Agent", "HydeClaw/1.0")
-        .timeout(std::time::Duration::from_secs(30))
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return format!("Error fetching URL: {}", e),
-    };
-
-    if !resp.status().is_success() {
-        return format!("HTTP error {}", resp.status());
-    }
-
-    let ct = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-
-    // Guard against unbounded response bodies (OOM protection).
-    // Allow 2x max_length to account for HTML tags stripped during extraction.
-    let body_limit = max_length * 2;
-    if let Some(cl) = resp.content_length()
-        && cl as usize > body_limit {
+        // Guard against unbounded response bodies (OOM protection).
+        let body_limit = max_length * 2;
+        if let Some(cl) = resp.content_length()
+            && cl as usize > body_limit
+        {
             return format!("Error: response too large ({} bytes, limit {})", cl, body_limit);
         }
-
-    let body = match resp.text().await {
-        Ok(t) if t.len() > body_limit => {
-            let boundary = t.floor_char_boundary(body_limit);
-            t[..boundary].to_string()
+        match resp.text().await {
+            Ok(t) if t.len() > body_limit => {
+                let boundary = t.floor_char_boundary(body_limit);
+                t[..boundary].to_string()
+            }
+            Ok(t) => t,
+            Err(e) => return format!("Error reading response: {}", e),
         }
-        Ok(t) => t,
-        Err(e) => return format!("Error reading response: {}", e),
-    };
-
-    // Extract readable text from HTML; pass through JSON/plain text as-is
-    let text = if ct.contains("text/html") {
-        extract_readable_text(&body)
     } else {
-        body
+        // External URL — delegate to toolgate /web (readability + SSRF + size cap).
+        match fetch_via_toolgate_web(http_client, toolgate_url, url, 30).await {
+            Ok(t) => t,
+            Err(e) => return format!("Error: {}", e),
+        }
     };
 
     // Truncate if too long (safe UTF-8 boundary)
     let trimmed = if text.len() > max_length {
         let boundary = text.floor_char_boundary(max_length);
-        format!("{}...\n\n[Truncated at {} chars, total {}]", &text[..boundary], max_length, text.len())
+        format!(
+            "{}...\n\n[Truncated at {} chars, total {}]",
+            &text[..boundary],
+            max_length,
+            text.len()
+        )
     } else {
         text
     };
