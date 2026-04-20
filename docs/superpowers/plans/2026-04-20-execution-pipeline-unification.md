@@ -77,19 +77,30 @@ Porting errors are caught by the snapshot tests from Task 1. If a snapshot fails
 
 ### Steps
 
-- [ ] **Step 1: Inspect reference integration test for AgentEngine construction pattern**
+- [ ] **Step 1: Find the canonical AgentEngine construction for tests**
 
-Run: `grep -rln 'AgentEngine::' crates/hydeclaw-core/tests/`
-Read the first matching file end-to-end. The exact construction may vary between tests; pick the shortest one as a template.
+Run these two greps in parallel:
 
-If no test constructs `AgentEngine` directly, search lib tests: `grep -rn 'fn build_engine\|AgentEngine::new' crates/hydeclaw-core/src/agent/` — there is likely a test helper in `src/agent/engine/mod.rs` under `#[cfg(test)]`.
+```bash
+grep -rln 'AgentEngine::new\|Arc::new(AgentEngine' crates/hydeclaw-core/tests/ crates/hydeclaw-core/src/agent/
+grep -rln 'fn build_engine\|fn make_engine\|fn test_engine' crates/hydeclaw-core/
+```
 
-Treat whichever pattern you find as the canonical construction for `pipeline_helpers::build_test_engine`.
+Expected: at least one match — either in an existing integration test (e.g. `tests/integration_*.rs`) or a `#[cfg(test)]` helper inside `src/agent/engine/mod.rs` or `src/agent/engine/context_builder.rs`.
+
+Open the shortest match. Note the exact construction sequence: which builder is called, how `db`, `provider`, `memory_store`, `agent_config`, `hooks`, `tool_loop_config` are assembled, and whether `Arc::new` wraps the result.
+
+This is the canonical pattern — **your `build_test_engine` copies this verbatim**. Do not invent a new construction path.
 
 - [ ] **Step 2: Create `tests/support/pipeline_helpers.rs`**
 
 ```rust
 //! Shared helpers for pipeline integration and snapshot tests.
+//!
+//! `build_test_engine` is a verbatim copy of the canonical AgentEngine test
+//! construction identified in Step 1. If that reference changes shape
+//! (fields added/removed in AgentConfig, new required trait objects),
+//! update this helper in lockstep.
 
 use hydeclaw_core::agent::engine::{AgentEngine, StreamEvent};
 use hydeclaw_core::agent::engine_event_sender::EngineEventSender;
@@ -99,24 +110,27 @@ use std::sync::Arc;
 
 use super::mock_provider::MockProvider;
 
-/// Build a minimal `AgentEngine` for integration tests.
-///
-/// Uses the construction pattern from the first test in the repo that
-/// builds an engine (see Step 1 of Task 1 for the source reference).
-/// The provider is the `MockProvider` from `tests/support/mock_provider.rs`.
 pub async fn build_test_engine(db: PgPool, provider: MockProvider) -> Arc<AgentEngine> {
-    // IMPLEMENTER: replace the body with the construction code from the
-    // reference test identified in Step 1. The Arc-wrapping convention is
-    // used by the gateway — keep it.
+    // STEP 1 OUTPUT GOES HERE. The exact shape depends on the reference
+    // construction found in Step 1 — typical skeleton:
     //
-    // Required config for tests:
-    //   - agent.name = "test-agent"
-    //   - limits.max_agent_turns = 5 (default)
-    //   - tool_loop defaults
-    //   - empty memory store (use NoOpMemoryStore or similar from tests/support/)
+    //   let agent_config = hydeclaw_core::agent::agent_config::AgentConfig {
+    //       agent: /* minimal AgentSettings with name = "test-agent" */,
+    //       db: db.clone(),
+    //       provider: Arc::new(provider) as Arc<dyn LlmProvider>,
+    //       memory_store: Arc::new(/* NoOpMemoryStore or equivalent */),
+    //       approval_manager: /* default */,
+    //       config: /* default HydeClawConfig */,
+    //   };
+    //   let agent_state = hydeclaw_core::agent::agent_state::AgentState::new(
+    //       /* empty processing_tracker, empty ui_event_tx */
+    //   );
+    //   let hooks = /* default HooksRegistry */;
+    //   Arc::new(AgentEngine::new(agent_config, agent_state, hooks))
     //
-    // Return Arc<AgentEngine>.
-    unreachable!("Step 1 required: copy reference construction into this function body")
+    // The actual field names and method signatures come from Step 1's reference.
+    // Keep the helper under 30 LOC.
+    panic!("Task 1 Step 1: copy reference construction here. See the grep output.");
 }
 
 /// Drain an SSE receiver into a Vec until the sender drops.
@@ -768,71 +782,101 @@ pub mod finalize;
 
 - [ ] **Step 7: Unit tests for `finalize` via MockSink**
 
-Append to `finalize.rs` at the bottom:
+These tests require `FinalizeContext` which holds `Arc<dyn LlmProvider>` and `Arc<dyn MemoryService>`. Instead of duplicating fixture wiring inside `src/agent/pipeline/finalize.rs`, the tests live in `crates/hydeclaw-core/tests/pipeline_finalize.rs` where they can reuse `support::pipeline_helpers::build_test_engine` from Task 1.
+
+Create `crates/hydeclaw-core/tests/pipeline_finalize.rs`:
 
 ```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::agent::pipeline::sink::test_support::MockSink;
-    use crate::agent::pipeline::sink::PipelineEvent;
-    use crate::agent::engine::stream::StreamEvent;
+//! Integration tests for pipeline::finalize.
 
-    fn build_ctx<'a>(
-        db: PgPool, session_id: Uuid, msg: &'a IncomingMessage,
-    ) -> FinalizeContext<'a> {
-        // IMPLEMENTER: use the same construction pattern as pipeline_helpers
-        // from Task 1 for provider/memory_store. Tests only need Arc<dyn ...>
-        // values that do not actually get called on Failed/Interrupted paths.
-        unreachable!("fill with Arc<dyn LlmProvider> / Arc<dyn MemoryService> via test fixtures")
-    }
+mod support;
 
-    #[sqlx::test(migrations = "../../migrations")]
-    async fn finalize_failed_emits_error_and_saves_partial(pool: PgPool) {
-        use crate::db::sessions::get_or_create_session;
-        let session_id = get_or_create_session(&pool, "test-agent", None, None, None, false).await.unwrap();
+use hydeclaw_core::agent::pipeline::finalize::{self, FinalizeContext, FinalizeOutcome};
+use hydeclaw_core::agent::pipeline::sink::test_support::MockSink;
+use hydeclaw_core::agent::pipeline::sink::PipelineEvent;
+use hydeclaw_core::agent::engine::stream::StreamEvent;
+use hydeclaw_core::agent::session_manager::SessionLifecycleGuard;
+use hydeclaw_types::IncomingMessage;
+use sqlx::PgPool;
+use support::mock_provider::MockProvider;
+use support::pipeline_helpers::{build_test_engine, user_msg};
 
-        let msg = IncomingMessage { text: Some("hi".into()), ..Default::default() };
-        let ctx = build_ctx(pool.clone(), session_id, &msg);
-        let mut guard = SessionLifecycleGuard::new(pool.clone(), session_id);
-        let mut sink = MockSink::new();
+#[sqlx::test(migrations = "../../migrations")]
+async fn finalize_failed_emits_error_and_saves_partial(pool: PgPool) {
+    // --- Arrange ---
+    let engine = build_test_engine(pool.clone(), MockProvider::new()).await;
+    let session_id = hydeclaw_core::db::sessions::get_or_create_session(
+        &pool, "test-agent", None, None, None, false,
+    ).await.unwrap();
+    let msg = user_msg("hi");
+    let ctx = finalize::finalize_context_from_engine(&engine, session_id, 1, &msg);
+    let mut guard = SessionLifecycleGuard::new(pool.clone(), session_id);
+    let mut sink = MockSink::new();
 
-        let text = finalize(ctx,
-            FinalizeOutcome::Failed { partial: "partial".into(), reason: "llm_exhausted".into() },
-            &mut sink, &mut guard,
-        ).await.unwrap();
+    // --- Act ---
+    let text = finalize::finalize(ctx,
+        FinalizeOutcome::Failed { partial: "partial".into(), reason: "llm_exhausted".into() },
+        &mut sink, &mut guard,
+    ).await.unwrap();
 
-        assert_eq!(text, "partial");
-        assert!(sink.events.iter().any(|e| matches!(e, PipelineEvent::Stream(StreamEvent::Error(_)))),
-            "Error event emitted");
-        let role: String = sqlx::query_scalar(
-            "SELECT role FROM messages WHERE session_id = $1 ORDER BY created_at DESC LIMIT 1"
-        ).bind(session_id).fetch_one(&pool).await.unwrap();
-        assert_eq!(role, "assistant", "partial saved as assistant message");
-    }
+    // --- Assert ---
+    assert_eq!(text, "partial");
+    assert!(sink.events.iter().any(|e| matches!(e, PipelineEvent::Stream(StreamEvent::Error(_)))),
+        "Error event emitted");
+    let role: String = sqlx::query_scalar(
+        "SELECT role FROM messages WHERE session_id = $1 ORDER BY created_at DESC LIMIT 1"
+    ).bind(session_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(role, "assistant", "partial saved as assistant message");
+}
 
-    #[sqlx::test(migrations = "../../migrations")]
-    async fn finalize_interrupted_does_not_emit_error(pool: PgPool) {
-        use crate::db::sessions::get_or_create_session;
-        let session_id = get_or_create_session(&pool, "test-agent", None, None, None, false).await.unwrap();
+// Structurally identical to finalize_failed_emits_error_and_saves_partial;
+// differs only in:
+//   - FinalizeOutcome variant: Interrupted { partial: "p", reason: "sink_closed" }
+//   - Negative Error assertion: no StreamEvent::Error present in sink.events
+#[sqlx::test(migrations = "../../migrations")]
+async fn finalize_interrupted_does_not_emit_error(pool: PgPool) {
+    let engine = build_test_engine(pool.clone(), MockProvider::new()).await;
+    let session_id = hydeclaw_core::db::sessions::get_or_create_session(
+        &pool, "test-agent", None, None, None, false,
+    ).await.unwrap();
+    let msg = user_msg("hi");
+    let ctx = finalize::finalize_context_from_engine(&engine, session_id, 1, &msg);
+    let mut guard = SessionLifecycleGuard::new(pool.clone(), session_id);
+    let mut sink = MockSink::new();
 
-        let msg = IncomingMessage { text: Some("hi".into()), ..Default::default() };
-        let ctx = build_ctx(pool.clone(), session_id, &msg);
-        let mut guard = SessionLifecycleGuard::new(pool.clone(), session_id);
-        let mut sink = MockSink::new();
+    finalize::finalize(ctx,
+        FinalizeOutcome::Interrupted { partial: "p".into(), reason: "sink_closed" },
+        &mut sink, &mut guard,
+    ).await.unwrap();
 
-        finalize(ctx,
-            FinalizeOutcome::Interrupted { partial: "p".into(), reason: "sink_closed" },
-            &mut sink, &mut guard,
-        ).await.unwrap();
+    assert!(!sink.events.iter().any(|e| matches!(e, PipelineEvent::Stream(StreamEvent::Error(_)))),
+        "no Error event on interrupt");
+}
+```
 
-        assert!(!sink.events.iter().any(|e| matches!(e, PipelineEvent::Stream(StreamEvent::Error(_)))),
-            "no Error event on interrupt");
+Note: `finalize_context_from_engine` is the public helper added in Task 7 Step 1. It is already needed by Tasks 7/8/9, so pulling its signature forward into Task 4 is a natural dependency. Add this helper in this commit (Task 4) instead of Task 7 if the test compilation requires it:
+
+```rust
+// In src/agent/pipeline/finalize.rs, below the `finalize` function:
+pub fn finalize_context_from_engine<'a>(
+    engine: &'a crate::agent::engine::AgentEngine,
+    session_id: Uuid,
+    message_count: usize,
+    msg: &'a IncomingMessage,
+) -> FinalizeContext<'a> {
+    FinalizeContext {
+        db: engine.cfg().db.clone(),
+        session_id,
+        agent_name: engine.cfg().agent.name.clone(),
+        message_count,
+        msg,
+        provider: engine.cfg().provider.clone(),
+        memory_store: engine.cfg().memory_store.clone(),
     }
 }
 ```
 
-The `unreachable!` in `build_ctx` must be filled by the implementer using the same provider/memory fixtures as `pipeline_helpers::build_test_engine` (Task 1 Step 2). This is the fourth place that needs fixtures; expect ~20 LOC of imports + Arc construction.
+(Task 7 Step 1 can then remove its copy and just note "already added in Task 4".)
 
 - [ ] **Step 8: Verify**
 
@@ -990,40 +1034,12 @@ In `pipeline/mod.rs`:
 pub mod bootstrap;
 ```
 
-- [ ] **Step 4: Unit test for bootstrap command early-exit**
-
-Append to `bootstrap.rs`:
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::agent::pipeline::sink::test_support::MockSink;
-
-    #[sqlx::test(migrations = "../../migrations")]
-    async fn bootstrap_detects_slash_command(pool: sqlx::PgPool) {
-        // IMPLEMENTER: build an engine via pipeline_helpers::build_test_engine
-        // (make that helper available to unit tests by adding a cfg(test)
-        // re-export OR duplicate the construction here).
-        //
-        // Then send an IncomingMessage { text: "/help" }, call bootstrap(),
-        // and assert that outcome.command_output.is_some().
-        //
-        // This test can be skipped as #[ignore] if fixture wiring is too
-        // heavy for a lib test; the integration snapshot suite in Task 1
-        // exercises the same path end-to-end.
-    }
-}
-```
-
-The test is documented but deliberately empty — slash-command detection is fully covered by snapshot tests through `handle_sse` in Task 1. Adding a duplicate lib-level test increases infrastructure cost without buying new coverage.
-
-- [ ] **Step 5: Verify**
+- [ ] **Step 4: Verify**
 
 Run: `cd crates/hydeclaw-core && cargo check && cargo clippy --lib -- -D warnings`
 Expected: compiles, zero warnings.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add crates/hydeclaw-core/src/agent/engine/context_builder.rs \
@@ -1031,6 +1047,8 @@ git add crates/hydeclaw-core/src/agent/engine/context_builder.rs \
         crates/hydeclaw-core/src/agent/pipeline/mod.rs
 git commit -m "feat(pipeline): bootstrap() and raise handle_command/build_context visibility"
 ```
+
+*Note:* no dedicated unit test for `bootstrap()` — its happy path is fully exercised by the snapshot suite in Task 1 (which calls `handle_sse` → `handle_with_status` → `handle_streaming`, each of which now routes through `bootstrap`). The slash-command early-exit path is also covered by snapshots via `/help` in the Task 1 SSE snapshot.
 
 ---
 
@@ -1044,10 +1062,30 @@ git commit -m "feat(pipeline): bootstrap() and raise handle_command/build_contex
 
 ### Steps
 
-- [ ] **Step 1: Read the current main loop**
+- [ ] **Step 1: Study the LLM streaming pattern in engine_sse.rs:214-232**
 
-Run: `wc -l crates/hydeclaw-core/src/agent/engine_sse.rs`
-Read lines ~200–900. Note the `while`/`loop` structure, where `event_tx` is called, where `chat_stream_with_transient_retry` is invoked, where tool results are routed. You will port this logic into `execute()` over Task 6a (happy path) and Task 6b (error + tool paths).
+Read `engine_sse.rs:214-232`. The pattern is **spawn-forwarder + await LLM** (NOT `tokio::select!`):
+
+```rust
+// Per-iteration chunk channel — LLM writes here, forwarder task reads.
+let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel::<String>();
+let event_tx_fwd = event_tx.clone();
+tokio::spawn(async move {
+    while let Some(chunk) = chunk_rx.recv().await {
+        if event_tx_fwd.send(StreamEvent::TextDelta(chunk)).is_err() {
+            tracing::debug!("SSE forwarder: event channel closed or full");
+        }
+    }
+});
+let llm_result = self.chat_stream_with_transient_retry(&mut messages, &available_tools, chunk_tx).await;
+```
+
+Key observations:
+- `chat_stream_with_transient_retry` is called as a **method on `AgentEngine`** (wrapper over the free function in `pipeline/llm_call.rs:264`). The wrapper hides the `&impl Compactor` argument.
+- When the LLM finishes and drops `chunk_tx`, `chunk_rx.recv()` returns `None` and the forwarder task terminates naturally. No join needed.
+- Cancellation happens at the loop-top check (`cancel_guard.token.is_cancelled()`), not inside `tokio::select!`.
+
+**Port this pattern in Step 2.** Do NOT introduce `tokio::select!` over the LLM future — that creates a race with the chunk-drain task.
 
 - [ ] **Step 2: Create `pipeline/execute.rs` with happy-path skeleton**
 
@@ -1058,7 +1096,7 @@ Read lines ~200–900. Note the `while`/`loop` structure, where `event_tx` is ca
 //! Porting rules documented at the top of this plan file.
 
 use crate::agent::pipeline::bootstrap::BootstrapOutcome;
-use crate::agent::pipeline::sink::{EventSink, PipelineEvent, SinkError};
+use crate::agent::pipeline::sink::{EventSink, PipelineEvent};
 use crate::agent::engine::stream::StreamEvent;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -1077,9 +1115,9 @@ pub enum ExecuteStatus {
     Interrupted(&'static str),
 }
 
-/// Top-level dispatch. In 6a this only implements the happy path: one LLM call,
-/// text streamed into sink, no tool calls, Finish. Task 6b adds tool loop and
-/// error branches.
+/// Top-level dispatch. In 6a this implements the happy path: one LLM call,
+/// text streamed into sink via a forwarder task, no tool calls, Finish.
+/// Task 6b adds the tool-call iteration loop and error paths.
 pub async fn execute<S: EventSink>(
     engine: &crate::agent::engine::AgentEngine,
     bootstrap_outcome: BootstrapOutcome,
@@ -1094,106 +1132,107 @@ pub async fn execute<S: EventSink>(
         ..
     } = bootstrap_outcome;
 
-    let msg_id = format!("msg_{}", Uuid::new_v4());
-    if let Err(e) = sink.emit(StreamEvent::MessageStart { message_id: msg_id.clone() }.into()).await {
-        return Ok(interrupted(e, session_id, String::new(), None, messages.len()));
-    }
-
-    // Single LLM call (Task 6a scope). Task 6b introduces the iteration loop.
-    // IMPLEMENTER: the following pair must mirror what engine_sse.rs:~220
-    // currently does — call `chat_stream_with_transient_retry` with an
-    // internal chunk channel, forward each chunk into the sink as TextDelta,
-    // accumulate into `partial`.
-    let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-
-    let llm_future = crate::agent::pipeline::llm_call::chat_stream_with_transient_retry(
-        engine.cfg().provider.as_ref(),
-        &mut messages,
-        &tools,
-        chunk_tx,
-        engine, // implements Compactor; check actual signature
-    );
-
-    let mut partial = String::new();
-    let llm_result = tokio::select! {
-        biased;
-        _ = cancel.cancelled() => {
-            return Ok(ExecuteOutcome {
-                status: ExecuteStatus::Interrupted("cancel_token"),
-                session_id, final_text: partial, thinking_json: None,
-                messages_len_at_end: messages.len(),
-            });
-        }
-        res = async {
-            while let Some(delta) = chunk_rx.recv().await {
-                partial.push_str(&delta);
-                if let Err(SinkError::Closed) = sink.emit(StreamEvent::TextDelta(delta).into()).await {
-                    return Err(anyhow::anyhow!("sink_closed_while_streaming"));
-                }
-            }
-            Ok::<(), anyhow::Error>(())
-        } => res,
-        res = llm_future => {
-            // When llm_future finishes, drain any buffered chunks below.
-            res.map(|_| ())
-        }
-    };
-
-    // Drain any remaining buffered chunks after llm_future returns.
-    while let Ok(delta) = chunk_rx.try_recv() {
-        partial.push_str(&delta);
-        let _ = sink.emit(StreamEvent::TextDelta(delta).into()).await;
-    }
-
-    if let Err(e) = llm_result {
-        let reason = e.to_string();
-        if reason == "sink_closed_while_streaming" {
-            return Ok(ExecuteOutcome {
-                status: ExecuteStatus::Interrupted("sink_closed"),
-                session_id, final_text: partial, thinking_json: None,
-                messages_len_at_end: messages.len(),
-            });
-        }
+    if cancel.is_cancelled() {
         return Ok(ExecuteOutcome {
-            status: ExecuteStatus::Failed(reason),
-            session_id, final_text: partial, thinking_json: None,
+            status: ExecuteStatus::Interrupted("cancel_token"),
+            session_id, final_text: String::new(), thinking_json: None,
             messages_len_at_end: messages.len(),
         });
     }
 
-    // Happy path: Finish.
-    let _ = sink.emit(StreamEvent::Finish {
-        finish_reason: "stop".into(), continuation: false,
-    }.into()).await;
+    let msg_id = format!("msg_{}", Uuid::new_v4());
+    if sink.emit(StreamEvent::MessageStart { message_id: msg_id }.into()).await.is_err() {
+        return Ok(ExecuteOutcome {
+            status: ExecuteStatus::Interrupted("sink_closed"),
+            session_id, final_text: String::new(), thinking_json: None,
+            messages_len_at_end: messages.len(),
+        });
+    }
 
-    Ok(ExecuteOutcome {
-        status: ExecuteStatus::Done,
-        session_id, final_text: partial, thinking_json: None,
-        messages_len_at_end: messages.len(),
-    })
-}
+    // ── LLM streaming via spawn-forwarder pattern (mirror of engine_sse.rs:214-232) ──
+    //
+    // `chunk_tx` is handed to chat_stream_with_transient_retry; LLM writes
+    // tokens into it. The forwarder task drains chunk_rx and emits
+    // StreamEvent::TextDelta into the sink. When LLM finishes, it drops
+    // chunk_tx → rx.recv() returns None → forwarder exits cleanly.
+    //
+    // `partial` is accumulated inside the forwarder and returned via oneshot
+    // so execute() can own the final text for finalize().
+    let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (partial_tx, partial_rx) = tokio::sync::oneshot::channel::<Result<String, &'static str>>();
 
-fn interrupted(
-    err: crate::agent::pipeline::sink::SinkError,
-    session_id: Uuid,
-    partial: String,
-    thinking_json: Option<String>,
-    messages_len: usize,
-) -> ExecuteOutcome {
-    let reason: &'static str = match err {
-        crate::agent::pipeline::sink::SinkError::Closed => "sink_closed",
-        crate::agent::pipeline::sink::SinkError::Full   => "sink_full",
-        crate::agent::pipeline::sink::SinkError::Fatal(_) => "sink_fatal",
-    };
-    ExecuteOutcome {
-        status: ExecuteStatus::Interrupted(reason),
-        session_id, final_text: partial, thinking_json,
-        messages_len_at_end: messages_len,
+    // Clone sink into the forwarder. Since EventSink is not Clone in the generic
+    // form, we instead keep sink in execute() and drain-then-emit after LLM done.
+    // This matches engine_sse.rs semantics: chunks are batched by LLM as they
+    // stream, forwarder runs concurrently with the LLM call.
+    //
+    // To avoid the Clone constraint on S, we spawn a forwarder that collects
+    // chunks into a Vec, and after LLM returns we emit them in order. This is
+    // equivalent in observable behaviour because chunk_tx preserves order.
+    //
+    // IMPORTANT: this deliberately forgoes interleaved TextDelta emission to
+    // keep `S: EventSink` non-Clone. Snapshot tests from Task 1 verify the
+    // user-visible shape is unchanged (they assert on concatenated text, not
+    // per-chunk timing).
+    let forwarder = tokio::spawn(async move {
+        let mut buf = String::new();
+        while let Some(chunk) = chunk_rx.recv().await {
+            buf.push_str(&chunk);
+        }
+        let _ = partial_tx.send(Ok(buf));
+    });
+
+    let llm_result = engine
+        .chat_stream_with_transient_retry(&mut messages, &tools, chunk_tx)
+        .await;
+
+    // Forwarder exits when chunk_tx drops inside LLM call; await it to
+    // collect accumulated text.
+    let _ = forwarder.await;
+    let partial = partial_rx.await.unwrap_or_else(|_| Ok(String::new())).unwrap_or_default();
+
+    match llm_result {
+        Ok(_response) => {
+            // Emit the collected text in one TextDelta, then Finish.
+            // If the sink is already closed at this point, downgrade Done to
+            // Interrupted so finalize() takes the partial-save + WAL-interrupted path.
+            // (Task 6b will replace batched TextDelta with per-chunk streaming.)
+            if !partial.is_empty() {
+                if let Err(_) = sink.emit(StreamEvent::TextDelta(partial.clone()).into()).await {
+                    return Ok(ExecuteOutcome {
+                        status: ExecuteStatus::Interrupted("sink_closed"),
+                        session_id, final_text: partial, thinking_json: None,
+                        messages_len_at_end: messages.len(),
+                    });
+                }
+            }
+            if let Err(_) = sink.emit(StreamEvent::Finish {
+                finish_reason: "stop".into(), continuation: false,
+            }.into()).await {
+                return Ok(ExecuteOutcome {
+                    status: ExecuteStatus::Interrupted("sink_closed"),
+                    session_id, final_text: partial, thinking_json: None,
+                    messages_len_at_end: messages.len(),
+                });
+            }
+            Ok(ExecuteOutcome {
+                status: ExecuteStatus::Done,
+                session_id, final_text: partial, thinking_json: None,
+                messages_len_at_end: messages.len(),
+            })
+        }
+        Err(e) => Ok(ExecuteOutcome {
+            status: ExecuteStatus::Failed(e.to_string()),
+            session_id, final_text: partial, thinking_json: None,
+            messages_len_at_end: messages.len(),
+        }),
     }
 }
 ```
 
-**Porting anchor (not a placeholder):** the signature of `chat_stream_with_transient_retry` as of today may require a `&impl Compactor` argument whose exact type differs from `engine`. If the compile fails on that line, refer to `engine_sse.rs` line invoking the same function and copy the call-site verbatim.
+**Design note for Task 6b:** the single-batched `TextDelta` at the end is a Task 6a compromise to keep `S: EventSink` non-Clone. Task 6b replaces this with per-chunk streaming by changing the forwarder to hold `&mut S` through an `Arc<Mutex<S>>` OR by passing sink through an inverted control flow (execute drives the chunk_rx.recv loop itself, LLM runs on a tokio::spawn with its own result oneshot). Task 6b Step 1 decides and documents the choice.
+
+**Signature fact (verified):** `AgentEngine::chat_stream_with_transient_retry(&self, &mut Vec<Message>, &[ToolDefinition], mpsc::UnboundedSender<String>) -> Result<LlmResponse>`. The `&impl Compactor` argument is hidden by the wrapper method. See [engine_sse.rs:231](crates/hydeclaw-core/src/agent/engine_sse.rs#L231) for a live call-site.
 
 - [ ] **Step 3: Register module**
 
@@ -1203,57 +1242,149 @@ In `pipeline/mod.rs`:
 pub mod execute;
 ```
 
-- [ ] **Step 4: Unit tests via MockSink**
+- [ ] **Step 4: Unit tests via MockSink — implement the first test fully, reuse the pattern for the other two**
 
-Append to `execute.rs`:
+These are integration tests (they need `AgentEngine` + `PgPool`), so they live in `crates/hydeclaw-core/tests/pipeline_execute.rs`, not inside `src/agent/pipeline/execute.rs #[cfg(test)]`. This keeps them alongside the Task 1 snapshots with the same `support::` fixtures.
+
+Create `crates/hydeclaw-core/tests/pipeline_execute.rs`:
 
 ```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::agent::pipeline::sink::test_support::MockSink;
+//! Unit tests for pipeline::execute against MockSink.
+//!
+//! Snapshot-level regression is covered by tests/pipeline_snapshots.rs;
+//! these tests target specific invariants of execute() that snapshots
+//! cannot observe directly (status enum, partial on closed sink, cancel).
 
-    // IMPLEMENTER: these tests require a built AgentEngine with a MockProvider.
-    // Use the same pipeline_helpers fixture from Task 1; if lib tests cannot
-    // reach tests/support/, lift a minimal construction helper into
-    // `src/agent/engine/mod.rs #[cfg(test)]` and reuse here.
+mod support;
 
-    #[sqlx::test(migrations = "../../migrations")]
-    async fn execute_happy_path_done(pool: sqlx::PgPool) {
-        // Build engine with MockProvider::new().expect_text("hello", "stop").
-        // Call bootstrap() to get BootstrapOutcome. Call execute() with MockSink.
-        // Assert:
-        //   - status is ExecuteStatus::Done
-        //   - final_text == "hello"
-        //   - sink.stream_shapes() contains MessageStart, TextDelta, Finish in order
-    }
+use hydeclaw_core::agent::pipeline::bootstrap::{self, BootstrapContext};
+use hydeclaw_core::agent::pipeline::execute::{execute, ExecuteStatus};
+use hydeclaw_core::agent::pipeline::sink::test_support::MockSink;
+use hydeclaw_core::agent::pipeline::sink::PipelineEvent;
+use hydeclaw_core::agent::engine::stream::StreamEvent;
+use sqlx::PgPool;
+use support::mock_provider::MockProvider;
+use support::pipeline_helpers::{build_test_engine, user_msg};
 
-    #[sqlx::test(migrations = "../../migrations")]
-    async fn execute_interrupted_on_sink_closed(pool: sqlx::PgPool) {
-        // Build engine with MockProvider::new().expect_text("a long response", "stop").
-        // Use MockSink::close_after(2) — closes after MessageStart + first TextDelta.
-        // Call execute(). Assert:
-        //   - status is ExecuteStatus::Interrupted("sink_closed")
-        //   - partial non-empty
-    }
+#[sqlx::test(migrations = "../../migrations")]
+async fn execute_happy_path_done(pool: PgPool) {
+    // --- Arrange ---
+    let engine = build_test_engine(
+        pool.clone(),
+        MockProvider::new().expect_text("hello", "stop"),
+    ).await;
+    let msg = user_msg("hi");
+    let mut sink = MockSink::new();
 
-    #[sqlx::test(migrations = "../../migrations")]
-    async fn execute_interrupted_on_cancel(pool: sqlx::PgPool) {
-        // Build engine with a provider that hangs (MockProvider::never_responds or similar).
-        // Spawn execute() on a task. After 100ms cancel the token.
-        // Assert status is ExecuteStatus::Interrupted("cancel_token").
+    let boot = bootstrap::bootstrap(
+        &engine,
+        BootstrapContext { msg: &msg, resume_session_id: None, force_new_session: false, use_history: true },
+        &mut sink,
+    ).await.unwrap();
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+
+    // --- Act ---
+    let outcome = execute(&engine, boot, &mut sink, cancel).await.unwrap();
+
+    // --- Assert ---
+    assert!(matches!(outcome.status, ExecuteStatus::Done));
+    assert_eq!(outcome.final_text, "hello");
+
+    let shapes = sink.stream_shapes();
+    // Phase(Thinking) emitted inside bootstrap, then MessageStart/TextDelta/Finish in execute.
+    // stream_shapes() filters Phase out; check the stream-event sequence:
+    let start_idx = shapes.iter().position(|s| *s == "MessageStart").expect("MessageStart emitted");
+    assert_eq!(&shapes[start_idx..],
+        &["MessageStart", "TextDelta", "Finish"],
+        "SSE-like event sequence after MessageStart"
+    );
+}
+
+// Structurally identical to execute_happy_path_done; differs only in:
+//   - sink variant: MockSink::close_after(2) instead of MockSink::new()
+//     (closes the sink after Phase + MessageStart, forcing sink_closed on TextDelta)
+//   - expected status: Interrupted("sink_closed") instead of Done
+//   - expected partial: may be non-empty if LLM had produced any chunk
+//     before the sink closed — treat >=0 len as acceptable
+#[sqlx::test(migrations = "../../migrations")]
+async fn execute_interrupted_on_sink_closed(pool: PgPool) {
+    let engine = build_test_engine(
+        pool.clone(),
+        MockProvider::new().expect_text("some longer text", "stop"),
+    ).await;
+    let msg = user_msg("hi");
+    let mut sink = MockSink::close_after(2); // Thinking phase + MessageStart; next emit returns Closed
+
+    let boot = bootstrap::bootstrap(
+        &engine,
+        BootstrapContext { msg: &msg, resume_session_id: None, force_new_session: false, use_history: true },
+        &mut sink,
+    ).await.unwrap();
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let outcome = execute(&engine, boot, &mut sink, cancel).await.unwrap();
+
+    assert!(matches!(outcome.status, ExecuteStatus::Interrupted("sink_closed")),
+        "expected Interrupted(sink_closed), got {:?}", match &outcome.status {
+            ExecuteStatus::Done => "Done", ExecuteStatus::Failed(_) => "Failed(..)",
+            ExecuteStatus::Interrupted(r) => r,
+        });
+}
+
+// Structurally identical to execute_happy_path_done; differs only in:
+//   - the provider is MockProvider::never_responds() (add this helper in
+//     tests/support/mock_provider.rs if missing — 10-line addition that
+//     returns a future pending forever)
+//   - cancel token is cancelled after 100ms
+//   - expected status: Interrupted("cancel_token")
+#[sqlx::test(migrations = "../../migrations")]
+async fn execute_interrupted_on_cancel(pool: PgPool) {
+    let engine = build_test_engine(pool.clone(), MockProvider::never_responds()).await;
+    let msg = user_msg("hi");
+    let mut sink = MockSink::new();
+
+    let boot = bootstrap::bootstrap(
+        &engine,
+        BootstrapContext { msg: &msg, resume_session_id: None, force_new_session: false, use_history: true },
+        &mut sink,
+    ).await.unwrap();
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let cancel_for_trigger = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        cancel_for_trigger.cancel();
+    });
+
+    let outcome = execute(&engine, boot, &mut sink, cancel).await.unwrap();
+    assert!(matches!(outcome.status, ExecuteStatus::Interrupted("cancel_token")));
+}
+```
+
+If `MockProvider::never_responds()` does not exist yet, add it as a small method in `tests/support/mock_provider.rs`:
+
+```rust
+impl MockProvider {
+    pub fn never_responds() -> Self {
+        // Build a MockProvider whose chat_stream future is std::future::pending()
+        // so the test controls termination via cancel token.
+        // IMPLEMENTER: 5-10 LOC — add a new variant to the internal MockState
+        // enum that signals the stream should hang. Existing expect_text paths
+        // stay unchanged.
+        unimplemented!("add a Pending variant to MockState and wire chat_stream to std::future::pending() for it")
     }
 }
 ```
 
-These three tests MUST be implemented, not stubbed. If `MockProvider` does not expose a "never responds" mode, add one in `tests/support/mock_provider.rs` as a first step of this task (small addition, no design impact).
+This is the only trait extension in this task; the 10-LOC addition goes into the same commit.
 
 - [ ] **Step 5: Verify**
 
-Run: `cd crates/hydeclaw-core && cargo test --lib agent::pipeline::execute -- --nocapture`
+Run: `cd crates/hydeclaw-core && cargo test --test pipeline_execute -- --nocapture`
 Expected: three tests PASS. Fix imports/visibility issues as they arise; these are mechanical.
 
-Run: `cd crates/hydeclaw-core && cargo clippy --lib -- -D warnings`
+Run: `cd crates/hydeclaw-core && cargo clippy --all-targets -- -D warnings`
 Expected: zero warnings.
 
 - [ ] **Step 6: Commit**
@@ -1261,6 +1392,7 @@ Expected: zero warnings.
 ```bash
 git add crates/hydeclaw-core/src/agent/pipeline/execute.rs \
         crates/hydeclaw-core/src/agent/pipeline/mod.rs \
+        crates/hydeclaw-core/tests/pipeline_execute.rs \
         crates/hydeclaw-core/tests/support/mock_provider.rs
 git commit -m "feat(pipeline): execute() skeleton with happy path and sink-interrupted tests"
 ```
@@ -1296,24 +1428,93 @@ After the loop exits without a Done: emit `Finish { finish_reason: "turn_limit",
 
 **Porting source:** `engine_sse.rs` main loop body, using the transformation table at the top of this file.
 
-- [ ] **Step 2: Add two additional unit tests**
+- [ ] **Step 2: Add two additional unit tests in `tests/pipeline_execute.rs`**
+
+Append to the existing `tests/pipeline_execute.rs` created in Task 6a. Test 1 is written out fully; Test 2 uses the same structure.
 
 ```rust
-    #[sqlx::test(migrations = "../../migrations")]
-    async fn execute_failed_when_llm_exhausts_retries(pool: sqlx::PgPool) {
-        // MockProvider::new().expect_error("service_unavailable", times: 10).
-        // chat_stream_with_transient_retry should exhaust after 5 attempts.
-        // Assert: status is ExecuteStatus::Failed(reason) where reason contains "service_unavailable".
-        // Assert: partial is empty (no TextDelta was emitted before the error).
-    }
+#[sqlx::test(migrations = "../../migrations")]
+async fn execute_failed_when_llm_exhausts_retries(pool: PgPool) {
+    // --- Arrange ---
+    let engine = build_test_engine(
+        pool.clone(),
+        MockProvider::new().expect_error_times("service_unavailable", 10),
+    ).await;
+    let msg = user_msg("hi");
+    let mut sink = MockSink::new();
 
-    #[sqlx::test(migrations = "../../migrations")]
-    async fn execute_failed_on_loop_detector() {
-        // MockProvider that keeps requesting the same tool_call 11 times.
-        // Feed a stub tool that always succeeds.
-        // Assert: execute returns ExecuteStatus::Failed with reason containing "loop_detector" or tool name.
+    let boot = bootstrap::bootstrap(
+        &engine,
+        BootstrapContext { msg: &msg, resume_session_id: None, force_new_session: false, use_history: true },
+        &mut sink,
+    ).await.unwrap();
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+
+    // --- Act ---
+    let outcome = execute(&engine, boot, &mut sink, cancel).await.unwrap();
+
+    // --- Assert ---
+    match outcome.status {
+        ExecuteStatus::Failed(reason) => {
+            assert!(reason.to_lowercase().contains("service_unavailable") ||
+                    reason.to_lowercase().contains("unavailable"),
+                "expected service_unavailable in reason, got: {}", reason);
+        }
+        other => panic!("expected Failed, got {:?}", match other {
+            ExecuteStatus::Done => "Done", ExecuteStatus::Interrupted(r) => r,
+            ExecuteStatus::Failed(_) => unreachable!(),
+        }),
     }
+    assert!(outcome.final_text.is_empty(),
+        "no TextDelta should have been emitted before exhaustion");
+}
+
+// Structurally identical to execute_failed_when_llm_exhausts_retries; differs in:
+//   - MockProvider: expect_tool_call_loop("my_tool", args, times: 11) — every LLM
+//     turn returns the same tool_call. Add this helper in tests/support/mock_provider.rs
+//     if missing (5-10 LOC).
+//   - Register a stub tool "my_tool" that always succeeds with a trivial response.
+//     Use the existing tool-registration API on AgentEngine — see engine/tool_executor.rs
+//     for how tools are registered in other tests (or mock via the pipeline::handlers
+//     hook if available).
+//   - Expected: ExecuteStatus::Failed whose reason contains "loop_detector" or "my_tool".
+#[sqlx::test(migrations = "../../migrations")]
+async fn execute_failed_on_loop_detector(pool: PgPool) {
+    // IMPLEMENTER: mirror the Arrange/Act/Assert structure above. If stub-tool
+    // registration is non-trivial in the test harness, mark this test #[ignore]
+    // with a TODO comment and file a follow-up — the loop-detector path is also
+    // exercised by existing tests in src/agent/tool_loop.rs.
+    let engine = build_test_engine(
+        pool.clone(),
+        MockProvider::new().expect_tool_call_loop("my_tool", serde_json::json!({}), 11),
+    ).await;
+    let msg = user_msg("hi");
+    let mut sink = MockSink::new();
+
+    let boot = bootstrap::bootstrap(
+        &engine,
+        BootstrapContext { msg: &msg, resume_session_id: None, force_new_session: false, use_history: true },
+        &mut sink,
+    ).await.unwrap();
+
+    let outcome = execute(&engine, boot, &mut sink, tokio_util::sync::CancellationToken::new()).await.unwrap();
+
+    match outcome.status {
+        ExecuteStatus::Failed(reason) => {
+            let r = reason.to_lowercase();
+            assert!(r.contains("loop_detector") || r.contains("my_tool"),
+                "expected loop_detector or tool name in reason, got: {}", reason);
+        }
+        other => panic!("expected Failed, got {:?}", match other {
+            ExecuteStatus::Done => "Done", ExecuteStatus::Interrupted(r) => r,
+            ExecuteStatus::Failed(_) => unreachable!(),
+        }),
+    }
+}
 ```
+
+`MockProvider::expect_error_times(&str, usize)` and `expect_tool_call_loop(&str, Value, usize)` are new helpers. Add them at the same time in `tests/support/mock_provider.rs`; each is a small variant of existing `expect_*` constructors.
 
 - [ ] **Step 3: Verify**
 
@@ -1340,29 +1541,13 @@ git commit -m "feat(pipeline): execute() tool loop, loop detector, failover erro
 
 ### Steps
 
-- [ ] **Step 1: Add internal helper `build_finalize_context`**
+- [ ] **Step 1: Add `execute_status_to_finalize` helper**
 
-For DRY in Tasks 7/8/9, add to `pipeline/finalize.rs` inside the existing module (below `finalize` function):
+`finalize_context_from_engine` is already added in Task 4 Step 7 (needed by the finalize integration tests). This step only adds the second helper.
+
+Append to `src/agent/pipeline/finalize.rs`, below `finalize_context_from_engine`:
 
 ```rust
-/// Construct FinalizeContext from engine references. Used by all three adapters.
-pub fn finalize_context_from_engine<'a>(
-    engine: &'a crate::agent::engine::AgentEngine,
-    session_id: Uuid,
-    message_count: usize,
-    msg: &'a IncomingMessage,
-) -> FinalizeContext<'a> {
-    FinalizeContext {
-        db: engine.cfg().db.clone(),
-        session_id,
-        agent_name: engine.cfg().agent.name.clone(),
-        message_count,
-        msg,
-        provider: engine.cfg().provider.clone(),
-        memory_store: engine.cfg().memory_store.clone(),
-    }
-}
-
 /// Convert ExecuteStatus + (final_text, thinking_json) into FinalizeOutcome.
 pub fn execute_status_to_finalize(
     status: crate::agent::pipeline::execute::ExecuteStatus,
@@ -1412,21 +1597,22 @@ pub async fn handle_sse(
         bootstrap::BootstrapContext { msg, resume_session_id, force_new_session, use_history: true },
         &mut s,
     ).await?;
-    let session_id = boot.session_id;
-    let mut lg = boot.lifecycle_guard.as_ref().map(|_| ()).map(|_| {
-        // SAFETY: bootstrap always sets lifecycle_guard to Some.
-    });
-    // Pattern: take the guard now so it survives into finalize.
-    let mut lifecycle_guard = boot.lifecycle_guard
-        .take() // compilation note: boot is consumed by value below, so rebind
-        .expect("bootstrap always sets lifecycle_guard");
-    let mut boot = BootstrapOutcome { // re-bind lifecycle_guard as None
-        lifecycle_guard: None,
-        ..boot
+
+    // Explicit destructure pattern — single source of truth for all three adapters.
+    // lifecycle_guard is taken out so it survives into finalize; boot_for_execute
+    // is rebuilt with lifecycle_guard=None and command_output=None.
+    let BootstrapOutcome {
+        session_id, messages, tools, loop_detector, processing_guard,
+        lifecycle_guard, mut command_output, enriched_text,
+    } = boot;
+    let mut lifecycle_guard = lifecycle_guard.expect("bootstrap always sets lifecycle_guard");
+    let boot_for_execute = BootstrapOutcome {
+        lifecycle_guard: None, command_output: None,
+        session_id, messages, tools, loop_detector, processing_guard, enriched_text,
     };
 
     // Slash-command early exit (SSE shape: MessageStart + TextDelta + Finish)
-    if let Some(text) = boot.command_output.take() {
+    if let Some(text) = command_output.take() {
         let msg_id = format!("msg_{}", Uuid::new_v4());
         let _ = s.emit(sink::PipelineEvent::Stream(StreamEvent::MessageStart { message_id: msg_id })).await;
         let _ = s.emit(sink::PipelineEvent::Stream(StreamEvent::TextDelta(text.clone()))).await;
@@ -1434,7 +1620,7 @@ pub async fn handle_sse(
             finish_reason: "command".into(), continuation: false,
         })).await;
 
-        let fin_ctx = finalize::finalize_context_from_engine(self, session_id, boot.messages.len(), msg);
+        let fin_ctx = finalize::finalize_context_from_engine(self, session_id, boot_for_execute.messages.len(), msg);
         finalize::finalize(fin_ctx,
             finalize::FinalizeOutcome::Done { assistant_text: text, thinking_json: None },
             &mut s, &mut lifecycle_guard,
@@ -1444,7 +1630,7 @@ pub async fn handle_sse(
 
     // Full pipeline
     let cancel = tokio_util::sync::CancellationToken::new(); // per-session cancel: follow-up
-    let outcome = execute::execute(self, boot, &mut s, cancel).await?;
+    let outcome = execute::execute(self, boot_for_execute, &mut s, cancel).await?;
 
     let fin_ctx = finalize::finalize_context_from_engine(
         self, session_id, outcome.messages_len_at_end, msg,
@@ -1458,23 +1644,7 @@ pub async fn handle_sse(
 }
 ```
 
-**Note on the lifecycle_guard dance:** the "rebind" technique above works because `BootstrapOutcome` fields are all owned. If it reads awkwardly, the alternative is to destructure explicitly:
-
-```rust
-let BootstrapOutcome {
-    session_id, messages, tools, loop_detector, processing_guard,
-    lifecycle_guard, command_output, enriched_text,
-} = boot;
-let mut lifecycle_guard = lifecycle_guard.expect("set by bootstrap");
-let mut boot_for_execute = BootstrapOutcome {
-    lifecycle_guard: None,
-    session_id, messages, tools, loop_detector, processing_guard,
-    command_output: None, // already taken
-    enriched_text,
-};
-```
-
-Pick whichever compiles cleanest.
+**Pattern note:** all three adapters (Tasks 7/8/9) use the same explicit-destructure shape above. `lifecycle_guard` is `.take()`-en before `execute()` so it survives into `finalize()`. `command_output` is taken separately inside the `if let Some(...)` branch.
 
 - [ ] **Step 3: Remove any helpers in `engine_sse.rs` that are no longer called**
 
@@ -1669,31 +1839,37 @@ Expected: matches only inside files being modified in this task.
 
 Find the bodies in `pipeline/execution.rs` and `pipeline/entry.rs`, paste into the target, remove the `crate::agent::pipeline::execution::...` delegation stubs.
 
-- [ ] **Step 3: Create `engine/run.rs` with the three adapters**
+- [ ] **Step 3: Move the three adapters into `engine/run.rs`**
 
-Move the three `impl AgentEngine` method bodies (from Tasks 7/8/9) into a new file:
+This is a **file-move operation**, not new code. The three methods (`handle_sse`, `handle_with_status`, `handle_streaming`) were rewritten as thin adapters in Tasks 7, 8, 9 and are currently living in `engine_sse.rs` and `engine_execution.rs`. Consolidate them into a single new file.
 
-```rust
-//! Three thin adapter methods on AgentEngine. Each constructs an EventSink and
-//! delegates to pipeline::execute. See Tasks 7–9 in the implementation plan
-//! and spec §3 for rationale.
+Procedure:
 
-use anyhow::Result;
-use hydeclaw_types::IncomingMessage;
-use uuid::Uuid;
+1. Create `crates/hydeclaw-core/src/agent/engine/run.rs` with the module header:
 
-use crate::agent::engine::stream::{ProcessingPhase, StreamEvent};
-use crate::agent::engine::AgentEngine;
-use crate::agent::engine_event_sender::EngineEventSender;
+   ```rust
+   //! Three thin adapter methods on AgentEngine. Each constructs an EventSink
+   //! and delegates to pipeline::execute. See spec §3 and the implementation
+   //! plan (Tasks 7–9) for rationale.
 
-impl AgentEngine {
-    pub async fn handle_sse(&self, /* ... full body from Task 7 ... */) -> Result<Uuid> { /* ... */ }
-    pub async fn handle_with_status(&self, /* ... full body from Task 8 ... */) -> Result<String> { /* ... */ }
-    pub async fn handle_streaming(&self, /* ... full body from Task 9 ... */) -> Result<String> { /* ... */ }
-}
-```
+   use anyhow::Result;
+   use hydeclaw_types::IncomingMessage;
+   use uuid::Uuid;
+   use crate::agent::engine::stream::{ProcessingPhase, StreamEvent};
+   use crate::agent::engine::AgentEngine;
+   use crate::agent::engine_event_sender::EngineEventSender;
+   use crate::agent::pipeline::bootstrap::BootstrapOutcome;
+   ```
 
-Copy the tested bodies verbatim — do not re-write.
+2. Cut the `impl AgentEngine { pub async fn handle_sse(...) }` block from `engine_sse.rs` and paste it verbatim into `engine/run.rs` as the first item inside a new `impl AgentEngine { }` block.
+
+3. Cut the `pub async fn handle_with_status(...)` and `pub async fn handle_streaming(...)` blocks from `engine_execution.rs` and paste them verbatim into the same `impl AgentEngine { }` block in `engine/run.rs`.
+
+4. Do not modify the bodies. These are the exact adapter implementations built and tested in Tasks 7–9.
+
+5. Remove any now-unused imports from `engine_sse.rs` and `engine_execution.rs` (they should be empty shells at this point and will be deleted in Step 4).
+
+Run `cd crates/hydeclaw-core && cargo check` after each cut/paste to catch any import fix-ups early.
 
 - [ ] **Step 4: Delete old files**
 
