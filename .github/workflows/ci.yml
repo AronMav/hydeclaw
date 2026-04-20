@@ -59,6 +59,7 @@ jobs:
   types-drift:
     name: API types drift check
     runs-on: ubuntu-latest
+    needs: [rust]
     steps:
       - uses: actions/checkout@v4
 

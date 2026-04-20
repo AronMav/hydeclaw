@@ -239,8 +239,10 @@ pub mod dto_export {
     //! 2. Always-on modules (like `db::approvals`) can be re-exported via `pub use`.
     //! 3. Modules not already in lib.rs need a `#[path]` entry here (ts-gen only).
     //!
-    //! #[path] in this inline module resolves relative to the virtual directory
-    //! src/dto_export/, so "../" returns to src/ and "../db/" → src/db/.
+    //! #[path] on a submodule resolves relative to the parent module's file
+    //! (src/lib.rs lives in src/), so "../gateway/..." navigates from src/ into
+    //! the sibling gateway/ directory. There is no src/dto_export/ directory on
+    //! disk — Rust 2018+ creates a virtual module path for inline mods.
 
     /// Phase B: AgentDetail DTO tree (12 structs).
     #[path = "../gateway/handlers/agents/dto_structs.rs"]
