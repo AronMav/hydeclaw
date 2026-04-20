@@ -31,3 +31,4 @@ pub mod channel_actions;
 pub mod subagent_runner;
 pub mod openai_compat;
 pub mod cron;
+pub mod sink;
