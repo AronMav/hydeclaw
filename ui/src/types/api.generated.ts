@@ -38,3 +38,7 @@ export type AllowlistEntry = { id: string, agent_id: string, tool_pattern: strin
 export type AgentInfoToolPolicyDto = { allow: Array<string>, deny: Array<string>, allow_all: boolean, };
 
 export type AgentInfoDto = { name: string, language: string, model: string, provider: string, provider_connection: string | null, fallback_provider: string | null, icon: string | null, temperature: number, has_access: boolean, access_mode: string | null, has_heartbeat: boolean, heartbeat_cron: string | null, heartbeat_timezone: string | null, tool_policy: AgentInfoToolPolicyDto | null, routing_count: number, is_running: boolean, config_dirty: boolean, base?: boolean, pending_delete?: boolean, };
+
+export type Notification = { id: string, type: string, title: string, body: string, data: Record<string, unknown>, read: boolean, created_at: string, };
+
+export type NotificationsResponseDto = { items: Array<Notification>, unread_count: bigint, limit: bigint, offset: bigint, };

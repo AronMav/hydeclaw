@@ -17,6 +17,7 @@ use hydeclaw_core::dto_export::{
     },
     github_dto::GitHubRepo,
     AllowlistEntry,
+    Notification, NotificationsResponseDto,
 };
 use ts_rs::TS;
 
@@ -46,6 +47,9 @@ fn main() {
         // Phase A Wave 1: AgentInfo DTO tree — nested type first.
         collect_decl::<AgentInfoToolPolicyDto>(),
         collect_decl::<AgentInfoDto>(),
+        // Phase A Wave 1: DB notification types.
+        collect_decl::<Notification>(),
+        collect_decl::<NotificationsResponseDto>(),
     ];
 
     let header = "// @generated — do not edit by hand.\n\

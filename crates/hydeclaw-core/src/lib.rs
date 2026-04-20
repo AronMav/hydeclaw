@@ -193,6 +193,12 @@ pub mod db {
     // `tests/integration_stuck_sessions_window_fn.rs`.
     #[path = "sessions.rs"]
     pub mod sessions;
+
+    // Phase A W1: `notifications` is a leaf module (anyhow, sqlx, uuid, chrono, serde_json —
+    // no crate::* references). Exposed so dto_export can re-export Notification and
+    // NotificationsResponseDto for ts-gen.
+    #[path = "notifications.rs"]
+    pub mod notifications;
 }
 
 // ── Phase 64 SEC-01: unified SSRF guard ────────────────────────────────
@@ -255,4 +261,10 @@ pub mod dto_export {
     /// Phase C: AllowlistEntry — already in lib's always-on db::approvals surface.
     /// Re-exported here so gen_ts_types can import from one predictable place.
     pub use crate::db::approvals::AllowlistEntry;
+
+    /// Phase A W1: DB notification types — already in always-on db::notifications.
+    pub use crate::db::notifications::{Notification, NotificationsResponseDto};
+
+    /// Phase A W1: DB session + message types — already in always-on db::sessions.
+    pub use crate::db::sessions::{Session, MessageRow};
 }

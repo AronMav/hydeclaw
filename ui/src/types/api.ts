@@ -378,21 +378,15 @@ export interface MediaDriverInfo {
   requires_key: boolean;
 }
 
-export interface NotificationRow {
-  id: string;
-  type: string;
-  title: string;
-  body: string;
-  data: Record<string, unknown> | null;
-  read: boolean;
-  created_at: string;
-}
+// NotificationRow is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/db/notifications.rs
+// Regenerate: make gen-types
+export type { Notification as NotificationRow } from "./api.generated";
 
-export interface NotificationsResponse {
-  notifications?: NotificationRow[];
-  items?: NotificationRow[];
-  unread_count: number;
-}
+// NotificationsResponse is now generated. `items` is required (not optional);
+// the stale `notifications?` key has been removed.
+// Regenerate: make gen-types
+export type { NotificationsResponseDto as NotificationsResponse } from "./api.generated";
 
 export interface TaskStep {
   id: string;
