@@ -126,7 +126,10 @@ impl AgentEngine {
             session_id,
             outcome.messages_len_at_end,
             msg,
-            Some(user_message_id),
+            // Final assistant parent = end of intermediate chain (last tool
+            // result or intermediate assistant with tool_calls) persisted by
+            // pipeline::execute. For no-tool turns this equals user_message_id.
+            Some(outcome.final_parent_msg_id),
         );
         let fin_outcome = finalize::execute_status_to_finalize(
             outcome.status,
@@ -231,7 +234,10 @@ impl AgentEngine {
             session_id,
             outcome.messages_len_at_end,
             msg,
-            Some(user_message_id),
+            // Final assistant parent = end of intermediate chain (last tool
+            // result or intermediate assistant with tool_calls) persisted by
+            // pipeline::execute. For no-tool turns this equals user_message_id.
+            Some(outcome.final_parent_msg_id),
         );
         let fin_outcome = finalize::execute_status_to_finalize(
             outcome.status,
@@ -322,7 +328,10 @@ impl AgentEngine {
             session_id,
             outcome.messages_len_at_end,
             msg,
-            Some(user_message_id),
+            // Final assistant parent = end of intermediate chain (last tool
+            // result or intermediate assistant with tool_calls) persisted by
+            // pipeline::execute. For no-tool turns this equals user_message_id.
+            Some(outcome.final_parent_msg_id),
         );
         let fin_outcome = finalize::execute_status_to_finalize(
             outcome.status,

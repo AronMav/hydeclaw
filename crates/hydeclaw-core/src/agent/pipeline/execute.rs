@@ -47,6 +47,10 @@ pub struct ExecuteOutcome {
     /// Thinking blocks from extended thinking (Anthropic only).
     pub thinking_json: Option<serde_json::Value>,
     pub messages_len_at_end: usize,
+    /// Parent id for the final assistant message — tracks the end of the
+    /// intermediate chain (last tool result or last intermediate assistant)
+    /// so finalize can link the final reply correctly.
+    pub final_parent_msg_id: Uuid,
 }
 
 #[derive(Debug)]
@@ -96,8 +100,15 @@ pub async fn execute<S: EventSink>(
         lifecycle_guard: _lifecycle_guard,
         enriched_text: _,
         command_output: _,
-        user_message_id: _,
+        user_message_id,
     } = bootstrap_outcome;
+
+    // last_msg_id threads the DB parent chain through intermediate assistant
+    // (with tool_calls) and tool-result messages so reload-from-active-path
+    // can reconstruct the full turn, not just user → final assistant.
+    let sm = crate::agent::session_manager::SessionManager::new(engine.cfg().db.clone());
+    let agent_name = engine.cfg().agent.name.clone();
+    let mut last_msg_id: uuid::Uuid = user_message_id;
 
     // Bail early if cancel was already signalled before we start.
     if cancel.is_cancelled() {
@@ -107,6 +118,7 @@ pub async fn execute<S: EventSink>(
             final_text: String::new(),
             thinking_json: None,
             messages_len_at_end: messages.len(),
+            final_parent_msg_id: last_msg_id,
         });
     }
 
@@ -121,6 +133,7 @@ pub async fn execute<S: EventSink>(
             final_text: String::new(),
             thinking_json: None,
             messages_len_at_end: messages.len(),
+            final_parent_msg_id: last_msg_id,
         }
     );
 
@@ -142,6 +155,7 @@ pub async fn execute<S: EventSink>(
                 final_text,
                 thinking_json: None,
                 messages_len_at_end: messages.len(),
+                final_parent_msg_id: last_msg_id,
             });
         }
 
@@ -161,6 +175,7 @@ pub async fn execute<S: EventSink>(
                     final_text,
                     thinking_json: None,
                     messages_len_at_end: messages.len(),
+                    final_parent_msg_id: last_msg_id,
                 });
             }
             Err(e) => return Err(e.into()),
@@ -235,6 +250,7 @@ pub async fn execute<S: EventSink>(
                     final_text: user_msg,
                     thinking_json: None,
                     messages_len_at_end: messages.len(),
+                    final_parent_msg_id: last_msg_id,
                 });
             }
         };
@@ -275,6 +291,7 @@ pub async fn execute<S: EventSink>(
                             final_text: partial,
                             thinking_json: None,
                             messages_len_at_end: messages.len(),
+                        final_parent_msg_id: last_msg_id,
                         });
                     }
                     Err(e) => return Err(e.into()),
@@ -307,6 +324,7 @@ pub async fn execute<S: EventSink>(
                         final_text,
                         thinking_json: None,
                         messages_len_at_end: messages.len(),
+                        final_parent_msg_id: last_msg_id,
                     });
                 }
                 Err(e) => return Err(e.into()),
@@ -323,6 +341,7 @@ pub async fn execute<S: EventSink>(
                 final_text,
                 thinking_json,
                 messages_len_at_end: messages.len(),
+                final_parent_msg_id: last_msg_id,
             });
         }
 
@@ -343,6 +362,31 @@ pub async fn execute<S: EventSink>(
             thinking_blocks: vec![],
         });
         context_chars += partial.chars().count();
+
+        // Persist the intermediate assistant (with tool_calls) to DB so
+        // reload-from-active-path can reconstruct tool-use history.
+        // Errors are logged but non-fatal — the in-memory context is already
+        // correct, only DB replay degrades.
+        let tc_json = serde_json::to_value(&response.tool_calls).ok();
+        match sm
+            .save_message_ex(
+                session_id,
+                "assistant",
+                &partial,
+                tc_json.as_ref(),
+                None,
+                Some(&agent_name),
+                None,
+                Some(last_msg_id),
+            )
+            .await
+        {
+            Ok(id) => last_msg_id = id,
+            Err(e) => tracing::warn!(
+                error = %e, session_id = %session_id,
+                "failed to save intermediate assistant to DB"
+            ),
+        }
 
         // 9. Emit ToolCallStart + ToolCallArgs for each tool (UI feedback)
         for tc in &response.tool_calls {
@@ -381,25 +425,51 @@ pub async fn execute<S: EventSink>(
         {
             Ok(results) => {
                 for (tc_id, tool_result) in &results {
-                    // Emit ToolResult (plain text; rich-card/file markers not extracted
-                    // in pipeline path — the SSE path via entry::extract_tool_result_events
-                    // requires EngineEventSender; that extraction lives in the SSE adapter).
+                    // Extract rich-card / __file__: markers and emit File/RichCard
+                    // stream events; for plain text both halves are the raw string.
+                    let ToolResultParts {
+                        display_result,
+                        db_result,
+                    } = extract_tool_result_events(tool_result, sink).await;
+
                     let _ = sink
                         .emit(PipelineEvent::Stream(StreamEvent::ToolResult {
                             id: tc_id.clone(),
-                            result: tool_result.clone(),
+                            result: display_result.clone(),
                         }))
                         .await;
 
-                    let result_len = tool_result.chars().count();
+                    let display_len = display_result.chars().count();
                     messages.push(Message {
                         role: MessageRole::Tool,
-                        content: tool_result.clone(),
+                        content: display_result,
                         tool_calls: None,
                         tool_call_id: Some(tc_id.clone()),
                         thinking_blocks: vec![],
                     });
-                    context_chars += result_len;
+                    context_chars += display_len;
+
+                    // Persist tool result to DB with raw markers preserved so
+                    // reload-from-active-path can reinstate File/RichCard events.
+                    match sm
+                        .save_message_ex(
+                            session_id,
+                            "tool",
+                            &db_result,
+                            None,
+                            Some(tc_id),
+                            None,
+                            None,
+                            Some(last_msg_id),
+                        )
+                        .await
+                    {
+                        Ok(id) => last_msg_id = id,
+                        Err(e) => tracing::warn!(
+                            error = %e, session_id = %session_id,
+                            "failed to save tool result to DB"
+                        ),
+                    }
                 }
                 false // loop continues
             }
@@ -456,6 +526,7 @@ pub async fn execute<S: EventSink>(
                 final_text,
                 thinking_json: None,
                 messages_len_at_end: messages.len(),
+                final_parent_msg_id: last_msg_id,
             });
         }
     }
@@ -482,10 +553,91 @@ pub async fn execute<S: EventSink>(
         final_text,
         thinking_json: None,
         messages_len_at_end: messages.len(),
+        final_parent_msg_id: last_msg_id,
     })
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
+
+/// Result of processing a tool result for SSE event emission.
+///
+/// `display_result` is what goes into the LLM context (markers stripped) and
+/// the `ToolResult` event. `db_result` is preserved verbatim for DB storage
+/// so reload/active_path rebuild can recover the full marker set.
+struct ToolResultParts {
+    display_result: String,
+    db_result: String,
+}
+
+/// Extract inline markers (`__rich_card__:`, `__file__:`) from a tool result,
+/// emit corresponding `StreamEvent`s via the sink, and return cleaned display
+/// + raw DB text. Ported from the old `pipeline::entry::extract_tool_result_events`
+/// so the pipeline path has parity with the deleted engine_sse.rs behaviour.
+async fn extract_tool_result_events<S: EventSink>(
+    tool_result: &str,
+    sink: &mut S,
+) -> ToolResultParts {
+    use crate::agent::engine::{FILE_PREFIX, RICH_CARD_PREFIX};
+
+    if let Some(json_str) = tool_result.strip_prefix(RICH_CARD_PREFIX) {
+        if let Ok(data) = serde_json::from_str::<serde_json::Value>(json_str) {
+            let card_type = data
+                .get("card_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("table")
+                .to_string();
+            let _ = sink
+                .emit(PipelineEvent::Stream(StreamEvent::RichCard {
+                    card_type,
+                    data,
+                }))
+                .await;
+        }
+        ToolResultParts {
+            display_result: "Rich card displayed".to_string(),
+            db_result: tool_result.to_string(),
+        }
+    } else if tool_result.contains(FILE_PREFIX) {
+        let db_result = tool_result.to_string();
+        let mut clean_lines: Vec<&str> = Vec::new();
+        for line in tool_result.lines() {
+            if let Some(json_str) = line.strip_prefix(FILE_PREFIX) {
+                if let Ok(meta) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    let url = meta.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                    let media_type = meta
+                        .get("mediaType")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("application/octet-stream");
+                    if !url.is_empty() {
+                        let _ = sink
+                            .emit(PipelineEvent::Stream(StreamEvent::File {
+                                url: url.to_string(),
+                                media_type: media_type.to_string(),
+                            }))
+                            .await;
+                    }
+                }
+            } else {
+                clean_lines.push(line);
+            }
+        }
+        let text = clean_lines.join("\n");
+        let display_result = if text.is_empty() {
+            "Image displayed inline in the chat. Do NOT use canvas or other tools to show it again.".to_string()
+        } else {
+            text
+        };
+        ToolResultParts {
+            display_result,
+            db_result,
+        }
+    } else {
+        ToolResultParts {
+            display_result: tool_result.to_string(),
+            db_result: tool_result.to_string(),
+        }
+    }
+}
 
 /// Build the system nudge message injected when a tool-call loop is detected.
 fn build_loop_nudge_message(reason: Option<&str>) -> String {
