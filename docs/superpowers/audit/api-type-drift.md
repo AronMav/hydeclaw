@@ -151,6 +151,70 @@ Three parallel scans per handler:
 | 135 | monitoring.rs | PUT /api/watchdog/settings | api_watchdog_settings_update | hand-rolled | — | TBD | TBD |
 | 136 | monitoring.rs | POST /api/watchdog/restart/{name} | api_watchdog_restart_check | hand-rolled | — | TBD | TBD |
 
+| 137 | access.rs | GET /api/access/{agent}/pending | api_access_pending | hand-rolled | — | TBD | TBD |
+| 138 | access.rs | POST /api/access/{agent}/approve/{code} | api_access_approve | hand-rolled | — | TBD | TBD |
+| 139 | access.rs | POST /api/access/{agent}/reject/{code} | api_access_reject | hand-rolled | — | TBD | TBD |
+| 140 | access.rs | GET /api/access/{agent}/users | api_access_list_users | hand-rolled | — | TBD | TBD |
+| 141 | access.rs | DELETE /api/access/{agent}/users/{user_id} | api_access_remove_user | hand-rolled | — | TBD | TBD |
+| 142 | channel_ws.rs | GET /ws | ws_handler | WebSocket — out of scope | — | N/A | N/A |
+| 143 | channel_ws.rs | GET /ws/channel/{agent_name} | channel_ws_handler | WebSocket — out of scope | — | N/A | N/A |
+| 144 | csp.rs | POST /api/csp-report | api_csp_report | none (204/400 only) | — | N/A | N/A |
+| 145 | github_repos.rs | GET /api/agents/{name}/github/repos | api_list_github_repos | hand-rolled | — | TBD | TBD |
+| 146 | github_repos.rs | POST /api/agents/{name}/github/repos | api_add_github_repo | typed | GitHubRepo (db/github.rs:18) | TBD | TBD |
+| 147 | github_repos.rs | DELETE /api/agents/{name}/github/repos/{id} | api_delete_github_repo | none (StatusCode only) | — | N/A | N/A |
+| 148 | media.rs | POST /api/media/upload | api_media_upload | hand-rolled | — | TBD | TBD |
+| 149 | media.rs | GET /uploads/{filename} | api_media_serve | none (raw bytes) | — | N/A | N/A |
+| 150 | oauth.rs | GET /api/oauth/callback | api_oauth_callback | none (Redirect) | — | N/A | N/A |
+| 151 | oauth.rs | GET /api/oauth/accounts | api_oauth_accounts_list | hand-rolled | — | TBD | TBD |
+| 152 | oauth.rs | POST /api/oauth/accounts | api_oauth_account_create | hand-rolled | — | TBD | TBD |
+| 153 | oauth.rs | DELETE /api/oauth/accounts/{id} | api_oauth_account_delete | none (StatusCode only) | — | N/A | N/A |
+| 154 | oauth.rs | POST /api/oauth/accounts/{id}/connect | api_oauth_account_connect | hand-rolled | — | TBD | TBD |
+| 155 | oauth.rs | POST /api/oauth/accounts/{id}/revoke | api_oauth_account_revoke | hand-rolled | — | TBD | TBD |
+| 156 | oauth.rs | GET /api/oauth/providers | api_oauth_providers | hand-rolled | — | TBD | TBD |
+| 157 | oauth.rs | GET /api/agents/{name}/oauth/bindings | api_oauth_bindings_list | hand-rolled | — | TBD | TBD |
+| 158 | oauth.rs | POST /api/agents/{name}/oauth/bindings | api_oauth_binding_create | hand-rolled | — | TBD | TBD |
+| 159 | oauth.rs | DELETE /api/agents/{name}/oauth/bindings/{provider} | api_oauth_binding_delete | hand-rolled | — | TBD | TBD |
+| 160 | skills.rs | GET /api/skills | api_skills_list_global | hand-rolled | — | TBD | TBD |
+| 161 | skills.rs | GET /api/skills/{skill} | api_skill_get_global | hand-rolled | — | TBD | TBD |
+| 162 | skills.rs | PUT /api/skills/{skill} | api_skill_upsert_global | hand-rolled | — | TBD | TBD |
+| 163 | skills.rs | DELETE /api/skills/{skill} | api_skill_delete_global | hand-rolled | — | TBD | TBD |
+| 164 | skills.rs | GET /api/agents/{name}/skills | api_skills_list | hand-rolled | — | TBD | TBD |
+| 165 | skills.rs | GET /api/agents/{name}/skills/{skill} | api_skill_get | hand-rolled | — | TBD | TBD |
+| 166 | skills.rs | PUT /api/agents/{name}/skills/{skill} | api_skill_upsert | hand-rolled | — | TBD | TBD |
+| 167 | skills.rs | DELETE /api/agents/{name}/skills/{skill} | api_skill_delete | hand-rolled | — | TBD | TBD |
+| 168 | tasks.rs | GET /api/tasks | api_list_tasks | hand-rolled | TaskRow (tasks/mod.rs:7) wrapped in json!{} | TBD | TBD |
+| 169 | tasks.rs | POST /api/tasks | api_create_task_endpoint | hand-rolled | — | TBD | TBD |
+| 170 | tasks.rs | GET /api/tasks/audit | api_task_audit | mixed | ToolAuditEntry (db/tool_audit.rs) wrapped in json!{} | TBD | TBD |
+| 171 | tasks.rs | GET /api/tasks/{id} | api_get_task | mixed | TaskRow (tasks/mod.rs:7) via json!(task) | TBD | TBD |
+| 172 | tasks.rs | DELETE /api/tasks/{id} | api_delete_task | hand-rolled | — | TBD | TBD |
+| 173 | tasks.rs | GET /api/tasks/{id}/steps | api_task_steps | hand-rolled | TaskStepRow fields inlined via json!{} | TBD | TBD |
+| 174 | tools.rs | GET /api/tool-definitions | api_tool_definitions | hand-rolled | — | TBD | TBD |
+| 175 | tools.rs | GET /api/tools | api_list_tools | hand-rolled | — | TBD | TBD |
+| 176 | tools.rs | POST /api/tools | api_tool_service_create | hand-rolled | — | TBD | TBD |
+| 177 | tools.rs | PUT /api/tools/{name} | api_tool_service_update | hand-rolled | — | TBD | TBD |
+| 178 | tools.rs | DELETE /api/tools/{name} | api_tool_service_delete | hand-rolled | — | TBD | TBD |
+| 179 | tools.rs | GET /api/mcp | api_list_mcp | hand-rolled | — | TBD | TBD |
+| 180 | tools.rs | POST /api/mcp | api_mcp_create | hand-rolled | — | TBD | TBD |
+| 181 | tools.rs | PUT /api/mcp/{name} | api_mcp_update | hand-rolled | — | TBD | TBD |
+| 182 | tools.rs | DELETE /api/mcp/{name} | api_mcp_delete | hand-rolled | — | TBD | TBD |
+| 183 | tools.rs | POST /api/mcp/{name}/reload | api_mcp_reload | hand-rolled | — | TBD | TBD |
+| 184 | tools.rs | POST /api/mcp/{name}/toggle | api_mcp_toggle | hand-rolled | — | TBD | TBD |
+| 185 | workspace.rs | GET /api/workspace | api_workspace_browse | hand-rolled | — | TBD | TBD |
+| 186 | workspace.rs | GET /api/workspace/{*path} | api_workspace_browse | hand-rolled | — | TBD | TBD |
+| 187 | workspace.rs | PUT /api/workspace/{*path} | api_workspace_write | hand-rolled | — | TBD | TBD |
+| 188 | workspace.rs | DELETE /api/workspace/{*path} | api_workspace_delete | hand-rolled | — | TBD | TBD |
+| 189 | yaml_tools.rs | GET /api/yaml-tools | api_yaml_tools_list_global | hand-rolled | — | TBD | TBD |
+| 190 | yaml_tools.rs | POST /api/yaml-tools | api_yaml_tool_create_global | hand-rolled | — | TBD | TBD |
+| 191 | yaml_tools.rs | POST /api/yaml-tools/{tool}/verify | api_yaml_tool_verify_global | hand-rolled | — | TBD | TBD |
+| 192 | yaml_tools.rs | POST /api/yaml-tools/{tool}/disable | api_yaml_tool_disable_global | hand-rolled | — | TBD | TBD |
+| 193 | yaml_tools.rs | POST /api/yaml-tools/{tool}/enable | api_yaml_tool_enable_global | hand-rolled | — | TBD | TBD |
+| 194 | yaml_tools.rs | GET /api/yaml-tools/{tool} | api_yaml_tool_get_global | hand-rolled | — | TBD | TBD |
+| 195 | yaml_tools.rs | PUT /api/yaml-tools/{tool} | api_yaml_tool_update_global | hand-rolled | — | TBD | TBD |
+| 196 | yaml_tools.rs | DELETE /api/yaml-tools/{tool} | api_yaml_tool_delete_global | hand-rolled | — | TBD | TBD |
+| 197 | yaml_tools.rs | GET /api/agents/{name}/yaml-tools | api_yaml_tools_list | hand-rolled | — | TBD | TBD |
+| 198 | yaml_tools.rs | POST /api/agents/{name}/yaml-tools/{tool}/verify | api_yaml_tool_verify | hand-rolled | — | TBD | TBD |
+| 199 | yaml_tools.rs | POST /api/agents/{name}/yaml-tools/{tool}/disable | api_yaml_tool_disable | hand-rolled | — | TBD | TBD |
+
 (populated by tasks 3-8)
 
 ## Metrics
