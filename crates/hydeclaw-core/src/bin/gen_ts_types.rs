@@ -20,6 +20,7 @@ use hydeclaw_core::dto_export::{
     Notification, NotificationsResponseDto,
     Session, MessageRow,
     channels_dto::{ChannelRowDto, ActiveChannelDto},
+    cron_dto::{CronJobDto, CronRunDto},
 };
 use ts_rs::TS;
 
@@ -58,6 +59,9 @@ fn main() {
         // Phase A Wave 2: Channel DTOs.
         collect_decl::<ChannelRowDto>(),
         collect_decl::<ActiveChannelDto>(),
+        // Phase A Wave 2: Cron DTOs.
+        collect_decl::<CronJobDto>(),
+        collect_decl::<CronRunDto>(),
     ];
 
     let header = "// @generated — do not edit by hand.\n\
@@ -65,6 +69,7 @@ fn main() {
 //                  crates/hydeclaw-core/src/db/github.rs + approvals.rs (Phase C),\n\
 //                  crates/hydeclaw-core/src/db/notifications.rs + sessions.rs (Phase A W1)\n\
 //                  crates/hydeclaw-core/src/gateway/handlers/channels_dto_structs.rs (Phase A W2)\n\
+//                  crates/hydeclaw-core/src/gateway/handlers/cron_dto_structs.rs (Phase A W2)\n\
 // Regenerate with: make gen-types\n\n";
 
     let body = decls.join("\n\n");

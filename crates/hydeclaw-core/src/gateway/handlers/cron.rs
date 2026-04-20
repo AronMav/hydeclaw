@@ -12,6 +12,33 @@ use sqlx::Row;
 use super::super::AppState;
 use crate::gateway::clusters::{AgentCore, InfraServices};
 
+include!("cron_dto_structs.rs");
+
+fn cron_job_to_dto(j: &crate::scheduler::ScheduledJob) -> CronJobDto {
+    CronJobDto {
+        id: j.id.to_string(),
+        name: j.name.clone(),
+        agent: j.agent_id.clone(),
+        cron: j.cron_expr.clone(),
+        timezone: j.timezone.clone(),
+        task: j.task_message.clone(),
+        enabled: j.enabled,
+        silent: j.silent,
+        announce_to: j.announce_to.clone(),
+        jitter_secs: j.jitter_secs,
+        run_once: j.run_once,
+        run_at: j.run_at.map(|t| t.to_rfc3339()),
+        created_at: j.created_at.to_rfc3339(),
+        last_run: j.last_run_at.map(|t| t.to_rfc3339()),
+        next_run: if j.enabled && !j.run_once {
+            crate::scheduler::compute_next_run(&j.cron_expr, &j.timezone)
+        } else {
+            None
+        },
+        tool_policy: j.tool_policy.clone(),
+    }
+}
+
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/cron", get(api_list_cron).post(api_create_cron))
@@ -33,33 +60,7 @@ pub(crate) async fn api_list_cron(State(infra): State<InfraServices>) -> impl In
 
     match rows {
         Ok(jobs) => {
-            let list: Vec<Value> = jobs
-                .iter()
-                .map(|j| {
-                    json!({
-                        "id": j.id,
-                        "agent": j.agent_id,
-                        "name": j.name,
-                        "cron": j.cron_expr,
-                        "timezone": j.timezone,
-                        "task": j.task_message,
-                        "enabled": j.enabled,
-                        "silent": j.silent,
-                        "announce_to": j.announce_to,
-                        "jitter_secs": j.jitter_secs,
-                        "run_once": j.run_once,
-                        "run_at": j.run_at.map(|t| t.to_rfc3339()),
-                        "created_at": j.created_at.to_rfc3339(),
-                        "last_run": j.last_run_at.map(|t| t.to_rfc3339()),
-                        "next_run": if j.enabled && !j.run_once {
-                            crate::scheduler::compute_next_run(&j.cron_expr, &j.timezone)
-                        } else {
-                            None
-                        },
-                        "tool_policy": j.tool_policy,
-                    })
-                })
-                .collect();
+            let list: Vec<CronJobDto> = jobs.iter().map(cron_job_to_dto).collect();
             Json(json!({ "jobs": list })).into_response()
         }
         Err(e) => (
@@ -511,19 +512,18 @@ pub(crate) async fn api_cron_runs(
 
     match rows {
         Ok(rows) => {
-            let runs: Vec<serde_json::Value> = rows
+            let runs: Vec<CronRunDto> = rows
                 .iter()
-                .map(|r| {
-                    json!({
-                        "id": r.get::<uuid::Uuid, _>("id"),
-                        "job_id": r.get::<uuid::Uuid, _>("job_id"),
-                        "agent_id": r.get::<String, _>("agent_id"),
-                        "started_at": r.get::<chrono::DateTime<chrono::Utc>, _>("started_at").to_rfc3339(),
-                        "finished_at": r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("finished_at").map(|d| d.to_rfc3339()),
-                        "status": r.get::<String, _>("status"),
-                        "error": r.get::<Option<String>, _>("error"),
-                        "response_preview": r.get::<Option<String>, _>("response_preview"),
-                    })
+                .map(|r| CronRunDto {
+                    id: r.get::<uuid::Uuid, _>("id").to_string(),
+                    job_id: r.get::<uuid::Uuid, _>("job_id").to_string(),
+                    job_name: None,
+                    agent_id: r.get::<String, _>("agent_id"),
+                    started_at: r.get::<chrono::DateTime<chrono::Utc>, _>("started_at").to_rfc3339(),
+                    finished_at: r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("finished_at").map(|d| d.to_rfc3339()),
+                    status: r.get::<String, _>("status"),
+                    error: r.get::<Option<String>, _>("error"),
+                    response_preview: r.get::<Option<String>, _>("response_preview"),
                 })
                 .collect();
             Json(json!({ "runs": runs })).into_response()
@@ -552,20 +552,18 @@ pub(crate) async fn api_cron_runs_all(
 
     match rows {
         Ok(rows) => {
-            let runs: Vec<serde_json::Value> = rows
+            let runs: Vec<CronRunDto> = rows
                 .iter()
-                .map(|r| {
-                    json!({
-                        "id": r.get::<uuid::Uuid, _>("id"),
-                        "job_id": r.get::<uuid::Uuid, _>("job_id"),
-                        "job_name": r.get::<Option<String>, _>("job_name"),
-                        "agent_id": r.get::<String, _>("agent_id"),
-                        "started_at": r.get::<chrono::DateTime<chrono::Utc>, _>("started_at").to_rfc3339(),
-                        "finished_at": r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("finished_at").map(|d| d.to_rfc3339()),
-                        "status": r.get::<String, _>("status"),
-                        "error": r.get::<Option<String>, _>("error"),
-                        "response_preview": r.get::<Option<String>, _>("response_preview"),
-                    })
+                .map(|r| CronRunDto {
+                    id: r.get::<uuid::Uuid, _>("id").to_string(),
+                    job_id: r.get::<uuid::Uuid, _>("job_id").to_string(),
+                    job_name: r.get::<Option<String>, _>("job_name"),
+                    agent_id: r.get::<String, _>("agent_id"),
+                    started_at: r.get::<chrono::DateTime<chrono::Utc>, _>("started_at").to_rfc3339(),
+                    finished_at: r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("finished_at").map(|d| d.to_rfc3339()),
+                    status: r.get::<String, _>("status"),
+                    error: r.get::<Option<String>, _>("error"),
+                    response_preview: r.get::<Option<String>, _>("response_preview"),
                 })
                 .collect();
             Json(json!({ "runs": runs })).into_response()

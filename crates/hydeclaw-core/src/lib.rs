@@ -271,4 +271,8 @@ pub mod dto_export {
     /// Phase A W2: Channel row + active channel DTOs — leaf file, no crate::* imports.
     #[path = "../gateway/handlers/channels_dto_structs.rs"]
     pub mod channels_dto;
+
+    /// Phase A W2: Cron job + run DTOs — leaf file, no crate::* imports.
+    #[path = "../gateway/handlers/cron_dto_structs.rs"]
+    pub mod cron_dto;
 }

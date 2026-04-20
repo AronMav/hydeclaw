@@ -55,36 +55,15 @@ export type { Session as SessionRow } from "./api.generated";
 // Regenerate: make gen-types
 export type { MessageRow } from "./api.generated";
 
-export interface CronJob {
-  id: string;
-  name: string;
-  agent: string;
-  cron: string;
-  timezone: string;
-  task: string;
-  enabled: boolean;
-  silent: boolean;
-  announce_to?: { channel: string; chat_id: number; channel_id?: string } | null;
-  jitter_secs: number;
-  run_once: boolean;
-  run_at: string | null;
-  created_at: string;
-  last_run: string | null;
-  next_run: string | null;
-  tool_policy?: { allow: string[]; deny: string[] } | null;
-}
+// CronJob is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/gateway/handlers/cron_dto_structs.rs
+// Regenerate: make gen-types
+export type { CronJobDto as CronJob } from "./api.generated";
 
-export interface CronRun {
-  id: string;
-  job_id: string;
-  job_name?: string;
-  agent_id: string;
-  started_at: string;
-  finished_at: string | null;
-  status: "running" | "success" | "error";
-  error: string | null;
-  response_preview: string | null;
-}
+// CronRun is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/gateway/handlers/cron_dto_structs.rs
+// Regenerate: make gen-types
+export type { CronRunDto as CronRun } from "./api.generated";
 
 export interface MemoryDocument {
   id: string;
