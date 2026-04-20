@@ -11,8 +11,6 @@ pub struct CommandContext<'a> {
     pub tex: &'a super::tool_executor::DefaultToolExecutor,
 }
 
-pub mod entry;
-pub mod execution;
 pub mod context;
 pub mod llm_call;
 pub mod parallel;

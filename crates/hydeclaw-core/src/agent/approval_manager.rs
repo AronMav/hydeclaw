@@ -303,7 +303,7 @@ impl ApprovalManager {
 
     /// Evict stale approval waiters (older than 10 minutes).
     ///
-    /// Kept `async` for call-site stability (`engine_execution.rs` awaits it).
+    /// Kept `async` for call-site stability (callers in run.rs await it).
     /// The body itself no longer requires async since DashMap's `retain` is sync.
     pub(crate) async fn prune_stale(&self) {
         let now = Instant::now();

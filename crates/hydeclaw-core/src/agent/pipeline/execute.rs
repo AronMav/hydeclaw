@@ -12,11 +12,10 @@
 //! - LoopDetector trip (after max nudges) → Failed
 //! - Turn limit reached → Done with finish_reason = "turn_limit"
 //!
-//! # Explicitly omitted (handled by engine_sse.rs until Phase 66)
+//! # Explicitly omitted (deferred to Phase 66)
 //!
 //! - Fallback provider switching on consecutive_failures (`using_fallback` path).
-//!   `engine_sse.rs` handles this for the SSE call-site; pipeline::execute uses a
-//!   single provider per session entry.
+//!   The thin adapters in `engine/run.rs` use a single provider per session entry.
 //! - SessionCorruption recovery (messages reset + retry). Pipeline path treats it
 //!   as a regular LLM error → `ExecuteStatus::Failed`.
 //! - Empty-response auto-retry (`empty_retry_count` path).
@@ -408,7 +407,7 @@ pub async fn execute<S: EventSink>(
                     // Inject nudge message and continue (mirrors engine_sse.rs lines 575-599)
                     messages.push(Message {
                         role: MessageRole::System,
-                        content: crate::agent::pipeline::execution::build_loop_nudge_message(reason.as_deref()),
+                        content: build_loop_nudge_message(reason.as_deref()),
                         tool_calls: None,
                         tool_call_id: None,
                         thinking_blocks: vec![],
@@ -483,6 +482,19 @@ pub async fn execute<S: EventSink>(
         thinking_json: None,
         messages_len_at_end: messages.len(),
     })
+}
+
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+/// Build the system nudge message injected when a tool-call loop is detected.
+fn build_loop_nudge_message(reason: Option<&str>) -> String {
+    let nudge_desc = reason.unwrap_or("repeating pattern");
+    format!(
+        "LOOP DETECTED: You have repeated the same sequence of actions ({desc}). \
+         Change your approach entirely. If the task is too large for a single session, \
+         tell the user and suggest breaking it into smaller steps. Do NOT retry the same approach.",
+        desc = nudge_desc
+    )
 }
 
 // No inline #[cfg(test)] module for Task 6a/6b. Tests require a live

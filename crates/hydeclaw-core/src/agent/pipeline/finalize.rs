@@ -170,16 +170,14 @@ pub(crate) fn spawn_knowledge_extraction(
     memory_store: Arc<dyn MemoryService>,
     message_count: usize,
 ) {
-    // Temporarily delegate to the existing helper; Task 10 inlines the body here
-    // and deletes pipeline/execution.rs.
-    crate::agent::pipeline::execution::spawn_knowledge_extraction(
-        db,
-        session_id,
-        agent_name,
-        provider,
-        memory_store,
-        message_count,
-    );
+    if message_count >= 5 {
+        tokio::spawn(async move {
+            crate::agent::knowledge_extractor::extract_and_save(
+                db, session_id, agent_name, provider, memory_store,
+            )
+            .await;
+        });
+    }
 }
 
 // ── execute_status_to_finalize() ─────────────────────────────────────────────

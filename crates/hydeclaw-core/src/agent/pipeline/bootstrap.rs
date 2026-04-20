@@ -41,13 +41,28 @@ pub struct BootstrapContext<'a> {
     pub use_history: bool,
 }
 
-// ── Thin delegation wrappers ──────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Delegate to `execution::log_wal_running_with_retry`.
-///
-/// Task 10 may inline the body here and remove the delegation.
+/// Log a WAL "running" event with a single retry on failure.
 pub(crate) async fn log_wal_running_with_retry(sm: &SessionManager, session_id: Uuid) {
-    crate::agent::pipeline::execution::log_wal_running_with_retry(sm, session_id).await;
+    if let Err(e) = sm.log_wal_event(session_id, "running", None).await {
+        tracing::warn!(session_id = %session_id, error = %e, "failed to log WAL running event, retrying");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        if let Err(e2) = sm.log_wal_event(session_id, "running", None).await {
+            tracing::error!(session_id = %session_id, error = %e2, "WAL running event retry also failed");
+        }
+    }
+}
+
+/// Extract the sender agent ID from an inter-agent message.
+///
+/// Returns `Some("AgentName")` when `user_id` starts with `"agent:"`, `None` otherwise.
+fn extract_sender_agent_id(user_id: &str) -> Option<&str> {
+    if user_id.starts_with("agent:") {
+        Some(user_id.trim_start_matches("agent:"))
+    } else {
+        None
+    }
 }
 
 // ── Main entry point ──────────────────────────────────────────────────────────
@@ -115,8 +130,7 @@ pub async fn bootstrap<S: EventSink>(
     let user_text = ctx.msg.text.clone().unwrap_or_default();
     let enriched_text = user_text.clone();
 
-    let sender_agent_id =
-        crate::agent::pipeline::execution::extract_sender_agent_id(&ctx.msg.user_id);
+    let sender_agent_id = extract_sender_agent_id(&ctx.msg.user_id);
     sm.save_message_ex(
         session_id,
         "user",

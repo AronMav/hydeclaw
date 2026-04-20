@@ -17,10 +17,7 @@ use super::tool_loop::LoopDetector;
 // Extracted impl AgentEngine blocks (submodules of engine for full super:: access)
 pub use crate::agent::pipeline::parallel::LoopBreak;
 pub(crate) use crate::agent::pipeline::subagent::parse_subagent_timeout;
-#[path = "../engine_execution.rs"]
-mod execution_impl;
-#[path = "../engine_sse.rs"]
-mod sse_impl;
+pub mod run;
 
 // ── REF-01 submodules (populated progressively across tasks 2–7) ────────────
 pub mod stream;
@@ -32,8 +29,6 @@ pub mod loop_detector_integration;
 
 // REF-01 task 2: re-export stream submodule items so external callers keep
 // resolving `crate::agent::engine::{ProcessingPhase, StreamEvent}`.
-// `ProcessingGuard` / `AUTO_CONTINUE_NUDGE` stay visible to the `#[path]`-included
-// engine_execution.rs / engine_sse.rs leaves via `pub(super) use`.
 pub use self::stream::{ProcessingPhase, StreamEvent};
 pub(crate) use self::stream::ProcessingGuard;
 
@@ -112,8 +107,7 @@ const AUTO_CONTINUE_NUDGE: &str = "[system] You described remaining steps but di
 // `approval_manager.rs` keeps importing it via `super::engine::ApprovalResult`.
 
 // ProcessingGuard — moved to self::stream (REF-01 task 2), re-exported above
-// via `pub(super) use self::stream::ProcessingGuard` so engine_execution.rs /
-// engine_sse.rs keep seeing it through their `use super::*;`.
+// via `pub(crate) use self::stream::ProcessingGuard`.
 
 use crate::agent::session_manager::{SessionLifecycleGuard, SessionManager};
 
