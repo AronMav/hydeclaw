@@ -117,6 +117,7 @@ impl AgentEngine {
     /// Handle with streaming: sends content chunks via mpsc channel for progressive display.
     ///
     /// Thin adapter over pipeline::{bootstrap, execute, finalize} using `ChunkSink`.
+    /// Uses `use_history: false` (matches old behaviour — streaming callers get no prior context).
     pub async fn handle_streaming(
         &self,
         msg: &IncomingMessage,
