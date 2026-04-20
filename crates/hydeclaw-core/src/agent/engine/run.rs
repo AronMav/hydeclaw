@@ -56,6 +56,7 @@ impl AgentEngine {
             lifecycle_guard,
             mut command_output,
             enriched_text,
+            user_message_id,
         } = boot;
         let mut lifecycle_guard = lifecycle_guard.expect("bootstrap always sets lifecycle_guard");
 
@@ -75,6 +76,7 @@ impl AgentEngine {
             loop_detector,
             processing_guard,
             enriched_text,
+            user_message_id,
         };
 
         // Slash-command early exit
@@ -100,6 +102,7 @@ impl AgentEngine {
                 session_id,
                 boot_for_execute.messages.len(),
                 msg,
+                Some(user_message_id),
             );
             finalize::finalize(
                 fin_ctx,
@@ -123,6 +126,7 @@ impl AgentEngine {
             session_id,
             outcome.messages_len_at_end,
             msg,
+            Some(user_message_id),
         );
         let fin_outcome = finalize::execute_status_to_finalize(
             outcome.status,
@@ -176,6 +180,7 @@ impl AgentEngine {
             lifecycle_guard,
             mut command_output,
             enriched_text,
+            user_message_id,
         } = boot;
         let mut lifecycle_guard = lifecycle_guard.expect("set by bootstrap");
         let boot_for_execute = BootstrapOutcome {
@@ -187,6 +192,7 @@ impl AgentEngine {
             loop_detector,
             processing_guard,
             enriched_text,
+            user_message_id,
         };
 
         // Channel adapters render slash commands as plain TextDelta
@@ -199,6 +205,7 @@ impl AgentEngine {
                 session_id,
                 boot_for_execute.messages.len(),
                 msg,
+                Some(user_message_id),
             );
             return finalize::finalize(
                 fin_ctx,
@@ -220,6 +227,7 @@ impl AgentEngine {
             session_id,
             outcome.messages_len_at_end,
             msg,
+            Some(user_message_id),
         );
         let fin_outcome = finalize::execute_status_to_finalize(
             outcome.status,
@@ -261,6 +269,7 @@ impl AgentEngine {
             lifecycle_guard,
             mut command_output,
             enriched_text,
+            user_message_id,
         } = boot;
         let mut lifecycle_guard = lifecycle_guard.expect("set by bootstrap");
         let boot_for_execute = BootstrapOutcome {
@@ -272,6 +281,7 @@ impl AgentEngine {
             loop_detector,
             processing_guard,
             enriched_text,
+            user_message_id,
         };
 
         if let Some(text) = command_output.take() {
@@ -283,6 +293,7 @@ impl AgentEngine {
                 session_id,
                 boot_for_execute.messages.len(),
                 msg,
+                Some(user_message_id),
             );
             return finalize::finalize(
                 fin_ctx,
@@ -304,6 +315,7 @@ impl AgentEngine {
             session_id,
             outcome.messages_len_at_end,
             msg,
+            Some(user_message_id),
         );
         let fin_outcome = finalize::execute_status_to_finalize(
             outcome.status,

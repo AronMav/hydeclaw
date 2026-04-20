@@ -44,6 +44,10 @@ pub struct FinalizeContext<'a> {
     pub msg: &'a IncomingMessage,
     pub provider: Arc<dyn LlmProvider>,
     pub memory_store: Arc<dyn MemoryService>,
+    /// Parent id threaded from bootstrap's user-message save; used as
+    /// `parent_message_id` for the assistant reply so reload-from-active-path
+    /// finds both sides of the turn.
+    pub user_message_id: Option<Uuid>,
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -80,7 +84,7 @@ pub async fn finalize<S: EventSink>(
                 None,
                 sender_agent_id_ref,
                 thinking_json.as_ref(),
-                None,
+                ctx.user_message_id,
             )
             .await?;
             lifecycle_guard.done().await;
@@ -105,7 +109,7 @@ pub async fn finalize<S: EventSink>(
                         None,
                         sender_agent_id_ref,
                         None,
-                        None,
+                        ctx.user_message_id,
                     )
                     .await;
             }
@@ -126,7 +130,7 @@ pub async fn finalize<S: EventSink>(
                         None,
                         sender_agent_id_ref,
                         None,
-                        None,
+                        ctx.user_message_id,
                     )
                     .await;
             }
@@ -148,6 +152,7 @@ pub fn finalize_context_from_engine<'a>(
     session_id: Uuid,
     message_count: usize,
     msg: &'a IncomingMessage,
+    user_message_id: Option<Uuid>,
 ) -> FinalizeContext<'a> {
     FinalizeContext {
         db: engine.cfg().db.clone(),
@@ -157,6 +162,7 @@ pub fn finalize_context_from_engine<'a>(
         msg,
         provider: engine.cfg().provider.clone(),
         memory_store: engine.cfg().memory_store.clone(),
+        user_message_id,
     }
 }
 
@@ -323,6 +329,7 @@ mod tests {
             msg,
             provider: Arc::new(NeverCalledProvider),
             memory_store: Arc::new(NeverCalledMemory),
+            user_message_id: None,
         }
     }
 

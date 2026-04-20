@@ -29,6 +29,8 @@ pub struct BootstrapOutcome {
     pub lifecycle_guard: Option<SessionLifecycleGuard>,
     /// Non-None when the user message was a slash-command that was already handled.
     pub command_output: Option<String>,
+    /// ID of the user message just persisted; used by finalize as parent for the assistant reply.
+    pub user_message_id: Uuid,
 }
 
 /// Input context for the bootstrap phase.
@@ -131,17 +133,22 @@ pub async fn bootstrap<S: EventSink>(
     let enriched_text = user_text.clone();
 
     let sender_agent_id = extract_sender_agent_id(&ctx.msg.user_id);
-    sm.save_message_ex(
-        session_id,
-        "user",
-        &enriched_text,
-        None,
-        None,
-        sender_agent_id,
-        None,
-        None,
-    )
-    .await?;
+    // parent_message_id = leaf_message_id: threads the new user message onto
+    // the active conversation path so reload-from-active-path can find it.
+    // user_message_id is then used as parent for the assistant reply in finalize.
+    // Regression fixed 2026-04-20 (pipeline unification had dropped both).
+    let user_message_id = sm
+        .save_message_ex(
+            session_id,
+            "user",
+            &enriched_text,
+            None,
+            None,
+            sender_agent_id,
+            None,
+            ctx.msg.leaf_message_id,
+        )
+        .await?;
 
     // 7. LoopDetector — resets on each session entry (spec §7)
     let loop_config = engine.tool_loop_config();
@@ -171,5 +178,6 @@ pub async fn bootstrap<S: EventSink>(
         processing_guard,
         lifecycle_guard,
         command_output,
+        user_message_id,
     })
 }

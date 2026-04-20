@@ -96,6 +96,7 @@ pub async fn execute<S: EventSink>(
         lifecycle_guard: _lifecycle_guard,
         enriched_text: _,
         command_output: _,
+        user_message_id: _,
     } = bootstrap_outcome;
 
     // Bail early if cancel was already signalled before we start.
