@@ -13,13 +13,18 @@ import { qk } from "@/lib/queries";
  * stable tool grouping and consistent identity.
  */
 export function convertHistory(rows: MessageRow[], isAgentStreaming?: boolean, selectedBranches?: Record<string, string>): ChatMessage[] {
-  // When branching data exists and selectedBranches provided, resolve active path first
-  const resolvedRows = selectedBranches && rows.some(r => r.parent_message_id != null)
-    ? resolveActivePath(rows, selectedBranches)
-    : rows;
-  // Filter out streaming rows — they are artifacts of incomplete SSE flushes.
-  // The complete version of the message is always saved separately.
-  const filtered = resolvedRows.filter(m => m.status !== "streaming");
+  // Drop streaming placeholder rows FIRST — they are artifacts of incomplete
+  // SSE flushes and historically have been INSERTed with parent_message_id=NULL,
+  // which would confuse resolveActivePath into picking the placeholder as
+  // roots[0] and shadowing the real conversation tree (Bug 2, 2026-04-20).
+  // The authoritative assistant row is always saved separately on Finish.
+  const nonStreamingRows = rows.filter(m => m.status !== "streaming");
+  // Only walk resolveActivePath if branching data is actually present — saves
+  // work on trunk-only conversations.
+  const resolvedRows = selectedBranches && nonStreamingRows.some(r => r.parent_message_id != null)
+    ? resolveActivePath(nonStreamingRows, selectedBranches)
+    : nonStreamingRows;
+  const filtered = resolvedRows;
 
   const messages: ChatMessage[] = [];
   let lastAssistantMsg: ChatMessage | null = null;
