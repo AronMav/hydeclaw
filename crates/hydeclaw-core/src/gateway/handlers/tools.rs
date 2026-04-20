@@ -73,7 +73,10 @@ pub(crate) async fn api_list_tools(
             .and_then(|n| n.as_str())
             .is_some_and(|n| managed.iter().any(|m| m == n));
         t["managed"] = json!(is_managed);
-        serde_json::from_value(t).ok()
+        serde_json::from_value(t).map_err(|e| {
+            tracing::warn!("tool entry deserialize failed: {e}");
+            e
+        }).ok()
     }).collect();
     Json(json!({ "tools": tools }))
 }
