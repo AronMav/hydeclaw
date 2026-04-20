@@ -66,9 +66,21 @@ Porting errors are caught by the snapshot tests from Task 1. If a snapshot fails
 
 ---
 
-## Task 1: Regression snapshot tests + test fixture
+## Task 1: Skipped (architecture constraint)
 
-**Purpose:** Lock current behaviour before any change.
+**Original plan:** end-to-end regression snapshots via integration tests.
+
+**Why skipped (discovered 2026-04-20 during execution):** `tests/support/mock_provider.rs` implements a local `MockLlmProvider` trait, not the real `LlmProvider` — the bridge is deliberately deferred to Phase 66 REF-01 ([lib.rs:14-18](crates/hydeclaw-core/src/lib.rs#L14)). Exposing `AgentEngine::new` via the test-facing lib facade would cascade 15+ modules into the 10-module `lib.rs` cap, which is a team-level architectural contract.
+
+**Replacement strategy:**
+1. **Unit tests live inside `src/agent/pipeline/*.rs #[cfg(test)]`** (binary-crate test modules have full access to private types). Tasks 4 / 6a / 6b use inline fake-types (`FakeLlmProvider`, `FakeMemoryService`) instead of `tests/support` fixtures.
+2. **Manual smoke test** after Task 10 verifies integration end-to-end (new final Task 12, see below).
+
+This keeps all new logic under `pipeline/` covered by unit tests, at the cost of not having automated end-to-end snapshots across the three entry points. Integration regression risk is mitigated by: (a) Task 10 is a file-move operation with `cargo check && cargo clippy`; (b) Tasks 7/8/9 adapters are each ~20 LOC with a clear delegate-to-pipeline shape.
+
+**No files created or modified in this task.** Proceed to Task 2.
+
+## Task 1 (original — retained for reference)
 
 **Files:**
 - Create: `crates/hydeclaw-core/tests/support/pipeline_helpers.rs`
