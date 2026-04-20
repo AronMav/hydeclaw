@@ -2,6 +2,7 @@
 // Source of truth: crates/hydeclaw-core/src/gateway/handlers/agents/dto_structs.rs (Phase B),
 //                  crates/hydeclaw-core/src/db/github.rs + approvals.rs (Phase C),
 //                  crates/hydeclaw-core/src/db/notifications.rs + sessions.rs (Phase A W1)
+//                  crates/hydeclaw-core/src/gateway/handlers/channels_dto_structs.rs (Phase A W2)
 // Regenerate with: make gen-types
 
 export type AgentDetailAccessDto = { mode: string, owner_id: string | null, };
@@ -47,3 +48,7 @@ export type NotificationsResponseDto = { items: Array<Notification>, unread_coun
 export type Session = { id: string, agent_id: string, user_id: string, channel: string, started_at: string, last_message_at: string, title: string | null, metadata: Record<string, unknown> | null, run_status: string | null, participants: Array<string>, };
 
 export type MessageRow = { id: string, role: string, content: string, tool_calls: unknown, tool_call_id: string | null, created_at: string, agent_id: string | null, feedback: number | null, edited_at: string | null, status: string, thinking_blocks: unknown, parent_message_id: string | null, branch_from_message_id: string | null, abort_reason: string | null, };
+
+export type ChannelRowDto = { id: string, agent_name: string, channel_type: string, display_name: string, config: Record<string, unknown>, status: string, error_msg: string | null, };
+
+export type ActiveChannelDto = { agent_name: string, channel_id: string | null, channel_type: string, display_name: string, adapter_version: string, connected_at: string, last_activity: string, };

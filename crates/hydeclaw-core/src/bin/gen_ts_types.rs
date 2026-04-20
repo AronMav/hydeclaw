@@ -19,6 +19,7 @@ use hydeclaw_core::dto_export::{
     AllowlistEntry,
     Notification, NotificationsResponseDto,
     Session, MessageRow,
+    channels_dto::{ChannelRowDto, ActiveChannelDto},
 };
 use ts_rs::TS;
 
@@ -54,12 +55,16 @@ fn main() {
         // Phase A Wave 1: DB session + message types.
         collect_decl::<Session>(),
         collect_decl::<MessageRow>(),
+        // Phase A Wave 2: Channel DTOs.
+        collect_decl::<ChannelRowDto>(),
+        collect_decl::<ActiveChannelDto>(),
     ];
 
     let header = "// @generated — do not edit by hand.\n\
 // Source of truth: crates/hydeclaw-core/src/gateway/handlers/agents/dto_structs.rs (Phase B),\n\
 //                  crates/hydeclaw-core/src/db/github.rs + approvals.rs (Phase C),\n\
 //                  crates/hydeclaw-core/src/db/notifications.rs + sessions.rs (Phase A W1)\n\
+//                  crates/hydeclaw-core/src/gateway/handlers/channels_dto_structs.rs (Phase A W2)\n\
 // Regenerate with: make gen-types\n\n";
 
     let body = decls.join("\n\n");

@@ -267,4 +267,8 @@ pub mod dto_export {
 
     /// Phase A W1: DB session + message types — already in always-on db::sessions.
     pub use crate::db::sessions::{Session, MessageRow};
+
+    /// Phase A W2: Channel row + active channel DTOs — leaf file, no crate::* imports.
+    #[path = "../gateway/handlers/channels_dto_structs.rs"]
+    pub mod channels_dto;
 }

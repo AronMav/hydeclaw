@@ -246,25 +246,15 @@ export interface AuditEvent {
   created_at: string;
 }
 
-export interface ChannelRow {
-  id: string;
-  agent_name: string;
-  channel_type: string;
-  display_name: string;
-  config: Record<string, unknown>;
-  status: string;
-  error_msg: string | null;
-}
+// ChannelRow is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/gateway/handlers/channels_dto_structs.rs
+// Regenerate: make gen-types
+export type { ChannelRowDto as ChannelRow } from "./api.generated";
 
-export interface ActiveChannel {
-  agent_name: string;
-  channel_id: string | null;
-  channel_type: string;
-  display_name: string;
-  adapter_version: string;
-  connected_at: string;
-  last_activity: string;
-}
+// ActiveChannel is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/gateway/handlers/channels_dto_structs.rs
+// Regenerate: make gen-types
+export type { ActiveChannelDto as ActiveChannel } from "./api.generated";
 
 export interface BackupEntry {
   filename: string;
