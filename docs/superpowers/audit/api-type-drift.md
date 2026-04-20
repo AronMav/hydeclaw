@@ -367,7 +367,7 @@ Three parallel scans per handler:
 - **Decision:** ✗ Reorder to phase B-first.
 - **Rationale:** Only 2 of 184 in-scope endpoints use `#[derive(Serialize)]` typed responses (1.1%). Phase C (codegen for typed structs) would deliver almost no benefit upfront — there are barely any typed structs to generate from. Phase B (pilot refactor of `agents/schema.rs` `agent_to_detail()` hand-rolled json! → typed DTO) should proceed first to prove the migration pattern and raise the typed ratio above threshold. Phase C rolls out after B establishes the pattern.
 
-## Dead TS Interfaces (candidate removal in phase A)
+## Dead TS Interfaces (candidates for removal in phase A)
 
 - `LogEntry` — no GET /api/logs endpoint found in handler inventory; UI consumers: `ui/src/app/(authenticated)/monitor/page.tsx`
 - `DailyUsageEntry` — used only as member type within `DailyUsageResponse`; not directly consumed by any endpoint row; UI consumers: (none — only referenced inside `DailyUsageResponse` definition)
