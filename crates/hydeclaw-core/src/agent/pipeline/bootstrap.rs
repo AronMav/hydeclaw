@@ -164,7 +164,16 @@ pub async fn bootstrap<S: EventSink>(
     // parent_message_id = leaf_message_id: threads the new user message onto
     // the active conversation path so reload-from-active-path can find it.
     // user_message_id is then used as parent for the assistant reply in finalize.
-    // Regression fixed 2026-04-20 (pipeline unification had dropped both).
+    //
+    // If the UI didn't send leaf_message_id (stale cache / race between reload
+    // and fetch-messages), fall back to the session's latest completed message
+    // so the new turn stays anchored to a real chain instead of floating as a
+    // root orphan. Without this fallback, reload-during-stream would leave the
+    // user message invisible in active_path (seen 2026-04-20).
+    let parent_message_id = match ctx.msg.leaf_message_id {
+        Some(id) => Some(id),
+        None => sm.latest_leaf_message_id(session_id).await.unwrap_or(None),
+    };
     let user_message_id = sm
         .save_message_ex(
             session_id,
@@ -174,7 +183,7 @@ pub async fn bootstrap<S: EventSink>(
             None,
             sender_agent_id,
             None,
-            ctx.msg.leaf_message_id,
+            parent_message_id,
         )
         .await?;
 
