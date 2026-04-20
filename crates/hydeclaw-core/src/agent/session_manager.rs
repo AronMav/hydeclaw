@@ -188,6 +188,7 @@ pub(crate) enum SessionOutcome {
     Running,
     Done,
     Failed,
+    Interrupted,
 }
 
 /// RAII guard that marks a session as `'failed'` if dropped without an explicit
@@ -250,6 +251,26 @@ impl SessionLifecycleGuard {
             ),
         }
     }
+
+    /// Mark session as interrupted (client disconnected / user cancel).
+    pub async fn interrupt(&mut self, reason: &str) {
+        match crate::db::sessions::set_session_run_status(&self.db, self.session_id, "interrupted").await {
+            Ok(()) => {
+                self.outcome = SessionOutcome::Interrupted;
+                let payload = serde_json::json!({ "reason": reason });
+                if let Err(e) = crate::db::session_wal::log_event(
+                    &self.db, self.session_id, "interrupted", Some(&payload)
+                ).await {
+                    tracing::warn!(session_id = %self.session_id, error = %e,
+                        "failed to log WAL interrupted event");
+                }
+            }
+            Err(e) => tracing::warn!(
+                session_id = %self.session_id, error = %e, reason,
+                "failed to mark session interrupted in DB"
+            ),
+        }
+    }
 }
 
 impl Drop for SessionLifecycleGuard {
@@ -305,6 +326,37 @@ impl Drop for SessionLifecycleGuard {
                 }
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn lifecycle_guard_interrupt_writes_wal(pool: sqlx::PgPool) {
+        let session_id = crate::db::sessions::create_new_session(&pool, "test-agent", "test-user", "test-channel")
+            .await
+            .unwrap();
+
+        let mut guard = SessionLifecycleGuard::new(pool.clone(), session_id);
+        guard.interrupt("sink_closed").await;
+
+        let status: String = sqlx::query_scalar("SELECT run_status FROM sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(status, "interrupted");
+
+        let event_type: String = sqlx::query_scalar(
+            "SELECT event_type FROM session_events WHERE session_id = $1 ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(event_type, "interrupted");
     }
 }
 
