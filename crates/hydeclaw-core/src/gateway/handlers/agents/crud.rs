@@ -58,9 +58,10 @@ pub(crate) async fn api_agents(State(agents): State<AgentCore>) -> Json<Value> {
         if seen_names.contains(name) {
             continue;
         }
+        let agent_cfg = handle.engine.cfg();
         agents.push(AgentInfoDto::from_config(
-            &AgentConfig { agent: handle.engine.cfg().agent.clone() },
-            handle.engine.cfg().agent.routing.len(),
+            &AgentConfig { agent: agent_cfg.agent.clone() },
+            agent_cfg.agent.routing.len(),
             true,
             false,
             None,
