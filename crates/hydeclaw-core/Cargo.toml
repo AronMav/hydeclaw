@@ -118,7 +118,7 @@ ts-rs = { version = "12", optional = true, features = ["chrono-impl", "serde-jso
 [features]
 default = []
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
-ts-gen = ["dep:ts-rs"]
+ts-gen = ["dep:ts-rs", "hydeclaw-types/ts-gen"]
 
 # Systemd watchdog (Linux-only)
 [target.'cfg(target_os = "linux")'.dependencies]
