@@ -24,6 +24,7 @@ impl From<ProcessingPhase> for PipelineEvent {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[allow(dead_code)] // Full/Fatal used once sinks wire backpressure/infra errors (Tasks 5+).
 pub enum SinkError {
     #[error("sink closed (client disconnected)")]
     Closed,
@@ -35,6 +36,7 @@ pub enum SinkError {
 
 pub trait EventSink: Send {
     async fn emit(&mut self, ev: PipelineEvent) -> Result<(), SinkError>;
+    #[allow(dead_code)] // default close() is overridden by collector-style sinks in later tasks.
     async fn close(&mut self) -> Result<(), SinkError> {
         Ok(())
     }
@@ -58,6 +60,7 @@ pub mod test_support {
             Self { closed_after: Some(n), ..Self::default() }
         }
 
+        #[allow(dead_code)] // used by pipeline::execute tests once integrated.
         pub fn stream_shapes(&self) -> Vec<&'static str> {
             self.events
                 .iter()
@@ -76,10 +79,10 @@ pub mod test_support {
 
     impl EventSink for MockSink {
         async fn emit(&mut self, ev: PipelineEvent) -> Result<(), SinkError> {
-            if let Some(n) = self.closed_after {
-                if self.events.len() >= n {
-                    return Err(SinkError::Closed);
-                }
+            if let Some(n) = self.closed_after
+                && self.events.len() >= n
+            {
+                return Err(SinkError::Closed);
             }
             self.events.push(ev);
             Ok(())
