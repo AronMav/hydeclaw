@@ -326,7 +326,7 @@ impl AgentEngine {
     }
 
     /// Trim session messages if `max_messages` is configured.
-    async fn maybe_trim_session(&self, session_id: Uuid) {
+    pub(super) async fn maybe_trim_session(&self, session_id: Uuid) {
         if let Some(max) = self.cfg().agent.session.as_ref().and_then(|s| {
             if s.max_messages > 0 { Some(s.max_messages) } else { None }
         }) {

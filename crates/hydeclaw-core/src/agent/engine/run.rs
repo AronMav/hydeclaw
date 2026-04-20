@@ -135,6 +135,10 @@ impl AgentEngine {
         );
         finalize::finalize(fin_ctx, fin_outcome, &mut s, &mut lifecycle_guard).await?;
 
+        // Trim old messages if the agent's session.max_messages is configured.
+        // Missed during the pipeline refactor (Tasks 7-10 dropped the tail call).
+        self.maybe_trim_session(session_id).await;
+
         Ok(session_id)
     }
 
@@ -234,7 +238,10 @@ impl AgentEngine {
             outcome.final_text,
             outcome.thinking_json,
         );
-        finalize::finalize(fin_ctx, fin_outcome, &mut s, &mut lifecycle_guard).await
+        let result =
+            finalize::finalize(fin_ctx, fin_outcome, &mut s, &mut lifecycle_guard).await;
+        self.maybe_trim_session(session_id).await;
+        result
     }
 
     /// Handle with streaming: sends content chunks via mpsc channel for progressive display.

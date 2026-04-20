@@ -13,6 +13,102 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
+// ── UI notifications ──────────────────────────────────────────────────────────
+//
+// Notifications are DB-persisted + WS-broadcast. The sidebar/bell icon in the UI
+// relies on them for agent lifecycle signals (error, iteration limit, loop). Old
+// engine_sse.rs / engine_execution.rs emitted these at trigger sites via the now-
+// deleted `pipeline::execution::notify_*` helpers. We restore them here so the
+// pipeline path has parity with the pre-refactor behaviour.
+
+/// Spawn a DB-persisted notification that the agent run failed.
+pub(crate) fn notify_agent_error(
+    db: PgPool,
+    ui_event_tx: Option<&tokio::sync::broadcast::Sender<String>>,
+    agent_name: &str,
+    reason: &str,
+) {
+    if let Some(ui_tx) = ui_event_tx {
+        let tx = ui_tx.clone();
+        let agent_name = agent_name.to_string();
+        let reason = reason.to_string();
+        tokio::spawn(async move {
+            let _ = crate::gateway::notify(
+                &db,
+                &tx,
+                "agent_error",
+                "Agent Error",
+                &format!("Agent {agent_name} run failed: {reason}"),
+                serde_json::json!({"agent": agent_name, "reason": reason}),
+            )
+            .await;
+        });
+    }
+}
+
+/// Spawn a DB-persisted notification that the agent hit the turn/iteration limit.
+pub(crate) fn notify_iteration_limit(
+    db: PgPool,
+    ui_event_tx: Option<&tokio::sync::broadcast::Sender<String>>,
+    agent_name: &str,
+    max_iterations: usize,
+) {
+    tracing::warn!(
+        agent = %agent_name,
+        max_iterations,
+        "agent reached iteration limit"
+    );
+    if let Some(ui_tx) = ui_event_tx {
+        let tx = ui_tx.clone();
+        let agent_name = agent_name.to_string();
+        tokio::spawn(async move {
+            let _ = crate::gateway::notify(
+                &db,
+                &tx,
+                "iteration_limit",
+                &format!("Iteration limit: {agent_name}"),
+                &format!(
+                    "Agent {agent_name} reached its iteration limit ({max_iterations} iterations). The task may be incomplete."
+                ),
+                serde_json::json!({
+                    "agent": agent_name,
+                    "max_iterations": max_iterations,
+                }),
+            )
+            .await;
+        });
+    }
+}
+
+/// Spawn a DB-persisted notification that the agent was stopped after detecting a loop.
+pub(crate) fn notify_loop_detected(
+    db: PgPool,
+    ui_event_tx: Option<&tokio::sync::broadcast::Sender<String>>,
+    agent_name: &str,
+    session_id: Uuid,
+) {
+    if let Some(ui_tx) = ui_event_tx {
+        let tx = ui_tx.clone();
+        let agent_name = agent_name.to_string();
+        tokio::spawn(async move {
+            let _ = crate::gateway::notify(
+                &db,
+                &tx,
+                "agent_loop_detected",
+                &format!("Agent stuck in loop: {agent_name}"),
+                &format!(
+                    "Agent {agent_name} was stopped after detecting a repeating pattern. Session: {session_id}"
+                ),
+                serde_json::json!({
+                    "agent": agent_name,
+                    "session_id": session_id.to_string(),
+                }),
+            )
+            .await;
+        });
+    }
+}
+
 // ── FinalizeOutcome ───────────────────────────────────────────────────────────
 
 #[allow(dead_code)] // variants consumed by Task 5+ pipeline::execute integration
@@ -48,6 +144,13 @@ pub struct FinalizeContext<'a> {
     /// `parent_message_id` for the assistant reply so reload-from-active-path
     /// finds both sides of the turn.
     pub user_message_id: Option<Uuid>,
+    /// Broadcast channel used to push DB-persisted notifications (agent_error,
+    /// iteration_limit, loop_detected) to the UI. `None` means notifications
+    /// are disabled (e.g. in unit tests with no UI).
+    pub ui_event_tx: Option<tokio::sync::broadcast::Sender<String>>,
+    /// Max iterations configured for this agent; used when surfacing an
+    /// `iteration_limit` notification to UI.
+    pub max_iterations: usize,
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -117,6 +220,32 @@ pub async fn finalize<S: EventSink>(
             let _ = sink
                 .emit(PipelineEvent::Stream(StreamEvent::Error(reason.clone())))
                 .await;
+            // UI notification (DB + WS broadcast) — surfaces the failure in the bell
+            // icon + notification list. Specialized reasons get their own notification
+            // kind (loop_detected, iteration_limit) rather than the generic agent_error.
+            let lowered = reason.to_ascii_lowercase();
+            if lowered.starts_with("loop_detected") {
+                notify_loop_detected(
+                    ctx.db.clone(),
+                    ctx.ui_event_tx.as_ref(),
+                    &ctx.agent_name,
+                    ctx.session_id,
+                );
+            } else if lowered.starts_with("iteration_limit") {
+                notify_iteration_limit(
+                    ctx.db.clone(),
+                    ctx.ui_event_tx.as_ref(),
+                    &ctx.agent_name,
+                    ctx.max_iterations,
+                );
+            } else {
+                notify_agent_error(
+                    ctx.db.clone(),
+                    ctx.ui_event_tx.as_ref(),
+                    &ctx.agent_name,
+                    reason,
+                );
+            }
             partial.clone()
         }
         FinalizeOutcome::Interrupted { partial, reason } => {
@@ -163,6 +292,8 @@ pub fn finalize_context_from_engine<'a>(
         provider: engine.cfg().provider.clone(),
         memory_store: engine.cfg().memory_store.clone(),
         user_message_id,
+        ui_event_tx: engine.state().ui_event_tx.clone(),
+        max_iterations: engine.tool_loop_config().effective_max_iterations(),
     }
 }
 
@@ -330,6 +461,9 @@ mod tests {
             provider: Arc::new(NeverCalledProvider),
             memory_store: Arc::new(NeverCalledMemory),
             user_message_id: None,
+            // No UI in unit tests — notify_* becomes a no-op with ui_event_tx=None.
+            ui_event_tx: None,
+            max_iterations: 0,
         }
     }
 

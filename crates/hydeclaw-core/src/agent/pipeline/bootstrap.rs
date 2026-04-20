@@ -117,7 +117,17 @@ pub async fn bootstrap<S: EventSink>(
         "type": "agent_processing",
         "agent": engine.cfg().agent.name,
         "session_id": session_id.to_string(),
+        "status": "start",
+        "channel": ctx.msg.channel,
     });
+    // Broadcast the start event — sidebar relies on WS `agent_processing`
+    // to refresh the session list (ui/src/lib/queries.ts:387). ProcessingGuard
+    // only emits the `end` event via Drop; without this explicit start the UI
+    // never learns about a newly started session until it completes.
+    // Regression fixed 2026-04-20 (pipeline unification had dropped this).
+    if let Some(tx) = &engine.state().ui_event_tx {
+        let _ = tx.send(start_event.to_string());
+    }
     let processing_guard = ProcessingGuard::new(
         engine.state().ui_event_tx.clone(),
         engine.state().processing_tracker.clone(),
