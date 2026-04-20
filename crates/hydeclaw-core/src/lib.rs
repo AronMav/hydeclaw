@@ -227,9 +227,9 @@ pub mod uploads;
 
 // ── ts-gen codegen surface ─────────────────────────────────────────────
 // Exposes DTO types for the `gen_ts_types` binary (feature-gated so
-// production builds never pull in ts-rs). Under `ts-gen`, dto.rs
-// compiles without `crate::config::AgentConfig` (the from_config impl is
-// gated out), so the include is safe — no cascade into config/memory/etc.
+// production builds never pull in ts-rs). `dto_structs.rs` is a leaf
+// module with zero crate-internal imports, so the include is safe —
+// no cascade into config/memory/etc.
 #[cfg(feature = "ts-gen")]
 pub mod dto_export {
     //! Re-export of `AgentDetailDto` and nested DTOs for `gen_ts_types`.
@@ -238,8 +238,7 @@ pub mod dto_export {
     //! Uses `dto_structs.rs` — a leaf module with zero crate-internal
     //! imports (only serde + ts-rs). This is safe to include here without
     //! cascading config/memory/process_manager into the lib facade.
-    //! The `#[path]` below is relative to lib.rs's directory (src/), so
-    //! the path must walk to the agents directory.
+    //! #[path] is relative to this module's virtual directory (src/dto_export/), so "../" returns to src/.
     #[path = "../gateway/handlers/agents/dto_structs.rs"]
     pub mod agents_dto;
 }

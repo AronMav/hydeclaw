@@ -1,5 +1,5 @@
 // @generated — do not edit by hand.
-// Source of truth: crates/hydeclaw-core/src/gateway/handlers/agents/dto.rs
+// Source of truth: crates/hydeclaw-core/src/gateway/handlers/agents/dto_structs.rs
 // Regenerate with: make gen-types
 
 export type AgentDetailAccessDto = { mode: string, owner_id: string | null, };
@@ -28,4 +28,4 @@ export type AgentDetailDto = { name: string, language: string, provider: string,
 /**
  * Injected by the handler from scoped TTS_VOICE secret; absent when not set.
  */
-voice: string | null, };
+voice?: string, };

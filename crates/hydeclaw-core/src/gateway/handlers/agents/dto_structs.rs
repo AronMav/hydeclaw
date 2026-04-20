@@ -165,5 +165,6 @@ pub struct AgentDetailDto {
     pub config_dirty: bool,
     /// Injected by the handler from scoped TTS_VOICE secret; absent when not set.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-gen", ts(optional))]
     pub voice: Option<String>,
 }

@@ -3,8 +3,8 @@
 //! Run via: `cargo run --features ts-gen --bin gen_ts_types`
 //! Or: `make gen-types` (from the workspace root)
 //!
-//! Uses ts-rs `T::decl()` to collect TypeScript declarations for all 12
-//! AgentDetail DTO structs and writes them into a single generated file.
+//! Uses ts-rs `T::decl(&Config::default())` to collect TypeScript declarations
+//! for all 12 AgentDetail DTO structs and writes them into a single generated file.
 
 use hydeclaw_core::dto_export::agents_dto::{
     AgentDetailAccessDto, AgentDetailApprovalDto, AgentDetailCompactionDto, AgentDetailDto,
@@ -39,7 +39,7 @@ fn main() {
         collect_decl::<AgentDetailDto>(),
     ];
 
-    let header = "// @generated — do not edit by hand.\n// Source of truth: crates/hydeclaw-core/src/gateway/handlers/agents/dto.rs\n// Regenerate with: make gen-types\n\n";
+    let header = "// @generated — do not edit by hand.\n// Source of truth: crates/hydeclaw-core/src/gateway/handlers/agents/dto_structs.rs\n// Regenerate with: make gen-types\n\n";
 
     // ts-rs 12 decl() emits `type Foo = { ... };` (without `export`);
     // collect_decl() prefixes `export ` before joining.
