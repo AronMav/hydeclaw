@@ -1,26 +1,21 @@
 // ── stream/stream-processor.ts ──────────────────────────────────────────────
-// SSE event-dispatch loop extracted from streaming-renderer.ts (Task 4.3).
-// Reads a ReadableStream<Uint8Array>, parses SSE frames, and dispatches each
-// event to the appropriate StreamSession write path.
-// Callers inject reconnect + sessionId callbacks so this module has
-// no dependency on the renderer's closure state.
+// Pure SSE event dispatcher. All buffer mutations go through session.buffer.*.
+// All store writes go through session.commit() or session.write().
 
 import { parseSSELines, parseSseEvent } from "./sse-parser";
 import { parseContentParts } from "@/stores/sse-events";
-import { IncrementalParser } from "@/lib/message-parser";
 import { queryClient } from "@/lib/query-client";
 import { qk } from "@/lib/queries";
 import type { SessionRow } from "@/types/api";
 
-import { uuid, STREAM_THROTTLE_MS, getLiveMessages } from "../chat-types";
 import type {
   ChatMessage,
-  MessagePart,
   TextPart,
   ToolPart,
   ApprovalPart,
   ConnectionPhase,
   AgentState,
+  MessagePart,
 } from "../chat-types";
 import type { StreamSession } from "../stream-session";
 
@@ -68,83 +63,13 @@ export async function processSSEStream(
 
   const reader = body.getReader();
   const decoder = new TextDecoder();
-  const buffer = { current: "" };
+  const lineBuffer = { current: "" };
 
-  // Mutable assistant message being built
-  let assistantId = uuid();
-  let assistantCreatedAt = new Date().toISOString();
-  let parts: MessagePart[] = [];
-  const incrementalParser = new IncrementalParser();
-  const toolInputChunks = new Map<string, string[]>();
+  // Reset buffer for this stream (preserves currentRespondingAgent = agent name)
+  session.buffer.reset();
+
   let receivedSessionId: string | null = knownSessionId ?? null;
-  // Track finish event to distinguish natural end from connection drop
   let receivedFinishEvent = false;
-  let currentRespondingAgent: string | null = agent;
-
-  function flushText() {
-    const flushed = incrementalParser.flush();
-    if (flushed.length > 0) {
-      parts.push(...flushed);
-    }
-  }
-
-  function pushUpdate() {
-    // Guard: stale stream -- a newer stream has started, discard updates
-    if (!session.isCurrent) return;
-    // Guard: don't update store after abort (prevents race with stopStream)
-    if (session.signal.aborted) return;
-
-    const textParts = incrementalParser.snapshot();
-    const nonTextParts = parts.filter(p => p.type !== "text" && p.type !== "reasoning");
-
-    session.writeDraft((agentDraft: AgentState) => {
-      // Double-check generation inside draft to close race window
-      if ((agentDraft as any).streamGeneration !== session.generation) return;
-      if (agentDraft.messageSource.mode !== "live") {
-        agentDraft.messageSource = { mode: "live", messages: [] };
-      }
-      // Preserve existing overlay messages (e.g. optimistic user msg)
-      const liveMessages = (agentDraft.messageSource as any).messages as ChatMessage[];
-      const existing = liveMessages.findIndex((m: ChatMessage) => m.id === assistantId);
-
-      const allParts = [...nonTextParts, ...textParts] as MessagePart[];
-
-      if (existing >= 0) {
-        const msg = liveMessages[existing];
-        msg.parts = allParts;
-        msg.agentId = currentRespondingAgent ?? undefined;
-      } else {
-        liveMessages.push({
-          id: assistantId,
-          role: "assistant",
-          parts: allParts,
-          createdAt: assistantCreatedAt,
-          agentId: currentRespondingAgent ?? undefined,
-        });
-      }
-      if (agentDraft.connectionPhase !== "error") agentDraft.connectionPhase = "streaming";
-    });
-  }
-
-  // Throttle UI updates to ~20fps (50ms) -- reduces renders from 60/sec to 20/sec.
-  // setTimeout coalesces rapid SSE events, then rAF syncs with browser paint cycle.
-  let updateScheduled = false;
-  let updateTimer: ReturnType<typeof setTimeout> | null = null;
-  function scheduleUpdate() {
-    if (updateScheduled) return;
-    updateScheduled = true;
-    updateTimer = setTimeout(() => {
-      updateTimer = null;
-      requestAnimationFrame(() => {
-        updateScheduled = false;
-        pushUpdate();
-      });
-    }, STREAM_THROTTLE_MS);
-  }
-  function cancelScheduledUpdate() {
-    if (updateTimer) { clearTimeout(updateTimer); updateTimer = null; }
-    updateScheduled = false;
-  }
 
   try {
     while (true) {
@@ -153,7 +78,7 @@ export async function processSSEStream(
       if (done) break;
 
       const chunk = decoder.decode(value, { stream: true });
-      const lines = parseSSELines(chunk, buffer);
+      const lines = parseSSELines(chunk, lineBuffer);
 
       for (const line of lines) {
         if (!line.startsWith("data:")) continue;
@@ -166,12 +91,6 @@ export async function processSSEStream(
           continue;
         }
 
-        // Stale-stream short-circuit: if abort fired or streamGeneration
-        // moved (navigation / new stream), drop any remaining events
-        // buffered inside the current chunk. Individual case-level
-        // guards (data-session-id, pushUpdate) are still in place; this
-        // is the belt-and-suspenders catch for `sync`-terminal and
-        // `error` paths that do unconditional `session.write(...)`.
         if (session.signal.aborted || !session.isCurrent) {
           continue;
         }
@@ -193,10 +112,8 @@ export async function processSSEStream(
                 }
               });
               session.write({ activeSessionId: sid });
-              // saveLastSession is called from chat-store.ts via the callback
               callbacks.onSessionId(sid);
 
-              // Populate sessionParticipants cache from React Query session data
               const sessionsData = queryClient.getQueryData<{ sessions: SessionRow[] }>(
                 qk.sessions(agent)
               );
@@ -209,40 +126,34 @@ export async function processSSEStream(
           }
 
           case "start": {
-            const newId = event.messageId || assistantId;
-
-            // Don't reset if current message only has tool/approval parts —
-            // Architecture C: each `start` = new LLM iteration.
-            // Reset overlay for new assistant message. History refresh happens
-            // via React Query polling (3-5s) — no forced invalidation to avoid races.
-            assistantId = newId;
-            assistantCreatedAt = new Date().toISOString();
-            parts = [];
-            incrementalParser.reset();
-            if (event.agentName) currentRespondingAgent = event.agentName;
+            // Capture id before reset() generates a new one
+            const preservedId = event.messageId || session.buffer.assistantId;
+            session.buffer.reset();
+            session.buffer.assistantId = preservedId;
+            if (event.agentName) session.buffer.currentRespondingAgent = event.agentName;
             break;
           }
 
           case "text-start": {
-            if (event.agentName) currentRespondingAgent = event.agentName;
+            if (event.agentName) session.buffer.currentRespondingAgent = event.agentName;
             break;
           }
 
           case "text-delta": {
-            incrementalParser.processDelta(event.delta);
-            scheduleUpdate();
+            session.buffer.parser.processDelta(event.delta);
+            session.scheduleCommit();
             break;
           }
 
           case "text-end": {
-            scheduleUpdate();
+            session.scheduleCommit();
             break;
           }
 
           case "tool-input-start": {
-            flushText();
+            session.buffer.flushText();
             const { toolCallId: tcId, toolName: tcName } = event;
-            toolInputChunks.set(tcId, []);
+            session.buffer.toolInputChunks.set(tcId, []);
             const toolPart: ToolPart = {
               type: "tool",
               toolCallId: tcId,
@@ -250,44 +161,52 @@ export async function processSSEStream(
               state: "input-streaming",
               input: {},
             };
-            parts.push(toolPart);
-            scheduleUpdate();
+            session.buffer.parts.push(toolPart);
+            session.scheduleCommit();
             break;
           }
 
           case "tool-input-delta": {
             const { toolCallId: tcId, inputTextDelta: delta } = event;
-            if (delta) toolInputChunks.get(tcId)?.push(delta);
+            if (delta) session.buffer.toolInputChunks.get(tcId)?.push(delta);
             break;
           }
 
           case "tool-input-available": {
             const { toolCallId: tcId, input } = event;
-            toolInputChunks.delete(tcId);
-            const idx = parts.findIndex(
-              (p) => p.type === "tool" && p.toolCallId === tcId,
+            session.buffer.toolInputChunks.delete(tcId);
+            const idx = session.buffer.parts.findIndex(
+              p => p.type === "tool" && (p as ToolPart).toolCallId === tcId,
             );
             if (idx >= 0) {
-              parts[idx] = { ...(parts[idx] as ToolPart), state: "input-available", input: (input as Record<string, unknown>) ?? {} };
+              session.buffer.parts[idx] = {
+                ...(session.buffer.parts[idx] as ToolPart),
+                state: "input-available",
+                input: (input as Record<string, unknown>) ?? {},
+              };
             }
-            scheduleUpdate();
+            session.scheduleCommit();
             break;
           }
 
           case "tool-output-available": {
             const { toolCallId: tcId, output } = event;
-            const idx = parts.findIndex(
-              (p) => p.type === "tool" && p.toolCallId === tcId,
+            const idx = session.buffer.parts.findIndex(
+              p => p.type === "tool" && (p as ToolPart).toolCallId === tcId,
             );
             if (idx >= 0) {
-              parts[idx] = { ...(parts[idx] as ToolPart), state: "output-available", output };
+              session.buffer.parts[idx] = {
+                ...(session.buffer.parts[idx] as ToolPart),
+                state: "output-available",
+                output,
+              };
             }
-            scheduleUpdate();
+            session.scheduleCommit();
             break;
           }
 
           case "tool-approval-needed": {
-            flushText();
+            session.buffer.flushText();
             const approval: ApprovalPart = {
               type: "approval",
               approvalId: event.approvalId,
@@ -297,24 +216,24 @@ export async function processSSEStream(
               receivedAt: Date.now(),
               status: "pending",
             };
-            parts.push(approval);
-            scheduleUpdate();
+            session.buffer.parts.push(approval);
+            session.scheduleCommit();
             break;
           }
 
           case "tool-approval-resolved": {
-            const idx = parts.findIndex(
-              (p) => p.type === "approval" && p.approvalId === event.approvalId,
+            const idx = session.buffer.parts.findIndex(
+              p => p.type === "approval" && (p as ApprovalPart).approvalId === event.approvalId,
             );
             if (idx >= 0) {
-              const existing = parts[idx] as ApprovalPart;
-              parts[idx] = {
+              const existing = session.buffer.parts[idx] as ApprovalPart;
+              session.buffer.parts[idx] = {
                 ...existing,
                 status: event.action,
                 modifiedInput: event.modifiedInput,
               };
             }
-            scheduleUpdate();
+            session.scheduleCommit();
             break;
           }
 
@@ -324,106 +243,96 @@ export async function processSSEStream(
             break;
 
           case "file": {
-            flushText();
-            parts.push({
+            session.buffer.flushText();
+            session.buffer.parts.push({
               type: "file",
               url: event.url,
               mediaType: event.mediaType || "application/octet-stream",
             });
-            scheduleUpdate();
+            session.scheduleCommit();
             break;
           }
 
           case "rich-card": {
-            flushText();
-            parts.push({
+            session.buffer.flushText();
+            session.buffer.parts.push({
               type: "rich-card",
               cardType: event.cardType,
               data: event.data,
             });
-            scheduleUpdate();
+            session.scheduleCommit();
             break;
           }
 
           case "sync": {
             const { content: syncContent, status: syncStatus } = event;
-            // Architecture C: overlay = text only. Tools come from history (DB).
             const syncParts: MessagePart[] = parseContentParts(syncContent || "");
+            const phase: ConnectionPhase =
+              syncStatus === "error" ? "error" :
+              (syncStatus === "done" || syncStatus === "finished") ? "idle" : "streaming";
+            const errorText = syncStatus === "error" ? (event.error ?? null) : null;
 
+            // Single writeDraft — message + connectionPhase + error fields are atomic (fixes bugs b and c)
             session.writeDraft((agentDraft: AgentState) => {
-              // Guard: skip sync events for a different session (e.g. agent switch race)
               if (receivedSessionId && agentDraft.activeSessionId && receivedSessionId !== agentDraft.activeSessionId) return;
 
               const currentSessionId = agentDraft.activeSessionId;
               const isSameSession = receivedSessionId && currentSessionId === receivedSessionId;
 
-              if (agentDraft.messageSource.mode !== "live" && !isSameSession) {
-                agentDraft.messageSource = { mode: "live", messages: [] };
+              // Only skip the live-mode switch when we're in "history" mode for the same session.
+              // For "new-chat" mode we always need to switch, even if session IDs match.
+              const isHistoryMode = agentDraft.messageSource.mode === "history";
+              if (agentDraft.messageSource.mode !== "live" && !(isHistoryMode && isSameSession)) {
+                (agentDraft as any).messageSource = { mode: "live", messages: [] };
               }
 
-              // Cast to any[] — sync status uses "streaming"/"complete" values not in ChatMessage.status union
               const liveMessages = (agentDraft.messageSource as any).messages as any[];
-              const existingIdx = liveMessages.findIndex((m: any) => m.id === assistantId);
+              const existingIdx = liveMessages.findIndex((m: any) => m.id === session.buffer.assistantId);
 
               if (existingIdx >= 0) {
                 const existingMsg = liveMessages[existingIdx];
-                // Merge content: keep local text if it's ahead of sync (prevents flicker)
-                // but accept sync if it's significantly different (recon from scratch)
                 const localTextLen = (existingMsg.parts as MessagePart[])
                   .filter((p: MessagePart): p is TextPart => p.type === "text")
                   .reduce((acc: number, p: TextPart) => acc + (p.text?.length ?? 0), 0);
                 const syncTextLen = syncParts
                   .filter((p: MessagePart): p is TextPart => p.type === "text")
                   .reduce((acc: number, p: TextPart) => acc + (p.text?.length ?? 0), 0);
-
                 if (syncTextLen > localTextLen || Math.abs(syncTextLen - localTextLen) > 50) {
-                   existingMsg.parts = syncParts;
+                  existingMsg.parts = syncParts;
                 }
-
                 if (existingMsg.status !== "complete") {
                   existingMsg.status = (syncStatus === "done" || syncStatus === "finished") ? "complete" : "streaming";
                 }
               } else {
                 liveMessages.push({
-                  id: assistantId,
+                  id: session.buffer.assistantId,
                   role: "assistant",
                   parts: syncParts,
-                  createdAt: assistantCreatedAt,
-                  agentId: currentRespondingAgent ?? undefined,
+                  createdAt: session.buffer.assistantCreatedAt,
+                  agentId: session.buffer.currentRespondingAgent ?? undefined,
                   status: (syncStatus === "done" || syncStatus === "finished") ? "complete" : "streaming",
                 });
               }
 
-              if (agentDraft.connectionPhase !== "error" && syncStatus !== "done" && syncStatus !== "finished") {
-                agentDraft.connectionPhase = "streaming";
-              } else if (syncStatus === "done" || syncStatus === "finished") {
-                agentDraft.connectionPhase = "idle";
+              // Atomic: phase + error in same writeDraft
+              if (agentDraft.connectionPhase !== "error" || phase === "error") {
+                agentDraft.connectionPhase = phase;
+              }
+              if (errorText !== null) {
+                agentDraft.streamError = errorText;
+                agentDraft.connectionError = errorText;
               }
             });
-
-            if (syncStatus === "finished" || syncStatus === "error" || syncStatus === "interrupted") {
-              const errorText = syncStatus === "error" ? (event.error ?? null) : null;
-              const newPhase: ConnectionPhase = syncStatus === "error" ? "error" : "idle";
-              session.write({
-                streamError: errorText,
-                connectionPhase: newPhase,
-                connectionError: errorText,
-              });
-            }
             break;
           }
 
           case "finish": {
             receivedFinishEvent = true;
-            cancelScheduledUpdate();
-            flushText();
-            pushUpdate();
-            incrementalParser.reset();
-            assistantId = uuid();
-            assistantCreatedAt = new Date().toISOString();
-            parts = [];
+            session.cancelScheduledCommit();
+            session.buffer.flushText();
+            session.commit("streaming");  // final snapshot of all parts; "error" guard in commit() prevents overwrite
+            session.buffer.reset();       // clean buffer for next LLM iteration
 
-            // Mark session as no longer running (don't rely solely on WS agent_processing event)
             if (receivedSessionId) {
               const sid = receivedSessionId;
               session.writeDraft((agentDraft: AgentState) => {
@@ -438,11 +347,7 @@ export async function processSSEStream(
             if (errText.includes("turn limit") || errText.includes("cycle detected")) {
               session.write({ turnLimitMessage: errText });
             } else {
-              session.write({
-                streamError: errText,
-                connectionPhase: "error",
-                connectionError: errText,
-              });
+              session.write({ streamError: errText, connectionPhase: "error", connectionError: errText });
             }
             break;
           }
@@ -451,68 +356,34 @@ export async function processSSEStream(
     }
   } finally {
     reader.releaseLock();
-    if (updateScheduled) {
-      cancelScheduledUpdate();
-      pushUpdate();
-    }
-    flushText();
-    if (!session.signal.aborted) {
-      if (parts.length > 0) pushUpdate();
+    session.cancelScheduledCommit();
+    session.buffer.flushText();
 
-      // SSE-02: Detect connection drop (stream ended without finish event).
+    if (!session.signal.aborted) {
+      // Flush any remaining buffer content
+      if (session.buffer.snapshot().length > 0) session.commit();
+
       const agentState = callbacks.getAgentState(agent);
       const isError = agentState?.connectionPhase === "error";
       const effectiveSessionId = receivedSessionId ?? agentState?.activeSessionId;
+
       if (!isError && !receivedFinishEvent && effectiveSessionId) {
         callbacks.onReconnectNeeded(effectiveSessionId, reconnectAttempt);
         return;
       }
 
       if (!isError) {
-        session.write({
-          connectionPhase: "idle",
-          connectionError: null,
-          reconnectAttempt: 0,
-        });
+        session.write({ connectionPhase: "idle", connectionError: null, reconnectAttempt: 0 });
       }
       callbacks.onStreamDone?.();
-    } else if (parts.length > 0) {
-      const st = callbacks.getAgentState(agent);
-      // Only persist partial text if this stream is still the current one.
-      // After `abortLocalOnly` (navigation) bumps streamGeneration, this
-      // write must NOT overwrite `messageSource` — the user is looking
-      // at a different session now and a live-mode overlay from the
-      // previous stream would visually clobber it. The corresponding
-      // `receivedSessionId` guard in the sync-event path at the top of
-      // this function already handles the mid-stream case; this branch
-      // runs on clean abort with buffered parts, so it needs its own
-      // generation check.
-      if (
-        st &&
-        session.isCurrent &&
-        (!receivedSessionId ||
-          !st.activeSessionId ||
-          st.activeSessionId === receivedSessionId)
-      ) {
-        const assistantMsg: ChatMessage = {
-          id: assistantId,
-          role: "assistant",
-          parts: [...parts],
-          createdAt: assistantCreatedAt,
-          agentId: currentRespondingAgent ?? undefined,
-        };
-        const currentMessages = getLiveMessages(st.messageSource);
-        const existing = currentMessages.findIndex((m: ChatMessage) => m.id === assistantId);
-        const updated =
-          existing >= 0
-            ? currentMessages.map((m: ChatMessage, i: number) => (i === existing ? assistantMsg : m))
-            : [...currentMessages, assistantMsg];
-        session.write({ messageSource: { mode: "live", messages: updated } });
-      }
+    } else {
+      // Abort case: commit any partial parts (commit() drops silently if not current)
+      session.commit("streaming");
     }
   }
 
-  // Save and invalidate React Query caches, switch to history mode
+  // Post-finally: switch to history mode and invalidate React Query caches.
+  // This block is UNCHANGED — session.write() is not affected by this refactor.
   if (!session.signal.aborted) {
     if (receivedSessionId) {
       callbacks.onSessionId(receivedSessionId);
@@ -521,8 +392,6 @@ export async function processSSEStream(
     const completedSessionId = receivedSessionId ?? callbacks.getAgentState(agent)?.activeSessionId;
     if (completedSessionId) {
       queryClient.invalidateQueries({ queryKey: qk.sessionMessages(completedSessionId) });
-      // Switch to history mode so UI renders from DB rows via convertHistory —
-      // identical to what the user sees after F5 reload.
       session.write({ messageSource: { mode: "history", sessionId: completedSessionId } });
     }
   }

@@ -1,0 +1,81 @@
+[agent]
+name = "SnapshotFull"
+language = "en"
+provider = "anthropic"
+model = "claude-3-5-sonnet-20241022"
+provider_connection = "main-claude"
+fallback_provider = "openai-fallback"
+temperature = 0.8
+max_tokens = 4096
+icon = "uploads/robot.png"
+max_tools_in_context = 20
+max_history_messages = 100
+daily_budget_tokens = 500000
+max_agent_turns = 10
+max_failover_attempts = 2
+
+[agent.access]
+mode = "restricted"
+owner_id = "123456"
+
+[agent.heartbeat]
+cron = "0 9 * * 1-5"
+timezone = "Europe/Moscow"
+announce_to = "telegram"
+
+[agent.tools]
+allow = ["workspace_read", "workspace_write"]
+deny = ["code_exec"]
+allow_all = false
+deny_all_others = true
+
+[agent.tools.groups]
+git = true
+tool_management = false
+skill_editing = true
+session_tools = true
+
+[agent.compaction]
+enabled = true
+threshold = 0.75
+preserve_tool_calls = true
+preserve_last_n = 5
+max_context_tokens = 200000
+
+[agent.session]
+dm_scope = "per-peer"
+ttl_days = 14
+max_messages = 200
+prune_tool_output_after_turns = 3
+
+[agent.approval]
+enabled = true
+require_for = ["workspace_write"]
+require_for_categories = ["destructive"]
+timeout_seconds = 120
+
+[agent.tool_loop]
+max_iterations = 30
+compact_on_overflow = false
+detect_loops = true
+warn_threshold = 3
+break_threshold = 7
+max_consecutive_failures = 2
+max_auto_continues = 3
+max_loop_nudges = 2
+ngram_cycle_length = 4
+error_break_threshold = 5
+
+[[agent.routing]]
+condition = "long_context"
+connection = "openai-gpt4"
+model = "gpt-4o"
+temperature = 0.5
+cooldown_secs = 30
+
+[agent.watchdog]
+inactivity_secs = 300
+
+[agent.hooks]
+log_all_tool_calls = true
+block_tools = ["shell_exec"]

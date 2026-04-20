@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { processSSEStream } from "../stream-processor";
 import { streamSessionManager } from "../../stream-session";
 import { useChatStore } from "../../chat-store";
+import { getLiveMessages } from "../../chat-types";
+import type { MessagePart } from "../../chat-types";
 
 // Build a ReadableStream from an array of frames (SSE "data: ...\n\n" format).
 function makeStream(frames: string[]): ReadableStream<Uint8Array> {
@@ -101,5 +103,59 @@ describe("processSSEStream", () => {
       callbacks,
     });
     expect(callbacks.onReconnectNeeded).not.toHaveBeenCalled();
+  });
+
+  it("BUG-A: reasoning parts survive a subsequent tool call", async () => {
+    const session = streamSessionManager.start("Arty");
+    const frames = [
+      `data: ${JSON.stringify({ type: "start", messageId: "m1" })}\n\n`,
+      `data: ${JSON.stringify({ type: "text-start" })}\n\n`,
+      `data: ${JSON.stringify({ type: "text-delta", delta: "<think>deep thought</think>then text" })}\n\n`,
+      `data: ${JSON.stringify({ type: "text-end" })}\n\n`,
+      `data: ${JSON.stringify({ type: "tool-input-start", toolCallId: "t1", toolName: "search" })}\n\n`,
+      `data: ${JSON.stringify({ type: "tool-input-available", toolCallId: "t1", input: { q: "x" } })}\n\n`,
+      `data: ${JSON.stringify({ type: "finish" })}\n\n`,
+    ];
+    await processSSEStream(session, makeStream(frames), {
+      sessionId: null,
+      reconnectAttempt: 0,
+      callbacks: makeCallbacks(),
+    });
+    const msgs = getLiveMessages(useChatStore.getState().agents.Arty.messageSource);
+    const parts: MessagePart[] = msgs.find(m => m.id === "m1")?.parts ?? [];
+    expect(parts.find(p => p.type === "reasoning")).toBeDefined();
+    expect(parts.find(p => p.type === "text")).toBeDefined();
+    expect(parts.find(p => p.type === "tool")).toBeDefined();
+  });
+
+  it("BUG-B: sync error sets connectionPhase to error", async () => {
+    const session = streamSessionManager.start("Arty");
+    const frames = [
+      `data: ${JSON.stringify({ type: "data-session-id", data: { sessionId: "s1" } })}\n\n`,
+      `data: ${JSON.stringify({ type: "sync", content: "partial response", status: "error", error: "oops" })}\n\n`,
+    ];
+    await processSSEStream(session, makeStream(frames), {
+      sessionId: null,
+      reconnectAttempt: 0,
+      callbacks: makeCallbacks(),
+    });
+    expect(useChatStore.getState().agents.Arty.connectionPhase).toBe("error");
+    expect(useChatStore.getState().agents.Arty.streamError).toBe("oops");
+  });
+
+  it("BUG-C: connectionPhase stays error after finish when sync error preceded it", async () => {
+    const session = streamSessionManager.start("Arty");
+    const frames = [
+      `data: ${JSON.stringify({ type: "data-session-id", data: { sessionId: "s1" } })}\n\n`,
+      `data: ${JSON.stringify({ type: "sync", content: "hi", status: "error", error: "fail" })}\n\n`,
+      `data: ${JSON.stringify({ type: "finish" })}\n\n`,
+    ];
+    await processSSEStream(session, makeStream(frames), {
+      sessionId: null,
+      reconnectAttempt: 0,
+      callbacks: makeCallbacks(),
+    });
+    // finish after sync-error must NOT overwrite "error" with "streaming"
+    expect(useChatStore.getState().agents.Arty.connectionPhase).toBe("error");
   });
 });

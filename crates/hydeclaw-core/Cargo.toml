@@ -117,6 +117,7 @@ sd-notify = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+insta = { version = "1", features = ["json"] }
 # Phase 64 SEC-05: in-process axum integration via Router::oneshot (no TCP server).
 tower = { workspace = true }
 # Integration test harness (Phase 61 Plan 01).
