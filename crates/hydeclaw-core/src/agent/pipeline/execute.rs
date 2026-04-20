@@ -650,8 +650,235 @@ fn build_loop_nudge_message(reason: Option<&str>) -> String {
     )
 }
 
-// No inline #[cfg(test)] module for Task 6a/6b. Tests require a live
-// AgentEngine which is architecturally blocked from inline unit tests
-// (see lib.rs 10-module cap, spec §1). Coverage via Task 12 smoke test
-// and future CI integration tests once Phase 66 REF-01 exposes a test
-// surface for AgentEngine.
+// ── Chunk forwarding helper ─────────────────────────────────────────────────
+//
+// Extracted so the forwarding contract can be pinned by unit tests without
+// constructing a live `AgentEngine`. `execute()` uses this helper today to
+// drive the LLM stream and emit `TextDelta` events into the sink.
+//
+// Contract pinned by the tests below:
+//   * Each chunk arriving on `chunk_rx` is forwarded as a separate
+//     `StreamEvent::TextDelta` emission to `sink` IN ORDER.
+//   * Forwarding happens CONCURRENTLY with `llm_fut`, so text preceding a
+//     tool-call is visible in the sink BEFORE the LLM future resolves.
+//   * Sink `Closed` is swallowed (forwarding becomes a no-op, LLM future
+//     continues to completion). Other `SinkError`s are returned as the
+//     third tuple slot via `anyhow::Error` so the caller can decide to
+//     bail. Fatal sink errors do NOT abort the LLM future.
+//   * When `llm_fut` resolves, any chunks that raced past the select! tick
+//     are drained via `try_recv` and emitted before the helper returns.
+//
+// Returns `(llm_result, concatenated_partial_text, first_fatal_sink_error)`.
+pub(crate) async fn forward_chunks_into_sink<S, F, T, E>(
+    llm_fut: F,
+    mut chunk_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    sink: &mut S,
+) -> (Result<T, E>, String, Option<anyhow::Error>)
+where
+    S: EventSink,
+    F: std::future::Future<Output = Result<T, E>>,
+{
+    // RED-phase stub: accumulate all chunks and emit a single batched TextDelta
+    // after the LLM future resolves. This mirrors the current execute.rs
+    // behavior (oneshot + spawned aggregator) and fails the per-chunk contract
+    // tests below. Replaced by tokio::select! in the fix commit.
+    tokio::pin!(llm_fut);
+    let res = (&mut llm_fut).await;
+    let mut partial = String::new();
+    // Close the sender side implicitly has not happened here — but
+    // chat_stream_with_transient_retry drops chunk_tx on return, so recv()
+    // drains to completion.
+    while let Some(chunk) = chunk_rx.recv().await {
+        partial.push_str(&chunk);
+    }
+    let mut first_err: Option<anyhow::Error> = None;
+    if !partial.is_empty() {
+        if let Err(e) = sink.emit(PipelineEvent::Stream(StreamEvent::TextDelta(partial.clone()))).await {
+            match e {
+                SinkError::Closed => {}
+                other => first_err = Some(anyhow::Error::new(other)),
+            }
+        }
+    }
+    (res, partial, first_err)
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+//
+// These tests pin the streaming contract of `forward_chunks_into_sink` without
+// constructing a live AgentEngine. The `pipeline::execute::execute()` function
+// itself still requires an engine for end-to-end testing — covered by the
+// human-verified smoke checkpoint in the quick task plan.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::pipeline::sink::test_support::MockSink;
+    use hydeclaw_types::{LlmResponse, ToolCall};
+    use tokio::sync::mpsc;
+
+    /// Build a minimal `LlmResponse` with the given tool_calls. Other fields are
+    /// the serde defaults — the forwarder never inspects them.
+    fn mk_response(tool_calls: Vec<ToolCall>) -> LlmResponse {
+        LlmResponse {
+            content: String::new(),
+            tool_calls,
+            usage: None,
+            finish_reason: None,
+            model: None,
+            provider: None,
+            fallback_notice: None,
+            tools_used: vec![],
+            iterations: 0,
+            thinking_blocks: vec![],
+        }
+    }
+
+    fn text_deltas(sink: &MockSink) -> Vec<String> {
+        sink.events
+            .iter()
+            .filter_map(|e| match e {
+                PipelineEvent::Stream(StreamEvent::TextDelta(s)) => Some(s.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Test A: Chunks arriving on `chunk_rx` during an LLM stream are forwarded
+    /// to the sink as SEPARATE `TextDelta` events, not batched into a single
+    /// end-of-turn emit. A batched implementation MUST fail this assertion.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn streams_chunks_individually_during_no_tool_turn() {
+        let (chunk_tx, chunk_rx) = mpsc::unbounded_channel::<String>();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+
+        // LLM future: push 3 chunks, then wait for a signal before resolving
+        // (with no tool_calls — mimics a plain text reply).
+        let llm_fut = async move {
+            chunk_tx.send("Hel".to_string()).unwrap();
+            chunk_tx.send("lo ".to_string()).unwrap();
+            chunk_tx.send("world".to_string()).unwrap();
+            // Yield so the forwarder select! has a chance to tick.
+            done_rx.await.unwrap();
+            drop(chunk_tx); // close sender so recv() returns None
+            Ok::<LlmResponse, anyhow::Error>(mk_response(vec![]))
+        };
+
+        let mut sink = MockSink::new();
+        // Run the forwarder and the "signal-done" side in parallel.
+        let forward = tokio::spawn(async move {
+            let mut s = sink;
+            let out = forward_chunks_into_sink(llm_fut, chunk_rx, &mut s).await;
+            (out, s)
+        });
+
+        // Give the spawned forwarder time to observe all 3 chunks BEFORE
+        // llm_fut resolves. This is the whole point: per-chunk emission
+        // happens during the LLM call, not after.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        done_tx.send(()).unwrap();
+
+        let ((llm_result, partial, sink_err), sink) = forward.await.unwrap();
+        assert!(sink_err.is_none(), "no fatal sink error expected");
+        assert!(llm_result.is_ok(), "llm future must resolve Ok");
+        assert_eq!(partial, "Hello world");
+
+        let deltas = text_deltas(&sink);
+        // Per-chunk contract: at least 3 distinct TextDelta emissions whose
+        // concatenated payloads equal "Hello world". A single batched
+        // TextDelta("Hello world") MUST FAIL this assertion.
+        assert!(
+            deltas.len() >= 3,
+            "expected >=3 TextDelta emissions (per-chunk), got {} (batched?): {:?}",
+            deltas.len(),
+            deltas
+        );
+        assert_eq!(deltas.concat(), "Hello world");
+    }
+
+    /// A sink that records events into a shared `Arc<Mutex<Vec<_>>>` so tests
+    /// can observe emissions live while the LLM future is still pending.
+    struct SharedSink {
+        events: std::sync::Arc<std::sync::Mutex<Vec<PipelineEvent>>>,
+    }
+    impl EventSink for SharedSink {
+        async fn emit(&mut self, ev: PipelineEvent) -> Result<(), SinkError> {
+            self.events.lock().unwrap().push(ev);
+            Ok(())
+        }
+    }
+
+    fn deltas_of(events: &[PipelineEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                PipelineEvent::Stream(StreamEvent::TextDelta(s)) => Some(s.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Test B: When the LLM call returns tool_calls, any text chunks that
+    /// arrived during the call must be visible in the sink as TextDelta
+    /// BEFORE the LLM future resolves — NOT silently swallowed and NOT
+    /// batch-emitted only after the future returns.
+    ///
+    /// The test observes the shared sink WHILE the LLM future is blocked
+    /// on `done_rx`. A batched implementation emits 0 TextDeltas at this
+    /// observation point, which MUST fail this assertion.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn emits_reasoning_text_before_tool_call() {
+        let (chunk_tx, chunk_rx) = mpsc::unbounded_channel::<String>();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let llm_fut = async move {
+            chunk_tx.send("Let me think. ".to_string()).unwrap();
+            // Block until the test releases us — the sink MUST already
+            // contain the TextDelta by the time this await completes, or
+            // the forwarder batched instead of streaming.
+            done_rx.await.unwrap();
+            drop(chunk_tx);
+            Ok::<LlmResponse, anyhow::Error>(mk_response(vec![ToolCall {
+                id: "tc_1".to_string(),
+                name: "mock_tool".to_string(),
+                arguments: serde_json::Value::Null,
+            }]))
+        };
+
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(Vec::<PipelineEvent>::new()));
+        let mut sink = SharedSink { events: shared.clone() };
+        let shared_probe = shared.clone();
+
+        let forward = tokio::spawn(async move {
+            forward_chunks_into_sink(llm_fut, chunk_rx, &mut sink).await
+        });
+
+        // Let the forwarder tick, observe the sink BEFORE the LLM future
+        // resolves. Per-chunk emission MUST have pushed a TextDelta into
+        // the shared vec by now.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        {
+            let events = shared_probe.lock().unwrap();
+            let deltas = deltas_of(&events);
+            assert!(
+                !deltas.is_empty(),
+                "expected TextDelta in sink BEFORE llm_fut resolves, got events: {:?}",
+                *events
+            );
+            assert_eq!(
+                deltas.concat(),
+                "Let me think. ",
+                "reasoning text preceding tool-call must be streamed to sink before tool call, got deltas: {:?}",
+                deltas
+            );
+        }
+
+        // Now release the future so the test can finish cleanly.
+        done_tx.send(()).unwrap();
+        let (llm_result, partial, sink_err) = forward.await.unwrap();
+        assert!(sink_err.is_none());
+        let resp = llm_result.expect("llm future ok");
+        assert_eq!(resp.tool_calls.len(), 1, "fixture returns one tool call");
+        assert_eq!(partial, "Let me think. ");
+    }
+}
