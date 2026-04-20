@@ -95,61 +95,6 @@ pub(crate) fn extract_urls(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Extract readable text from HTML using the `scraper` crate.
-/// Returns title, meta description, and main content body.
-pub(crate) fn extract_readable_text(html: &str) -> String {
-    use scraper::{Html, Selector};
-
-    let doc = Html::parse_document(html);
-
-    // Extract <title>
-    let title = Selector::parse("title")
-        .ok()
-        .and_then(|s| doc.select(&s).next())
-        .map(|el| el.text().collect::<String>());
-
-    // Extract <meta name="description" content="...">
-    let desc = Selector::parse("meta[name=description]")
-        .ok()
-        .and_then(|s| doc.select(&s).next())
-        .and_then(|el| el.value().attr("content"))
-        .map(String::from);
-
-    // Extract main content: try article > main > [role=main] > body
-    let content_selectors = ["article", "main", "[role=main]", "body"];
-    let mut text = String::new();
-    for sel_str in content_selectors {
-        if let Ok(sel) = Selector::parse(sel_str)
-            && let Some(el) = doc.select(&sel).next() {
-                text = el
-                    .text()
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                // Normalize whitespace
-                text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                if text.len() > 100 {
-                    break;
-                }
-            }
-    }
-
-    let mut result = String::new();
-    if let Some(t) = title {
-        let t = t.trim();
-        if !t.is_empty() {
-            result.push_str(&format!("Title: {t}\n"));
-        }
-    }
-    if let Some(d) = desc {
-        let d = d.trim();
-        if !d.is_empty() {
-            result.push_str(&format!("Description: {d}\n\n"));
-        }
-    }
-    result.push_str(&text);
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

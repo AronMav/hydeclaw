@@ -60,9 +60,6 @@ rand = { workspace = true }
 # YAML parsing (for YAML tool definitions)
 serde_yaml = "0.9"
 
-# HTML parsing (Link Understanding)
-scraper = { workspace = true }
-
 # Error classification
 regex = "1"
 

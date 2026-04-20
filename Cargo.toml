@@ -44,9 +44,6 @@ schemars = { version = "1.2", features = ["preserve_order"] }
 # Config hot-reload
 notify = "7"
 
-# HTML parsing (Link Understanding)
-scraper = "0.22"
-
 # Systemd watchdog
 sd-notify = "0.4"
 
