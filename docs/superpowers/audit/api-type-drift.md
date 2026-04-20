@@ -37,3 +37,82 @@ Three parallel scans per handler:
 - **Gate:** ≥20% typed threshold for C-first priority.
 - **Decision:** __ (proceed to phase C | reorder to B-first)
 - **Rationale:** __
+
+## Scratchpad — Handler Modules
+
+### All handler files
+
+handlers/access.rs
+handlers/agents/crud.rs
+handlers/agents/lifecycle.rs
+handlers/agents/mod.rs
+handlers/agents/schema.rs
+handlers/auth.rs
+handlers/backup.rs
+handlers/cancel_grace.rs
+handlers/channel_ws.rs
+handlers/channels.rs
+handlers/chat.rs
+handlers/config.rs
+handlers/cron.rs
+handlers/csp.rs
+handlers/email_triggers.rs
+handlers/github_events.rs
+handlers/github_repos.rs
+handlers/media.rs
+handlers/memory.rs
+handlers/mod.rs
+handlers/monitoring.rs
+handlers/network.rs
+handlers/notifications.rs
+handlers/oauth.rs
+handlers/providers.rs
+handlers/secrets.rs
+handlers/services.rs
+handlers/sessions.rs
+handlers/skills.rs
+handlers/tasks.rs
+handlers/tools.rs
+handlers/webhooks.rs
+handlers/workspace.rs
+handlers/yaml_tools.rs
+
+### routes() locations
+
+handlers/access.rs:13
+handlers/agents/mod.rs:17
+handlers/auth.rs:6
+handlers/backup.rs:27
+handlers/channel_ws.rs:20
+handlers/channels.rs:14
+handlers/chat.rs:22
+handlers/config.rs:14
+handlers/cron.rs:15
+handlers/csp.rs:28
+handlers/email_triggers.rs:15
+handlers/github_repos.rs:12
+handlers/media.rs:27
+handlers/memory.rs:14
+handlers/network.rs:7
+handlers/notifications.rs:14
+handlers/oauth.rs:13
+handlers/providers.rs:24
+handlers/secrets.rs:14
+handlers/services.rs:16
+handlers/sessions.rs:17
+handlers/skills.rs:11
+handlers/tasks.rs:16
+handlers/tools.rs:14
+handlers/webhooks.rs:19
+handlers/workspace.rs:12
+handlers/yaml_tools.rs:13
+
+### Files without routes() (helper modules)
+
+handlers/agents/crud.rs — NO routes()
+handlers/agents/lifecycle.rs — NO routes()
+handlers/agents/schema.rs — NO routes()
+handlers/cancel_grace.rs — NO routes()
+handlers/github_events.rs — NO routes()
+handlers/mod.rs — NO routes()
+handlers/monitoring.rs — NO routes()
