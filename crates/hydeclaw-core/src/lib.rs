@@ -293,8 +293,6 @@ pub mod dto_export {
     pub mod approvals_dto;
 
     /// Phase A W3: Backup file list DTO
-    pub mod backup_dto {
-        use serde::Serialize;
-        include!("gateway/handlers/backup_dto_structs.rs");
-    }
+    #[path = "../gateway/handlers/backup_dto_structs.rs"]
+    pub mod backup_dto;
 }

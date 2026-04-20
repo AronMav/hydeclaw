@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
 };
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use std::path::Path as FsPath;

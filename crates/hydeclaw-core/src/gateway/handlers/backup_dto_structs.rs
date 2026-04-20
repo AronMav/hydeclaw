@@ -1,3 +1,5 @@
+use serde::Serialize;
+
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "ts-gen", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts-gen", ts(export))]
