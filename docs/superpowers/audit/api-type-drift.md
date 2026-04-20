@@ -221,7 +221,8 @@ Three parallel scans per handler:
 - **Hand-rolled (`json!{}`):** 161 — phase A scope (minus pilot B)
 - **Mixed:** 21 — treated as hand-rolled
 - **Handlers with no TS interface (UI uses `unknown`):** 129
-- **TS interfaces with no backing handler (dead code):** 3 — removed during phase A
+- **TS interfaces with no backing handler (dead code):** 2 — removed during phase A
+- **Drift findings:** 17
 - **Typed ratio:** 2/(2+161+21) = 1.1%
 
 ## Drift Summary
@@ -370,6 +371,5 @@ Three parallel scans per handler:
 ## Dead TS Interfaces (candidates for removal in phase A)
 
 - `LogEntry` — no GET /api/logs endpoint found in handler inventory; UI consumers: `ui/src/app/(authenticated)/monitor/page.tsx`
-- `DailyUsageEntry` — used only as member type within `DailyUsageResponse`; not directly consumed by any endpoint row; UI consumers: (none — only referenced inside `DailyUsageResponse` definition)
 - `CreateProviderInput` — input DTO (request body shape), not a response type; no GET endpoint returns this; UI consumers: `ui/src/app/(authenticated)/providers/page.tsx`, `ui/src/lib/queries.ts`
 
