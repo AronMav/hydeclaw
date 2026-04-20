@@ -65,30 +65,16 @@ export type { CronJobDto as CronJob } from "./api.generated";
 // Regenerate: make gen-types
 export type { CronRunDto as CronRun } from "./api.generated";
 
-export interface MemoryDocument {
-  id: string;
-  source: string | null;
-  pinned: boolean;
-  relevance_score: number;
-  similarity?: number;
-  created_at?: string;
-  accessed_at?: string;
-  preview: string | null;
-  chunks_count: number;
-  total_chars: number | null;
-  category: string | null;
-  topic: string | null;
-  scope?: string | null;
-}
+// MemoryDocument is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/gateway/handlers/memory_dto_structs.rs
+// Regenerate: make gen-types
+export type { MemoryDocumentDto as MemoryDocument } from "./api.generated";
 
-export interface MemoryStats {
-  total: number;
-  total_chunks: number;
-  pinned: number;
-  avg_score: number;
-  embed_model?: string | null;
-  embed_dim?: number | null;
-}
+// MemoryStats is now generated from Rust DTO via ts-rs codegen.
+// Drift fix: tasks field (pending/processing/done/failed) was emitted by handler but absent from TS type.
+// Source: crates/hydeclaw-core/src/gateway/handlers/memory_dto_structs.rs
+// Regenerate: make gen-types
+export type { MemoryStatsDto as MemoryStats } from "./api.generated";
 
 export interface ToolEntry {
   name: string;

@@ -1,9 +1,8 @@
 // @generated — do not edit by hand.
 // Source of truth: crates/hydeclaw-core/src/gateway/handlers/agents/dto_structs.rs (Phase B),
 //                  crates/hydeclaw-core/src/db/github.rs + approvals.rs (Phase C),
-//                  crates/hydeclaw-core/src/db/notifications.rs + sessions.rs (Phase A W1)
-//                  crates/hydeclaw-core/src/gateway/handlers/channels_dto_structs.rs (Phase A W2)
-//                  crates/hydeclaw-core/src/gateway/handlers/cron_dto_structs.rs (Phase A W2)
+//                  crates/hydeclaw-core/src/db/notifications.rs + sessions.rs (Phase A W1),
+//                  crates/hydeclaw-core/src/gateway/handlers/*_dto_structs.rs (Phase A W2)
 // Regenerate with: make gen-types
 
 export type AgentDetailAccessDto = { mode: string, owner_id: string | null, };
@@ -57,3 +56,9 @@ export type ActiveChannelDto = { agent_name: string, channel_id: string | null, 
 export type CronJobDto = { id: string, name: string, agent: string, cron: string, timezone: string, task: string, enabled: boolean, silent: boolean, announce_to?: { channel: string; chat_id: number; channel_id?: string }, jitter_secs: number, run_once: boolean, run_at: string | null, created_at: string, last_run: string | null, next_run: string | null, tool_policy?: { allow: string[]; deny: string[] }, };
 
 export type CronRunDto = { id: string, job_id: string, job_name?: string, agent_id: string, started_at: string, finished_at: string | null, status: "running" | "success" | "error", error: string | null, response_preview: string | null, };
+
+export type MemoryDocumentDto = { id: string, source: string | null, pinned: boolean, relevance_score: number, similarity?: number, created_at?: string, accessed_at?: string, preview: string | null, chunks_count: number, total_chars: number | null, category: string | null, topic: string | null, scope?: string, };
+
+export type MemoryTaskStatsDto = { pending: number, processing: number, done: number, failed: number, };
+
+export type MemoryStatsDto = { total: number, total_chunks: number, pinned: number, avg_score: number, embed_model?: string, embed_dim?: number, tasks: MemoryTaskStatsDto, };

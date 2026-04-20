@@ -11,6 +11,8 @@ use serde_json::{json, Value};
 use super::super::AppState;
 use crate::gateway::clusters::InfraServices;
 
+include!("memory_dto_structs.rs");
+
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/memory", get(api_list_memory).post(api_create_memory))
@@ -128,7 +130,7 @@ pub(crate) struct MemoryChunkRow {
     agent_id: String,
 }
 
-pub(crate) async fn api_memory_stats(State(state): State<InfraServices>) -> Json<Value> {
+pub(crate) async fn api_memory_stats(State(state): State<InfraServices>) -> Json<MemoryStatsDto> {
     let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory_chunks")
         .fetch_one(&state.db).await
         .inspect_err(|e| tracing::error!(error = %e, "stats: failed to count chunks"))
@@ -161,20 +163,20 @@ pub(crate) async fn api_memory_stats(State(state): State<InfraServices>) -> Json
     let embed_dim = state.embedder.embed_dim();
     let embed_model = state.embedder.embed_model_name().unwrap_or_default();
 
-    Json(json!({
-        "total": documents,
-        "total_chunks": total,
-        "pinned": pinned,
-        "avg_score": avg_score,
-        "embed_model": if embed_model.is_empty() { None } else { Some(&embed_model) },
-        "embed_dim": if embed_dim > 0 { Some(embed_dim) } else { None },
-        "tasks": {
-            "pending": t_pending,
-            "processing": t_processing,
-            "done": t_done,
-            "failed": t_failed,
+    Json(MemoryStatsDto {
+        total: documents,
+        total_chunks: total,
+        pinned,
+        avg_score,
+        embed_model: if embed_model.is_empty() { None } else { Some(embed_model) },
+        embed_dim: if embed_dim > 0 { Some(embed_dim as i32) } else { None },
+        tasks: MemoryTaskStatsDto {
+            pending: t_pending,
+            processing: t_processing,
+            done: t_done,
+            failed: t_failed,
         },
-    }))
+    })
 }
 
 
@@ -263,23 +265,26 @@ pub(crate) async fn api_list_documents(
                     let meta_map: std::collections::HashMap<String, (i64, Option<i64>, Option<String>)> =
                         meta_rows.into_iter().map(|(id, cnt, chars, prev)| (id.to_string(), (cnt, chars, prev))).collect();
 
-                    let documents: Vec<Value> = page.iter().map(|(sim, r)| {
+                    let documents: Vec<MemoryDocumentDto> = page.iter().map(|(sim, r)| {
                         let doc_id = r.parent_id.as_deref().unwrap_or(&r.id);
                         let (chunks_count, total_chars, preview) = meta_map.get(doc_id)
                             .cloned()
                             .unwrap_or((1, None, None));
-                        json!({
-                            "id": doc_id,
-                            "source": r.source,
-                            "pinned": r.pinned,
-                            "relevance_score": r.relevance_score,
-                            "similarity": sim,
-                            "preview": preview.unwrap_or_else(|| r.content.chars().take(200).collect()),
-                            "chunks_count": chunks_count,
-                            "total_chars": total_chars,
-                            "category": r.category,
-                            "topic": r.topic,
-                        })
+                        MemoryDocumentDto {
+                            id: doc_id.to_string(),
+                            source: Some(r.source.clone()),
+                            pinned: r.pinned,
+                            relevance_score: r.relevance_score,
+                            similarity: Some(*sim),
+                            created_at: None,
+                            accessed_at: None,
+                            preview: preview.or_else(|| Some(r.content.chars().take(200).collect())),
+                            chunks_count,
+                            total_chars,
+                            category: r.category.clone(),
+                            topic: r.topic.clone(),
+                            scope: None,
+                        }
                     }).collect();
                     Json(json!({ "documents": documents, "total": total_found, "search_mode": mode })).into_response()
                 }
@@ -335,20 +340,21 @@ pub(crate) async fn api_list_documents(
         Ok(rows) => {
             let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory_chunks WHERE parent_id IS NULL")
                 .fetch_one(&state.db).await.unwrap_or(0);
-            let documents: Vec<Value> = rows.iter().map(|r| json!({
-                "id": r.id,
-                "source": r.source,
-                "pinned": r.pinned,
-                "relevance_score": r.relevance_score,
-                "created_at": r.created_at.to_rfc3339(),
-                "accessed_at": r.accessed_at.to_rfc3339(),
-                "preview": r.preview,
-                "chunks_count": r.chunks_count,
-                "total_chars": r.total_chars,
-                "category": r.category,
-                "topic": r.topic,
-                "scope": r.scope,
-            })).collect();
+            let documents: Vec<MemoryDocumentDto> = rows.iter().map(|r| MemoryDocumentDto {
+                id: r.id.to_string(),
+                source: r.source.clone(),
+                pinned: r.pinned,
+                relevance_score: r.relevance_score,
+                similarity: None,
+                created_at: Some(r.created_at.to_rfc3339()),
+                accessed_at: Some(r.accessed_at.to_rfc3339()),
+                preview: r.preview.clone(),
+                chunks_count: r.chunks_count,
+                total_chars: r.total_chars,
+                category: r.category.clone(),
+                topic: r.topic.clone(),
+                scope: if r.scope.is_empty() { None } else { Some(r.scope.clone()) },
+            }).collect();
             Json(json!({ "documents": documents, "total": total })).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),

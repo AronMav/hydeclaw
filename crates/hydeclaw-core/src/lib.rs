@@ -275,4 +275,8 @@ pub mod dto_export {
     /// Phase A W2: Cron job + run DTOs — leaf file, no crate::* imports.
     #[path = "../gateway/handlers/cron_dto_structs.rs"]
     pub mod cron_dto;
+
+    /// Phase A W2: Memory document + stats DTOs — leaf file, no crate::* imports.
+    #[path = "../gateway/handlers/memory_dto_structs.rs"]
+    pub mod memory_dto;
 }
