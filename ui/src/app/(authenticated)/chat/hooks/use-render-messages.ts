@@ -1,9 +1,11 @@
 "use client";
 
 import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useChatStore } from "@/stores/chat-store";
 import { selectRenderMessages } from "@/stores/chat-selectors";
 import type { ChatMessage } from "@/stores/chat-types";
+import { qk } from "@/lib/queries";
 
 /**
  * Subscribes to the underlying stable fields (not the derived array)
@@ -23,6 +25,18 @@ export function useRenderMessages(agent: string): ChatMessage[] {
   const messageSource = useChatStore((s) => s.agents[agent]?.messageSource);
   const selectedBranches = useChatStore((s) => s.agents[agent]?.selectedBranches);
   const activeSessionId = useChatStore((s) => s.agents[agent]?.activeSessionId ?? null);
+
+  // Read-only RQ subscription: re-render when the cache for this session
+  // is populated by ChatThread's useSessionMessages. staleTime + disabled
+  // refetch flags guarantee this hook never initiates a fetch itself.
+  const { dataUpdatedAt } = useQuery({
+    queryKey: qk.sessionMessages(activeSessionId!),
+    enabled: !!activeSessionId,
+    staleTime: Infinity,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
 
   return useMemo(() => {
     // Guard: agent slot not yet initialised — return stable empty array.
@@ -44,6 +58,7 @@ export function useRenderMessages(agent: string): ChatMessage[] {
     // messageSource, selectedBranches, activeSessionId are the only
     // inputs that can influence the result. All three have stable
     // identity across renders when their values do not change
-    // (Immer draft).
-  }, [messageSource, selectedBranches, activeSessionId, agent]);
+    // (Immer draft). dataUpdatedAt triggers recomputation when
+    // ChatThread's useSessionMessages fills the RQ cache for this session.
+  }, [messageSource, selectedBranches, activeSessionId, agent, dataUpdatedAt]);
 }
