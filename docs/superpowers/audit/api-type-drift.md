@@ -150,7 +150,6 @@ Three parallel scans per handler:
 | 134 | monitoring.rs | GET /api/watchdog/settings | api_watchdog_settings | hand-rolled | — | TBD | TBD |
 | 135 | monitoring.rs | PUT /api/watchdog/settings | api_watchdog_settings_update | hand-rolled | — | TBD | TBD |
 | 136 | monitoring.rs | POST /api/watchdog/restart/{name} | api_watchdog_restart_check | hand-rolled | — | TBD | TBD |
-
 | 137 | access.rs | GET /api/access/{agent}/pending | api_access_pending | hand-rolled | — | TBD | TBD |
 | 138 | access.rs | POST /api/access/{agent}/approve/{code} | api_access_approve | hand-rolled | — | TBD | TBD |
 | 139 | access.rs | POST /api/access/{agent}/reject/{code} | api_access_reject | hand-rolled | — | TBD | TBD |
@@ -159,7 +158,7 @@ Three parallel scans per handler:
 | 142 | channel_ws.rs | GET /ws | ws_handler | WebSocket — out of scope | — | N/A | N/A |
 | 143 | channel_ws.rs | GET /ws/channel/{agent_name} | channel_ws_handler | WebSocket — out of scope | — | N/A | N/A |
 | 144 | csp.rs | POST /api/csp-report | api_csp_report | none (204/400 only) | — | N/A | N/A |
-| 145 | github_repos.rs | GET /api/agents/{name}/github/repos | api_list_github_repos | hand-rolled | — | TBD | TBD |
+| 145 | github_repos.rs | GET /api/agents/{name}/github/repos | api_list_github_repos | mixed | GitHubRepo (db/github.rs:18) wrapped in json!{} | TBD | TBD |
 | 146 | github_repos.rs | POST /api/agents/{name}/github/repos | api_add_github_repo | typed | GitHubRepo (db/github.rs:18) | TBD | TBD |
 | 147 | github_repos.rs | DELETE /api/agents/{name}/github/repos/{id} | api_delete_github_repo | none (StatusCode only) | — | N/A | N/A |
 | 148 | media.rs | POST /api/media/upload | api_media_upload | hand-rolled | — | TBD | TBD |
@@ -214,8 +213,6 @@ Three parallel scans per handler:
 | 197 | yaml_tools.rs | GET /api/agents/{name}/yaml-tools | api_yaml_tools_list | hand-rolled | — | TBD | TBD |
 | 198 | yaml_tools.rs | POST /api/agents/{name}/yaml-tools/{tool}/verify | api_yaml_tool_verify | hand-rolled | — | TBD | TBD |
 | 199 | yaml_tools.rs | POST /api/agents/{name}/yaml-tools/{tool}/disable | api_yaml_tool_disable | hand-rolled | — | TBD | TBD |
-
-(populated by tasks 3-8)
 
 ## Metrics
 
