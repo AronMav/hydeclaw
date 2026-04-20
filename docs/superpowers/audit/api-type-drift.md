@@ -216,12 +216,13 @@ Three parallel scans per handler:
 
 ## Metrics
 
-- **Total endpoints:** N (populated by task 11)
-- **Typed (`#[derive(Serialize)]`):** N₁ — phase C scope
-- **Hand-rolled (`json!{}`):** N₂ — phase A scope (minus pilot B)
-- **Mixed:** N₃ — treated as hand-rolled
-- **Handlers with no TS interface (UI uses `unknown`):** N₄
-- **TS interfaces with no backing handler (dead code):** N₅ — removed during phase A
+- **Total endpoints (in scope):** 184
+- **Typed (`#[derive(Serialize)]`):** 2 — phase C scope
+- **Hand-rolled (`json!{}`):** 161 — phase A scope (minus pilot B)
+- **Mixed:** 21 — treated as hand-rolled
+- **Handlers with no TS interface (UI uses `unknown`):** 129
+- **TS interfaces with no backing handler (dead code):** 3 — removed during phase A
+- **Typed ratio:** 2/(2+161+21) = 1.1%
 
 ## Drift Summary
 
