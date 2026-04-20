@@ -16,6 +16,8 @@ use subtle::ConstantTimeEq;
 use super::super::AppState;
 use crate::gateway::clusters::{AgentCore, InfraServices};
 
+include!("webhooks_dto_structs.rs");
+
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/webhooks", get(api_list_webhooks).post(api_create_webhook))
@@ -133,7 +135,7 @@ pub(crate) async fn api_list_webhooks(State(state): State<InfraServices>) -> imp
 
     match rows {
         Ok(webhooks) => {
-            let list: Vec<Value> = webhooks.iter().map(webhook_to_json).collect();
+            let list: Vec<WebhookEntryDto> = webhooks.iter().map(webhook_to_dto).collect();
             Json(json!({ "webhooks": list })).into_response()
         }
         Err(e) => (
@@ -195,11 +197,11 @@ pub(crate) async fn api_create_webhook(
     match result {
         Ok(wh) => {
             // On create, return full secret (only chance to see it)
-            let mut json = webhook_to_json(&wh);
-            if let Some(obj) = json.as_object_mut() {
-                obj.insert("secret".into(), json!(wh.secret));
+            let mut dto_json = serde_json::to_value(webhook_to_dto(&wh)).unwrap_or_default();
+            if let Some(obj) = dto_json.as_object_mut() {
+                obj.insert("secret".to_string(), serde_json::json!(wh.secret));
             }
-            (StatusCode::CREATED, Json(json)).into_response()
+            (StatusCode::CREATED, Json(dto_json)).into_response()
         }
         Err(e) => {
             let msg = e.to_string();
@@ -285,7 +287,7 @@ pub(crate) async fn api_update_webhook(
     .await;
 
     match result {
-        Ok(wh) => Json(webhook_to_json(&wh)).into_response(),
+        Ok(wh) => Json(webhook_to_dto(&wh)).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": e.to_string()})),
@@ -519,26 +521,28 @@ pub(crate) async fn api_regenerate_webhook_secret(
 
 // ── Helpers ──
 
-fn webhook_to_json(wh: &WebhookRow) -> Value {
-    // Mask secret to prevent disclosure via API (show only last 4 chars)
+fn webhook_to_dto(wh: &WebhookRow) -> WebhookEntryDto {
     let masked_secret = wh.secret.as_ref().map(|s| {
         if s.len() > 4 {
-            format!("{}...{}", &"*".repeat(s.len() - 4), &s[s.len()-4..])
+            format!("{}...{}", "*".repeat(s.len() - 4), &s[s.len() - 4..])
         } else {
             "*".repeat(s.len())
         }
     });
-    json!({
-        "id": wh.id,
-        "name": wh.name,
-        "agent_id": wh.agent_id,
-        "secret": masked_secret,
-        "prompt_prefix": wh.prompt_prefix,
-        "enabled": wh.enabled,
-        "created_at": wh.created_at.to_rfc3339(),
-        "last_triggered_at": wh.last_triggered_at.map(|t| t.to_rfc3339()),
-        "trigger_count": wh.trigger_count,
-        "webhook_type": serde_json::to_value(&wh.webhook_type).unwrap_or(json!("generic")),
-        "event_filter": wh.event_filter,
-    })
+    WebhookEntryDto {
+        id: wh.id.to_string(),
+        name: wh.name.clone(),
+        agent_id: wh.agent_id.clone(),
+        secret: masked_secret,
+        prompt_prefix: wh.prompt_prefix.clone(),
+        enabled: wh.enabled,
+        created_at: wh.created_at.to_rfc3339(),
+        last_triggered_at: wh.last_triggered_at.map(|t| t.to_rfc3339()),
+        trigger_count: wh.trigger_count,
+        webhook_type: serde_json::to_value(&wh.webhook_type)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| "generic".to_string()),
+        event_filter: wh.event_filter.clone(),
+    }
 }
