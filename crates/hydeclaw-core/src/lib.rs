@@ -227,18 +227,30 @@ pub mod uploads;
 
 // ── ts-gen codegen surface ─────────────────────────────────────────────
 // Exposes DTO types for the `gen_ts_types` binary (feature-gated so
-// production builds never pull in ts-rs). `dto_structs.rs` is a leaf
-// module with zero crate-internal imports, so the include is safe —
-// no cascade into config/memory/etc.
+// production builds never pull in ts-rs). All included modules are leaf
+// modules with zero crate-internal imports — safe to include here without
+// cascading config/memory/etc.
 #[cfg(feature = "ts-gen")]
 pub mod dto_export {
-    //! Re-export of `AgentDetailDto` and nested DTOs for `gen_ts_types`.
-    //! Gated behind `ts-gen` — not compiled in normal/release builds.
+    //! Re-export surface for `gen_ts_types`. Gated behind `ts-gen`.
     //!
-    //! Uses `dto_structs.rs` — a leaf module with zero crate-internal
-    //! imports (only serde + ts-rs). This is safe to include here without
-    //! cascading config/memory/process_manager into the lib facade.
-    //! #[path] is relative to this module's virtual directory (src/dto_export/), so "../" returns to src/.
+    //! Rules for adding entries here:
+    //! 1. Only leaf modules (no `crate::*` imports) — prevents lib-facade cascade.
+    //! 2. Always-on modules (like `db::approvals`) can be re-exported via `pub use`.
+    //! 3. Modules not already in lib.rs need a `#[path]` entry here (ts-gen only).
+    //!
+    //! #[path] in this inline module resolves relative to the virtual directory
+    //! src/dto_export/, so "../" returns to src/ and "../db/" → src/db/.
+
+    /// Phase B: AgentDetail DTO tree (12 structs).
     #[path = "../gateway/handlers/agents/dto_structs.rs"]
     pub mod agents_dto;
+
+    /// Phase C: GitHubRepo — leaf module (anyhow, sqlx, uuid, chrono; no crate::*).
+    #[path = "../db/github.rs"]
+    pub mod github_dto;
+
+    /// Phase C: AllowlistEntry — already in lib's always-on db::approvals surface.
+    /// Re-exported here so gen_ts_types can import from one predictable place.
+    pub use crate::db::approvals::AllowlistEntry;
 }

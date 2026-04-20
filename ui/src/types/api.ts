@@ -205,13 +205,7 @@ export interface SecretInfo {
   updated_at: string;
 }
 
-export interface GitHubRepoInfo {
-  id: string;
-  agent_id: string;
-  owner: string;
-  repo: string;
-  added_at: string;
-}
+export type { GitHubRepo as GitHubRepoInfo } from "./api.generated";
 
 export interface OAuthAccount {
   id: string;

@@ -184,6 +184,8 @@ pub async fn list_all_pending(db: &PgPool) -> Result<Vec<PendingApproval>> {
 // ── Allowlist ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, sqlx::FromRow, serde::Serialize)]
+#[cfg_attr(feature = "ts-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-gen", ts(export))]
 pub struct AllowlistEntry {
     pub id: Uuid,
     pub agent_id: String,

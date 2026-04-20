@@ -15,6 +15,8 @@ pub async fn check_repo_access(db: &PgPool, agent_id: &str, owner: &str, repo: &
 }
 
 #[derive(Debug, serde::Serialize, sqlx::FromRow)]
+#[cfg_attr(feature = "ts-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-gen", ts(export))]
 pub struct GitHubRepo {
     pub id: Uuid,
     pub agent_id: String,
