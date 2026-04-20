@@ -279,4 +279,22 @@ pub mod dto_export {
     /// Phase A W2: Memory document + stats DTOs — leaf file, no crate::* imports.
     #[path = "../gateway/handlers/memory_dto_structs.rs"]
     pub mod memory_dto;
+
+    /// Phase A W3: Tool service + MCP DTOs
+    #[path = "../gateway/handlers/tools_dto_structs.rs"]
+    pub mod tools_dto;
+
+    /// Phase A W3: Webhook list DTO
+    #[path = "../gateway/handlers/webhooks_dto_structs.rs"]
+    pub mod webhooks_dto;
+
+    /// Phase A W3: Approval list DTO
+    #[path = "../gateway/handlers/agents/approvals_dto_structs.rs"]
+    pub mod approvals_dto;
+
+    /// Phase A W3: Backup file list DTO
+    pub mod backup_dto {
+        use serde::Serialize;
+        include!("gateway/handlers/backup_dto_structs.rs");
+    }
 }

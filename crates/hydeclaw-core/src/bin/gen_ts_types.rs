@@ -22,6 +22,10 @@ use hydeclaw_core::dto_export::{
     channels_dto::{ChannelRowDto, ActiveChannelDto},
     cron_dto::{CronJobDto, CronRunDto},
     memory_dto::{MemoryDocumentDto, MemoryTaskStatsDto, MemoryStatsDto},
+    tools_dto::{ToolEntryDto, McpEntryDto},
+    webhooks_dto::WebhookEntryDto,
+    approvals_dto::ApprovalEntryDto,
+    backup_dto::BackupEntryDto,
 };
 use ts_rs::TS;
 
@@ -67,13 +71,22 @@ fn main() {
         collect_decl::<MemoryDocumentDto>(),
         collect_decl::<MemoryTaskStatsDto>(),
         collect_decl::<MemoryStatsDto>(),
+        // Phase A Wave 3: Tool + MCP DTOs.
+        collect_decl::<ToolEntryDto>(),
+        collect_decl::<McpEntryDto>(),
+        // Phase A Wave 3: Webhook DTO.
+        collect_decl::<WebhookEntryDto>(),
+        // Phase A Wave 3: Approval DTO.
+        collect_decl::<ApprovalEntryDto>(),
+        // Phase A Wave 3: Backup file list DTO.
+        collect_decl::<BackupEntryDto>(),
     ];
 
     let header = "// @generated — do not edit by hand.\n\
 // Source of truth: crates/hydeclaw-core/src/gateway/handlers/agents/dto_structs.rs (Phase B),\n\
 //                  crates/hydeclaw-core/src/db/github.rs + approvals.rs (Phase C),\n\
 //                  crates/hydeclaw-core/src/db/notifications.rs + sessions.rs (Phase A W1),\n\
-//                  crates/hydeclaw-core/src/gateway/handlers/*_dto_structs.rs (Phase A W2)\n\
+//                  crates/hydeclaw-core/src/gateway/handlers/*_dto_structs.rs (Phase A W2+W3)\n\
 // Regenerate with: make gen-types\n\n";
 
     let body = decls.join("\n\n");

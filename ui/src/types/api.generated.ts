@@ -2,7 +2,7 @@
 // Source of truth: crates/hydeclaw-core/src/gateway/handlers/agents/dto_structs.rs (Phase B),
 //                  crates/hydeclaw-core/src/db/github.rs + approvals.rs (Phase C),
 //                  crates/hydeclaw-core/src/db/notifications.rs + sessions.rs (Phase A W1),
-//                  crates/hydeclaw-core/src/gateway/handlers/*_dto_structs.rs (Phase A W2)
+//                  crates/hydeclaw-core/src/gateway/handlers/*_dto_structs.rs (Phase A W2+W3)
 // Regenerate with: make gen-types
 
 export type AgentDetailAccessDto = { mode: string, owner_id: string | null, };
@@ -62,3 +62,13 @@ export type MemoryDocumentDto = { id: string, source: string | null, pinned: boo
 export type MemoryTaskStatsDto = { pending: number, processing: number, done: number, failed: number, };
 
 export type MemoryStatsDto = { total: number, total_chunks: number, pinned: number, avg_score: number, embed_model?: string, embed_dim?: number, tasks: MemoryTaskStatsDto, };
+
+export type ToolEntryDto = { name: string, url: string, tool_type: string, concurrency_limit: number, healthy: boolean, healthcheck?: string, depends_on: Array<string>, ui_path?: string, managed: boolean, };
+
+export type McpEntryDto = { name: string, url: string | null, container: string | null, port: number | null, mode: string, protocol: string, enabled: boolean, status: string | null, tool_count: number | null, };
+
+export type WebhookEntryDto = { id: string, name: string, agent_id: string, secret: string | null, prompt_prefix: string | null, enabled: boolean, created_at: string, last_triggered_at: string | null, trigger_count: number, webhook_type: "generic" | "github", event_filter: Array<string> | null, };
+
+export type ApprovalEntryDto = { id: string, agent_id: string, tool: string, arguments: Record<string, unknown>, status: "pending" | "approved" | "rejected", created_at: string, resolved_at: string | null, resolved_by: string | null, };
+
+export type BackupEntryDto = { filename: string, size_bytes: number, created_at: string | null, };

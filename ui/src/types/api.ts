@@ -76,17 +76,11 @@ export type { MemoryDocumentDto as MemoryDocument } from "./api.generated";
 // Regenerate: make gen-types
 export type { MemoryStatsDto as MemoryStats } from "./api.generated";
 
-export interface ToolEntry {
-  name: string;
-  url: string;
-  tool_type: string;
-  healthy: boolean;
-  concurrency_limit: number | null;
-  healthcheck?: string | null;
-  depends_on?: string[];
-  ui_path?: string | null;
-  managed?: boolean;
-}
+// ToolEntry is now generated from Rust DTO via ts-rs codegen.
+// Drift fixes: concurrency_limit is number (not number | null); managed is boolean (not optional).
+// Source: crates/hydeclaw-core/src/gateway/handlers/tools_dto_structs.rs
+// Regenerate: make gen-types
+export type { ToolEntryDto as ToolEntry } from "./api.generated";
 
 export interface SkillEntry {
   name: string;
@@ -107,18 +101,11 @@ export interface YamlToolEntry {
   tags: string[];
 }
 
-export interface McpEntry {
-  name: string;
-  url: string | null;
-  container: string | null;
-  port: number | null;
-  mode: string;
-  idle_timeout?: string;
-  protocol: string;
-  enabled: boolean;
-  status: string | null;
-  tool_count: number | null;
-}
+// McpEntry is now generated from Rust DTO via ts-rs codegen.
+// Drift fix: removed idle_timeout (was never emitted by handler).
+// Source: crates/hydeclaw-core/src/gateway/handlers/tools_dto_structs.rs
+// Regenerate: make gen-types
+export type { McpEntryDto as McpEntry } from "./api.generated";
 
 export interface FileEntry {
   name: string;
@@ -221,36 +208,21 @@ export type { ChannelRowDto as ChannelRow } from "./api.generated";
 // Regenerate: make gen-types
 export type { ActiveChannelDto as ActiveChannel } from "./api.generated";
 
-export interface BackupEntry {
-  filename: string;
-  size_bytes: number;
-  created_at: string;
-}
+// BackupEntry is now generated from Rust DTO via ts-rs codegen.
+// Drift fix: created_at is string | null (filesystem mtime can be absent).
+// Source: crates/hydeclaw-core/src/gateway/handlers/backup_dto_structs.rs
+// Regenerate: make gen-types
+export type { BackupEntryDto as BackupEntry } from "./api.generated";
 
-export interface WebhookEntry {
-  id: string;
-  name: string;
-  agent_id: string;
-  secret: string | null;
-  prompt_prefix: string | null;
-  enabled: boolean;
-  created_at: string;
-  last_triggered_at: string | null;
-  trigger_count: number;
-  webhook_type: "generic" | "github";
-  event_filter: string[] | null;
-}
+// WebhookEntry is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/gateway/handlers/webhooks_dto_structs.rs
+// Regenerate: make gen-types
+export type { WebhookEntryDto as WebhookEntry } from "./api.generated";
 
-export interface ApprovalEntry {
-  id: string;
-  agent_id: string;
-  tool: string;
-  arguments: Record<string, unknown>;
-  status: "pending" | "approved" | "rejected";
-  created_at: string;
-  resolved_at: string | null;
-  resolved_by: string | null;
-}
+// ApprovalEntry is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/gateway/handlers/agents/approvals_dto_structs.rs
+// Regenerate: make gen-types
+export type { ApprovalEntryDto as ApprovalEntry } from "./api.generated";
 
 export interface ProviderType {
   id: string;
