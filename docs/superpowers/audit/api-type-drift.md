@@ -14,6 +14,18 @@ Three parallel scans per handler:
 
 | # | File | Endpoint | Handler fn | Serialization | Rust type | TS interface | Drift |
 |---|---|---|---|---|---|---|---|
+| 1 | agents/crud.rs | GET /api/agents | api_agents | hand-rolled | — | TBD | TBD |
+| 2 | agents/crud.rs | POST /api/agents | api_create_agent | hand-rolled | — | TBD | TBD |
+| 3 | agents/crud.rs | GET /api/agents/{name} | api_get_agent | hand-rolled | — | TBD | TBD |
+| 4 | agents/crud.rs | PUT /api/agents/{name} | api_update_agent | hand-rolled | — | TBD | TBD |
+| 5 | agents/crud.rs | DELETE /api/agents/{name} | api_delete_agent | hand-rolled | — | TBD | TBD |
+| 6 | agents/crud.rs | GET /api/agents/{name}/tasks | api_agent_tasks | hand-rolled | — | TBD | TBD |
+| 7 | chat.rs (via agents/mod.rs) | POST /api/agents/{name}/model-override | set_model_override | hand-rolled | — | TBD | TBD |
+| 8 | agents/crud.rs | GET /api/approvals | api_list_approvals | hand-rolled | — | TBD | TBD |
+| 9 | agents/crud.rs | POST /api/approvals/{id}/resolve | api_resolve_approval | hand-rolled | — | TBD | TBD |
+| 10 | agents/crud.rs | GET /api/approvals/allowlist | api_list_allowlist | mixed | AllowlistEntry (db/approvals.rs) | TBD | TBD |
+| 11 | agents/crud.rs | POST /api/approvals/allowlist | api_add_to_allowlist | hand-rolled | — | TBD | TBD |
+| 12 | agents/crud.rs | DELETE /api/approvals/allowlist/{id} | api_delete_from_allowlist | hand-rolled | — | TBD | TBD |
 
 (populated by tasks 3-8)
 
