@@ -1,41 +1,27 @@
 "use client";
 
 import { useChatStore } from "./chat-store";
-import type { AgentState } from "./chat-types";
+import type { AgentState, ConnectionPhase } from "./chat-types";
+import type { ChatMessage } from "./chat-types";
+import { StreamBuffer } from "./stream/stream-buffer";
+import { STREAM_THROTTLE_MS } from "./chat-types";
 
-/**
- * Invariant-enforcing wrapper around stream-state mutations.
- *
- * A `StreamSession` owns three things for the lifetime of one
- * streaming operation:
- *   1. A generation number — set at construction, compared on every
- *      write. Writes from a session whose generation has been
- *      superseded (another `streamSessionManager.start()` ran for the
- *      same agent) are silently dropped.
- *   2. An `AbortSignal` — passed to fetch. Disposing the session
- *      aborts the signal.
- *   3. A reference to the shared Zustand store — writes go through
- *      `useChatStore.setState` internally; no raw store reference is exposed.
- *
- * Stream-touching state (messageSource live-mode, connectionPhase,
- * connectionError, streamError, streamGeneration, reconnectAttempt)
- * MUST be written via this class. Non-stream state (activeSessionId,
- * selectedBranches, renderLimit, turnLimitMessage, etc.) can be
- * written directly from navigation/CRUD actions.
- *
- * See `docs/superpowers/specs/2026-04-19-chat-architecture-cleanup-design.md` §7.
- */
 export class StreamSession {
   readonly agent: string;
   readonly generation: number;
+  readonly buffer: StreamBuffer;
 
   #controller: AbortController;
   #disposed = false;
+  #updateTimer: ReturnType<typeof setTimeout> | null = null;
+  #updateScheduled = false;
 
   constructor(agent: string, generation: number) {
     this.agent = agent;
     this.generation = generation;
     this.#controller = new AbortController();
+    const currentAgent = useChatStore.getState().agents[agent];
+    this.buffer = new StreamBuffer(currentAgent?.activeSessionId ?? null);
   }
 
   get signal(): AbortSignal {
@@ -87,18 +73,61 @@ export class StreamSession {
     });
   }
 
+  commit(phase?: ConnectionPhase): void {
+    if (!this.isCurrent) return;
+    this.writeDraft((agentDraft: AgentState) => {
+      if ((agentDraft as any).streamGeneration !== this.generation) return;
+      if (agentDraft.messageSource.mode !== "live") {
+        (agentDraft as any).messageSource = { mode: "live", messages: [] };
+      }
+      const liveMessages = (agentDraft.messageSource as any).messages as ChatMessage[];
+      const allParts = this.buffer.snapshot();
+      const existingIdx = liveMessages.findIndex(
+        (m: ChatMessage) => m.id === this.buffer.assistantId,
+      );
+      if (existingIdx >= 0) {
+        liveMessages[existingIdx].parts = allParts;
+        liveMessages[existingIdx].agentId =
+          this.buffer.currentRespondingAgent ?? undefined;
+      } else {
+        liveMessages.push({
+          id: this.buffer.assistantId,
+          role: "assistant",
+          parts: allParts,
+          createdAt: this.buffer.assistantCreatedAt,
+          agentId: this.buffer.currentRespondingAgent ?? undefined,
+        });
+      }
+      const targetPhase = phase ?? "streaming";
+      if (agentDraft.connectionPhase !== "error") {
+        agentDraft.connectionPhase = targetPhase;
+      }
+    });
+  }
+
+  scheduleCommit(): void {
+    if (this.#updateScheduled) return;
+    this.#updateScheduled = true;
+    this.#updateTimer = setTimeout(() => {
+      this.#updateScheduled = false;
+      this.#updateTimer = null;
+      this.commit();
+    }, STREAM_THROTTLE_MS);
+  }
+
+  cancelScheduledCommit(): void {
+    if (this.#updateTimer !== null) {
+      clearTimeout(this.#updateTimer);
+      this.#updateTimer = null;
+    }
+    this.#updateScheduled = false;
+  }
+
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.cancelScheduledCommit();
     this.#controller.abort();
-    // Final legal stream-state write BEFORE generation bump: land
-    // `connectionPhase: "idle"` so consumers that read the phase see
-    // the terminal state. This is the ONLY stream-state write that
-    // legitimately happens during dispose; all other writes during
-    // teardown go through the invariant-protected `write()` / bail
-    // on `isCurrent`. Bypassing `isCurrent` here is safe because
-    // `dispose()` is the only caller of this internal path and it
-    // runs exactly once (idempotency guard above).
     useChatStore.setState((draft: any) => {
       const st = draft.agents[this.agent];
       if (!st) return;
@@ -108,26 +137,14 @@ export class StreamSession {
   }
 }
 
-/**
- * Per-agent StreamSession registry. `start()` creates a new session,
- * auto-disposing any previous one for the same agent. `current()`
- * returns the active session or null. `disposeCurrent()` is the
- * navigation-initiated teardown path (equivalent to `abortLocalOnly`
- * in the legacy renderer).
- */
 const activeSessions = new Map<string, StreamSession>();
 
 export const streamSessionManager = {
   start(agent: string): StreamSession {
-    // Single generation bump per logical transition: dispose the
-    // previous session (which bumps), then create the new session
-    // whose generation reflects the bumped value.
     const previous = activeSessions.get(agent);
     if (previous) {
       previous.dispose();
     } else {
-      // No previous session to dispose — bump the generation directly
-      // so that `start()` always advances the counter exactly once.
       useChatStore.setState((draft: any) => {
         const st = draft.agents[agent];
         if (!st) return;
