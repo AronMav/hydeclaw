@@ -26,6 +26,35 @@ Three parallel scans per handler:
 | 10 | agents/crud.rs | GET /api/approvals/allowlist | api_list_allowlist | mixed | AllowlistEntry (db/approvals.rs) | TBD | TBD |
 | 11 | agents/crud.rs | POST /api/approvals/allowlist | api_add_to_allowlist | hand-rolled | — | TBD | TBD |
 | 12 | agents/crud.rs | DELETE /api/approvals/allowlist/{id} | api_delete_from_allowlist | hand-rolled | — | TBD | TBD |
+| 13 | chat.rs | GET /health | health | hand-rolled | — | TBD | TBD |
+| 14 | chat.rs | POST /api/mcp/callback | mcp_callback | none (StatusCode only) | — | TBD | TBD |
+| 15 | chat.rs | POST /v1/chat/completions | chat_completions | mixed | ChatCompletionResponse (chat.rs:150) | TBD | TBD |
+| 16 | chat.rs | GET /v1/models | list_models | hand-rolled | — | TBD | TBD |
+| 17 | chat.rs | POST /v1/embeddings | embeddings_proxy | hand-rolled | — | TBD | TBD |
+| 18 | chat.rs | POST /api/chat | api_chat_sse | SSE — out of scope | — | N/A: see sse-events.ts | N/A: see sse-events.ts |
+| 19 | chat.rs | GET /api/chat/{id}/stream | api_chat_resume_stream | SSE — out of scope | — | N/A: see sse-events.ts | N/A: see sse-events.ts |
+| 20 | chat.rs | POST /api/chat/{id}/abort | api_chat_abort | hand-rolled | — | TBD | TBD |
+| 21 | sessions.rs | GET /api/sessions | api_list_sessions | hand-rolled | — | TBD | TBD |
+| 22 | sessions.rs | DELETE /api/sessions | api_delete_all_sessions | hand-rolled | — | TBD | TBD |
+| 23 | sessions.rs | GET /api/sessions/latest | api_latest_session | hand-rolled | Session+MessageRow fields inlined (db/sessions.rs:21,280) | TBD | TBD |
+| 24 | sessions.rs | GET /api/sessions/search | api_search_sessions | hand-rolled | SearchResult fields inlined (db/sessions.rs:806) | TBD | TBD |
+| 25 | sessions.rs | GET /api/sessions/stuck | api_stuck_sessions | hand-rolled | — | TBD | TBD |
+| 26 | sessions.rs | DELETE /api/sessions/{id} | api_delete_session | hand-rolled | — | TBD | TBD |
+| 27 | sessions.rs | PATCH /api/sessions/{id} | api_patch_session | hand-rolled | — | TBD | TBD |
+| 28 | sessions.rs | POST /api/sessions/{id}/compact | api_compact_session | hand-rolled | — | TBD | TBD |
+| 29 | sessions.rs | GET /api/sessions/{id}/export | api_export_session | mixed | serde_json::Value from export_session (db/sessions.rs:846) | TBD | TBD |
+| 30 | sessions.rs | POST /api/sessions/{id}/invite | api_invite_to_session | hand-rolled | — | TBD | TBD |
+| 31 | sessions.rs | GET /api/sessions/{id}/messages | api_session_messages | hand-rolled | MessageRow fields inlined (db/sessions.rs:280) | TBD | TBD |
+| 32 | sessions.rs | DELETE /api/messages/{id} | api_delete_message | hand-rolled | — | TBD | TBD |
+| 33 | sessions.rs | PATCH /api/messages/{id} | api_patch_message | hand-rolled | — | TBD | TBD |
+| 34 | sessions.rs | POST /api/messages/{id}/feedback | api_message_feedback | hand-rolled | — | TBD | TBD |
+| 35 | sessions.rs | POST /api/sessions/{id}/fork | api_fork_session | hand-rolled | — | TBD | TBD |
+| 36 | sessions.rs | GET /api/sessions/{id}/active-path | api_active_path | hand-rolled | MessageRow fields inlined (db/sessions.rs:280) | TBD | TBD |
+| 37 | sessions.rs | POST /api/sessions/{id}/retry | api_retry_session | hand-rolled | — | TBD | TBD |
+| 38 | notifications.rs | GET /api/notifications | api_list_notifications | mixed | Notification (db/notifications.rs:7) wrapped in json!{} | TBD | TBD |
+| 39 | notifications.rs | POST /api/notifications/read-all | api_mark_all_notifications_read | hand-rolled | — | TBD | TBD |
+| 40 | notifications.rs | DELETE /api/notifications/clear | api_clear_all_notifications | hand-rolled | — | TBD | TBD |
+| 41 | notifications.rs | PATCH /api/notifications/{id} | api_mark_notification_read | hand-rolled | — | TBD | TBD |
 
 (populated by tasks 3-8)
 
