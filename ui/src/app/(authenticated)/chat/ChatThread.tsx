@@ -1,6 +1,6 @@
 "use client";
 
-import React, { Component, useRef, useEffect, useMemo } from "react";
+import React, { Component, useEffect, useMemo } from "react";
 import type { ErrorInfo, ReactNode } from "react";
 import { useChatStore, isActivePhase } from "@/stores/chat-store";
 import { useVisualViewport } from "@/hooks/use-visual-viewport";
@@ -95,15 +95,12 @@ export function ChatThread({
   const isHistory = useIsReplayingHistory(currentAgent);
   const liveHasContent = useLiveHasContent(currentAgent);
 
-  // Auto-resume SSE stream ONCE after page reload when engine is still processing.
-  // Uses a Set to prevent re-triggering for the same session.
-  const resumedSessions = useRef(new Set<string>());
+  // Auto-resume SSE stream when engine is still processing. React 18+ batches
+  // state updates; isActivePhase + isRunning guards prevent double-fire.
   useEffect(() => {
     if (!activeSessionId || isActivePhase(connectionPhase)) return;
-    if (resumedSessions.current.has(activeSessionId)) return;
     const isRunning = activeSessionIds.includes(activeSessionId) || sessionRunStatus === "running";
     if (!isRunning) return;
-    resumedSessions.current.add(activeSessionId);
     useChatStore.getState().resumeStream(currentAgent, activeSessionId);
   }, [activeSessionId, activeSessionIds, sessionRunStatus, connectionPhase, currentAgent]);
 
