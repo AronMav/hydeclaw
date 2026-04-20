@@ -15,6 +15,8 @@ use super::dto::{AgentDetailDto, AgentInfoDto};
 use super::schema::*;
 use super::lifecycle::start_agent_from_config;
 
+include!("approvals_dto_structs.rs");
+
 // ── Agent list ──────────────────────────────────────────
 
 pub(crate) async fn api_agents(State(agents): State<AgentCore>) -> Json<Value> {
@@ -709,19 +711,19 @@ pub(crate) async fn api_list_approvals(
 
     match result {
         Ok(approvals) => {
-            let items: Vec<serde_json::Value> = approvals.iter().map(|a| {
-                json!({
-                    "id": a.id,
-                    "agent_id": a.agent_id,
-                    "tool": a.tool_name,
-                    "arguments": a.tool_args,
-                    "status": a.status,
-                    "created_at": a.requested_at,
-                    "resolved_at": a.resolved_at,
-                    "resolved_by": a.resolved_by,
-                })
+            let items: Vec<ApprovalEntryDto> = approvals.iter().map(|a| {
+                ApprovalEntryDto {
+                    id: a.id.to_string(),
+                    agent_id: a.agent_id.clone(),
+                    tool: a.tool_name.clone(),
+                    arguments: a.tool_args.clone(),
+                    status: a.status.clone(),
+                    created_at: a.requested_at.to_rfc3339(),
+                    resolved_at: a.resolved_at.map(|t| t.to_rfc3339()),
+                    resolved_by: a.resolved_by.clone(),
+                }
             }).collect();
-            Json(json!({"approvals": items})).into_response()
+            Json(serde_json::json!({"approvals": items})).into_response()
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
