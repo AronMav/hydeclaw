@@ -136,11 +136,29 @@ pub async fn bootstrap<S: EventSink>(
     );
 
     // 6. Enrich + persist user message
-    //    Full enrichment (URL fetch, attachment descriptions) requires HTTP clients
-    //    injected from the caller — delegated to Task 10 which inlines the body.
-    //    For now we use the raw text (PII redaction lives inside enrich_message_text).
+    //    Calls crate::agent::pipeline::subagent::enrich_message_text which:
+    //    - redacts PII (emails/phones) before sending to external LLM,
+    //    - transcribes voice attachments via toolgate,
+    //    - describes image/document attachments via vision,
+    //    - auto-fetches URLs mentioned in the text through SSRF-safe client.
+    //    Previously lost during the pipeline refactor; restored 2026-04-20.
     let user_text = ctx.msg.text.clone().unwrap_or_default();
-    let enriched_text = user_text.clone();
+    let toolgate_url = engine
+        .cfg()
+        .app_config
+        .toolgate_url
+        .clone()
+        .unwrap_or_else(|| "http://localhost:9011".to_string());
+    let enriched_text = crate::agent::pipeline::subagent::enrich_message_text(
+        engine.http_client(),
+        engine.ssrf_http_client(),
+        &engine.cfg().app_config.gateway.listen,
+        &toolgate_url,
+        &engine.cfg().agent.language,
+        &user_text,
+        &ctx.msg.attachments,
+    )
+    .await;
 
     let sender_agent_id = extract_sender_agent_id(&ctx.msg.user_id);
     // parent_message_id = leaf_message_id: threads the new user message onto
@@ -171,9 +189,13 @@ pub async fn bootstrap<S: EventSink>(
     };
 
     // 9. Push user message into message history for the LLM
+    // Feed the enriched text to the LLM so it sees the transcribed voice /
+    // attachment descriptions / fetched URL contents that enrich_message_text
+    // produced. The DB already persists the same enriched_text (above) so
+    // reload-from-active-path reproduces exactly what the LLM saw.
     messages.push(Message {
         role: MessageRole::User,
-        content: user_text,
+        content: enriched_text.clone(),
         tool_calls: None,
         tool_call_id: None,
         thinking_blocks: vec![],
