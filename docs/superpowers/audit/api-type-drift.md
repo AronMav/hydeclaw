@@ -72,6 +72,49 @@ Three parallel scans per handler:
 | 56 | email_triggers.rs | GET /api/triggers/email | api_list_gmail_triggers | hand-rolled | — | TBD | TBD |
 | 57 | email_triggers.rs | POST /api/triggers/email | api_create_gmail_trigger | hand-rolled | — | TBD | TBD |
 | 58 | email_triggers.rs | DELETE /api/triggers/email/{id} | api_delete_gmail_trigger | none (StatusCode only) | — | N/A | N/A |
+| 59 | providers.rs | GET /api/provider-types | api_list_provider_types | hand-rolled | — | TBD | TBD |
+| 60 | providers.rs | GET /api/media-drivers | api_list_media_drivers | hand-rolled | — | TBD | TBD |
+| 61 | providers.rs | GET /api/media-config | api_media_config_export | hand-rolled | — | TBD | TBD |
+| 62 | providers.rs | GET /api/providers | api_list_providers | mixed | ProviderRow (db/providers.rs:8) augmented with api_key/has_api_key via json!{} | TBD | TBD |
+| 63 | providers.rs | POST /api/providers | api_create_provider | mixed | ProviderRow (db/providers.rs:8) augmented with api_key/has_api_key via json!{} | TBD | TBD |
+| 64 | providers.rs | GET /api/providers/{id} | api_get_provider | mixed | ProviderRow (db/providers.rs:8) augmented with api_key/has_api_key via json!{} | TBD | TBD |
+| 65 | providers.rs | PUT /api/providers/{id} | api_update_provider | mixed | ProviderRow (db/providers.rs:8) augmented with api_key/has_api_key via json!{} | TBD | TBD |
+| 66 | providers.rs | DELETE /api/providers/{id} | api_delete_provider | hand-rolled | — | TBD | TBD |
+| 67 | providers.rs | GET /api/providers/{id}/models | api_unified_provider_models | hand-rolled | — | TBD | TBD |
+| 68 | providers.rs | GET /api/providers/{id}/resolve | api_provider_resolve | hand-rolled | — | TBD | TBD |
+| 69 | providers.rs | POST /api/providers/{id}/test-cli | api_test_cli | typed | CliTestResult (providers.rs:683) | TBD | TBD |
+| 70 | providers.rs | PATCH /api/providers/{id} | api_patch_cli_options | mixed | ProviderRow + CliTestResult wrapped in json!{} | TBD | TBD |
+| 71 | providers.rs | GET /api/provider-active | api_list_provider_active | mixed | ProviderActiveRow (db/providers.rs:56) wrapped in json!{} | TBD | TBD |
+| 72 | providers.rs | PUT /api/provider-active | api_set_provider_active | mixed | ProviderActiveRow (db/providers.rs:56) via json!(row) | TBD | TBD |
+| 73 | secrets.rs | GET /api/secrets | list_secrets | hand-rolled | — | TBD | TBD |
+| 74 | secrets.rs | POST /api/secrets | set_secret | hand-rolled | — | TBD | TBD |
+| 75 | secrets.rs | GET /api/secrets/{name} | get_secret | hand-rolled | — | TBD | TBD |
+| 76 | secrets.rs | DELETE /api/secrets/{name} | delete_secret | hand-rolled | — | TBD | TBD |
+| 77 | channels.rs | GET /api/channels | api_list_all_channels | hand-rolled | — | TBD | TBD |
+| 78 | channels.rs | GET /api/channels/active | api_channels_active | hand-rolled | — | TBD | TBD |
+| 79 | channels.rs | POST /api/channels/notify | api_channel_notify | hand-rolled | — | TBD | TBD |
+| 80 | channels.rs | GET /api/agents/{name}/channels | api_channels_list | hand-rolled | — | TBD | TBD |
+| 81 | channels.rs | POST /api/agents/{name}/channels | api_channel_create | hand-rolled | — | TBD | TBD |
+| 82 | channels.rs | DELETE /api/agents/{name}/channels/{id} | api_channel_delete | hand-rolled | — | TBD | TBD |
+| 83 | channels.rs | PUT /api/agents/{name}/channels/{id} | api_channel_update | hand-rolled | — | TBD | TBD |
+| 84 | channels.rs | POST /api/agents/{name}/channels/{id}/restart | api_channel_restart | hand-rolled | — | TBD | TBD |
+| 85 | channels.rs | POST /api/agents/{name}/channels/{id}/ack | api_channel_ack | hand-rolled | — | TBD | TBD |
+| 86 | channels.rs | GET /api/agents/{name}/channels/{id}/status | api_channel_status | hand-rolled | — | TBD | TBD |
+| 87 | services.rs | GET /api/services | api_list_services | hand-rolled | — | TBD | TBD |
+| 88 | services.rs | POST /api/services/{name}/{action} | api_service_action | hand-rolled | — | TBD | TBD |
+| 89 | services.rs | POST /api/containers/{name}/restart | api_container_restart | hand-rolled | — | TBD | TBD |
+| 90 | network.rs | GET /api/network/addresses | api_network_addresses | hand-rolled | — | TBD | TBD |
+| 91 | config.rs | GET /api/config/schema | api_get_config_schema | hand-rolled | — | TBD | TBD |
+| 92 | config.rs | GET /api/config | api_get_config | hand-rolled | — | TBD | TBD |
+| 93 | config.rs | PUT /api/config | api_update_config | hand-rolled | — | TBD | TBD |
+| 94 | config.rs | GET /api/config/export | api_export_config | hand-rolled | — | TBD | TBD |
+| 95 | config.rs | POST /api/config/import | api_import_config | hand-rolled | — | TBD | TBD |
+| 96 | config.rs | POST /api/restart | api_restart | hand-rolled | — | TBD | TBD |
+| 97 | config.rs | GET /api/tts/voices | api_tts_voices | hand-rolled | — | TBD | TBD |
+| 98 | config.rs | POST /api/tts/synthesize | api_tts_synthesize | none (raw bytes) | — | N/A | N/A |
+| 99 | config.rs | GET /api/canvas/{agent} | api_canvas_state | hand-rolled | — | TBD | TBD |
+| 100 | config.rs | DELETE /api/canvas/{agent} | api_canvas_clear | none (StatusCode only) | — | N/A | N/A |
+| 101 | auth.rs | POST /api/auth/ws-ticket | api_create_ws_ticket | hand-rolled | — | TBD | TBD |
 
 (populated by tasks 3-8)
 
