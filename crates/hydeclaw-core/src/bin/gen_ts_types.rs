@@ -18,6 +18,7 @@ use hydeclaw_core::dto_export::{
     github_dto::GitHubRepo,
     AllowlistEntry,
     Notification, NotificationsResponseDto,
+    Session, MessageRow,
 };
 use ts_rs::TS;
 
@@ -50,12 +51,15 @@ fn main() {
         // Phase A Wave 1: DB notification types.
         collect_decl::<Notification>(),
         collect_decl::<NotificationsResponseDto>(),
+        // Phase A Wave 1: DB session + message types.
+        collect_decl::<Session>(),
+        collect_decl::<MessageRow>(),
     ];
 
     let header = "// @generated — do not edit by hand.\n\
 // Source of truth: crates/hydeclaw-core/src/gateway/handlers/agents/dto_structs.rs (Phase B),\n\
 //                  crates/hydeclaw-core/src/db/github.rs + approvals.rs (Phase C),\n\
-//                  crates/hydeclaw-core/src/db/notifications.rs (Phase A W1)\n\
+//                  crates/hydeclaw-core/src/db/notifications.rs + sessions.rs (Phase A W1)\n\
 // Regenerate with: make gen-types\n\n";
 
     let body = decls.join("\n\n");

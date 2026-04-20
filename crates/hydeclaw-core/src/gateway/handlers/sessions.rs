@@ -58,36 +58,9 @@ pub(crate) async fn api_latest_session(
         }
     };
 
-    let msg_json: Vec<Value> = messages
-        .iter()
-        .map(|m| {
-            json!({
-                "id": m.id.to_string(),
-                "role": m.role,
-                "content": m.content,
-                "tool_calls": m.tool_calls,
-                "tool_call_id": m.tool_call_id,
-                "created_at": m.created_at.to_rfc3339(),
-                "feedback": m.feedback.unwrap_or(0),
-                "edited_at": m.edited_at.map(|t| t.to_rfc3339()),
-                "status": m.status,
-            })
-        })
-        .collect();
-
-    Json(json!({
-        "session": {
-            "id": session.id.to_string(),
-            "agent_id": session.agent_id,
-            "channel": session.channel,
-            "started_at": session.started_at.to_rfc3339(),
-            "last_message_at": session.last_message_at.to_rfc3339(),
-            "title": session.title,
-            "metadata": session.metadata,
-            "run_status": session.run_status,
-            "participants": session.participants,
-        },
-        "messages": msg_json,
+    Json(serde_json::json!({
+        "session": session,
+        "messages": messages,
     }))
     .into_response()
 }

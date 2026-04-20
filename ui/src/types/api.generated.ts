@@ -1,7 +1,7 @@
 // @generated — do not edit by hand.
 // Source of truth: crates/hydeclaw-core/src/gateway/handlers/agents/dto_structs.rs (Phase B),
 //                  crates/hydeclaw-core/src/db/github.rs + approvals.rs (Phase C),
-//                  crates/hydeclaw-core/src/db/notifications.rs (Phase A W1)
+//                  crates/hydeclaw-core/src/db/notifications.rs + sessions.rs (Phase A W1)
 // Regenerate with: make gen-types
 
 export type AgentDetailAccessDto = { mode: string, owner_id: string | null, };
@@ -43,3 +43,14 @@ export type AgentInfoDto = { name: string, language: string, model: string, prov
 export type Notification = { id: string, type: string, title: string, body: string, data: Record<string, unknown>, read: boolean, created_at: string, };
 
 export type NotificationsResponseDto = { items: Array<Notification>, unread_count: number, limit: number, offset: number, };
+
+export type Session = { id: string, agent_id: string, user_id: string, channel: string, started_at: string, last_message_at: string, title: string | null, metadata: unknown, run_status: string | null, participants: Array<string>, };
+
+export type MessageRow = { id: string, role: string, content: string, tool_calls: unknown, tool_call_id: string | null, created_at: string, agent_id: string | null, feedback: number | null, edited_at: string | null, status: string, thinking_blocks: unknown, parent_message_id: string | null, branch_from_message_id: string | null, 
+/**
+ * Abort reason for messages with status='aborted'. NULL for completed
+ * messages. Stable identifiers pinned in `LlmCallError::abort_reason()`:
+ * connect_timeout | inactivity | request_timeout | max_duration |
+ * user_cancelled | shutdown_drain.
+ */
+abort_reason: string | null, };

@@ -44,34 +44,16 @@ export interface RoutingRule {
 // Regenerate: make gen-types
 export type { AgentDetailDto as AgentDetail } from "./api.generated";
 
-export interface SessionRow {
-  id: string;
-  agent_id: string;
-  user_id: string;
-  channel: string;
-  started_at: string;
-  last_message_at: string;
-  title: string | null;
-  run_status: string | null;
-  metadata: Record<string, unknown> | null;
-  participants?: string[];
-}
+// SessionRow is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/db/sessions.rs
+// Regenerate: make gen-types
+export type { Session as SessionRow } from "./api.generated";
 
-export interface MessageRow {
-  id: string;
-  role: "user" | "assistant" | "tool" | "system";
-  content: string;
-  tool_calls: unknown;
-  tool_call_id: string | null;
-  created_at: string;
-  agent_id?: string | null;
-  status: string;
-  feedback: number;
-  edited_at: string | null;
-  parent_message_id: string | null;
-  branch_from_message_id: string | null;
-  abort_reason?: string | null;
-}
+// MessageRow is now generated from Rust DTO via ts-rs codegen.
+// Note: feedback is number | null (DB-accurate); the old type had number (incorrect).
+// Source: crates/hydeclaw-core/src/db/sessions.rs
+// Regenerate: make gen-types
+export type { MessageRow } from "./api.generated";
 
 export interface CronJob {
   id: string;

@@ -16,24 +16,29 @@ use uuid::Uuid;
 /// `'complete'`) do NOT count toward the bind budget.
 pub(crate) const MAX_PARAMS_PER_QUERY: usize = 32767;
 
-#[derive(Debug, FromRow)]
+#[derive(Debug, serde::Serialize, sqlx::FromRow)]
 #[allow(dead_code)]
+#[cfg_attr(feature = "ts-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-gen", ts(export))]
 pub struct Session {
-    pub id: Uuid,
+    pub id: uuid::Uuid,
     pub agent_id: String,
     pub user_id: String,
     pub channel: String,
-    pub started_at: DateTime<Utc>,
-    pub last_message_at: DateTime<Utc>,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub last_message_at: chrono::DateTime<chrono::Utc>,
     pub title: Option<String>,
+    #[cfg_attr(feature = "ts-gen", ts(type = "unknown"))]
     pub metadata: Option<serde_json::Value>,
     #[sqlx(default)]
     pub run_status: Option<String>,
     #[sqlx(default)]
-    pub activity_at: Option<DateTime<Utc>>,
+    #[serde(skip)]
+    pub activity_at: Option<chrono::DateTime<chrono::Utc>>,
     #[sqlx(default)]
     pub participants: Vec<String>,
     #[sqlx(default)]
+    #[serde(skip)]
     pub retry_count: i32,
 }
 
@@ -275,25 +280,29 @@ pub async fn load_messages(
     Ok(rows)
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug, serde::Serialize, sqlx::FromRow)]
 #[allow(dead_code)]
+#[cfg_attr(feature = "ts-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-gen", ts(export))]
 pub struct MessageRow {
-    pub id: Uuid,
+    pub id: uuid::Uuid,
     pub role: String,
     pub content: String,
+    #[cfg_attr(feature = "ts-gen", ts(type = "unknown"))]
     pub tool_calls: Option<serde_json::Value>,
     pub tool_call_id: Option<String>,
-    pub created_at: DateTime<Utc>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
     pub agent_id: Option<String>,
     pub feedback: Option<i16>,
-    pub edited_at: Option<DateTime<Utc>>,
+    pub edited_at: Option<chrono::DateTime<chrono::Utc>>,
     pub status: String,
     #[sqlx(default)]
+    #[cfg_attr(feature = "ts-gen", ts(type = "unknown"))]
     pub thinking_blocks: Option<serde_json::Value>,
     #[sqlx(default)]
-    pub parent_message_id: Option<Uuid>,
+    pub parent_message_id: Option<uuid::Uuid>,
     #[sqlx(default)]
-    pub branch_from_message_id: Option<Uuid>,
+    pub branch_from_message_id: Option<uuid::Uuid>,
     /// Abort reason for messages with status='aborted'. NULL for completed
     /// messages. Stable identifiers pinned in `LlmCallError::abort_reason()`:
     /// connect_timeout | inactivity | request_timeout | max_duration |
