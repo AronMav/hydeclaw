@@ -6,7 +6,7 @@ use crate::config::AgentConfig;
 
 #[derive(Debug, Serialize)]
 pub struct AgentDetailAccessDto {
-    pub mode: Option<String>,
+    pub mode: String,
     pub owner_id: Option<String>,
 }
 
@@ -27,10 +27,10 @@ pub struct AgentDetailToolGroupsDto {
 
 #[derive(Debug, Serialize)]
 pub struct AgentDetailToolsDto {
-    pub allow: Option<Vec<String>>,
-    pub deny: Option<Vec<String>>,
-    pub allow_all: Option<bool>,
-    pub deny_all_others: Option<bool>,
+    pub allow: Vec<String>,
+    pub deny: Vec<String>,
+    pub allow_all: bool,
+    pub deny_all_others: bool,
     pub groups: AgentDetailToolGroupsDto,
 }
 
@@ -62,14 +62,15 @@ pub struct AgentDetailToolLoopDto {
     pub max_auto_continues: u8,
     pub max_loop_nudges: usize,
     pub ngram_cycle_length: usize,
+    // error_break_threshold is intentionally absent — internal executor hint, not exposed via API
 }
 
 #[derive(Debug, Serialize)]
 pub struct AgentDetailApprovalDto {
-    pub enabled: Option<bool>,
-    pub require_for: Option<Vec<String>>,
-    pub require_for_categories: Option<Vec<String>>,
-    pub timeout_seconds: Option<u64>,
+    pub enabled: bool,
+    pub require_for: Vec<String>,
+    pub require_for_categories: Vec<String>,
+    pub timeout_seconds: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -83,13 +84,13 @@ pub struct AgentDetailRoutingDto {
 
 #[derive(Debug, Serialize)]
 pub struct AgentDetailWatchdogDto {
-    pub inactivity_secs: Option<u64>,
+    pub inactivity_secs: u64,
 }
 
 #[derive(Debug, Serialize)]
 pub struct AgentDetailHooksDto {
-    pub log_all_tool_calls: Option<bool>,
-    pub block_tools: Option<Vec<String>>,
+    pub log_all_tool_calls: bool,
+    pub block_tools: Vec<String>,
 }
 
 // ── Top-level DTO ───────────────────────────────────────────────────────────
@@ -148,7 +149,7 @@ impl AgentDetailDto {
             temperature: a.temperature,
             max_tokens: a.max_tokens,
             access: a.access.as_ref().map(|ac| AgentDetailAccessDto {
-                mode: Some(ac.mode.clone()),
+                mode: ac.mode.clone(),
                 owner_id: ac.owner_id.clone(),
             }),
             heartbeat: a.heartbeat.as_ref().map(|h| AgentDetailHeartbeatDto {
@@ -157,10 +158,10 @@ impl AgentDetailDto {
                 announce_to: h.announce_to.clone(),
             }),
             tools: a.tools.as_ref().map(|t| AgentDetailToolsDto {
-                allow: Some(t.allow.clone()),
-                deny: Some(t.deny.clone()),
-                allow_all: Some(t.allow_all),
-                deny_all_others: Some(t.deny_all_others),
+                allow: t.allow.clone(),
+                deny: t.deny.clone(),
+                allow_all: t.allow_all,
+                deny_all_others: t.deny_all_others,
                 groups: AgentDetailToolGroupsDto {
                     git: t.groups.git,
                     tool_management: t.groups.tool_management,
@@ -195,10 +196,10 @@ impl AgentDetailDto {
                 ngram_cycle_length: tl.ngram_cycle_length,
             }),
             approval: a.approval.as_ref().map(|ap| AgentDetailApprovalDto {
-                enabled: Some(ap.enabled),
-                require_for: Some(ap.require_for.clone()),
-                require_for_categories: Some(ap.require_for_categories.clone()),
-                timeout_seconds: Some(ap.timeout_seconds),
+                enabled: ap.enabled,
+                require_for: ap.require_for.clone(),
+                require_for_categories: ap.require_for_categories.clone(),
+                timeout_seconds: ap.timeout_seconds,
             }),
             routing: a.routing.iter().map(|r| AgentDetailRoutingDto {
                 condition: r.condition.clone(),
@@ -208,11 +209,11 @@ impl AgentDetailDto {
                 cooldown_secs: r.cooldown_secs,
             }).collect(),
             watchdog: a.watchdog.as_ref().map(|w| AgentDetailWatchdogDto {
-                inactivity_secs: Some(w.inactivity_secs),
+                inactivity_secs: w.inactivity_secs,
             }),
             hooks: a.hooks.as_ref().map(|h| AgentDetailHooksDto {
-                log_all_tool_calls: Some(h.log_all_tool_calls),
-                block_tools: Some(h.block_tools.clone()),
+                log_all_tool_calls: h.log_all_tool_calls,
+                block_tools: h.block_tools.clone(),
             }),
             max_history_messages: a.max_history_messages,
             daily_budget_tokens: a.daily_budget_tokens,
