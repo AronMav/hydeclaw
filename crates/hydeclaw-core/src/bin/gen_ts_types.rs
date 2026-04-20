@@ -18,7 +18,7 @@ use ts_rs::TS;
 /// ts-rs `decl()` returns the declaration without the `export` keyword;
 /// we prefix it here so the generated file has proper named exports.
 fn collect_decl<T: TS>() -> String {
-    format!("export {}", T::decl())
+    format!("export {}", T::decl(&ts_rs::Config::default()))
 }
 
 fn main() {
@@ -41,7 +41,8 @@ fn main() {
 
     let header = "// @generated — do not edit by hand.\n// Source of truth: crates/hydeclaw-core/src/gateway/handlers/agents/dto.rs\n// Regenerate with: make gen-types\n\n";
 
-    // ts-rs 10 decl() already emits `export type Foo = { ... };`
+    // ts-rs 12 decl() emits `type Foo = { ... };` (without `export`);
+    // collect_decl() prefixes `export ` before joining.
     // Join all declarations separated by a blank line.
     let body = decls.join("\n\n");
     let output = format!("{}{}\n", header, body);
