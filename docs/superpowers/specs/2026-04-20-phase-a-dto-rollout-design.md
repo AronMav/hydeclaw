@@ -43,7 +43,7 @@ Phase A executes in 5 waves. Each wave = one implementation plan. Each wave must
 
 | Wave | Handler modules | TS interfaces migrated | Drift fixes | Plan status |
 |------|----------------|------------------------|-------------|-------------|
-| **W1** | `agents/crud.rs`, `notifications.rs`, `sessions.rs` | `AgentInfo`, `NotificationRow`, `NotificationsResponse`, `SessionRow`, `MessageRow` (+dead code deletion) | 4 | **Write now** |
+| **W1** | `agents/crud.rs`, `notifications.rs`, `sessions.rs` | `AgentInfo`, `NotificationRow`, `NotificationsResponse`, `SessionRow`, `MessageRow` | 4 | **Write now** |
 | **W2** | `channels.rs`, `cron.rs`, `memory.rs` | `ChannelRow`, `ActiveChannel`, `CronJob`, `CronRun`, `MemoryDocument`, `MemoryStats` | 1 | Future |
 | **W3** | `tools.rs`, `webhooks.rs`, `approvals.rs`, `backup.rs` | `ToolEntry`, `McpEntry`, `WebhookEntry`, `ApprovalEntry`, `BackupEntry` | 0 | Future |
 | **W4** | `providers.rs`, `secrets.rs`, `monitoring.rs` | `Provider`, `ProviderType`, `ProviderActiveRow`, `MediaDriverInfo`, `SecretInfo`, `StatusInfo`, `StatsInfo`, `UsageSummary`, `UsageResponse`, `DailyUsageEntry`, `DailyUsageResponse`, `AuditEvent` | 1 | Future |
@@ -120,7 +120,9 @@ pub struct AgentInfoToolPolicyDto {
 
 In `api_agents`, replace `json!({...})` pushes with struct construction + `Json(json!({ "agents": agents }))` where `agents: Vec<AgentInfoDto>`.
 
-`api.ts` change: replace `AgentInfo` interface + `RoutingRule` sub-interface with `export type { AgentInfoDto as AgentInfo } from "./api.generated"`. (`RoutingRule` is only used as part of `AgentDetail`, not `AgentInfo` — remove if unused after check.)
+`api.ts` change: replace `AgentInfo` interface with `export type { AgentInfoDto as AgentInfo } from "./api.generated"`. `RoutingRule` stays — it is a UI form model used by `AgentEditDialog.tsx` and `RoutingRulesEditor.tsx`, not an API response shape (see §E).
+
+Constructor placement: `AgentInfoDto::from_config()` goes in `handlers/agents/dto.rs` (same file as `AgentDetailDto::from_config()`), since the constructor needs `crate::config::AgentConfig` which cannot be imported in the leaf `dto_structs.rs`.
 
 ---
 
@@ -132,9 +134,16 @@ Drift finding (audit row 38): handler wraps in `json!({ "items": [...], "unread_
 
 New `NotificationsResponse` is a simple wrapper DTO (not a DB row), lives in `handlers/notifications/dto_structs.rs` or inline in a new handlers-level file.
 
-`Notification` → `NotificationRow` alias in api.ts. TS `data` field is `Record<string, unknown> | null` — Rust has `serde_json::Value` → maps to `unknown` via `serde-json-impl`. Add `#[ts(type = "Record<string, unknown> | null")]` override.
+`Notification` → `NotificationRow` alias in api.ts.
 
-Actually, checking: `Notification.data` is `serde_json::Value` (not `Option<...>`). The DB column might return NULL. Check `db/notifications.rs` query — if `data` can be null from DB, change to `Option<serde_json::Value>`. If not, keep as `serde_json::Value` (ts-rs emits `unknown`). Adjust `api.ts` accordingly.
+`Notification.data` is `serde_json::Value` (non-optional — the `notifications` table has `data jsonb NOT NULL DEFAULT '{}'`). ts-rs emits `unknown` for `serde_json::Value`. The current `api.ts NotificationRow` declares `data: Record<string, unknown> | null`. Add a per-field override to preserve the specific type:
+
+```rust
+#[cfg_attr(feature = "ts-gen", ts(type = "Record<string, unknown>"))]
+pub data: serde_json::Value,
+```
+
+This matches actual DB semantics (non-null) and removes the spurious `| null` from the TS type.
 
 ---
 
@@ -174,51 +183,61 @@ These three interfaces stay as hand-written TypeScript; they are not candidates 
 
 ---
 
-## lib.rs dto_export — Wave 1 Additions
+## lib.rs — Wave 1 Changes
+
+**Step 1: Add `notifications` to the always-on `pub mod db` block** (same block that already has `sessions`, `approvals`, `usage`, `session_wal`):
 
 ```rust
-// Phase A Wave 1: AgentInfoDto (computed summary — dto_structs.rs leaf).
-// AgentDetailDto already present via agents_dto (Phase B).
-// AgentInfoDto and AgentInfoToolPolicyDto added to the same file.
-// No new #[path] needed — agents_dto already includes dto_structs.rs.
-
-// Phase A Wave 1: DB-layer notification type.
-#[path = "../db/notifications.rs"]
-pub mod notifications_dto;
-
-// Phase A Wave 1: DB-layer session + message types.
-// db::sessions is not yet in the always-on lib surface — add it here (ts-gen only).
-#[path = "../db/sessions.rs"]
-pub mod sessions_dto;
+// In pub mod db { ... } (src/lib.rs, always-on):
+// Phase A W1: notifications is a leaf module (anyhow, sqlx, uuid, chrono, serde_json — no crate::*).
+#[path = "notifications.rs"]
+pub mod notifications;
 ```
 
-**Important:** `db/sessions.rs` is 800+ lines with many async query functions. When included via `#[path]` into `dto_export`, all those functions will be compiled under `ts-gen`. They reference `sqlx::PgPool` etc. — all external deps, no `crate::*`. This is safe (no lib-facade cascade). Verified pattern: same approach used for `github.rs` in Phase C.
+`db::sessions` is already in the always-on block (added in Phase 63 DATA-02). No change needed.
 
-Alternatively: add `db::sessions` and `db::notifications` to the always-on `pub mod db` block in lib.rs (like `db::approvals` and `db::usage`). This is cleaner since the modules are large — avoids duplicating them under dto_export. **Preferred: add to always-on db block, then re-export from dto_export via `pub use`.**
+Both `sessions.rs` and `notifications.rs` have zero `crate::*` imports — confirmed safe for the always-on lib surface.
+
+**Step 2: Re-export from `dto_export`** (ts-gen only):
+
+```rust
+// In #[cfg(feature = "ts-gen")] pub mod dto_export { ... }:
+
+/// Phase A W1: AgentInfoDto + AgentInfoToolPolicyDto — in existing dto_structs.rs leaf.
+/// No new #[path] needed — agents_dto already covers dto_structs.rs.
+
+/// Phase A W1: DB notification type — already in always-on db::notifications.
+pub use crate::db::notifications::Notification;
+
+/// Phase A W1: DB session + message types — already in always-on db::sessions.
+pub use crate::db::sessions::{Session, MessageRow};
+```
 
 ---
 
 ## gen_ts_types.rs — Wave 1 Additions
 
 ```rust
-// Phase A Wave 1
+// Phase A Wave 1 — new imports
 use hydeclaw_core::dto_export::{
-    agents_dto::{AgentInfoDto, AgentInfoToolPolicyDto},  // added
-    notifications_dto::{Notification},
-    sessions_dto::{Session, MessageRow},
-    // ... existing imports
+    agents_dto::{AgentInfoDto, AgentInfoToolPolicyDto},  // added to dto_structs.rs
+    AllowlistEntry,  // existing (Phase C)
+    // re-exports added to dto_export in W1:
+};
+use hydeclaw_core::db::{
+    notifications::Notification,   // aliased as NotificationRow in api.ts
+    sessions::{Session, MessageRow},
 };
 
-// In main():
-// Phase A Wave 1
+// In main(), Phase A Wave 1 block:
 collect_decl::<AgentInfoDto>(),
 collect_decl::<AgentInfoToolPolicyDto>(),
-collect_decl::<Notification>(),          // aliased as NotificationRow in api.ts
-collect_decl::<Session>(),               // aliased as SessionRow in api.ts
+collect_decl::<Notification>(),     // aliased as NotificationRow in api.ts
+collect_decl::<Session>(),          // aliased as SessionRow in api.ts
 collect_decl::<MessageRow>(),
 ```
 
-Type count after W1: 14 (current) + 5 = **19 types**
+Type count after W1: 14 (current) + 6 = **20 types**
 
 ---
 
