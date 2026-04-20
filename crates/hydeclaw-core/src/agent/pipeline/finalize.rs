@@ -182,6 +182,33 @@ pub(crate) fn spawn_knowledge_extraction(
     );
 }
 
+// ── execute_status_to_finalize() ─────────────────────────────────────────────
+
+/// Convert [`ExecuteStatus`] + (final_text, thinking_json) into [`FinalizeOutcome`].
+///
+/// Used by the thin adapter methods in Tasks 7/8/9.
+pub fn execute_status_to_finalize(
+    status: crate::agent::pipeline::execute::ExecuteStatus,
+    final_text: String,
+    thinking_json: Option<serde_json::Value>,
+) -> FinalizeOutcome {
+    use crate::agent::pipeline::execute::ExecuteStatus;
+    match status {
+        ExecuteStatus::Done => FinalizeOutcome::Done {
+            assistant_text: final_text,
+            thinking_json,
+        },
+        ExecuteStatus::Failed(reason) => FinalizeOutcome::Failed {
+            partial: final_text,
+            reason,
+        },
+        ExecuteStatus::Interrupted(reason) => FinalizeOutcome::Interrupted {
+            partial: final_text,
+            reason,
+        },
+    }
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
