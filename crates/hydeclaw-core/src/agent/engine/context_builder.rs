@@ -126,7 +126,7 @@ impl AgentEngine {
     }
 
     /// Run compaction on messages if token budget exceeded, indexing extracted facts to memory.
-    pub(super) async fn compact_messages(&self, messages: &mut Vec<Message>, detector: Option<&LoopDetector>) {
+    pub(crate) async fn compact_messages(&self, messages: &mut Vec<Message>, detector: Option<&LoopDetector>) {
         let engine = self;
         let cfg = engine.cfg();
         crate::agent::pipeline::context::compact_messages(

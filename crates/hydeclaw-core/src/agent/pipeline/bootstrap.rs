@@ -201,6 +201,14 @@ pub async fn bootstrap<S: EventSink>(
         thinking_blocks: vec![],
     });
 
+    // Compact the history now that the new user message is appended, matching
+    // the pre-refactor order: compact before the first LLM call, re-compact
+    // between tool iterations (compact_tool_results lives in pipeline::execute).
+    // Without this, context windows silently overflow for long sessions.
+    engine
+        .compact_messages(&mut messages, Some(&loop_detector))
+        .await;
+
     Ok(BootstrapOutcome {
         session_id,
         enriched_text,

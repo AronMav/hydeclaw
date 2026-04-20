@@ -33,6 +33,11 @@ impl AgentEngine {
         }
         let _cancel_guard = self.state.register_request();
 
+        // Publish the event sender so approval_manager can broadcast tool-approval
+        // requests while the SSE stream is live. Cleared after finalize so idle
+        // agents don't keep a dangling reference. Previously lost during the
+        // pipeline refactor; restored 2026-04-20.
+        *self.sse_event_tx().lock().await = Some(event_tx.clone());
         let mut s = sink::SseSink::new(event_tx);
 
         let boot = bootstrap::bootstrap(
@@ -141,6 +146,10 @@ impl AgentEngine {
         // Trim old messages if the agent's session.max_messages is configured.
         // Missed during the pipeline refactor (Tasks 7-10 dropped the tail call).
         self.maybe_trim_session(session_id).await;
+
+        // Clear the event sender now that the stream is gone. Matches the
+        // `*self.sse_event_tx().lock().await = None;` tail in old engine_sse.rs.
+        *self.sse_event_tx().lock().await = None;
 
         Ok(session_id)
     }
