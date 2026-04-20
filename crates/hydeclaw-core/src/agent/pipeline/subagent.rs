@@ -469,4 +469,111 @@ mod tests {
     fn parse_subagent_timeout_whitespace() {
         assert_eq!(parse_subagent_timeout(" 5m "), std::time::Duration::from_secs(300));
     }
+
+    // ── fetch_via_toolgate_web (KQ3) ─────────────────────────────────────────
+    //
+    // Tests the private helper that delegates HTML readability to toolgate's
+    // `POST /web` endpoint. See .planning/quick/260420-kq3-*/260420-kq3-PLAN.md.
+
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn fetch_via_toolgate_parses_html_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/web"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "title": "T",
+                "content": "body",
+                "url": "https://x"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let out = fetch_via_toolgate_web(&client, &server.uri(), "https://x", 10)
+            .await
+            .expect("expected Ok");
+        assert!(out.contains("Title: T"), "expected 'Title: T' in {out:?}");
+        assert!(out.contains("body"), "expected 'body' in {out:?}");
+        // First line is the Title:
+        assert!(out.starts_with("Title: T"), "Title must be first line: {out:?}");
+    }
+
+    #[tokio::test]
+    async fn fetch_via_toolgate_parses_non_html_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/web"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "content": "raw json string",
+                "url": "https://api.example.com"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let out = fetch_via_toolgate_web(&client, &server.uri(), "https://api.example.com", 10)
+            .await
+            .expect("expected Ok");
+        assert!(out.contains("raw json string"), "expected content body in {out:?}");
+        assert!(!out.contains("Title:"), "must NOT prepend Title when absent: {out:?}");
+    }
+
+    #[tokio::test]
+    async fn fetch_via_toolgate_non_2xx_returns_err() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/web"))
+            .respond_with(ResponseTemplate::new(502).set_body_json(serde_json::json!({
+                "error": "Web error: blocked"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let err = fetch_via_toolgate_web(&client, &server.uri(), "https://bad.example", 10)
+            .await
+            .expect_err("expected Err on HTTP 502");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("toolgate /web") || msg.contains("blocked") || msg.contains("502"),
+            "error should mention toolgate /web / upstream substring: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_via_toolgate_connection_error_returns_err() {
+        // Bind to an ephemeral port, then drop the listener so nothing listens there.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let unreachable = format!("http://{addr}");
+
+        let client = reqwest::Client::new();
+        let err = fetch_via_toolgate_web(&client, &unreachable, "https://x", 2)
+            .await
+            .expect_err("expected Err on connection failure");
+        // No panic (getting here means no panic); confirm err is surfaced.
+        let _ = format!("{err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_via_toolgate_empty_content_ok_empty_string() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/web"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://paywalled.example"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let out = fetch_via_toolgate_web(&client, &server.uri(), "https://paywalled.example", 10)
+            .await
+            .expect("expected Ok even when content missing");
+        assert_eq!(out, "", "no title + no content → empty string, not Err");
+    }
 }
