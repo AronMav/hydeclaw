@@ -28,7 +28,7 @@ pub struct Session {
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub last_message_at: chrono::DateTime<chrono::Utc>,
     pub title: Option<String>,
-    #[cfg_attr(feature = "ts-gen", ts(type = "unknown"))]
+    #[cfg_attr(feature = "ts-gen", ts(type = "Record<string, unknown> | null"))]
     pub metadata: Option<serde_json::Value>,
     #[sqlx(default)]
     pub run_status: Option<String>,
@@ -303,10 +303,6 @@ pub struct MessageRow {
     pub parent_message_id: Option<uuid::Uuid>,
     #[sqlx(default)]
     pub branch_from_message_id: Option<uuid::Uuid>,
-    /// Abort reason for messages with status='aborted'. NULL for completed
-    /// messages. Stable identifiers pinned in `LlmCallError::abort_reason()`:
-    /// connect_timeout | inactivity | request_timeout | max_duration |
-    /// user_cancelled | shutdown_drain.
     #[sqlx(default)]
     pub abort_reason: Option<String>,
 }
