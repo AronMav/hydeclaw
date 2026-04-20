@@ -33,3 +33,4 @@ pub mod openai_compat;
 pub mod cron;
 pub mod sink;
 pub mod finalize;
+pub mod bootstrap;
