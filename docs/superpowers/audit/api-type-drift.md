@@ -365,8 +365,8 @@ Three parallel scans per handler:
 
 - **Typed ratio:** 2/184 = **1.1%**
 - **Gate:** ≥20% typed threshold for C-first priority.
-- **Decision:** ✗ Reorder to phase B-first.
-- **Rationale:** Only 2 of 184 in-scope endpoints use `#[derive(Serialize)]` typed responses (1.1%). Phase C (codegen for typed structs) would deliver almost no benefit upfront — there are barely any typed structs to generate from. Phase B (pilot refactor of `agents/schema.rs` `agent_to_detail()` hand-rolled json! → typed DTO) should proceed first to prove the migration pattern and raise the typed ratio above threshold. Phase C rolls out after B establishes the pattern.
+- **Decision:** ✗ Reorder to phase B first.
+- **Rationale:** Only 2 of 184 in-scope endpoints use `#[derive(Serialize)]` typed responses — far below the 20% threshold. The overwhelming majority (161 hand-rolled + 21 mixed = 182 endpoints, 98.9%) require the B-phase refactor to introduce typed DTOs before codegen is viable. Phase B pilot (`agents/schema.rs:37-120` — the 80-line `agent_to_detail()` function) demonstrates the pattern for `AgentDetail` first, then Phase C wires ts-rs codegen to the 2 already-typed endpoints, and Phase A rolls out the full DTO migration. Executing C before B would generate TS bindings for only 2 endpoints (1% coverage) — not worth the tooling investment at this stage.
 
 ## Dead TS Interfaces (candidates for removal in phase A)
 
