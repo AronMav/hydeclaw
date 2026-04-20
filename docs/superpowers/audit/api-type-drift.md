@@ -115,6 +115,41 @@ Three parallel scans per handler:
 | 99 | config.rs | GET /api/canvas/{agent} | api_canvas_state | hand-rolled | — | TBD | TBD |
 | 100 | config.rs | DELETE /api/canvas/{agent} | api_canvas_clear | none (StatusCode only) | — | N/A | N/A |
 | 101 | auth.rs | POST /api/auth/ws-ticket | api_create_ws_ticket | hand-rolled | — | TBD | TBD |
+| 102 | memory.rs | GET /api/memory | api_list_memory | hand-rolled | — | TBD | TBD |
+| 103 | memory.rs | POST /api/memory | api_create_memory | hand-rolled | — | TBD | TBD |
+| 104 | memory.rs | GET /api/memory/stats | api_memory_stats | hand-rolled | — | TBD | TBD |
+| 105 | memory.rs | GET /api/memory/export | api_export_memory | hand-rolled | — | TBD | TBD |
+| 106 | memory.rs | GET /api/memory/fts-language | api_get_fts_language | hand-rolled | — | TBD | TBD |
+| 107 | memory.rs | PUT /api/memory/fts-language | api_set_fts_language | hand-rolled | — | TBD | TBD |
+| 108 | memory.rs | GET /api/memory/tasks | api_memory_tasks | hand-rolled | — | TBD | TBD |
+| 109 | memory.rs | GET /api/memory/documents | api_list_documents | hand-rolled | — | TBD | TBD |
+| 110 | memory.rs | GET /api/memory/documents/{id} | api_get_document | hand-rolled | — | TBD | TBD |
+| 111 | memory.rs | PATCH /api/memory/documents/{id} | api_patch_document | hand-rolled | — | TBD | TBD |
+| 112 | memory.rs | DELETE /api/memory/{id} | api_delete_memory | hand-rolled | — | TBD | TBD |
+| 113 | memory.rs | PATCH /api/memory/{id} | api_patch_memory | hand-rolled | — | TBD | TBD |
+| 114 | backup.rs | POST /api/backup | api_create_backup | hand-rolled | — | TBD | TBD |
+| 115 | backup.rs | GET /api/backup | api_list_backups | hand-rolled | — | TBD | TBD |
+| 116 | backup.rs | GET /api/backup/{filename} | api_download_backup | none (raw bytes) | — | N/A | N/A |
+| 117 | backup.rs | DELETE /api/backup/{filename} | api_delete_backup | hand-rolled | — | TBD | TBD |
+| 118 | backup.rs | POST /api/restore | api_restore | mixed | BackupFile (backup.rs:49) response is hand-rolled json!{} | TBD | TBD |
+| 119 | monitoring.rs | GET /api/setup/status | api_setup_status | hand-rolled | — | TBD | TBD |
+| 120 | monitoring.rs | GET /api/setup/requirements | api_setup_requirements | mixed | CheckResult (monitoring.rs:149) wrapped in json!{} | TBD | TBD |
+| 121 | monitoring.rs | POST /api/setup/complete | api_setup_complete | hand-rolled | — | TBD | TBD |
+| 122 | monitoring.rs | GET /api/status | api_status | hand-rolled | — | TBD | TBD |
+| 123 | monitoring.rs | GET /api/stats | api_stats | hand-rolled | — | TBD | TBD |
+| 124 | monitoring.rs | GET /api/usage | api_usage | mixed | UsageSummary (db/usage.rs:90) wrapped in json!{} | TBD | TBD |
+| 125 | monitoring.rs | GET /api/usage/daily | api_usage_daily | mixed | DailyUsage (db/usage.rs:132) wrapped in json!{} | TBD | TBD |
+| 126 | monitoring.rs | GET /api/usage/sessions | api_usage_sessions | mixed | SessionUsage (db/usage.rs:177) wrapped in json!{} | TBD | TBD |
+| 127 | monitoring.rs | GET /api/doctor | api_doctor | mixed | CheckResult (monitoring.rs:149) wrapped in json!{} | TBD | TBD |
+| 128 | monitoring.rs | GET /api/health/dashboard | api_health_dashboard | hand-rolled | — | TBD | TBD |
+| 129 | monitoring.rs | GET /api/audit | api_audit_events | mixed | AuditEvent (db/audit.rs:50) wrapped in json!{} | TBD | TBD |
+| 130 | monitoring.rs | GET /api/audit/tools | api_tool_audit | hand-rolled | — | TBD | TBD |
+| 131 | monitoring.rs | GET /api/watchdog/status | api_watchdog_status | hand-rolled | — | TBD | TBD |
+| 132 | monitoring.rs | GET /api/watchdog/config | api_watchdog_config | hand-rolled | — | TBD | TBD |
+| 133 | monitoring.rs | PUT /api/watchdog/config | api_watchdog_config_update | hand-rolled | — | TBD | TBD |
+| 134 | monitoring.rs | GET /api/watchdog/settings | api_watchdog_settings | hand-rolled | — | TBD | TBD |
+| 135 | monitoring.rs | PUT /api/watchdog/settings | api_watchdog_settings_update | hand-rolled | — | TBD | TBD |
+| 136 | monitoring.rs | POST /api/watchdog/restart/{name} | api_watchdog_restart_check | hand-rolled | — | TBD | TBD |
 
 (populated by tasks 3-8)
 
