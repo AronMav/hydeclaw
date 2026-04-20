@@ -339,10 +339,9 @@ pub(crate) fn build_agent_config(name: String, p: AgentCreatePayload) -> AgentCo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::AgentConfig;
 
     fn load_fixture(name: &str) -> AgentConfig {
-        let path = format!("config/agents/{name}.toml");
+        let path = format!("{}/tests/fixtures/agents/{name}.toml", env!("CARGO_MANIFEST_DIR"));
         let content = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("{path}: {e}"));
         toml::from_str(&content).unwrap_or_else(|e| panic!("parse {path}: {e}"))
