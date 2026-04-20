@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { StreamSession, streamSessionManager } from "../stream-session";
 import { useChatStore } from "../chat-store";
+import { getLiveMessages, STREAM_THROTTLE_MS } from "../chat-types";
 
 beforeEach(() => {
   // Reset the store to a known state with one agent.
@@ -103,5 +104,90 @@ describe("StreamSession", () => {
     s.write({ connectionPhase: "streaming" });
     expect(spy).toHaveBeenCalledOnce();
     spy.mockRestore();
+  });
+
+  describe("StreamSession.commit()", () => {
+    it("commit() upserts assistant message into live overlay with correct parts", () => {
+      const s = streamSessionManager.start("Arty");
+      useChatStore.setState((draft: any) => {
+        draft.agents.Arty.messageSource = { mode: "live", messages: [] };
+      });
+      s.buffer.parts.push({
+        type: "tool",
+        toolCallId: "t1",
+        toolName: "fn",
+        state: "output-available" as const,
+        input: {},
+        output: "result",
+      });
+      s.commit();
+      const msgs = getLiveMessages(useChatStore.getState().agents.Arty.messageSource);
+      expect(msgs).toHaveLength(1);
+      expect(msgs[0].role).toBe("assistant");
+      expect(msgs[0].parts[0].type).toBe("tool");
+    });
+
+    it("commit() writes message and connectionPhase atomically", () => {
+      const s = streamSessionManager.start("Arty");
+      useChatStore.setState((draft: any) => {
+        draft.agents.Arty.messageSource = { mode: "live", messages: [] };
+      });
+      s.buffer.parser.processDelta("hello");
+      s.commit("idle");
+      const agentState = useChatStore.getState().agents.Arty;
+      const msgs = getLiveMessages(agentState.messageSource);
+      expect(msgs).toHaveLength(1);
+      expect(agentState.connectionPhase).toBe("idle");
+    });
+
+    it("commit() is a no-op after dispose", () => {
+      const s = streamSessionManager.start("Arty");
+      useChatStore.setState((draft: any) => {
+        draft.agents.Arty.messageSource = { mode: "live", messages: [] };
+      });
+      s.dispose();
+      s.buffer.parser.processDelta("should not appear");
+      s.commit();
+      const msgs = getLiveMessages(useChatStore.getState().agents.Arty.messageSource);
+      expect(msgs).toHaveLength(0);
+    });
+
+    it("commit(\"error\") sets connectionPhase to error", () => {
+      const s = streamSessionManager.start("Arty");
+      useChatStore.setState((draft: any) => {
+        draft.agents.Arty.messageSource = { mode: "live", messages: [] };
+        draft.agents.Arty.connectionPhase = "streaming";
+      });
+      s.commit("error");
+      expect(useChatStore.getState().agents.Arty.connectionPhase).toBe("error");
+    });
+  });
+
+  describe("StreamSession.scheduleCommit() / cancelScheduledCommit()", () => {
+    it("cancelScheduledCommit() prevents a scheduled commit from firing", async () => {
+      const s = streamSessionManager.start("Arty");
+      useChatStore.setState((draft: any) => {
+        draft.agents.Arty.messageSource = { mode: "live", messages: [] };
+      });
+      s.buffer.parser.processDelta("should not appear");
+      s.scheduleCommit();
+      s.cancelScheduledCommit();
+      await new Promise(r => setTimeout(r, STREAM_THROTTLE_MS + 60));
+      const msgs = getLiveMessages(useChatStore.getState().agents.Arty.messageSource);
+      expect(msgs).toHaveLength(0);
+    });
+
+    it("dispose() cancels a pending scheduleCommit", async () => {
+      const s = streamSessionManager.start("Arty");
+      useChatStore.setState((draft: any) => {
+        draft.agents.Arty.messageSource = { mode: "live", messages: [] };
+      });
+      s.buffer.parser.processDelta("should not appear");
+      s.scheduleCommit();
+      s.dispose();
+      await new Promise(r => setTimeout(r, STREAM_THROTTLE_MS + 60));
+      const msgs = getLiveMessages(useChatStore.getState().agents.Arty.messageSource);
+      expect(msgs).toHaveLength(0);
+    });
   });
 });

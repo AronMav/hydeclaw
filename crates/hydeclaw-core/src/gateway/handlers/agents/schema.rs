@@ -246,33 +246,6 @@ pub(crate) struct WatchdogPayload {
     pub inactivity_secs: Option<u64>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::AgentConfig;
-
-    fn load_fixture(name: &str) -> AgentConfig {
-        let path = format!("config/agents/{name}.toml");
-        let content = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("{path}: {e}"));
-        toml::from_str(&content).unwrap_or_else(|e| panic!("parse {path}: {e}"))
-    }
-
-    #[test]
-    fn agent_detail_snapshot_min() {
-        let cfg = load_fixture("SnapshotMin");
-        let value = agent_to_detail(&cfg, false, false);
-        insta::assert_json_snapshot!("agent_detail_snapshot_min", value);
-    }
-
-    #[test]
-    fn agent_detail_snapshot_full() {
-        let cfg = load_fixture("SnapshotFull");
-        let value = agent_to_detail(&cfg, false, false);
-        insta::assert_json_snapshot!("agent_detail_snapshot_full", value);
-    }
-}
-
 // ── Config builder ──────────────────────────────────────
 
 pub(crate) fn build_agent_config(name: String, p: AgentCreatePayload) -> AgentConfig {
@@ -360,5 +333,32 @@ pub(crate) fn build_agent_config(name: String, p: AgentCreatePayload) -> AgentCo
             max_failover_attempts: p.max_failover_attempts.unwrap_or(3),
             base: false,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AgentConfig;
+
+    fn load_fixture(name: &str) -> AgentConfig {
+        let path = format!("config/agents/{name}.toml");
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{path}: {e}"));
+        toml::from_str(&content).unwrap_or_else(|e| panic!("parse {path}: {e}"))
+    }
+
+    #[test]
+    fn agent_detail_snapshot_min() {
+        let cfg = load_fixture("SnapshotMin");
+        let value = agent_to_detail(&cfg, false, false);
+        insta::assert_json_snapshot!("agent_detail_snapshot_min", value);
+    }
+
+    #[test]
+    fn agent_detail_snapshot_full() {
+        let cfg = load_fixture("SnapshotFull");
+        let value = agent_to_detail(&cfg, false, false);
+        insta::assert_json_snapshot!("agent_detail_snapshot_full", value);
     }
 }
