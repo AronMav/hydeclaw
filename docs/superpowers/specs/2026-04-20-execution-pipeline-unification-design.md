@@ -479,6 +479,31 @@ None at specification time. Any discovery during implementation that contradicts
 
 ---
 
+## 11. Future extensions (non-blocking)
+
+### 11.1 Slash commands returning richer output
+
+**Current state (verified 2026-04-20):** `pipeline::commands::handle_command` returns `Option<Result<String>>`. All ten implemented commands (`/status`, `/new`, `/reset`, `/compact`, `/model`, `/think`, `/usage`, `/export`, `/help`, `/memory`) produce plain text only. Therefore `render_command(text, sink)` in bootstrap is implemented as a single rendering: `sink.emit(MessageStart) → sink.emit(TextDelta(text)) → sink.emit(Finish)`.
+
+**Why this is still safe under the new architecture:** the sink contract already speaks in terms of `StreamEvent`, which includes variants for rich cards (`RichCard`), files (`File`), tool calls, and phase markers. A future command that needs to emit a rich card or attach a file does not require any change to `pipeline::execute`, `bootstrap`, `finalize`, or any sink implementation — only a change to the command layer and its renderer.
+
+**Point of extension (if needed later):** replace the current `Result<String>` return type with
+
+```rust
+pub enum CommandOutput {
+    Text(String),
+    Rich { card_type: String, data: serde_json::Value },
+    File { url: String, media_type: Option<String> },
+    Multi(Vec<CommandOutput>), // for commands that emit several artifacts
+}
+```
+
+and update `render_command(output, &mut sink)` to match on `CommandOutput` and emit the corresponding `StreamEvent` sequence. No call-site on the sink side changes.
+
+**Decision for this PR:** keep `Result<String>` to avoid scope creep. Add a one-line comment in `render_command` pointing to this section so the extension point is discoverable.
+
+---
+
 ## Appendix A — Mapping of current code to new modules
 
 | Current location | New location | Notes |
