@@ -55,6 +55,23 @@ Three parallel scans per handler:
 | 39 | notifications.rs | POST /api/notifications/read-all | api_mark_all_notifications_read | hand-rolled | — | TBD | TBD |
 | 40 | notifications.rs | DELETE /api/notifications/clear | api_clear_all_notifications | hand-rolled | — | TBD | TBD |
 | 41 | notifications.rs | PATCH /api/notifications/{id} | api_mark_notification_read | hand-rolled | — | TBD | TBD |
+| 42 | cron.rs | GET /api/cron | api_list_cron | hand-rolled | — | TBD | TBD |
+| 43 | cron.rs | POST /api/cron | api_create_cron | hand-rolled | — | TBD | TBD |
+| 44 | cron.rs | PUT /api/cron/{id} | api_update_cron | hand-rolled | — | TBD | TBD |
+| 45 | cron.rs | DELETE /api/cron/{id} | api_delete_cron | hand-rolled | — | TBD | TBD |
+| 46 | cron.rs | POST /api/cron/{id}/run | api_run_cron | hand-rolled | — | TBD | TBD |
+| 47 | cron.rs | GET /api/cron/{id}/runs | api_cron_runs | hand-rolled | — | TBD | TBD |
+| 48 | cron.rs | GET /api/cron/runs | api_cron_runs_all | hand-rolled | — | TBD | TBD |
+| 49 | webhooks.rs | GET /api/webhooks | api_list_webhooks | hand-rolled | — | TBD | TBD |
+| 50 | webhooks.rs | POST /api/webhooks | api_create_webhook | hand-rolled | — | TBD | TBD |
+| 51 | webhooks.rs | PUT /api/webhooks/{id} | api_update_webhook | hand-rolled | — | TBD | TBD |
+| 52 | webhooks.rs | DELETE /api/webhooks/{id} | api_delete_webhook | hand-rolled | — | TBD | TBD |
+| 53 | webhooks.rs | POST /api/webhooks/{id}/regenerate-secret | api_regenerate_webhook_secret | hand-rolled | — | TBD | TBD |
+| 54 | webhooks.rs | POST /webhook/{name} | webhook_handler | hand-rolled | — | TBD | TBD |
+| 55 | email_triggers.rs | POST /api/triggers/email/push | gmail_push_handler | none (StatusCode only) | — | N/A | N/A |
+| 56 | email_triggers.rs | GET /api/triggers/email | api_list_gmail_triggers | hand-rolled | — | TBD | TBD |
+| 57 | email_triggers.rs | POST /api/triggers/email | api_create_gmail_trigger | hand-rolled | — | TBD | TBD |
+| 58 | email_triggers.rs | DELETE /api/triggers/email/{id} | api_delete_gmail_trigger | none (StatusCode only) | — | N/A | N/A |
 
 (populated by tasks 3-8)
 
