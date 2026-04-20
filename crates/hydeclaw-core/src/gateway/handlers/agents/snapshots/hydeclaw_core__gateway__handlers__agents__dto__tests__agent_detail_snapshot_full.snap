@@ -1,6 +1,6 @@
 ---
-source: crates/hydeclaw-core/src/gateway/handlers/agents/schema.rs
-expression: value
+source: crates/hydeclaw-core/src/gateway/handlers/agents/dto.rs
+expression: dto
 ---
 {
   "name": "SnapshotFull",

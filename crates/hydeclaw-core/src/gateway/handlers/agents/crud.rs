@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::gateway::clusters::{AgentCore, AuthServices, InfraServices, ChannelBus, ConfigServices, StatusMonitor};
 use crate::config::AgentConfig;
+use super::dto::AgentDetailDto;
 use super::schema::*;
 use super::lifecycle::start_agent_from_config;
 
@@ -124,11 +125,8 @@ pub(crate) async fn api_get_agent(
         false
     };
 
-    let mut detail = agent_to_detail(&cfg, is_running, config_dirty);
-    // Attach per-agent TTS voice from scoped secrets
-    if let Some(voice) = auth.secrets.get_scoped("TTS_VOICE", &name).await {
-        detail["voice"] = json!(voice);
-    }
+    let voice = auth.secrets.get_scoped("TTS_VOICE", &name).await;
+    let detail = AgentDetailDto::from_config(&cfg, is_running, config_dirty, voice);
     Json(detail).into_response()
 }
 

@@ -1,5 +1,4 @@
 use serde::{Deserialize, Deserializer};
-use serde_json::{json, Value};
 
 use crate::config::AgentConfig;
 
@@ -29,95 +28,6 @@ pub(crate) fn validate_agent_name(name: &str) -> Result<(), String> {
         return Err("name must contain only alphanumeric, dash, or underscore".into());
     }
     Ok(())
-}
-
-// ── Response builders ───────────────────────────────────
-
-pub(crate) fn agent_to_detail(cfg: &AgentConfig, is_running: bool, config_dirty: bool) -> Value {
-    let a = &cfg.agent;
-    json!({
-        "name": a.name,
-        "language": a.language,
-        "provider": a.provider,
-        "model": a.model,
-        "provider_connection": a.provider_connection,
-        "fallback_provider": a.fallback_provider,
-        "temperature": a.temperature,
-        "max_tokens": a.max_tokens,
-        "access": a.access.as_ref().map(|ac| json!({
-            "mode": ac.mode,
-            "owner_id": ac.owner_id,
-        })),
-        "heartbeat": a.heartbeat.as_ref().map(|h| json!({
-            "cron": h.cron,
-            "timezone": h.timezone,
-            "announce_to": h.announce_to,
-        })),
-        "tools": a.tools.as_ref().map(|t| json!({
-            "allow": t.allow,
-            "deny": t.deny,
-            "allow_all": t.allow_all,
-            "deny_all_others": t.deny_all_others,
-            "groups": {
-                "git": t.groups.git,
-                "tool_management": t.groups.tool_management,
-                "skill_editing": t.groups.skill_editing,
-                "session_tools": t.groups.session_tools,
-            },
-        })),
-        "compaction": a.compaction.as_ref().map(|c| json!({
-            "enabled": c.enabled,
-            "threshold": c.threshold,
-            "preserve_tool_calls": c.preserve_tool_calls,
-            "preserve_last_n": c.preserve_last_n,
-            "max_context_tokens": c.max_context_tokens,
-        })),
-        "session": a.session.as_ref().map(|s| json!({
-            "dm_scope": s.dm_scope,
-            "ttl_days": s.ttl_days,
-            "max_messages": s.max_messages,
-            "prune_tool_output_after_turns": s.prune_tool_output_after_turns,
-        })),
-        "icon": a.icon,
-        "max_tools_in_context": a.max_tools_in_context,
-        "tool_loop": a.tool_loop.as_ref().map(|tl| json!({
-            "max_iterations": tl.max_iterations,
-            "compact_on_overflow": tl.compact_on_overflow,
-            "detect_loops": tl.detect_loops,
-            "warn_threshold": tl.warn_threshold,
-            "break_threshold": tl.break_threshold,
-            "max_consecutive_failures": tl.max_consecutive_failures,
-            "max_auto_continues": tl.max_auto_continues,
-            "max_loop_nudges": tl.max_loop_nudges,
-            "ngram_cycle_length": tl.ngram_cycle_length,
-        })),
-        "approval": a.approval.as_ref().map(|ap| json!({
-            "enabled": ap.enabled,
-            "require_for": ap.require_for,
-            "require_for_categories": ap.require_for_categories,
-            "timeout_seconds": ap.timeout_seconds,
-        })),
-        "routing": a.routing.iter().map(|r| json!({
-            "condition": r.condition,
-            "connection": r.connection,
-            "model": r.model,
-            "temperature": r.temperature,
-            "cooldown_secs": r.cooldown_secs,
-        })).collect::<Vec<_>>(),
-        "watchdog": a.watchdog.as_ref().map(|w| json!({
-            "inactivity_secs": w.inactivity_secs,
-        })),
-        "hooks": a.hooks.as_ref().map(|h| json!({
-            "log_all_tool_calls": h.log_all_tool_calls,
-            "block_tools": h.block_tools,
-        })),
-        "max_history_messages": a.max_history_messages,
-        "daily_budget_tokens": a.daily_budget_tokens,
-        "max_agent_turns": a.max_agent_turns,
-        "max_failover_attempts": a.max_failover_attempts,
-        "is_running": is_running,
-        "config_dirty": config_dirty,
-    })
 }
 
 // ── Payload types ───────────────────────────────────────
@@ -336,28 +246,3 @@ pub(crate) fn build_agent_config(name: String, p: AgentCreatePayload) -> AgentCo
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn load_fixture(name: &str) -> AgentConfig {
-        let path = format!("{}/tests/fixtures/agents/{name}.toml", env!("CARGO_MANIFEST_DIR"));
-        let content = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("{path}: {e}"));
-        toml::from_str(&content).unwrap_or_else(|e| panic!("parse {path}: {e}"))
-    }
-
-    #[test]
-    fn agent_detail_snapshot_min() {
-        let cfg = load_fixture("SnapshotMin");
-        let value = agent_to_detail(&cfg, false, false);
-        insta::assert_json_snapshot!("agent_detail_snapshot_min", value);
-    }
-
-    #[test]
-    fn agent_detail_snapshot_full() {
-        let cfg = load_fixture("SnapshotFull");
-        let value = agent_to_detail(&cfg, false, false);
-        insta::assert_json_snapshot!("agent_detail_snapshot_full", value);
-    }
-}
