@@ -43,6 +43,8 @@ pub(crate) fn routes() -> Router<AppState> {
 const BACKUP_DIR: &str = "backups";
 const RETENTION_DAYS: i64 = 7;
 
+include!("backup_dto_structs.rs");
+
 // ── Backup file format ──────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -339,33 +341,25 @@ pub(crate) async fn api_create_backup(
 // ── GET /api/backup ──────────────────────────────────────────────────────────
 
 pub(crate) async fn api_list_backups() -> impl IntoResponse {
-    let mut entries = Vec::new();
+    let mut entries: Vec<BackupEntryDto> = Vec::new();
     if let Ok(mut dir) = fs::read_dir(BACKUP_DIR).await {
         while let Ok(Some(entry)) = dir.next_entry().await {
             let path = entry.path();
             if path.extension().is_some_and(|e| e == "json") {
                 let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                // Single metadata() call — avoid double syscall
                 if let Ok(meta) = entry.metadata().await {
                     let size_bytes = meta.len();
-                    let modified = meta.modified().ok()
+                    let created_at = meta.modified().ok()
                         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .and_then(|d| chrono::DateTime::<Utc>::from_timestamp(d.as_secs() as i64, 0));
-                    entries.push(json!({
-                        "filename": filename,
-                        "size_bytes": size_bytes,
-                        "created_at": modified,
-                    }));
+                        .and_then(|d| chrono::DateTime::<Utc>::from_timestamp(d.as_secs() as i64, 0))
+                        .map(|dt| dt.to_rfc3339());
+                    entries.push(BackupEntryDto { filename, size_bytes, created_at });
                 }
             }
         }
     }
-    entries.sort_by(|a, b| {
-        let fa = a["filename"].as_str().unwrap_or("");
-        let fb = b["filename"].as_str().unwrap_or("");
-        fb.cmp(fa) // descending by filename (date)
-    });
-    Json(json!({ "backups": entries }))
+    entries.sort_by(|a, b| b.filename.cmp(&a.filename));
+    Json(serde_json::json!({ "backups": entries }))
 }
 
 // ── GET /api/backup/:filename ─────────────────────────────────────────────────
