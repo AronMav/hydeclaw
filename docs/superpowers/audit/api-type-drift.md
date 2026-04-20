@@ -250,11 +250,27 @@ Three parallel scans per handler:
 
 ---
 
+### Drift: `AgentTask` — field names completely wrong for agent task list endpoint
+**UI declaration:** `api.ts:468-476` — `task_id: string; agent: string; title: string; status; created_at; updated_at; steps: TaskStep[]`
+**Rust handler:** `agents/crud.rs:998` — `api_agent_tasks` reads raw `.json` files from `workspace/tasks/` and returns them verbatim in `{"tasks": [...]}` without normalization; files use `id`, `agent`, `input` keys; `steps` absent
+**Impact:** `AgentTask` consumers see `undefined` for `task_id` and `title`; `steps` is always `undefined`; task UI panel broken for the per-agent endpoint
+**Fix at:** phase A iteration for `agents/crud.rs` `api_agent_tasks` — normalize file JSON to TS contract keys at read time
+
+---
+
 ### Drift: `AgentTask` — field names completely wrong for task endpoints
 **UI declaration:** `api.ts:468-476` — `task_id`, `agent`, `title`, `status`, `created_at`, `updated_at`, `steps: TaskStep[]`
 **Rust handler:** `tasks.rs` `api_list_tasks` / `api_get_task` — emits `id`, `agent_id`, `input`, `status`, `created_at`, `updated_at`; `steps` absent; extra `user_id`, `source`, `plan`, `result`, `error`
 **Impact:** `TaskPlanPanel.tsx` and `tasks/page.tsx` see `undefined` for `task_id`, `agent`, `title`, `steps` — task UI is broken
 **Fix at:** phase A iteration for `tasks.rs` — either rename DB columns or remap in the handler JSON; add step fetching or embed steps
+
+---
+
+### Drift: `AgentTask` — same field-name drift on single-task GET endpoint
+**UI declaration:** `api.ts:468-476` — `task_id: string; agent: string; title: string;`
+**Rust handler:** `tasks.rs:171` — `api_get_task` serializes `TaskRow` via `json!(task)`, emitting `id`, `agent_id`, `input`; same mismatch as `api_list_tasks` since both serialize the same `TaskRow` struct
+**Impact:** task detail page sees `undefined` for `task_id`, `agent`, `title` — same breakage as the list endpoint
+**Fix at:** phase A iteration for `tasks.rs` `api_get_task` — apply the same field remapping fix as `api_list_tasks`
 
 ---
 
@@ -322,6 +338,14 @@ Three parallel scans per handler:
 
 ---
 
+### Drift: `MemoryStats` — extra undeclared `tasks` sub-object emitted
+**UI declaration:** `api.ts:179-186` — `{total, total_chunks, pinned, avg_score, embed_model?, embed_dim?}` — no `tasks` field
+**Rust handler:** `memory.rs:164` — `api_memory_stats` emits an extra `"tasks": {pending, processing, done, failed}` key from the `memory_tasks` table query
+**Impact:** additive only — TS ignores the extra key; no UI breakage; however `tasks` counts are silently swallowed and unavailable to any future UI consumers relying on `MemoryStats`
+**Fix at:** phase A cleanup — either add `tasks?: MemoryTaskStats` to the TS `MemoryStats` interface, or extract to a separate sub-endpoint
+
+---
+
 ### Drift: `SkillEntry` — single-skill GET returns `content`/`instructions` instead of `instructions_len`
 **UI declaration:** `api.ts:200-207` — `instructions_len: number;` (not the raw content)
 **Rust handler:** `skills.rs` `api_skill_get_global` / `api_skill_get` — emits `{name, content, description, triggers, tools_required, priority, instructions}` with full text; `instructions_len` absent
@@ -349,130 +373,3 @@ Three parallel scans per handler:
 - `DailyUsageEntry` — used only as member type within `DailyUsageResponse`; not directly consumed by any endpoint row; UI consumers: (none — only referenced inside `DailyUsageResponse` definition)
 - `CreateProviderInput` — input DTO (request body shape), not a response type; no GET endpoint returns this; UI consumers: `ui/src/app/(authenticated)/providers/page.tsx`, `ui/src/lib/queries.ts`
 
-## Scratchpad — Handler Modules
-
-### All handler files
-
-handlers/access.rs
-handlers/agents/crud.rs
-handlers/agents/lifecycle.rs
-handlers/agents/mod.rs
-handlers/agents/schema.rs
-handlers/auth.rs
-handlers/backup.rs
-handlers/cancel_grace.rs
-handlers/channel_ws.rs
-handlers/channels.rs
-handlers/chat.rs
-handlers/config.rs
-handlers/cron.rs
-handlers/csp.rs
-handlers/email_triggers.rs
-handlers/github_events.rs
-handlers/github_repos.rs
-handlers/media.rs
-handlers/memory.rs
-handlers/mod.rs
-handlers/monitoring.rs
-handlers/network.rs
-handlers/notifications.rs
-handlers/oauth.rs
-handlers/providers.rs
-handlers/secrets.rs
-handlers/services.rs
-handlers/sessions.rs
-handlers/skills.rs
-handlers/tasks.rs
-handlers/tools.rs
-handlers/webhooks.rs
-handlers/workspace.rs
-handlers/yaml_tools.rs
-
-### routes() locations
-
-handlers/access.rs:13
-handlers/agents/mod.rs:17
-handlers/auth.rs:6
-handlers/backup.rs:27
-handlers/channel_ws.rs:20
-handlers/channels.rs:14
-handlers/chat.rs:22
-handlers/config.rs:14
-handlers/cron.rs:15
-handlers/csp.rs:28
-handlers/email_triggers.rs:15
-handlers/github_repos.rs:12
-handlers/media.rs:27
-handlers/memory.rs:14
-handlers/network.rs:7
-handlers/notifications.rs:14
-handlers/oauth.rs:13
-handlers/providers.rs:24
-handlers/secrets.rs:14
-handlers/services.rs:16
-handlers/sessions.rs:17
-handlers/skills.rs:11
-handlers/tasks.rs:16
-handlers/tools.rs:14
-handlers/webhooks.rs:19
-handlers/workspace.rs:12
-handlers/yaml_tools.rs:13
-
-### Files without routes() (helper modules)
-
-handlers/agents/crud.rs — NO routes()
-handlers/agents/lifecycle.rs — NO routes()
-handlers/agents/schema.rs — NO routes()
-handlers/cancel_grace.rs — NO routes()
-handlers/github_events.rs — NO routes()
-handlers/mod.rs — NO routes()
-handlers/monitoring.rs — NO routes()
-
-## Scratchpad — TS Interfaces
-
-### All exported interfaces/types from ui/src/types/api.ts
-
-| Interface | External UI consumers (files outside api.ts) |
-|---|---|
-| `StatusInfo` | `ui/src/app/(authenticated)/monitor/page.tsx` |
-| `StatsInfo` | `ui/src/app/(authenticated)/monitor/page.tsx` |
-| `AgentInfo` | `ui/src/app/(authenticated)/agents/page.tsx`, `ui/src/lib/queries.ts`, `ui/src/stores/chat-history.ts`, multiple others |
-| `RoutingRule` | `ui/src/app/(authenticated)/agents/AgentEditDialog.tsx`, `ui/src/app/(authenticated)/agents/RoutingRulesEditor.tsx`, `ui/src/app/(authenticated)/agents/page.tsx` |
-| `AgentDetail` | `ui/src/app/(authenticated)/agents/page.tsx`, `ui/src/lib/queries.ts`, `ui/src/app/(authenticated)/agents/AgentEditDialog.tsx` |
-| `SessionRow` | `ui/src/stores/chat-history.ts`, `ui/src/lib/queries.ts`, `ui/src/stores/chat/actions/session-crud.ts`, multiple others |
-| `MessageRow` | `ui/src/app/(authenticated)/chat/ChatThread.tsx`, `ui/src/stores/chat-history.ts`, `ui/src/lib/queries.ts`, multiple others |
-| `CronJob` | `ui/src/lib/queries.ts`, `ui/src/app/(authenticated)/monitor/page.tsx` |
-| `CronRun` | `ui/src/lib/queries.ts`, `ui/src/app/(authenticated)/monitor/page.tsx` |
-| `MemoryDocument` | `ui/src/app/(authenticated)/memory/page.tsx`, `ui/src/lib/queries.ts` |
-| `MemoryStats` | `ui/src/app/(authenticated)/memory/page.tsx`, `ui/src/lib/queries.ts` |
-| `ToolEntry` | `ui/src/app/(authenticated)/tools/page.tsx`, `ui/src/lib/queries.ts` |
-| `SkillEntry` | `ui/src/app/(authenticated)/skills/page.tsx`, `ui/src/lib/queries.ts` |
-| `YamlToolEntry` | `ui/src/lib/queries.ts` |
-| `McpEntry` | `ui/src/lib/queries.ts` |
-| `FileEntry` | `ui/src/app/(authenticated)/workspace/page.tsx` |
-| `SecretInfo` | `ui/src/lib/queries.ts` |
-| `GitHubRepoInfo` | `ui/src/app/(authenticated)/integrations/page.tsx` |
-| `OAuthAccount` | `ui/src/app/(authenticated)/integrations/page.tsx`, `ui/src/lib/queries.ts` |
-| `OAuthBinding` | `ui/src/app/(authenticated)/integrations/page.tsx`, `ui/src/lib/queries.ts` |
-| `LogEntry` | `ui/src/app/(authenticated)/monitor/page.tsx` |
-| `UsageSummary` | `ui/src/app/(authenticated)/monitor/page.tsx` |
-| `UsageResponse` | `ui/src/lib/queries.ts` |
-| `DailyUsageEntry` | (none — used only as member type within `DailyUsageResponse`) |
-| `DailyUsageResponse` | `ui/src/lib/queries.ts` |
-| `AuditEvent` | `ui/src/app/(authenticated)/monitor/page.tsx`, `ui/src/lib/queries.ts`, `ui/src/types/ws.ts` |
-| `ChannelRow` | `ui/src/app/(authenticated)/channels/page.tsx`, `ui/src/lib/queries.ts` |
-| `ActiveChannel` | `ui/src/lib/queries.ts` |
-| `BackupEntry` | `ui/src/lib/queries.ts` |
-| `WebhookEntry` | `ui/src/app/(authenticated)/webhooks/page.tsx`, `ui/src/lib/queries.ts` |
-| `ApprovalEntry` | `ui/src/app/(authenticated)/agents/page.tsx`, `ui/src/lib/queries.ts` |
-| `ProviderType` | `ui/src/app/(authenticated)/providers/page.tsx`, `ui/src/lib/queries.ts` |
-| `TimeoutsConfig` | `ui/src/app/(authenticated)/providers/_parts/TimeoutsSection.tsx` |
-| `ProviderOptions` | `ui/src/app/(authenticated)/providers/page.tsx` |
-| `Provider` | `ui/src/app/(authenticated)/providers/page.tsx`, `ui/src/lib/queries.ts` |
-| `CreateProviderInput` | `ui/src/app/(authenticated)/providers/page.tsx`, `ui/src/lib/queries.ts` |
-| `ProviderActiveRow` | `ui/src/lib/queries.ts` |
-| `MediaDriverInfo` | `ui/src/lib/queries.ts` |
-| `NotificationRow` | `ui/src/stores/notification-store.ts` |
-| `NotificationsResponse` | `ui/src/stores/notification-store.ts` |
-| `TaskStep` | `ui/src/components/TaskPlanPanel.tsx` |
-| `AgentTask` | `ui/src/components/TaskPlanPanel.tsx`, `ui/src/app/(authenticated)/tasks/page.tsx` |
