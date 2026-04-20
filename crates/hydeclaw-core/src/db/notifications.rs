@@ -24,8 +24,11 @@ pub struct Notification {
 #[cfg_attr(feature = "ts-gen", ts(export))]
 pub struct NotificationsResponseDto {
     pub items: Vec<Notification>,
+    #[cfg_attr(feature = "ts-gen", ts(type = "number"))]
     pub unread_count: i64,
+    #[cfg_attr(feature = "ts-gen", ts(type = "number"))]
     pub limit: i64,
+    #[cfg_attr(feature = "ts-gen", ts(type = "number"))]
     pub offset: i64,
 }
 

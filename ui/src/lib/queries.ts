@@ -521,7 +521,7 @@ export function useNotifications() {
   });
   useEffect(() => {
     if (query.data) {
-      setNotifications(query.data.items, Number(query.data.unread_count));
+      setNotifications(query.data.items, query.data.unread_count);
     }
   }, [query.data, setNotifications]);
   return query;

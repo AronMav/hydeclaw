@@ -1,6 +1,7 @@
 // @generated — do not edit by hand.
 // Source of truth: crates/hydeclaw-core/src/gateway/handlers/agents/dto_structs.rs (Phase B),
-//                  crates/hydeclaw-core/src/db/github.rs + approvals.rs (Phase C)
+//                  crates/hydeclaw-core/src/db/github.rs + approvals.rs (Phase C),
+//                  crates/hydeclaw-core/src/db/notifications.rs (Phase A W1)
 // Regenerate with: make gen-types
 
 export type AgentDetailAccessDto = { mode: string, owner_id: string | null, };
@@ -41,4 +42,4 @@ export type AgentInfoDto = { name: string, language: string, model: string, prov
 
 export type Notification = { id: string, type: string, title: string, body: string, data: Record<string, unknown>, read: boolean, created_at: string, };
 
-export type NotificationsResponseDto = { items: Array<Notification>, unread_count: bigint, limit: bigint, offset: bigint, };
+export type NotificationsResponseDto = { items: Array<Notification>, unread_count: number, limit: number, offset: number, };

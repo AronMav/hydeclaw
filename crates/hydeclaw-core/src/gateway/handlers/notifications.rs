@@ -41,12 +41,12 @@ pub(crate) async fn api_list_notifications(
     let limit = q.limit.clamp(1, 200);
     let offset = q.offset.max(0);
     match crate::db::notifications::list_notifications(&infra.db, limit, offset).await {
-        Ok((items, unread_count)) => Json(serde_json::json!({
-            "items": items,
-            "unread_count": unread_count,
-            "limit": limit,
-            "offset": offset,
-        })).into_response(),
+        Ok((items, unread_count)) => Json(crate::db::notifications::NotificationsResponseDto {
+            items,
+            unread_count,
+            limit,
+            offset,
+        }).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),

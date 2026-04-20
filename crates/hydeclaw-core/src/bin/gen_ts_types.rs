@@ -54,7 +54,8 @@ fn main() {
 
     let header = "// @generated — do not edit by hand.\n\
 // Source of truth: crates/hydeclaw-core/src/gateway/handlers/agents/dto_structs.rs (Phase B),\n\
-//                  crates/hydeclaw-core/src/db/github.rs + approvals.rs (Phase C)\n\
+//                  crates/hydeclaw-core/src/db/github.rs + approvals.rs (Phase C),\n\
+//                  crates/hydeclaw-core/src/db/notifications.rs (Phase A W1)\n\
 // Regenerate with: make gen-types\n\n";
 
     let body = decls.join("\n\n");
