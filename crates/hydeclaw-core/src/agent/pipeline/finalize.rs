@@ -174,8 +174,7 @@ pub async fn finalize<S: EventSink>(
     lifecycle_guard: &mut SessionLifecycleGuard,
 ) -> anyhow::Result<String> {
     let sm = SessionManager::new(ctx.db.clone());
-    let sender_agent_id = extract_sender_agent_id(&ctx.msg.user_id);
-    let sender_agent_id_ref = sender_agent_id.as_deref();
+    let agent_name_ref = ctx.agent_name.as_str();
 
     let out = match &outcome {
         FinalizeOutcome::Done { assistant_text, thinking_json } => {
@@ -185,7 +184,7 @@ pub async fn finalize<S: EventSink>(
                 assistant_text,
                 None,
                 None,
-                sender_agent_id_ref,
+                Some(agent_name_ref),
                 thinking_json.as_ref(),
                 ctx.user_message_id,
             )
@@ -210,7 +209,7 @@ pub async fn finalize<S: EventSink>(
                         partial,
                         None,
                         None,
-                        sender_agent_id_ref,
+                        Some(agent_name_ref),
                         None,
                         ctx.user_message_id,
                     )
@@ -257,7 +256,7 @@ pub async fn finalize<S: EventSink>(
                         partial,
                         None,
                         None,
-                        sender_agent_id_ref,
+                        Some(agent_name_ref),
                         None,
                         ctx.user_message_id,
                     )
