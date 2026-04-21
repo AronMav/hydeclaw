@@ -220,15 +220,10 @@ function formToPayload(f: FormState) {
         }
       : null,
     routing: f.routing.length > 0 ? f.routing.map((r) => ({
-      provider: r.provider,
-      model: r.model,
+      connection: r.provider || null,
+      model: r.model || null,
       condition: r.condition || "default",
-      base_url: r.base_url || null,
-      api_key_env: r.api_key_env || null,
-      api_key_envs: r.api_key_envs?.length ? r.api_key_envs : undefined,
       temperature: r.temperature ?? null,
-      max_tokens: r.max_tokens ?? null,
-      prompt_cache: r.prompt_cache ?? false,
       cooldown_secs: r.cooldown_secs ?? 60,
     })) : null,
     voice: f.voice || null,

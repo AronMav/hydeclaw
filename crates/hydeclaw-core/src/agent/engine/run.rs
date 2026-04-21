@@ -106,7 +106,6 @@ impl AgentEngine {
                 self,
                 session_id,
                 boot_for_execute.messages.len(),
-                msg,
                 Some(user_message_id),
             );
             finalize::finalize(
@@ -130,7 +129,6 @@ impl AgentEngine {
             self,
             session_id,
             outcome.messages_len_at_end,
-            msg,
             // Final assistant parent = end of intermediate chain (last tool
             // result or intermediate assistant with tool_calls) persisted by
             // pipeline::execute. For no-tool turns this equals user_message_id.
@@ -162,7 +160,7 @@ impl AgentEngine {
         &self,
         msg: &IncomingMessage,
         status_tx: Option<tokio::sync::mpsc::UnboundedSender<ProcessingPhase>>,
-        chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+        chunk_tx: Option<tokio::sync::mpsc::Sender<String>>,
     ) -> Result<String> {
         self.cfg().approval_manager.prune_stale().await;
 
@@ -220,7 +218,6 @@ impl AgentEngine {
                 self,
                 session_id,
                 boot_for_execute.messages.len(),
-                msg,
                 Some(user_message_id),
             );
             return finalize::finalize(
@@ -242,7 +239,6 @@ impl AgentEngine {
             self,
             session_id,
             outcome.messages_len_at_end,
-            msg,
             // Final assistant parent = end of intermediate chain (last tool
             // result or intermediate assistant with tool_calls) persisted by
             // pipeline::execute. For no-tool turns this equals user_message_id.
@@ -266,7 +262,7 @@ impl AgentEngine {
     pub async fn handle_streaming(
         &self,
         msg: &IncomingMessage,
-        chunk_tx: tokio::sync::mpsc::UnboundedSender<String>,
+        chunk_tx: tokio::sync::mpsc::Sender<String>,
     ) -> Result<String> {
         let mut s = sink::ChunkSink::new(chunk_tx);
 
@@ -314,7 +310,6 @@ impl AgentEngine {
                 self,
                 session_id,
                 boot_for_execute.messages.len(),
-                msg,
                 Some(user_message_id),
             );
             return finalize::finalize(
@@ -336,7 +331,6 @@ impl AgentEngine {
             self,
             session_id,
             outcome.messages_len_at_end,
-            msg,
             // Final assistant parent = end of intermediate chain (last tool
             // result or intermediate assistant with tool_calls) persisted by
             // pipeline::execute. For no-tool turns this equals user_message_id.

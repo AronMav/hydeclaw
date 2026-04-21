@@ -138,6 +138,7 @@ pub async fn start_agent_from_config(
         Some(status.processing_tracker.clone()),
         Some(channel_router.clone()),
         Some(bus.ui_event_tx.clone()),
+        bus.bg_tasks.clone(),
     ));
 
     // Build the immutable AgentConfig snapshot (Step A of thin-wrapper conversion).

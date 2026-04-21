@@ -25,9 +25,6 @@
 //! - Thinking-block stripping from `IncomingMessage` directives. Content is passed
 //!   to DB as-is; callers that need stripping should do it in finalize.
 
-// Tasks 7-9 wire execute() into the real call-sites; allow dead_code until then.
-#![allow(dead_code)]
-
 use crate::agent::engine::AgentEngine;
 use crate::agent::engine::LoopBreak;
 use crate::agent::pipeline::bootstrap::BootstrapOutcome;
@@ -42,7 +39,6 @@ use uuid::Uuid;
 
 pub struct ExecuteOutcome {
     pub status: ExecuteStatus,
-    pub session_id: Uuid,
     pub final_text: String,
     /// Thinking blocks from extended thinking (Anthropic only).
     pub thinking_json: Option<serde_json::Value>,
@@ -72,7 +68,7 @@ macro_rules! emit_or_interrupted {
     ($sink:expr, $ev:expr, $outcome:expr) => {{
         match $sink.emit(PipelineEvent::Stream($ev)).await {
             Ok(()) => {}
-            Err(SinkError::Closed) => return Ok($outcome),
+            Err(SinkError::Closed) | Err(SinkError::Full) => return Ok($outcome),
             Err(e) => return Err(e.into()),
         }
     }};
@@ -114,7 +110,6 @@ pub async fn execute<S: EventSink>(
     if cancel.is_cancelled() {
         return Ok(ExecuteOutcome {
             status: ExecuteStatus::Interrupted("cancel_token"),
-            session_id,
             final_text: String::new(),
             thinking_json: None,
             messages_len_at_end: messages.len(),
@@ -129,7 +124,6 @@ pub async fn execute<S: EventSink>(
         StreamEvent::MessageStart { message_id: msg_id },
         ExecuteOutcome {
             status: ExecuteStatus::Interrupted("sink_closed"),
-            session_id,
             final_text: String::new(),
             thinking_json: None,
             messages_len_at_end: messages.len(),
@@ -151,7 +145,6 @@ pub async fn execute<S: EventSink>(
             tracing::info!(session = %session_id, "request cancelled — breaking tool loop");
             return Ok(ExecuteOutcome {
                 status: ExecuteStatus::Interrupted("cancel_token"),
-                session_id,
                 final_text,
                 thinking_json: None,
                 messages_len_at_end: messages.len(),
@@ -171,7 +164,6 @@ pub async fn execute<S: EventSink>(
             Err(SinkError::Closed) => {
                 return Ok(ExecuteOutcome {
                     status: ExecuteStatus::Interrupted("sink_closed"),
-                    session_id,
                     final_text,
                     thinking_json: None,
                     messages_len_at_end: messages.len(),
@@ -242,7 +234,6 @@ pub async fn execute<S: EventSink>(
                     .await;
                 return Ok(ExecuteOutcome {
                     status: ExecuteStatus::Failed(reason),
-                    session_id,
                     final_text: user_msg,
                     thinking_json: None,
                     messages_len_at_end: messages.len(),
@@ -298,7 +289,6 @@ pub async fn execute<S: EventSink>(
                 Err(SinkError::Closed) => {
                     return Ok(ExecuteOutcome {
                         status: ExecuteStatus::Interrupted("sink_closed"),
-                        session_id,
                         final_text,
                         thinking_json: None,
                         messages_len_at_end: messages.len(),
@@ -315,7 +305,6 @@ pub async fn execute<S: EventSink>(
             };
             return Ok(ExecuteOutcome {
                 status: ExecuteStatus::Done,
-                session_id,
                 final_text,
                 thinking_json,
                 messages_len_at_end: messages.len(),
@@ -402,7 +391,7 @@ pub async fn execute<S: EventSink>(
                 &response.tool_calls,
                 &serde_json::Value::Null, // context — callers with msg can pass msg.context; Task 6b uses Null
                 session_id,
-                "",   // channel — not available here; callers with channel can override in Tasks 7-9
+                "",   // channel — not available in the unified pipeline path
                 messages.iter().map(|m| m.content.len()).sum(),
                 &mut loop_detector,
                 loop_config.detect_loops,
@@ -470,7 +459,6 @@ pub async fn execute<S: EventSink>(
                         thinking_blocks: vec![],
                     });
                     loop_nudge_count += 1;
-                    loop_detector.reset();
                     tracing::warn!(
                         agent = %engine.cfg().agent.name,
                         nudge_count = loop_nudge_count,
@@ -508,7 +496,6 @@ pub async fn execute<S: EventSink>(
                 .await;
             return Ok(ExecuteOutcome {
                 status: ExecuteStatus::Failed(reason),
-                session_id,
                 final_text,
                 thinking_json: None,
                 messages_len_at_end: messages.len(),
@@ -535,7 +522,6 @@ pub async fn execute<S: EventSink>(
 
     Ok(ExecuteOutcome {
         status: ExecuteStatus::Done,
-        session_id,
         final_text,
         thinking_json: None,
         messages_len_at_end: messages.len(),
@@ -558,7 +544,8 @@ struct ToolResultParts {
 /// Extract inline markers (`__rich_card__:`, `__file__:`) from a tool result,
 /// emit corresponding `StreamEvent`s via the sink, and return cleaned display
 /// + raw DB text. Ported from the old `pipeline::entry::extract_tool_result_events`
-/// so the pipeline path has parity with the deleted engine_sse.rs behaviour.
+///
+/// Ensures the pipeline path has parity with the deleted engine_sse.rs behaviour.
 async fn extract_tool_result_events<S: EventSink>(
     tool_result: &str,
     sink: &mut S,

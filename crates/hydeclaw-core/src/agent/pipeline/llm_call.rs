@@ -364,6 +364,7 @@ pub async fn chat_with_transient_retry_using(
 // ── Transient retry with explicit provider (streaming) ──────────────
 
 /// Streaming variant of [`chat_with_transient_retry_using`].
+#[allow(dead_code)]
 pub async fn chat_stream_with_transient_retry_using(
     provider: &Arc<dyn LlmProvider>,
     messages: &mut Vec<Message>,

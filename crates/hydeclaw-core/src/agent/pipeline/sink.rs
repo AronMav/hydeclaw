@@ -111,14 +111,14 @@ impl EventSink for SseSink {
 
 pub struct ChannelStatusSink {
     status_tx: Option<tokio::sync::mpsc::UnboundedSender<ProcessingPhase>>,
-    chunk_tx:  Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    chunk_tx:  Option<tokio::sync::mpsc::Sender<String>>,
     pub buffer: String,
 }
 
 impl ChannelStatusSink {
     pub fn new(
         status_tx: Option<tokio::sync::mpsc::UnboundedSender<ProcessingPhase>>,
-        chunk_tx:  Option<tokio::sync::mpsc::UnboundedSender<String>>,
+        chunk_tx:  Option<tokio::sync::mpsc::Sender<String>>,
     ) -> Self { Self { status_tx, chunk_tx, buffer: String::new() } }
 }
 
@@ -132,7 +132,7 @@ impl EventSink for ChannelStatusSink {
             PipelineEvent::Stream(StreamEvent::TextDelta(s)) => {
                 self.buffer.push_str(&s);
                 if let Some(tx) = &self.chunk_tx {
-                    tx.send(s).map_err(|_| SinkError::Closed)
+                    tx.send(s).await.map_err(|_| SinkError::Closed)
                 } else { Ok(()) }
             }
             _ => Ok(()), // tool/file/card events not relevant to channel transport
@@ -141,12 +141,12 @@ impl EventSink for ChannelStatusSink {
 }
 
 pub struct ChunkSink {
-    chunk_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    chunk_tx: tokio::sync::mpsc::Sender<String>,
     pub buffer: String,
 }
 
 impl ChunkSink {
-    pub fn new(chunk_tx: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
+    pub fn new(chunk_tx: tokio::sync::mpsc::Sender<String>) -> Self {
         Self { chunk_tx, buffer: String::new() }
     }
 }
@@ -155,7 +155,7 @@ impl EventSink for ChunkSink {
     async fn emit(&mut self, ev: PipelineEvent) -> Result<(), SinkError> {
         if let PipelineEvent::Stream(StreamEvent::TextDelta(s)) = ev {
             self.buffer.push_str(&s);
-            self.chunk_tx.send(s).map_err(|_| SinkError::Closed)
+            self.chunk_tx.send(s).await.map_err(|_| SinkError::Closed)
         } else { Ok(()) }
     }
 }
@@ -210,7 +210,7 @@ mod tests {
     #[tokio::test]
     async fn channel_status_sink_routes_phase_to_status() {
         let (st, mut st_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (ch, _ch_rx)    = tokio::sync::mpsc::unbounded_channel();
+        let (ch, _ch_rx)    = tokio::sync::mpsc::channel(8);
         let mut sink = ChannelStatusSink::new(Some(st), Some(ch));
         sink.emit(ProcessingPhase::Thinking.into()).await.unwrap();
         assert!(matches!(st_rx.recv().await, Some(ProcessingPhase::Thinking)));
@@ -218,7 +218,7 @@ mod tests {
 
     #[tokio::test]
     async fn channel_status_sink_routes_text_to_chunks_and_buffers() {
-        let (ch, mut ch_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (ch, mut ch_rx) = tokio::sync::mpsc::channel(8);
         let mut sink = ChannelStatusSink::new(None, Some(ch));
         sink.emit(StreamEvent::TextDelta("hello".into()).into()).await.unwrap();
         assert_eq!(ch_rx.recv().await, Some("hello".into()));
@@ -227,7 +227,7 @@ mod tests {
 
     #[tokio::test]
     async fn channel_status_sink_drops_tool_events() {
-        let (ch, mut ch_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (ch, mut ch_rx) = tokio::sync::mpsc::channel(8);
         let mut sink = ChannelStatusSink::new(None, Some(ch));
         sink.emit(StreamEvent::MessageStart { message_id: "m".into() }.into()).await.unwrap();
         drop(sink);
@@ -236,12 +236,21 @@ mod tests {
 
     #[tokio::test]
     async fn chunk_sink_emits_only_text_deltas() {
-        let (ch, mut ch_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (ch, mut ch_rx) = tokio::sync::mpsc::channel(8);
         let mut sink = ChunkSink::new(ch);
         sink.emit(StreamEvent::TextDelta("abc".into()).into()).await.unwrap();
         sink.emit(StreamEvent::MessageStart { message_id: "m".into() }.into()).await.unwrap();
         assert_eq!(ch_rx.recv().await, Some("abc".into()));
         drop(sink);
         assert!(ch_rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn chunk_sink_returns_closed_when_receiver_dropped() {
+        let (ch, rx) = tokio::sync::mpsc::channel(8);
+        let mut sink = ChunkSink::new(ch);
+        drop(rx);
+        let err = sink.emit(StreamEvent::TextDelta("x".into()).into()).await;
+        assert!(matches!(err, Err(SinkError::Closed)));
     }
 }

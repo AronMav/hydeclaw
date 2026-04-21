@@ -8,9 +8,9 @@ use crate::agent::pipeline::sink::{EventSink, PipelineEvent};
 use crate::agent::providers::LlmProvider;
 use crate::agent::session_manager::{SessionLifecycleGuard, SessionManager};
 use crate::agent::stream_event::StreamEvent;
-use hydeclaw_types::IncomingMessage;
 use sqlx::PgPool;
 use std::sync::Arc;
+use tokio_util::task::TaskTracker;
 use uuid::Uuid;
 
 // ── UI notifications ──────────────────────────────────────────────────────────
@@ -27,12 +27,13 @@ pub(crate) fn notify_agent_error(
     ui_event_tx: Option<&tokio::sync::broadcast::Sender<String>>,
     agent_name: &str,
     reason: &str,
+    tracker: &TaskTracker,
 ) {
     if let Some(ui_tx) = ui_event_tx {
         let tx = ui_tx.clone();
         let agent_name = agent_name.to_string();
         let reason = reason.to_string();
-        tokio::spawn(async move {
+        tracker.spawn(async move {
             let _ = crate::gateway::notify(
                 &db,
                 &tx,
@@ -52,6 +53,7 @@ pub(crate) fn notify_iteration_limit(
     ui_event_tx: Option<&tokio::sync::broadcast::Sender<String>>,
     agent_name: &str,
     max_iterations: usize,
+    tracker: &TaskTracker,
 ) {
     tracing::warn!(
         agent = %agent_name,
@@ -61,7 +63,7 @@ pub(crate) fn notify_iteration_limit(
     if let Some(ui_tx) = ui_event_tx {
         let tx = ui_tx.clone();
         let agent_name = agent_name.to_string();
-        tokio::spawn(async move {
+        tracker.spawn(async move {
             let _ = crate::gateway::notify(
                 &db,
                 &tx,
@@ -86,11 +88,12 @@ pub(crate) fn notify_loop_detected(
     ui_event_tx: Option<&tokio::sync::broadcast::Sender<String>>,
     agent_name: &str,
     session_id: Uuid,
+    tracker: &TaskTracker,
 ) {
     if let Some(ui_tx) = ui_event_tx {
         let tx = ui_tx.clone();
         let agent_name = agent_name.to_string();
-        tokio::spawn(async move {
+        tracker.spawn(async move {
             let _ = crate::gateway::notify(
                 &db,
                 &tx,
@@ -111,7 +114,6 @@ pub(crate) fn notify_loop_detected(
 
 // ── FinalizeOutcome ───────────────────────────────────────────────────────────
 
-#[allow(dead_code)] // variants consumed by Task 5+ pipeline::execute integration
 #[derive(Debug)]
 pub enum FinalizeOutcome {
     Done {
@@ -131,13 +133,11 @@ pub enum FinalizeOutcome {
 
 // ── FinalizeContext ───────────────────────────────────────────────────────────
 
-#[allow(dead_code)] // constructed by Task 7/8/9 thin adapter methods
-pub struct FinalizeContext<'a> {
+pub struct FinalizeContext {
     pub db: PgPool,
     pub session_id: Uuid,
     pub agent_name: String,
     pub message_count: usize,
-    pub msg: &'a IncomingMessage,
     pub provider: Arc<dyn LlmProvider>,
     pub memory_store: Arc<dyn MemoryService>,
     /// Parent id threaded from bootstrap's user-message save; used as
@@ -151,13 +151,9 @@ pub struct FinalizeContext<'a> {
     /// Max iterations configured for this agent; used when surfacing an
     /// `iteration_limit` notification to UI.
     pub max_iterations: usize,
-}
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-/// Extract a sender agent ID from the `user_id` field if it has the `"agent:"` prefix.
-pub(crate) fn extract_sender_agent_id(user_id: &str) -> Option<String> {
-    user_id.strip_prefix("agent:").map(|s| s.to_string())
+    /// Shared task tracker for fire-and-forget spawns (notifications, knowledge
+    /// extraction). Ensures graceful shutdown waits for them.
+    pub bg_tasks: Arc<TaskTracker>,
 }
 
 // ── finalize() ────────────────────────────────────────────────────────────────
@@ -166,9 +162,8 @@ pub(crate) fn extract_sender_agent_id(user_id: &str) -> Option<String> {
 /// guard, and (on `Done`) spawn knowledge extraction in the background.
 ///
 /// Returns the saved assistant text so callers can pass it upstream.
-#[allow(dead_code)] // called by Task 5 pipeline::execute
 pub async fn finalize<S: EventSink>(
-    ctx: FinalizeContext<'_>,
+    ctx: FinalizeContext,
     outcome: FinalizeOutcome,
     sink: &mut S,
     lifecycle_guard: &mut SessionLifecycleGuard,
@@ -197,6 +192,7 @@ pub async fn finalize<S: EventSink>(
                 ctx.provider.clone(),
                 ctx.memory_store.clone(),
                 ctx.message_count,
+                &ctx.bg_tasks,
             );
             assistant_text.clone()
         }
@@ -229,6 +225,7 @@ pub async fn finalize<S: EventSink>(
                     ctx.ui_event_tx.as_ref(),
                     &ctx.agent_name,
                     ctx.session_id,
+                    &ctx.bg_tasks,
                 );
             } else if lowered.starts_with("iteration_limit") {
                 notify_iteration_limit(
@@ -236,6 +233,7 @@ pub async fn finalize<S: EventSink>(
                     ctx.ui_event_tx.as_ref(),
                     &ctx.agent_name,
                     ctx.max_iterations,
+                    &ctx.bg_tasks,
                 );
             } else {
                 notify_agent_error(
@@ -243,6 +241,7 @@ pub async fn finalize<S: EventSink>(
                     ctx.ui_event_tx.as_ref(),
                     &ctx.agent_name,
                     reason,
+                    &ctx.bg_tasks,
                 );
             }
             partial.clone()
@@ -272,27 +271,24 @@ pub async fn finalize<S: EventSink>(
 
 // ── finalize_context_from_engine() ───────────────────────────────────────────
 
-/// Public helper used by the thin adapter methods in Task 7/8/9 to construct
-/// `FinalizeContext` from an `AgentEngine` reference.
-#[allow(dead_code)] // used by Task 7/8/9 engine adapter methods
-pub fn finalize_context_from_engine<'a>(
-    engine: &'a crate::agent::engine::AgentEngine,
+/// Construct a `FinalizeContext` from an `AgentEngine` reference.
+pub fn finalize_context_from_engine(
+    engine: &crate::agent::engine::AgentEngine,
     session_id: Uuid,
     message_count: usize,
-    msg: &'a IncomingMessage,
     user_message_id: Option<Uuid>,
-) -> FinalizeContext<'a> {
+) -> FinalizeContext {
     FinalizeContext {
         db: engine.cfg().db.clone(),
         session_id,
         agent_name: engine.cfg().agent.name.clone(),
         message_count,
-        msg,
         provider: engine.cfg().provider.clone(),
         memory_store: engine.cfg().memory_store.clone(),
         user_message_id,
         ui_event_tx: engine.state().ui_event_tx.clone(),
         max_iterations: engine.tool_loop_config().effective_max_iterations(),
+        bg_tasks: engine.state().bg_tasks.clone(),
     }
 }
 
@@ -305,9 +301,10 @@ pub(crate) fn spawn_knowledge_extraction(
     provider: Arc<dyn LlmProvider>,
     memory_store: Arc<dyn MemoryService>,
     message_count: usize,
+    tracker: &TaskTracker,
 ) {
     if message_count >= 5 {
-        tokio::spawn(async move {
+        tracker.spawn(async move {
             crate::agent::knowledge_extractor::extract_and_save(
                 db, session_id, agent_name, provider, memory_store,
             )
@@ -450,19 +447,19 @@ mod tests {
         }
     }
 
-    fn build_ctx<'a>(db: PgPool, session_id: Uuid, msg: &'a IncomingMessage) -> FinalizeContext<'a> {
+    fn build_ctx(db: PgPool, session_id: Uuid) -> FinalizeContext {
         FinalizeContext {
             db,
             session_id,
             agent_name: "test-agent".to_string(),
             message_count: 0,
-            msg,
             provider: Arc::new(NeverCalledProvider),
             memory_store: Arc::new(NeverCalledMemory),
             user_message_id: None,
             // No UI in unit tests — notify_* becomes a no-op with ui_event_tx=None.
             ui_event_tx: None,
             max_iterations: 0,
+            bg_tasks: Arc::new(TaskTracker::new()),
         }
     }
 
@@ -473,19 +470,7 @@ mod tests {
                 .await
                 .unwrap();
 
-        let msg = IncomingMessage {
-            text: Some("hi".into()),
-            user_id: "test-user".into(),
-            context: serde_json::Value::Null,
-            attachments: vec![],
-            agent_id: "test-agent".into(),
-            channel: "test-channel".into(),
-            timestamp: chrono::Utc::now(),
-            formatting_prompt: None,
-            tool_policy_override: None,
-            leaf_message_id: None,
-        };
-        let ctx = build_ctx(pool.clone(), session_id, &msg);
+        let ctx = build_ctx(pool.clone(), session_id);
         let mut guard = SessionLifecycleGuard::new(pool.clone(), session_id);
         let mut sink = MockSink::new();
 
@@ -525,19 +510,7 @@ mod tests {
                 .await
                 .unwrap();
 
-        let msg = IncomingMessage {
-            text: Some("hi".into()),
-            user_id: "test-user".into(),
-            context: serde_json::Value::Null,
-            attachments: vec![],
-            agent_id: "test-agent".into(),
-            channel: "test-channel".into(),
-            timestamp: chrono::Utc::now(),
-            formatting_prompt: None,
-            tool_policy_override: None,
-            leaf_message_id: None,
-        };
-        let ctx = build_ctx(pool.clone(), session_id, &msg);
+        let ctx = build_ctx(pool.clone(), session_id);
         let mut guard = SessionLifecycleGuard::new(pool.clone(), session_id);
         let mut sink = MockSink::new();
 

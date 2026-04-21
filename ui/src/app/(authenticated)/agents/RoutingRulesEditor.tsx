@@ -6,8 +6,8 @@ import type { TranslationKey } from "@/i18n/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import type { RoutingRule } from "@/types/api";
-import { Settings, Plus, ChevronDown, ChevronUp, X } from "lucide-react";
+import type { Provider, RoutingRule } from "@/types/api";
+import { Link2, Settings, Plus, ChevronDown, ChevronUp, X } from "lucide-react";
 
 export const PROVIDERS = [
   { value: "minimax", label: "MiniMax" },
@@ -69,7 +69,7 @@ function Field({
 
 function RoutingRuleRow({
   rule,
-  secretNames,
+  llmProviders,
   discoveredModels,
   fetchModels,
   onChange,
@@ -78,9 +78,9 @@ function RoutingRuleRow({
   onMoveDown,
 }: {
   rule: RoutingRule;
-  secretNames: string[];
+  llmProviders: Provider[];
   discoveredModels: Record<string, string[]>;
-  fetchModels: (provider: string) => void;
+  fetchModels: (connection: string) => void;
   onChange: (patch: Partial<RoutingRule>) => void;
   onRemove: () => void;
   onMoveUp?: () => void;
@@ -93,46 +93,36 @@ function RoutingRuleRow({
     <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-2">
       <div className="flex flex-col sm:flex-row sm:items-center gap-2">
         <div className="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-2">
-          <Select value={rule.provider} onValueChange={(v) => { onChange({ provider: v, model: "" }); fetchModels(v); }}>
+          <Select
+            value={rule.provider || "__none__"}
+            onValueChange={(v) => {
+              if (v === "__none__") { onChange({ provider: "", model: "" }); return; }
+              const conn = llmProviders.find((p) => p.name === v);
+              onChange({ provider: v, model: conn?.default_model ?? "" });
+              fetchModels(v);
+            }}
+          >
             <SelectTrigger className="w-full bg-background border-border text-xs h-8">
-              <SelectValue />
+              <SelectValue placeholder="Select provider..." />
             </SelectTrigger>
             <SelectContent className="border-border">
-              {PROVIDERS.map((p) => (
-                <SelectItem key={p.value} value={p.value} className="text-xs">
-                  {p.label}
+              <SelectItem value="__none__" className="text-xs text-muted-foreground">
+                <span className="text-muted-foreground">&mdash;</span>
+              </SelectItem>
+              {llmProviders.map((conn) => (
+                <SelectItem key={conn.name} value={conn.name} className="text-xs">
+                  <span className="flex items-center gap-2">
+                    <Link2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    <span>{conn.name}</span>
+                    <span className="text-muted-foreground/60 text-[10px]">{conn.default_model}</span>
+                  </span>
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
-          {(() => {
-            const rModels = discoveredModels[rule.provider] ?? FALLBACK_MODELS[rule.provider] ?? [];
-            if (rModels.length > 0) {
-              return (
-                <div className="flex gap-1.5">
-                  <Select
-                    value={rModels.includes(rule.model) ? rule.model : ""}
-                    onValueChange={(v) => onChange({ model: v })}
-                  >
-                    <SelectTrigger className="bg-background border-border font-mono text-xs h-8">
-                      <SelectValue placeholder={t("agents.model_placeholder")} />
-                    </SelectTrigger>
-                    <SelectContent className="border-border max-h-60">
-                      {rModels.map((m) => (<SelectItem key={m} value={m} className="font-mono text-xs">{m}</SelectItem>))}
-                    </SelectContent>
-                  </Select>
-                  <Input value={rule.model} placeholder={t("agents.model_placeholder")}
-                    className="bg-background border-border font-mono text-xs h-8 max-w-[140px]"
-                    onChange={(e) => onChange({ model: e.target.value })} />
-                </div>
-              );
-            }
-            return (
-              <Input value={rule.model} placeholder={t("agents.model_placeholder")}
-                className="bg-background border-border font-mono text-xs h-8"
-                onChange={(e) => onChange({ model: e.target.value })} />
-            );
-          })()}
+          <Input value={rule.model} placeholder={t("agents.model_placeholder")}
+            className="bg-background border-border font-mono text-xs h-8"
+            onChange={(e) => onChange({ model: e.target.value })} />
           <Select value={rule.condition} onValueChange={(v) => onChange({ condition: v })}>
             <SelectTrigger className="w-full bg-background border-border text-xs h-8">
               <SelectValue />
@@ -178,30 +168,6 @@ function RoutingRuleRow({
       </div>
       {expanded && (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 animate-in fade-in duration-200">
-          <Field label={t("agents.routing_field_base_url")}>
-            <Input
-              value={rule.base_url || ""}
-              placeholder={t("agents.routing_placeholder_auto")}
-              className="bg-background border-border font-mono text-xs h-8"
-              onChange={(e) => onChange({ base_url: e.target.value || null })}
-            />
-          </Field>
-          <Field label={t("agents.routing_field_api_key_env")}>
-            <Select
-              value={rule.api_key_env || "__auto__"}
-              onValueChange={(v) => onChange({ api_key_env: v === "__auto__" ? null : v })}
-            >
-              <SelectTrigger className="w-full bg-background border-border font-mono text-xs h-8">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="border-border">
-                <SelectItem value="__auto__" className="text-xs">{t("agents.routing_placeholder_auto")}</SelectItem>
-                {secretNames.map((s) => (
-                  <SelectItem key={s} value={s} className="font-mono text-xs">{s}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
           <Field label={t("agents.routing_field_temperature")}>
             <Input
               type="number"
@@ -214,23 +180,6 @@ function RoutingRuleRow({
               onChange={(e) => onChange({ temperature: e.target.value ? parseFloat(e.target.value) : null })}
             />
           </Field>
-          <label className="flex items-center gap-2 text-xs cursor-pointer col-span-full">
-            <input
-              type="checkbox"
-              checked={rule.prompt_cache ?? false}
-              onChange={(e) => onChange({ prompt_cache: e.target.checked })}
-              className="rounded border-border"
-            />
-            <span>{t("agents.routing_prompt_cache")}</span>
-          </label>
-          <Field label={t("agents.routing_cooldown")}>
-            <Input
-              type="number" step="1" min="0"
-              value={String(rule.cooldown_secs ?? 0)}
-              className="bg-background border-border font-mono text-xs h-8"
-              onChange={(e) => onChange({ cooldown_secs: parseInt(e.target.value) || 0 })}
-            />
-          </Field>
         </div>
       )}
     </div>
@@ -239,15 +188,15 @@ function RoutingRuleRow({
 
 export interface RoutingRulesEditorProps {
   routing: RoutingRule[];
-  secretNames: string[];
+  llmProviders: Provider[];
   discoveredModels: Record<string, string[]>;
-  fetchModels: (provider: string) => void;
+  fetchModels: (connection: string) => void;
   onChange: (routing: RoutingRule[]) => void;
 }
 
 export function RoutingRulesEditor({
   routing,
-  secretNames,
+  llmProviders,
   discoveredModels,
   fetchModels,
   onChange,
@@ -272,7 +221,7 @@ export function RoutingRulesEditor({
           onClick={() =>
             onChange([
               ...routing,
-              { provider: "minimax", model: "", condition: "default" },
+              { provider: llmProviders[0]?.name ?? "", model: llmProviders[0]?.default_model ?? "", condition: "default" },
             ])
           }
         >
@@ -289,7 +238,7 @@ export function RoutingRulesEditor({
             <RoutingRuleRow
               key={idx}
               rule={rule}
-              secretNames={secretNames}
+              llmProviders={llmProviders}
               discoveredModels={discoveredModels}
               fetchModels={fetchModels}
               onChange={(patch) => {
