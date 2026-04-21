@@ -120,38 +120,9 @@ function RoutingRuleRow({
               ))}
             </SelectContent>
           </Select>
-          {(() => {
-            const rModels = discoveredModels[rule.provider] ?? FALLBACK_MODELS[rule.provider] ?? [];
-            const isCustom = rModels.length > 0 && !rModels.includes(rule.model);
-            if (rModels.length > 0) {
-              return (
-                <div className="space-y-1.5">
-                  <Select
-                    value={isCustom ? "__custom__" : (rule.model || "")}
-                    onValueChange={(v) => onChange({ model: v === "__custom__" ? "" : v })}
-                  >
-                    <SelectTrigger className="bg-background border-border font-mono text-xs h-8">
-                      <SelectValue placeholder={t("agents.model_placeholder")} />
-                    </SelectTrigger>
-                    <SelectContent className="border-border max-h-60">
-                      {rModels.map((m) => (<SelectItem key={m} value={m} className="font-mono text-xs">{m}</SelectItem>))}
-                      <SelectItem value="__custom__" className="font-mono text-xs italic text-muted-foreground">{t("agents.model_custom")}</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  {isCustom && (
-                    <Input value={rule.model} placeholder={t("agents.model_placeholder")}
-                      className="bg-background border-border font-mono text-xs h-8"
-                      onChange={(e) => onChange({ model: e.target.value })} />
-                  )}
-                </div>
-              );
-            }
-            return (
-              <Input value={rule.model} placeholder={t("agents.model_placeholder")}
-                className="bg-background border-border font-mono text-xs h-8"
-                onChange={(e) => onChange({ model: e.target.value })} />
-            );
-          })()}
+          <Input value={rule.model} placeholder={t("agents.model_placeholder")}
+            className="bg-background border-border font-mono text-xs h-8"
+            onChange={(e) => onChange({ model: e.target.value })} />
           <Select value={rule.condition} onValueChange={(v) => onChange({ condition: v })}>
             <SelectTrigger className="w-full bg-background border-border text-xs h-8">
               <SelectValue />
@@ -207,23 +178,6 @@ function RoutingRuleRow({
               placeholder={t("agents.routing_placeholder_none")}
               className="bg-background border-border font-mono text-xs h-8"
               onChange={(e) => onChange({ temperature: e.target.value ? parseFloat(e.target.value) : null })}
-            />
-          </Field>
-          <label className="flex items-center gap-2 text-xs cursor-pointer col-span-full">
-            <input
-              type="checkbox"
-              checked={rule.prompt_cache ?? false}
-              onChange={(e) => onChange({ prompt_cache: e.target.checked })}
-              className="rounded border-border"
-            />
-            <span>{t("agents.routing_prompt_cache")}</span>
-          </label>
-          <Field label={t("agents.routing_cooldown")}>
-            <Input
-              type="number" step="1" min="0"
-              value={String(rule.cooldown_secs ?? 0)}
-              className="bg-background border-border font-mono text-xs h-8"
-              onChange={(e) => onChange({ cooldown_secs: parseInt(e.target.value) || 0 })}
             />
           </Field>
         </div>
