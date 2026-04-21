@@ -8,7 +8,6 @@ use crate::agent::pipeline::sink::{EventSink, PipelineEvent};
 use crate::agent::providers::LlmProvider;
 use crate::agent::session_manager::{SessionLifecycleGuard, SessionManager};
 use crate::agent::stream_event::StreamEvent;
-use hydeclaw_types::IncomingMessage;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio_util::task::TaskTracker;
@@ -115,7 +114,6 @@ pub(crate) fn notify_loop_detected(
 
 // ── FinalizeOutcome ───────────────────────────────────────────────────────────
 
-#[allow(dead_code)] // variants consumed by Task 5+ pipeline::execute integration
 #[derive(Debug)]
 pub enum FinalizeOutcome {
     Done {
@@ -135,13 +133,11 @@ pub enum FinalizeOutcome {
 
 // ── FinalizeContext ───────────────────────────────────────────────────────────
 
-#[allow(dead_code)] // constructed by Task 7/8/9 thin adapter methods
-pub struct FinalizeContext<'a> {
+pub struct FinalizeContext {
     pub db: PgPool,
     pub session_id: Uuid,
     pub agent_name: String,
     pub message_count: usize,
-    pub msg: &'a IncomingMessage,
     pub provider: Arc<dyn LlmProvider>,
     pub memory_store: Arc<dyn MemoryService>,
     /// Parent id threaded from bootstrap's user-message save; used as
@@ -160,22 +156,14 @@ pub struct FinalizeContext<'a> {
     pub bg_tasks: Arc<TaskTracker>,
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-/// Extract a sender agent ID from the `user_id` field if it has the `"agent:"` prefix.
-pub(crate) fn extract_sender_agent_id(user_id: &str) -> Option<String> {
-    user_id.strip_prefix("agent:").map(|s| s.to_string())
-}
-
 // ── finalize() ────────────────────────────────────────────────────────────────
 
 /// Persist the final (or partial) assistant message, transition the lifecycle
 /// guard, and (on `Done`) spawn knowledge extraction in the background.
 ///
 /// Returns the saved assistant text so callers can pass it upstream.
-#[allow(dead_code)] // called by Task 5 pipeline::execute
 pub async fn finalize<S: EventSink>(
-    ctx: FinalizeContext<'_>,
+    ctx: FinalizeContext,
     outcome: FinalizeOutcome,
     sink: &mut S,
     lifecycle_guard: &mut SessionLifecycleGuard,
@@ -283,22 +271,18 @@ pub async fn finalize<S: EventSink>(
 
 // ── finalize_context_from_engine() ───────────────────────────────────────────
 
-/// Public helper used by the thin adapter methods in Task 7/8/9 to construct
-/// `FinalizeContext` from an `AgentEngine` reference.
-#[allow(dead_code)] // used by Task 7/8/9 engine adapter methods
-pub fn finalize_context_from_engine<'a>(
-    engine: &'a crate::agent::engine::AgentEngine,
+/// Construct a `FinalizeContext` from an `AgentEngine` reference.
+pub fn finalize_context_from_engine(
+    engine: &crate::agent::engine::AgentEngine,
     session_id: Uuid,
     message_count: usize,
-    msg: &'a IncomingMessage,
     user_message_id: Option<Uuid>,
-) -> FinalizeContext<'a> {
+) -> FinalizeContext {
     FinalizeContext {
         db: engine.cfg().db.clone(),
         session_id,
         agent_name: engine.cfg().agent.name.clone(),
         message_count,
-        msg,
         provider: engine.cfg().provider.clone(),
         memory_store: engine.cfg().memory_store.clone(),
         user_message_id,
@@ -463,13 +447,12 @@ mod tests {
         }
     }
 
-    fn build_ctx<'a>(db: PgPool, session_id: Uuid, msg: &'a IncomingMessage) -> FinalizeContext<'a> {
+    fn build_ctx(db: PgPool, session_id: Uuid) -> FinalizeContext {
         FinalizeContext {
             db,
             session_id,
             agent_name: "test-agent".to_string(),
             message_count: 0,
-            msg,
             provider: Arc::new(NeverCalledProvider),
             memory_store: Arc::new(NeverCalledMemory),
             user_message_id: None,
@@ -487,19 +470,7 @@ mod tests {
                 .await
                 .unwrap();
 
-        let msg = IncomingMessage {
-            text: Some("hi".into()),
-            user_id: "test-user".into(),
-            context: serde_json::Value::Null,
-            attachments: vec![],
-            agent_id: "test-agent".into(),
-            channel: "test-channel".into(),
-            timestamp: chrono::Utc::now(),
-            formatting_prompt: None,
-            tool_policy_override: None,
-            leaf_message_id: None,
-        };
-        let ctx = build_ctx(pool.clone(), session_id, &msg);
+        let ctx = build_ctx(pool.clone(), session_id);
         let mut guard = SessionLifecycleGuard::new(pool.clone(), session_id);
         let mut sink = MockSink::new();
 
@@ -539,19 +510,7 @@ mod tests {
                 .await
                 .unwrap();
 
-        let msg = IncomingMessage {
-            text: Some("hi".into()),
-            user_id: "test-user".into(),
-            context: serde_json::Value::Null,
-            attachments: vec![],
-            agent_id: "test-agent".into(),
-            channel: "test-channel".into(),
-            timestamp: chrono::Utc::now(),
-            formatting_prompt: None,
-            tool_policy_override: None,
-            leaf_message_id: None,
-        };
-        let ctx = build_ctx(pool.clone(), session_id, &msg);
+        let ctx = build_ctx(pool.clone(), session_id);
         let mut guard = SessionLifecycleGuard::new(pool.clone(), session_id);
         let mut sink = MockSink::new();
 

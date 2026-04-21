@@ -15,8 +15,6 @@ use uuid::Uuid;
 ///
 /// `lifecycle_guard` is wrapped in `Option` so the adapter can `.take()` it
 /// before forwarding `BootstrapOutcome` to `execute()` (avoids partial-move).
-// Tasks 7-9 consume this struct; allow dead_code until those are wired up.
-#[allow(dead_code)]
 pub struct BootstrapOutcome {
     pub session_id: Uuid,
     /// Raw user text after PII redaction / URL enrichment (TODO: Task 10 inlines enrichment).
@@ -34,8 +32,6 @@ pub struct BootstrapOutcome {
 }
 
 /// Input context for the bootstrap phase.
-// Tasks 7-9 construct this; allow dead_code until those are wired up.
-#[allow(dead_code)]
 pub struct BootstrapContext<'a> {
     pub msg: &'a IncomingMessage,
     pub resume_session_id: Option<Uuid>,
@@ -71,11 +67,6 @@ fn extract_sender_agent_id(user_id: &str) -> Option<&str> {
 
 /// Bootstrap a session: build context, mark running, emit first Phase event,
 /// persist the user message, arm the loop detector, and detect slash-commands.
-///
-/// Callers (Tasks 7-9) call this at the top of their handler, then pass
-/// `BootstrapOutcome` to the execute phase.
-// Tasks 7-9 call this; allow dead_code until those are wired up.
-#[allow(dead_code)]
 pub async fn bootstrap<S: EventSink>(
     engine: &crate::agent::engine::AgentEngine,
     ctx: BootstrapContext<'_>,
