@@ -110,7 +110,10 @@ pub async fn bootstrap<S: EventSink>(
     let _ = sink.emit(PipelineEvent::Phase(ProcessingPhase::Thinking)).await;
 
     // 4. Lifecycle guard (kept in Option so the adapter can .take() it for finalize)
-    let lifecycle_guard = Some(SessionLifecycleGuard::new(engine.cfg().db.clone(), session_id));
+    let lifecycle_guard = Some(
+        SessionLifecycleGuard::new(engine.cfg().db.clone(), session_id)
+            .with_tracker(engine.state().bg_tasks.clone()),
+    );
 
     // 5. ProcessingGuard — broadcasts "typing" via ui_event_tx (independent of sink)
     let start_event = serde_json::json!({

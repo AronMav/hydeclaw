@@ -229,11 +229,17 @@ pub(crate) struct SessionLifecycleGuard {
     pub db: PgPool,
     pub session_id: Uuid,
     pub outcome: SessionOutcome,
+    bg_tasks: Option<std::sync::Arc<tokio_util::task::TaskTracker>>,
 }
 
 impl SessionLifecycleGuard {
     pub fn new(db: PgPool, session_id: Uuid) -> Self {
-        Self { db, session_id, outcome: SessionOutcome::Running }
+        Self { db, session_id, outcome: SessionOutcome::Running, bg_tasks: None }
+    }
+
+    pub fn with_tracker(mut self, tracker: std::sync::Arc<tokio_util::task::TaskTracker>) -> Self {
+        self.bg_tasks = Some(tracker);
+        self
     }
 
     /// Mark session as done in DB. Sets outcome to `Done` only on DB success;
@@ -307,7 +313,7 @@ impl Drop for SessionLifecycleGuard {
             );
             let db = self.db.clone();
             let sid = self.session_id;
-            tokio::spawn(async move {
+            let fut = async move {
                 // Conditional update: only transition `'running'` → `'failed'`.
                 // The chat handler's cancel-grace path may have already written
                 // `'interrupted'` before hard-aborting our task — if so, we
@@ -349,7 +355,11 @@ impl Drop for SessionLifecycleGuard {
                         "failed to mark session as failed in Drop guard"
                     ),
                 }
-            });
+            };
+            match &self.bg_tasks {
+                Some(tracker) => { tracker.spawn(fut); }
+                None => { tokio::spawn(fut); }
+            }
         }
     }
 }
@@ -382,6 +392,23 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(event_type, "interrupted");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_guard_with_tracker_uses_tracker_on_drop() {
+        use std::sync::Arc;
+        use tokio_util::task::TaskTracker;
+
+        let tracker = Arc::new(TaskTracker::new());
+        let db = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
+        let guard = SessionLifecycleGuard::new(db, uuid::Uuid::new_v4())
+            .with_tracker(tracker.clone());
+        // Guard is still Running → Drop will call tracker.spawn(...)
+        // tracker must not be closed yet for spawn to succeed.
+        assert!(!tracker.is_closed());
+        drop(guard);
+        // After drop, one task was submitted to the tracker.
+        assert!(!tracker.is_empty());
     }
 }
 
