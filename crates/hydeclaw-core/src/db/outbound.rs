@@ -162,7 +162,7 @@ mod tests {
             .expect("failed to connect to test database");
 
         // Run migrations
-        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+        sqlx::migrate::Migrator::new(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../migrations")))
             .await
             .expect("failed to load migrations")
             .run(&pool)
