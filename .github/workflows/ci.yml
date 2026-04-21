@@ -86,6 +86,11 @@ jobs:
           prefix-key: v2
           cache-on-failure: true
 
+      - name: Debug paths
+        run: |
+          ls crates/hydeclaw-core/src/gateway/handlers/agents/
+          rustc --version
+
       - name: Generate types
         run: make gen-types
 
