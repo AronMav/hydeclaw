@@ -11,6 +11,8 @@ use serde_json::{json, Value};
 use super::super::AppState;
 use crate::gateway::clusters::{AgentCore, AuthServices, ChannelBus, InfraServices};
 
+include!("channels_dto_structs.rs");
+
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/channels", get(api_list_all_channels))
@@ -77,7 +79,7 @@ pub(crate) async fn api_channels_list(
 
     match rows {
         Ok(rows) => {
-            let items: Vec<Value> = rows.iter().map(channel_row_json).collect();
+            let items: Vec<ChannelRowDto> = rows.iter().map(to_channel_row_dto).collect();
             Json(json!(items)).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
@@ -424,7 +426,7 @@ pub(crate) async fn api_list_all_channels(
                 }
                 Json(json!({ "channels": channels })).into_response()
             } else {
-                let channels: Vec<Value> = rows.iter().map(channel_row_json).collect();
+                let channels: Vec<ChannelRowDto> = rows.iter().map(to_channel_row_dto).collect();
                 Json(json!({ "channels": channels })).into_response()
             }
         }
@@ -437,7 +439,8 @@ pub(crate) async fn api_channels_active(
     State(bus): State<ChannelBus>,
 ) -> impl IntoResponse {
     let channels = bus.connected_channels.read().await;
-    Json(json!({ "channels": &*channels }))
+    let dtos: Vec<ActiveChannelDto> = channels.iter().map(to_active_channel_dto).collect();
+    Json(json!({ "channels": dtos }))
 }
 
 /// Mask sensitive fields in channel config for API responses.
@@ -503,16 +506,28 @@ fn inject_credentials(mut config: serde_json::Value, creds_json: &str) -> serde_
     config
 }
 
-fn channel_row_json(r: &AgentChannelRow) -> Value {
-    json!({
-        "id": r.id,
-        "agent_name": r.agent_name,
-        "channel_type": r.channel_type,
-        "display_name": r.display_name,
-        "config": mask_config(&r.config),
-        "status": r.status,
-        "error_msg": r.error_msg,
-    })
+fn to_channel_row_dto(r: &AgentChannelRow) -> ChannelRowDto {
+    ChannelRowDto {
+        id: r.id.to_string(),
+        agent_name: r.agent_name.clone(),
+        channel_type: r.channel_type.clone(),
+        display_name: r.display_name.clone(),
+        config: mask_config(&r.config),
+        status: r.status.clone(),
+        error_msg: r.error_msg.clone(),
+    }
+}
+
+fn to_active_channel_dto(c: &crate::gateway::state::ConnectedChannel) -> ActiveChannelDto {
+    ActiveChannelDto {
+        agent_name: c.agent_name.clone(),
+        channel_id: c.channel_id.map(|id| id.to_string()),
+        channel_type: c.channel_type.clone(),
+        display_name: c.display_name.clone(),
+        adapter_version: c.adapter_version.clone(),
+        connected_at: c.connected_at.to_rfc3339(),
+        last_activity: c.last_activity.to_rfc3339(),
+    }
 }
 
 /// POST /api/channels/notify — send a text message to a specific channel.

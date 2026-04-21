@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.19.5"
+version = "0.20.0"
 edition = "2024"
 license = "MIT"
 
@@ -43,9 +43,6 @@ schemars = { version = "1.2", features = ["preserve_order"] }
 
 # Config hot-reload
 notify = "7"
-
-# HTML parsing (Link Understanding)
-scraper = "0.22"
 
 # Systemd watchdog
 sd-notify = "0.4"

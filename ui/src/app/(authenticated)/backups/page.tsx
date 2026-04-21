@@ -316,7 +316,7 @@ export default function BackupsPage() {
                       {b.filename}
                     </span>
                     <span className="font-mono text-xs text-muted-foreground/40 tabular-nums">
-                      {formatDate(b.created_at, locale)}
+                      {b.created_at ? formatDate(b.created_at, locale) : "—"}
                     </span>
                   </div>
                 </div>

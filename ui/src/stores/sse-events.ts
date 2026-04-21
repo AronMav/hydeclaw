@@ -23,7 +23,7 @@ export type SseEvent =
   | { type: "step-finish"; stepId: string; finishReason: string }
   | { type: "tool-approval-needed"; approvalId: string; toolName: string; toolInput: Record<string, unknown>; timeoutMs: number }
   | { type: "tool-approval-resolved"; approvalId: string; action: "approved" | "rejected" | "timeout_rejected"; modifiedInput?: Record<string, unknown> }
-  | { type: "finish"; agentName?: string; continuation?: boolean }
+  | { type: "finish"; agentName?: string }
   | { type: "error"; errorText: string };
 
 /**
@@ -91,7 +91,6 @@ export function parseSseEvent(raw: string): SseEvent | null {
       return {
         type,
         agentName: typeof e.agentName === "string" ? e.agentName : undefined,
-        continuation: typeof e.continuation === "boolean" ? e.continuation : undefined,
       };
     case "error":
       return { type, errorText: typeof e.errorText === "string" ? e.errorText : "Unknown error" };

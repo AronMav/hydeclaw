@@ -16,24 +16,29 @@ use uuid::Uuid;
 /// `'complete'`) do NOT count toward the bind budget.
 pub(crate) const MAX_PARAMS_PER_QUERY: usize = 32767;
 
-#[derive(Debug, FromRow)]
+#[derive(Debug, serde::Serialize, sqlx::FromRow)]
 #[allow(dead_code)]
+#[cfg_attr(feature = "ts-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-gen", ts(export))]
 pub struct Session {
-    pub id: Uuid,
+    pub id: uuid::Uuid,
     pub agent_id: String,
     pub user_id: String,
     pub channel: String,
-    pub started_at: DateTime<Utc>,
-    pub last_message_at: DateTime<Utc>,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub last_message_at: chrono::DateTime<chrono::Utc>,
     pub title: Option<String>,
+    #[cfg_attr(feature = "ts-gen", ts(type = "Record<string, unknown> | null"))]
     pub metadata: Option<serde_json::Value>,
     #[sqlx(default)]
     pub run_status: Option<String>,
     #[sqlx(default)]
-    pub activity_at: Option<DateTime<Utc>>,
+    #[serde(skip)]
+    pub activity_at: Option<chrono::DateTime<chrono::Utc>>,
     #[sqlx(default)]
     pub participants: Vec<String>,
     #[sqlx(default)]
+    #[serde(skip)]
     pub retry_count: i32,
 }
 
@@ -275,34 +280,46 @@ pub async fn load_messages(
     Ok(rows)
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug, serde::Serialize, sqlx::FromRow)]
 #[allow(dead_code)]
+#[cfg_attr(feature = "ts-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-gen", ts(export))]
 pub struct MessageRow {
-    pub id: Uuid,
+    pub id: uuid::Uuid,
     pub role: String,
     pub content: String,
+    #[cfg_attr(feature = "ts-gen", ts(type = "unknown"))]
     pub tool_calls: Option<serde_json::Value>,
     pub tool_call_id: Option<String>,
-    pub created_at: DateTime<Utc>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
     pub agent_id: Option<String>,
     pub feedback: Option<i16>,
-    pub edited_at: Option<DateTime<Utc>>,
+    pub edited_at: Option<chrono::DateTime<chrono::Utc>>,
     pub status: String,
     #[sqlx(default)]
+    #[cfg_attr(feature = "ts-gen", ts(type = "unknown"))]
     pub thinking_blocks: Option<serde_json::Value>,
     #[sqlx(default)]
-    pub parent_message_id: Option<Uuid>,
+    pub parent_message_id: Option<uuid::Uuid>,
     #[sqlx(default)]
-    pub branch_from_message_id: Option<Uuid>,
-    /// Abort reason for messages with status='aborted'. NULL for completed
-    /// messages. Stable identifiers pinned in `LlmCallError::abort_reason()`:
-    /// connect_timeout | inactivity | request_timeout | max_duration |
-    /// user_cancelled | shutdown_drain.
+    pub branch_from_message_id: Option<uuid::Uuid>,
     #[sqlx(default)]
     pub abort_reason: Option<String>,
 }
 
 /// Insert or update a streaming assistant message (called every ~2s during LLM response).
+///
+/// Invariant (Bug 2 fix, 2026-04-20): on INSERT we anchor `parent_message_id`
+/// to the most-recent `role='user'` row for this session via a correlated
+/// subquery. `bootstrap::run` persists the user row BEFORE the streaming row
+/// is ever written, so the subquery is guaranteed to find a candidate; if a
+/// pathological race leaves no user row, `parent_message_id` will be NULL
+/// which matches pre-fix behaviour (no regression).
+///
+/// `ON CONFLICT DO UPDATE` deliberately does NOT touch `parent_message_id` —
+/// the parent is established once at first INSERT and is invariant for the
+/// row's lifetime. A later user row racing in must NOT flip the parent
+/// (tested by `tests/integration_streaming_parent_link.rs`).
 pub async fn upsert_streaming_message(
     db: &PgPool,
     message_id: Uuid,
@@ -312,8 +329,14 @@ pub async fn upsert_streaming_message(
     tool_calls: Option<&serde_json::Value>,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO messages (id, session_id, role, content, tool_calls, agent_id, status) \
-         VALUES ($1, $2, 'assistant', $3, $4, $5, 'streaming') \
+        "INSERT INTO messages (id, session_id, role, content, tool_calls, agent_id, status, parent_message_id) \
+         VALUES ( \
+             $1, $2, 'assistant', $3, $4, $5, 'streaming', \
+             (SELECT id FROM messages \
+              WHERE session_id = $2 AND role = 'user' \
+              ORDER BY created_at DESC \
+              LIMIT 1) \
+         ) \
          ON CONFLICT (id) DO UPDATE SET content = $3, tool_calls = $4"
     )
     .bind(message_id)

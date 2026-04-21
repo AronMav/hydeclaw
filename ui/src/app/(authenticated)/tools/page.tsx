@@ -54,7 +54,7 @@ function mcpToForm(e: McpEntry): McpFormData {
   return {
     name: e.name, url: e.url ?? "", container: e.container ?? "",
     port: e.port != null ? String(e.port) : "", mode: e.mode,
-    idle_timeout: e.idle_timeout ?? "", protocol: e.protocol,
+    idle_timeout: "", protocol: e.protocol,
   };
 }
 

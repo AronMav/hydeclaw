@@ -21,27 +21,10 @@ export interface StatsInfo {
   recent_sessions?: { id: string; agent_id: string; channel: string; last_message_at: string; title: string | null }[];
 }
 
-export interface AgentInfo {
-  name: string;
-  language: string;
-  model: string;
-  provider: string;
-  icon: string | null;
-  temperature: number;
-  has_access: boolean;
-  access_mode: string | null;
-  has_heartbeat: boolean;
-  heartbeat_cron: string | null;
-  heartbeat_timezone: string | null;
-  tool_policy: { allow: string[]; deny: string[]; allow_all: boolean } | null;
-  routing_count: number;
-  is_running: boolean;
-  config_dirty: boolean;
-  pending_delete?: boolean;
-  base?: boolean;
-  provider_connection: string | null;
-  fallback_provider?: string | null;
-}
+// AgentInfo is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/gateway/handlers/agents/dto_structs.rs
+// Regenerate: make gen-types
+export type { AgentInfoDto as AgentInfo } from "./api.generated";
 
 export interface RoutingRule {
   provider: string;
@@ -56,146 +39,48 @@ export interface RoutingRule {
   cooldown_secs?: number;
 }
 
-export interface AgentDetail {
-  name: string;
-  language: string;
-  provider: string;
-  model: string;
-  icon: string | null;
-  temperature: number;
-  max_tokens: number | null;
-  access: { mode: string; owner_id: string | null } | null;
-  heartbeat: { cron: string; timezone: string | null; announce_to: string | null } | null;
-  tools: {
-    allow: string[]; deny: string[]; allow_all: boolean; deny_all_others: boolean;
-    groups: { git: boolean; tool_management: boolean; skill_editing: boolean; session_tools: boolean };
-  } | null;
-  compaction: {
-    enabled: boolean; threshold: number; preserve_tool_calls: boolean;
-    preserve_last_n: number; max_context_tokens: number | null;
-  } | null;
-  session: {
-    dm_scope: string; ttl_days: number; max_messages: number;
-    prune_tool_output_after_turns: number | null;
-  } | null;
-  max_tools_in_context: number | null;
-  tool_loop: {
-    max_iterations: number; compact_on_overflow: boolean; detect_loops: boolean;
-    warn_threshold: number; break_threshold: number; max_consecutive_failures?: number;
-    max_auto_continues?: number;
-  } | null;
-  routing: RoutingRule[];
-  voice?: string;
-  approval?: {
-    enabled: boolean; require_for: string[]; require_for_categories: string[];
-    timeout_seconds: number;
-  } | null;
-  watchdog?: { inactivity_secs: number } | null;
-  hooks?: { log_all_tool_calls: boolean; block_tools: string[] } | null;
-  max_history_messages?: number | null;
-  daily_budget_tokens?: number;
-  is_running: boolean;
-  config_dirty: boolean;
-  provider_connection: string | null;
-  fallback_provider?: string | null;
-}
+// AgentDetail is now generated from Rust DTOs via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/gateway/handlers/agents/dto.rs
+// Regenerate: make gen-types
+export type { AgentDetailDto as AgentDetail } from "./api.generated";
 
-export interface SessionRow {
-  id: string;
-  agent_id: string;
-  user_id: string;
-  channel: string;
-  started_at: string;
-  last_message_at: string;
-  title: string | null;
-  run_status: string | null;
-  metadata: Record<string, unknown> | null;
-  participants?: string[];
-}
+// SessionRow is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/db/sessions.rs
+// Regenerate: make gen-types
+export type { Session as SessionRow } from "./api.generated";
 
-export interface MessageRow {
-  id: string;
-  role: "user" | "assistant" | "tool" | "system";
-  content: string;
-  tool_calls: unknown;
-  tool_call_id: string | null;
-  created_at: string;
-  agent_id?: string | null;
-  status: string;
-  feedback: number;
-  edited_at: string | null;
-  parent_message_id: string | null;
-  branch_from_message_id: string | null;
-  abort_reason?: string | null;
-}
+// MessageRow is now generated from Rust DTO via ts-rs codegen.
+// Note: feedback is number | null (DB-accurate); the old type had number (incorrect).
+// Source: crates/hydeclaw-core/src/db/sessions.rs
+// Regenerate: make gen-types
+export type { MessageRow } from "./api.generated";
 
-export interface CronJob {
-  id: string;
-  name: string;
-  agent: string;
-  cron: string;
-  timezone: string;
-  task: string;
-  enabled: boolean;
-  silent: boolean;
-  announce_to?: { channel: string; chat_id: number; channel_id?: string } | null;
-  jitter_secs: number;
-  run_once: boolean;
-  run_at: string | null;
-  created_at: string;
-  last_run: string | null;
-  next_run: string | null;
-  tool_policy?: { allow: string[]; deny: string[] } | null;
-}
+// CronJob is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/gateway/handlers/cron_dto_structs.rs
+// Regenerate: make gen-types
+export type { CronJobDto as CronJob } from "./api.generated";
 
-export interface CronRun {
-  id: string;
-  job_id: string;
-  job_name?: string;
-  agent_id: string;
-  started_at: string;
-  finished_at: string | null;
-  status: "running" | "success" | "error";
-  error: string | null;
-  response_preview: string | null;
-}
+// CronRun is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/gateway/handlers/cron_dto_structs.rs
+// Regenerate: make gen-types
+export type { CronRunDto as CronRun } from "./api.generated";
 
-export interface MemoryDocument {
-  id: string;
-  source: string | null;
-  pinned: boolean;
-  relevance_score: number;
-  similarity?: number;
-  created_at?: string;
-  accessed_at?: string;
-  preview: string | null;
-  chunks_count: number;
-  total_chars: number | null;
-  category: string | null;
-  topic: string | null;
-  scope?: string | null;
-}
+// MemoryDocument is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/gateway/handlers/memory_dto_structs.rs
+// Regenerate: make gen-types
+export type { MemoryDocumentDto as MemoryDocument } from "./api.generated";
 
-export interface MemoryStats {
-  total: number;
-  total_chunks: number;
-  pinned: number;
-  avg_score: number;
-  embed_model?: string | null;
-  embed_dim?: number | null;
-}
+// MemoryStats is now generated from Rust DTO via ts-rs codegen.
+// Drift fix: tasks field (pending/processing/done/failed) was emitted by handler but absent from TS type.
+// Source: crates/hydeclaw-core/src/gateway/handlers/memory_dto_structs.rs
+// Regenerate: make gen-types
+export type { MemoryStatsDto as MemoryStats } from "./api.generated";
 
-export interface ToolEntry {
-  name: string;
-  url: string;
-  tool_type: string;
-  healthy: boolean;
-  concurrency_limit: number | null;
-  healthcheck?: string | null;
-  depends_on?: string[];
-  ui_path?: string | null;
-  managed?: boolean;
-}
+// ToolEntry is now generated from Rust DTO via ts-rs codegen.
+// Drift fixes: concurrency_limit is number (not number | null); managed is boolean (not optional).
+// Source: crates/hydeclaw-core/src/gateway/handlers/tools_dto_structs.rs
+// Regenerate: make gen-types
+export type { ToolEntryDto as ToolEntry } from "./api.generated";
 
 export interface SkillEntry {
   name: string;
@@ -216,18 +101,11 @@ export interface YamlToolEntry {
   tags: string[];
 }
 
-export interface McpEntry {
-  name: string;
-  url: string | null;
-  container: string | null;
-  port: number | null;
-  mode: string;
-  idle_timeout?: string;
-  protocol: string;
-  enabled: boolean;
-  status: string | null;
-  tool_count: number | null;
-}
+// McpEntry is now generated from Rust DTO via ts-rs codegen.
+// Drift fix: removed idle_timeout (was never emitted by handler).
+// Source: crates/hydeclaw-core/src/gateway/handlers/tools_dto_structs.rs
+// Regenerate: make gen-types
+export type { McpEntryDto as McpEntry } from "./api.generated";
 
 export interface FileEntry {
   name: string;
@@ -244,13 +122,7 @@ export interface SecretInfo {
   updated_at: string;
 }
 
-export interface GitHubRepoInfo {
-  id: string;
-  agent_id: string;
-  owner: string;
-  repo: string;
-  added_at: string;
-}
+export type { GitHubRepo as GitHubRepoInfo } from "./api.generated";
 
 export interface OAuthAccount {
   id: string;
@@ -326,56 +198,31 @@ export interface AuditEvent {
   created_at: string;
 }
 
-export interface ChannelRow {
-  id: string;
-  agent_name: string;
-  channel_type: string;
-  display_name: string;
-  config: Record<string, unknown>;
-  status: string;
-  error_msg: string | null;
-}
+// ChannelRow is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/gateway/handlers/channels_dto_structs.rs
+// Regenerate: make gen-types
+export type { ChannelRowDto as ChannelRow } from "./api.generated";
 
-export interface ActiveChannel {
-  agent_name: string;
-  channel_id: string | null;
-  channel_type: string;
-  display_name: string;
-  adapter_version: string;
-  connected_at: string;
-  last_activity: string;
-}
+// ActiveChannel is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/gateway/handlers/channels_dto_structs.rs
+// Regenerate: make gen-types
+export type { ActiveChannelDto as ActiveChannel } from "./api.generated";
 
-export interface BackupEntry {
-  filename: string;
-  size_bytes: number;
-  created_at: string;
-}
+// BackupEntry is now generated from Rust DTO via ts-rs codegen.
+// Drift fix: created_at is string | null (filesystem mtime can be absent).
+// Source: crates/hydeclaw-core/src/gateway/handlers/backup_dto_structs.rs
+// Regenerate: make gen-types
+export type { BackupEntryDto as BackupEntry } from "./api.generated";
 
-export interface WebhookEntry {
-  id: string;
-  name: string;
-  agent_id: string;
-  secret: string | null;
-  prompt_prefix: string | null;
-  enabled: boolean;
-  created_at: string;
-  last_triggered_at: string | null;
-  trigger_count: number;
-  webhook_type: "generic" | "github";
-  event_filter: string[] | null;
-}
+// WebhookEntry is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/gateway/handlers/webhooks_dto_structs.rs
+// Regenerate: make gen-types
+export type { WebhookEntryDto as WebhookEntry } from "./api.generated";
 
-export interface ApprovalEntry {
-  id: string;
-  agent_id: string;
-  tool: string;
-  arguments: Record<string, unknown>;
-  status: "pending" | "approved" | "rejected";
-  created_at: string;
-  resolved_at: string | null;
-  resolved_by: string | null;
-}
+// ApprovalEntry is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/gateway/handlers/agents/approvals_dto_structs.rs
+// Regenerate: make gen-types
+export type { ApprovalEntryDto as ApprovalEntry } from "./api.generated";
 
 export interface ProviderType {
   id: string;
@@ -440,21 +287,15 @@ export interface MediaDriverInfo {
   requires_key: boolean;
 }
 
-export interface NotificationRow {
-  id: string;
-  type: string;
-  title: string;
-  body: string;
-  data: Record<string, unknown> | null;
-  read: boolean;
-  created_at: string;
-}
+// NotificationRow is now generated from Rust DTO via ts-rs codegen.
+// Source: crates/hydeclaw-core/src/db/notifications.rs
+// Regenerate: make gen-types
+export type { Notification as NotificationRow } from "./api.generated";
 
-export interface NotificationsResponse {
-  notifications?: NotificationRow[];
-  items?: NotificationRow[];
-  unread_count: number;
-}
+// NotificationsResponse is now generated. `items` is required (not optional);
+// the stale `notifications?` key has been removed.
+// Regenerate: make gen-types
+export type { NotificationsResponseDto as NotificationsResponse } from "./api.generated";
 
 export interface TaskStep {
   id: string;

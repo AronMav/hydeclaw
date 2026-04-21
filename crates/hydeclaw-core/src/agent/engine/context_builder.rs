@@ -97,7 +97,7 @@ impl AgentEngine {
     // ── Context helpers (from engine_context.rs) ─────────────────────────────
 
     /// Build common context: session, messages, system prompt.
-    pub(super) async fn build_context(
+    pub(crate) async fn build_context(
         &self,
         msg: &IncomingMessage,
         include_tools: bool,
@@ -126,7 +126,7 @@ impl AgentEngine {
     }
 
     /// Run compaction on messages if token budget exceeded, indexing extracted facts to memory.
-    pub(super) async fn compact_messages(&self, messages: &mut Vec<Message>, detector: Option<&LoopDetector>) {
+    pub(crate) async fn compact_messages(&self, messages: &mut Vec<Message>, detector: Option<&LoopDetector>) {
         let engine = self;
         let cfg = engine.cfg();
         crate::agent::pipeline::context::compact_messages(
@@ -166,7 +166,7 @@ impl AgentEngine {
     // ── Command handler (from engine_commands.rs) ────────────────────────────
 
     /// Handle /slash commands. Returns Some(result) if a command matched, None otherwise.
-    pub(super) async fn handle_command(&self, text: &str, msg: &IncomingMessage) -> Option<Result<String>> {
+    pub(crate) async fn handle_command(&self, text: &str, msg: &IncomingMessage) -> Option<Result<String>> {
         let dm_scope = self.cfg().agent.session.as_ref()
             .map(|s| s.dm_scope.as_str())
             .unwrap_or("per-channel-peer");

@@ -11,6 +11,8 @@ use std::collections::HashMap;
 use super::super::AppState;
 use crate::gateway::clusters::{AgentCore, InfraServices};
 
+include!("tools_dto_structs.rs");
+
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/tool-definitions", get(api_tool_definitions))
@@ -61,17 +63,20 @@ pub(crate) async fn api_list_tools(
     State(agents): State<AgentCore>,
     State(infra): State<InfraServices>,
 ) -> Json<Value> {
-    let tools = agents.tools.entries().await;
+    let tool_values = agents.tools.entries().await;
     let managed: Vec<String> = infra.process_manager
         .as_ref()
         .map(|pm| pm.names())
         .unwrap_or_default();
-    let tools: Vec<_> = tools.into_iter().map(|mut t| {
+    let tools: Vec<ToolEntryDto> = tool_values.into_iter().filter_map(|mut t| {
         let is_managed = t.get("name")
             .and_then(|n| n.as_str())
             .is_some_and(|n| managed.iter().any(|m| m == n));
         t["managed"] = json!(is_managed);
-        t
+        serde_json::from_value(t).map_err(|e| {
+            tracing::warn!("tool entry deserialize failed: {e}");
+            e
+        }).ok()
     }).collect();
     Json(json!({ "tools": tools }))
 }
@@ -148,18 +153,18 @@ pub(crate) async fn api_list_mcp(State(agents): State<AgentCore>) -> Json<Value>
         HashMap::new()
     };
 
-    let entries: Vec<Value> = file_entries.iter().map(|e| {
-        json!({
-            "name": e.name,
-            "url": e.url,
-            "container": e.container,
-            "port": e.port,
-            "mode": e.mode,
-            "protocol": e.protocol,
-            "enabled": e.enabled,
-            "status": null,
-            "tool_count": tool_counts.get(&e.name).copied(),
-        })
+    let entries: Vec<McpEntryDto> = file_entries.iter().map(|e| {
+        McpEntryDto {
+            name: e.name.clone(),
+            url: e.url.clone(),
+            container: e.container.clone(),
+            port: e.port,
+            mode: e.mode.clone(),
+            protocol: e.protocol.clone(),
+            enabled: e.enabled,
+            status: None,
+            tool_count: tool_counts.get(&e.name).copied(),
+        }
     }).collect();
 
     Json(json!({ "mcp": entries }))

@@ -11,8 +11,6 @@ pub struct CommandContext<'a> {
     pub tex: &'a super::tool_executor::DefaultToolExecutor,
 }
 
-pub mod entry;
-pub mod execution;
 pub mod context;
 pub mod llm_call;
 pub mod parallel;
@@ -31,3 +29,7 @@ pub mod channel_actions;
 pub mod subagent_runner;
 pub mod openai_compat;
 pub mod cron;
+pub mod sink;
+pub mod finalize;
+pub mod bootstrap;
+pub mod execute;

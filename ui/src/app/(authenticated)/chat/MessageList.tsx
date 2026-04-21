@@ -6,7 +6,7 @@ import { useChatStore } from "@/stores/chat-store";
 import type { ChatMessage } from "@/stores/chat-store";
 import { Button } from "@/components/ui/button";
 import { BarsLoader } from "@/components/ui/loader";
-import { RoleAvatar } from "./ChatThread";
+import { RoleAvatar } from "./avatar/RoleAvatar";
 
 import { MessageItem } from "./MessageItem";
 import { useChatAutoscroll } from "./use-chat-autoscroll";

@@ -1,0 +1,172 @@
+"use client";
+
+import { useChatStore } from "./chat-store";
+import type { AgentState, ConnectionPhase } from "./chat-types";
+import type { ChatMessage } from "./chat-types";
+import { StreamBuffer } from "./stream/stream-buffer";
+import { STREAM_THROTTLE_MS } from "./chat-types";
+
+export class StreamSession {
+  readonly agent: string;
+  readonly generation: number;
+  readonly buffer: StreamBuffer;
+
+  #controller: AbortController;
+  #disposed = false;
+  #updateTimer: ReturnType<typeof setTimeout> | null = null;
+  #updateScheduled = false;
+
+  constructor(agent: string, generation: number) {
+    this.agent = agent;
+    this.generation = generation;
+    this.#controller = new AbortController();
+    const currentAgent = useChatStore.getState().agents[agent];
+    this.buffer = new StreamBuffer(currentAgent?.activeSessionId ?? null);
+  }
+
+  get signal(): AbortSignal {
+    return this.#controller.signal;
+  }
+
+  get disposed(): boolean {
+    return this.#disposed;
+  }
+
+  get isCurrent(): boolean {
+    if (this.#disposed) return false;
+    const current = useChatStore.getState().agents[this.agent]?.streamGeneration ?? 0;
+    return current === this.generation;
+  }
+
+  write(patch: Partial<AgentState>): void {
+    if (!this.isCurrent) {
+      if (process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.debug(
+          `[StreamSession] dropped write for agent=${this.agent} gen=${this.generation}`,
+          patch,
+        );
+      }
+      return;
+    }
+    useChatStore.setState((draft: any) => {
+      const st = draft.agents[this.agent];
+      if (!st) return;
+      Object.assign(st, patch);
+    });
+  }
+
+  writeDraft(mutator: (agentDraft: AgentState) => void): void {
+    if (!this.isCurrent) {
+      if (process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.debug(
+          `[StreamSession] dropped writeDraft for agent=${this.agent} gen=${this.generation}`,
+        );
+      }
+      return;
+    }
+    useChatStore.setState((draft: any) => {
+      const st = draft.agents[this.agent];
+      if (!st) return;
+      mutator(st);
+    });
+  }
+
+  commit(phase?: ConnectionPhase): void {
+    if (!this.isCurrent) return;
+    this.writeDraft((agentDraft: AgentState) => {
+      if ((agentDraft as any).streamGeneration !== this.generation) return;
+      if (agentDraft.messageSource.mode !== "live") {
+        (agentDraft as any).messageSource = { mode: "live", messages: [] };
+      }
+      const liveMessages = (agentDraft.messageSource as any).messages as ChatMessage[];
+      const allParts = this.buffer.snapshot();
+      const existingIdx = liveMessages.findIndex(
+        (m: ChatMessage) => m.id === this.buffer.assistantId,
+      );
+      if (existingIdx >= 0) {
+        liveMessages[existingIdx].parts = allParts;
+        liveMessages[existingIdx].agentId =
+          this.buffer.currentRespondingAgent ?? undefined;
+      } else {
+        liveMessages.push({
+          id: this.buffer.assistantId,
+          role: "assistant",
+          parts: allParts,
+          createdAt: this.buffer.assistantCreatedAt,
+          agentId: this.buffer.currentRespondingAgent ?? undefined,
+        });
+      }
+      const targetPhase = phase ?? "streaming";
+      if (agentDraft.connectionPhase !== "error") {
+        agentDraft.connectionPhase = targetPhase;
+      }
+    });
+  }
+
+  scheduleCommit(): void {
+    if (this.#updateScheduled) return;
+    this.#updateScheduled = true;
+    this.#updateTimer = setTimeout(() => {
+      this.#updateScheduled = false;
+      this.#updateTimer = null;
+      this.commit();
+    }, STREAM_THROTTLE_MS);
+  }
+
+  cancelScheduledCommit(): void {
+    if (this.#updateTimer !== null) {
+      clearTimeout(this.#updateTimer);
+      this.#updateTimer = null;
+    }
+    this.#updateScheduled = false;
+  }
+
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.cancelScheduledCommit();
+    this.#controller.abort();
+    useChatStore.setState((draft: any) => {
+      const st = draft.agents[this.agent];
+      if (!st) return;
+      st.connectionPhase = "idle";
+      st.streamGeneration = (st.streamGeneration ?? 0) + 1;
+    });
+  }
+}
+
+const activeSessions = new Map<string, StreamSession>();
+
+export const streamSessionManager = {
+  start(agent: string): StreamSession {
+    const previous = activeSessions.get(agent);
+    if (previous) {
+      previous.dispose();
+    } else {
+      useChatStore.setState((draft: any) => {
+        const st = draft.agents[agent];
+        if (!st) return;
+        st.streamGeneration = (st.streamGeneration ?? 0) + 1;
+      });
+    }
+
+    const nextGen = useChatStore.getState().agents[agent]?.streamGeneration ?? 0;
+    const session = new StreamSession(agent, nextGen);
+    activeSessions.set(agent, session);
+    return session;
+  },
+
+  current(agent: string): StreamSession | null {
+    const s = activeSessions.get(agent);
+    return s && !s.disposed ? s : null;
+  },
+
+  disposeCurrent(agent: string): void {
+    const s = activeSessions.get(agent);
+    if (!s) return;
+    s.dispose();
+    activeSessions.delete(agent);
+  },
+};

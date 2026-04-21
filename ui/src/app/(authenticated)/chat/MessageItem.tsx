@@ -22,14 +22,13 @@ import { BarsLoader } from "@/components/ui/loader";
 import { MessageActions } from "./MessageActions";
 import { TextPart } from "./parts/TextPart";
 import { ReasoningPart } from "./parts/ReasoningPart";
+import { ToolCallPartView } from "@/components/chat/ToolCallPartView";
+import { FileDataPartView } from "@/components/chat/FileDataPartView";
 import {
   RoleAvatar,
-  ToolCallPartView,
-  FileDataPartView,
   SourceUrlDataPartView,
   RichCardDataPartView,
-} from "./ChatThread";
-import { ContinuationSeparator } from "@/components/chat/ContinuationSeparator";
+} from "./avatar/RoleAvatar";
 import { StepGroup } from "@/components/chat/StepGroup";
 import { ApprovalCard } from "@/components/chat/ApprovalCard";
 import { abortReasonLabel } from "@/components/chat/abort-reason-label";
@@ -87,8 +86,6 @@ function renderPart(part: MessagePart, index: number, _meta?: { stepGroupToolIds
       // Skip agent-turn rich cards — AgentTransitionDivider in MessageList replaces this
       if (part.cardType === "agent-turn") return null;
       return <RichCardDataPartView key={`card-${part.cardType}-${index}`} data={{ cardType: part.cardType, ...part.data }} />;
-    case "continuation-separator":
-      return <ContinuationSeparator key={`cont-${index}`} />;
     case "step-group":
       return (
         <StepGroup

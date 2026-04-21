@@ -67,19 +67,25 @@ HydeClaw is a Rust-based AI gateway. The core binary (`crates/hydeclaw-core`) ha
 
 ### Agent Engine (`src/agent/`)
 
-`engine.rs` (~127KB) is the main LLM loop. Each agent runs as an independent tokio task:
+Three entry points on `AgentEngine`, all thin adapters in [engine/run.rs](crates/hydeclaw-core/src/agent/engine/run.rs) that construct an `EventSink` and delegate to `pipeline::execute`:
 
-1. Incoming message → build context (system prompt + workspace files + memory)
-2. Call LLM provider → stream tokens
-3. Parse tool calls → execute tools (sequential, semaphore-limited concurrency)
-4. Loop until no more tool calls or iteration limit hit
+- `handle_sse` — web SSE via `SseSink` (over `EngineEventSender`/flume)
+- `handle_with_status` — channel adapters (Telegram/Discord) with typing indicator via `ChannelStatusSink` (two `UnboundedSender` channels)
+- `handle_streaming` — plain-chunk text via `ChunkSink`
+
+Unified pipeline lives in [src/agent/pipeline/](crates/hydeclaw-core/src/agent/pipeline/):
+
+- `sink.rs` — `EventSink` trait, `PipelineEvent` (`Stream(StreamEvent)` | `Phase(ProcessingPhase)`), `SinkError`, three production sinks
+- `bootstrap.rs` — session entry, user-message persist, WAL `running`, `ProcessingGuard`, slash-command detection
+- `execute.rs` — main LLM+tools loop, transport-agnostic
+- `finalize.rs` — single exit point: persist assistant or partial, WAL `done|failed|interrupted` via `SessionLifecycleGuard`, enqueue knowledge extraction
 
 **Key execution paths:**
-- `engine.rs: execute_tool_call()` — dispatches to system tools, YAML tools, MCP tools
-- `engine_handlers.rs: execute_yaml_channel_action()` — YAML tool with post-call channel action (e.g. send_photo)
-- `workspace.rs: is_read_only()` — path protection; `base` agents can write to service dirs and tools but have SOUL.md/IDENTITY.md read-only
+- `pipeline::execute::execute()` — LLM call + tool loop, transport-agnostic
+- `pipeline::handlers::*` — tool implementations (workspace_write, workspace_read, etc.)
+- `workspace.rs::is_read_only()` — path protection
 
-**Loop detection (`tool_loop.rs`):** Two-phase `LoopDetector` — `check_limits()` (pre-execution, read-only) + `record_execution()` (post-execution, tracks success/failure). Error-aware: 3 consecutive errors on same tool → break. WAL records lifecycle events for diagnostics. LoopDetector resets on each session entry (crash recovery via WAL replay is not yet implemented).
+**Loop detection (`tool_loop.rs`):** Two-phase `LoopDetector` — `check_limits()` (pre-execution, read-only) + `record_execution()` (post-execution, tracks success/failure). Error-aware: 3 consecutive errors on same tool → break. WAL records lifecycle events for diagnostics. LoopDetector resets on each session entry (crash recovery via WAL replay is not yet implemented). See design spec at [docs/superpowers/specs/2026-04-20-execution-pipeline-unification-design.md](docs/superpowers/specs/2026-04-20-execution-pipeline-unification-design.md).
 
 **Session-scoped agents (`session_agent_pool.rs` + `engine_agent_tool.rs`):** Unified `agent` tool (run/message/status/kill) replaces old `subagent` + `handoff` tools. Agents are always-alive peers bound to a session via `SessionAgentPool` in `AppState.session_pools`. Each `LiveAgent` holds its own LLM dialog context in memory, receives messages via mpsc channel, and processes them in a background tokio task using `run_subagent()`. Polling-based — no automatic routing or turn loop. Peer-to-peer: any agent in a session can spawn, message, or kill any other.
 
@@ -187,7 +193,7 @@ Chat endpoint streams `StreamEvent` variants over SSE (Vercel AI SDK v3 compatib
 | `"finish"` | stream end | — |
 | `"error"` | stream error | `errorText` |
 
-File events: `engine.rs` emits `FILE_PREFIX = "__file__:"` inline in tool result; `engine_handlers.rs: save_binary_to_uploads()` saves to `workspace/uploads/` and returns `/uploads/{uuid}.ext` URL. The `/uploads/*` path is excluded from auth middleware.
+File events: tool handlers emit `FILE_PREFIX = "__file__:"` inline in tool result; `save_binary_to_uploads()` saves to `workspace/uploads/` and returns `/uploads/{uuid}.ext` URL. The `/uploads/*` path is excluded from auth middleware.
 
 ## Configuration
 
@@ -597,10 +603,10 @@ HydeClaw — Rust-based AI gateway (аналог OpenClaw с более безо
 - Location: `crates/hydeclaw-core/src/main.rs` (~43KB), `crates/hydeclaw-core/src/gateway/mod.rs`
 - Triggers: Startup (`cargo run` or systemd service)
 - Responsibilities: Load config, run migrations, spawn agent engines, start process_manager, bind Axum router to port 18789
-- Location: `crates/hydeclaw-core/src/agent/engine.rs` / `engine_sse.rs` function `handle_sse()`
+- Location: `crates/hydeclaw-core/src/agent/engine/run.rs` function `handle_sse()` → `pipeline::execute`
 - Triggers: POST `/api/chat`, resumed via `/api/chat/{id}/stream`, webhook tools
-- Responsibilities: Build context, call LLM, loop tool execution, stream results, persist session
-- Location: `crates/hydeclaw-core/src/agent/engine.rs` function `execute_tool_call()`
+- Responsibilities: Build context (bootstrap), call LLM (execute), loop tool execution, stream results (sink), persist session (finalize)
+- Location: `crates/hydeclaw-core/src/agent/pipeline/execute.rs` — tool call dispatch
 - Triggers: LLM returns tool_calls in response
 - Responsibilities: Dispatch by tool type, handle approval workflow, capture result, continue LLM loop
 - Location: `crates/hydeclaw-watchdog/src/main.rs`

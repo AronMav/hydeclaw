@@ -224,11 +224,22 @@ vi.mock("@/app/(authenticated)/chat/parts/ReasoningPart", () => ({
 }));
 
 vi.mock("@/app/(authenticated)/chat/ChatThread", () => ({
-  RoleAvatar: () => null,
   ToolCallPartView: () => null,
   FileDataPartView: () => null,
+}));
+
+vi.mock("@/app/(authenticated)/chat/avatar/RoleAvatar", () => ({
+  RoleAvatar: () => null,
   SourceUrlDataPartView: () => null,
   RichCardDataPartView: () => null,
+}));
+
+vi.mock("@/components/chat/ToolCallPartView", () => ({
+  ToolCallPartView: () => null,
+}));
+
+vi.mock("@/components/chat/FileDataPartView", () => ({
+  FileDataPartView: () => null,
 }));
 
 vi.mock("@/components/ui/collapsible", () => ({

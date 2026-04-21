@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classifyStreamError } from "@/app/(authenticated)/chat/ChatThread";
+import { classifyStreamError } from "@/app/(authenticated)/chat/error/ErrorBanner";
 
 describe("classifyStreamError", () => {
   it("Test 1: classifies 'Connection lost after retries' as connection_lost", () => {

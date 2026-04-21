@@ -193,6 +193,12 @@ pub mod db {
     // `tests/integration_stuck_sessions_window_fn.rs`.
     #[path = "sessions.rs"]
     pub mod sessions;
+
+    // Phase A W1: `notifications` is a leaf module (anyhow, sqlx, uuid, chrono, serde_json —
+    // no crate::* references). Exposed so dto_export can re-export Notification and
+    // NotificationsResponseDto for ts-gen.
+    #[path = "notifications.rs"]
+    pub mod notifications;
 }
 
 // ── Phase 64 SEC-01: unified SSRF guard ────────────────────────────────
@@ -224,3 +230,69 @@ pub mod net {
 //   metrics, agent, shutdown, gateway, db, net, uploads = 7. OK.
 #[path = "uploads.rs"]
 pub mod uploads;
+
+// ── ts-gen codegen surface ─────────────────────────────────────────────
+// Exposes DTO types for the `gen_ts_types` binary (feature-gated so
+// production builds never pull in ts-rs). All included modules are leaf
+// modules with zero crate-internal imports — safe to include here without
+// cascading config/memory/etc.
+#[cfg(feature = "ts-gen")]
+pub mod dto_export {
+    //! Re-export surface for `gen_ts_types`. Gated behind `ts-gen`.
+    //!
+    //! Rules for adding entries here:
+    //! 1. Only leaf modules (no `crate::*` imports) — prevents lib-facade cascade.
+    //! 2. Always-on modules (like `db::approvals`) can be re-exported via `pub use`.
+    //! 3. Modules not already in lib.rs need a `#[path]` entry here (ts-gen only).
+    //!
+    //! #[path] on a submodule resolves relative to the parent module's file
+    //! (src/lib.rs lives in src/), so "../gateway/..." navigates from src/ into
+    //! the sibling gateway/ directory. There is no src/dto_export/ directory on
+    //! disk — Rust 2018+ creates a virtual module path for inline mods.
+
+    /// Phase B: AgentDetail DTO tree (12 structs).
+    #[path = "../gateway/handlers/agents/dto_structs.rs"]
+    pub mod agents_dto;
+
+    /// Phase C: GitHubRepo — leaf module (anyhow, sqlx, uuid, chrono; no crate::*).
+    #[path = "../db/github.rs"]
+    pub mod github_dto;
+
+    /// Phase C: AllowlistEntry — already in lib's always-on db::approvals surface.
+    /// Re-exported here so gen_ts_types can import from one predictable place.
+    pub use crate::db::approvals::AllowlistEntry;
+
+    /// Phase A W1: DB notification types — already in always-on db::notifications.
+    pub use crate::db::notifications::{Notification, NotificationsResponseDto};
+
+    /// Phase A W1: DB session + message types — already in always-on db::sessions.
+    pub use crate::db::sessions::{Session, MessageRow};
+
+    /// Phase A W2: Channel row + active channel DTOs — leaf file, no crate::* imports.
+    #[path = "../gateway/handlers/channels_dto_structs.rs"]
+    pub mod channels_dto;
+
+    /// Phase A W2: Cron job + run DTOs — leaf file, no crate::* imports.
+    #[path = "../gateway/handlers/cron_dto_structs.rs"]
+    pub mod cron_dto;
+
+    /// Phase A W2: Memory document + stats DTOs — leaf file, no crate::* imports.
+    #[path = "../gateway/handlers/memory_dto_structs.rs"]
+    pub mod memory_dto;
+
+    /// Phase A W3: Tool service + MCP DTOs
+    #[path = "../gateway/handlers/tools_dto_structs.rs"]
+    pub mod tools_dto;
+
+    /// Phase A W3: Webhook list DTO
+    #[path = "../gateway/handlers/webhooks_dto_structs.rs"]
+    pub mod webhooks_dto;
+
+    /// Phase A W3: Approval list DTO
+    #[path = "../gateway/handlers/agents/approvals_dto_structs.rs"]
+    pub mod approvals_dto;
+
+    /// Phase A W3: Backup file list DTO
+    #[path = "../gateway/handlers/backup_dto_structs.rs"]
+    pub mod backup_dto;
+}

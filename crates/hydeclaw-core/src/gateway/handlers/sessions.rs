@@ -58,36 +58,9 @@ pub(crate) async fn api_latest_session(
         }
     };
 
-    let msg_json: Vec<Value> = messages
-        .iter()
-        .map(|m| {
-            json!({
-                "id": m.id.to_string(),
-                "role": m.role,
-                "content": m.content,
-                "tool_calls": m.tool_calls,
-                "tool_call_id": m.tool_call_id,
-                "created_at": m.created_at.to_rfc3339(),
-                "feedback": m.feedback.unwrap_or(0),
-                "edited_at": m.edited_at.map(|t| t.to_rfc3339()),
-                "status": m.status,
-            })
-        })
-        .collect();
-
-    Json(json!({
-        "session": {
-            "id": session.id.to_string(),
-            "agent_id": session.agent_id,
-            "channel": session.channel,
-            "started_at": session.started_at.to_rfc3339(),
-            "last_message_at": session.last_message_at.to_rfc3339(),
-            "title": session.title,
-            "metadata": session.metadata,
-            "run_status": session.run_status,
-            "participants": session.participants,
-        },
-        "messages": msg_json,
+    Json(serde_json::json!({
+        "session": session,
+        "messages": messages,
     }))
     .into_response()
 }
@@ -194,29 +167,7 @@ pub(crate) async fn api_session_messages(
         .record_db_query_duration(db_result_label, db_start.elapsed());
 
     match query_result {
-        Ok(rows) => {
-            let messages: Vec<Value> = rows
-                .iter()
-                .map(|m| {
-                    json!({
-                        "id": m.id,
-                        "role": m.role,
-                        "content": m.content,
-                        "tool_calls": m.tool_calls,
-                        "tool_call_id": m.tool_call_id,
-                        "created_at": m.created_at.to_rfc3339(),
-                        "agent_id": m.agent_id,
-                        "feedback": m.feedback.unwrap_or(0),
-                        "edited_at": m.edited_at.map(|t| t.to_rfc3339()),
-                        "status": m.status,
-                        "parent_message_id": m.parent_message_id,
-                        "branch_from_message_id": m.branch_from_message_id,
-                        "abort_reason": m.abort_reason,
-                    })
-                })
-                .collect();
-            Json(json!({ "messages": messages })).into_response()
-        }
+        Ok(rows) => Json(json!({ "messages": rows })).into_response(),
         Err(e) => ApiError::Internal(e.to_string()).into_response(),
     }
 }
@@ -877,26 +828,7 @@ pub(crate) async fn api_active_path(
     Query(q): Query<ActivePathQuery>,
 ) -> impl IntoResponse {
     match sessions::resolve_active_path(&infra.db, session_id, q.leaf).await {
-        Ok(msgs) => {
-            let messages: Vec<Value> = msgs.iter().map(|m| {
-                json!({
-                    "id": m.id,
-                    "role": m.role,
-                    "content": m.content,
-                    "tool_calls": m.tool_calls,
-                    "tool_call_id": m.tool_call_id,
-                    "created_at": m.created_at.to_rfc3339(),
-                    "agent_id": m.agent_id,
-                    "feedback": m.feedback.unwrap_or(0),
-                    "edited_at": m.edited_at.map(|t| t.to_rfc3339()),
-                    "status": m.status,
-                    "parent_message_id": m.parent_message_id,
-                    "branch_from_message_id": m.branch_from_message_id,
-                    "abort_reason": m.abort_reason,
-                })
-            }).collect();
-            Json(json!({ "messages": messages })).into_response()
-        }
+        Ok(msgs) => Json(json!({ "messages": msgs })).into_response(),
         Err(e) => ApiError::Internal(e.to_string()).into_response(),
     }
 }

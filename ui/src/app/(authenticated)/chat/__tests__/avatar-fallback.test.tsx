@@ -41,7 +41,7 @@ vi.mock("sonner", () => ({
 
 // ── Import tested exports ──────────────────────────────────────────────────
 
-import { RoleAvatar, hashAgentName, AGENT_COLORS } from "@/app/(authenticated)/chat/ChatThread";
+import { RoleAvatar, hashAgentName, AGENT_COLORS } from "@/app/(authenticated)/chat/avatar/RoleAvatar";
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 

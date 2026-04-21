@@ -11,6 +11,11 @@ path = "src/lib.rs"
 name = "hydeclaw-core"
 path = "src/main.rs"
 
+[[bin]]
+name = "gen_ts_types"
+path = "src/bin/gen_ts_types.rs"
+required-features = ["ts-gen"]
+
 [dependencies]
 # Workspace deps
 tokio = { workspace = true }
@@ -60,9 +65,6 @@ rand = { workspace = true }
 # YAML parsing (for YAML tool definitions)
 serde_yaml = "0.9"
 
-# HTML parsing (Link Understanding)
-scraper = { workspace = true }
-
 # Error classification
 regex = "1"
 
@@ -110,9 +112,13 @@ opentelemetry_sdk = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 
+# TypeScript codegen (optional, behind `ts-gen` feature)
+ts-rs = { version = "12", optional = true, features = ["chrono-impl", "serde-json-impl", "uuid-impl"] }
+
 [features]
 default = []
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
+ts-gen = ["dep:ts-rs", "hydeclaw-types/ts-gen"]
 
 # Systemd watchdog (Linux-only)
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -120,6 +126,7 @@ sd-notify = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+insta = { version = "1", features = ["json"] }
 # Phase 64 SEC-05: in-process axum integration via Router::oneshot (no TCP server).
 tower = { workspace = true }
 # Integration test harness (Phase 61 Plan 01).

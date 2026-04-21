@@ -9,6 +9,11 @@ from fastapi import HTTPException
 
 MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 
+# CGNAT / carrier-grade NAT range (RFC 6598). Python's ipaddress stdlib
+# does NOT classify this as private/reserved; mirror Rust
+# crates/hydeclaw-core/src/net/ssrf.rs::is_private_ip.
+_CGNAT_V4 = ipaddress.IPv4Network("100.64.0.0/10")
+
 
 def validate_url_ssrf(url: str) -> None:
     """Block requests to private/internal networks (SSRF protection).
@@ -36,6 +41,12 @@ def validate_url_ssrf(url: str) -> None:
             ip = ipaddress.ip_address(addr)
             if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
                 raise HTTPException(400, f"blocked: URL resolves to private IP ({addr})")
+            # CGNAT 100.64.0.0/10 — stdlib does not flag this range; mirror Rust SoT.
+            if isinstance(ip, ipaddress.IPv4Address) and ip in _CGNAT_V4:
+                raise HTTPException(400, f"blocked: URL resolves to CGNAT IP ({addr})")
+            # Multicast — IPv4 224.0.0.0/4 and IPv6 ff00::/8. Stdlib is_multicast covers both.
+            if ip.is_multicast:
+                raise HTTPException(400, f"blocked: URL resolves to multicast IP ({addr})")
     except socket.gaierror:
         pass  # DNS resolution will fail later in httpx — let it
 
@@ -43,7 +54,10 @@ def validate_url_ssrf(url: str) -> None:
 async def download_limited(http, url: str, *, max_bytes: int = MAX_DOWNLOAD_BYTES, **kwargs):
     """Download URL with a size limit to prevent OOM. Returns (bytes, content_type)."""
     validate_url_ssrf(url)
-    async with http.stream("GET", url, follow_redirects=True, **kwargs) as resp:
+    # follow_redirects=False mirrors Rust ssrf_http_client (commit 75fee11):
+    # a 302 from a public origin could otherwise bypass the pre-flight
+    # validate_url_ssrf check and land on a private-IP target.
+    async with http.stream("GET", url, follow_redirects=False, **kwargs) as resp:
         resp.raise_for_status()
         cl = resp.headers.get("content-length")
         if cl and int(cl) > max_bytes:

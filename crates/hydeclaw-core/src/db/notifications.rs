@@ -4,15 +4,32 @@ use uuid::Uuid;
 
 /// One row from the notifications table.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
+#[cfg_attr(feature = "ts-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-gen", ts(export))]
 pub struct Notification {
     pub id: Uuid,
     #[serde(rename = "type")]
     pub notification_type: String,
     pub title: String,
     pub body: String,
+    #[cfg_attr(feature = "ts-gen", ts(type = "Record<string, unknown>"))]
     pub data: serde_json::Value,
     pub read: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Response shape for GET /api/notifications.
+#[derive(Debug, serde::Serialize)]
+#[cfg_attr(feature = "ts-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-gen", ts(export))]
+pub struct NotificationsResponseDto {
+    pub items: Vec<Notification>,
+    #[cfg_attr(feature = "ts-gen", ts(type = "number"))]
+    pub unread_count: i64,
+    #[cfg_attr(feature = "ts-gen", ts(type = "number"))]
+    pub limit: i64,
+    #[cfg_attr(feature = "ts-gen", ts(type = "number"))]
+    pub offset: i64,
 }
 
 /// Insert a new notification. Returns the inserted row (with generated id and `created_at`).

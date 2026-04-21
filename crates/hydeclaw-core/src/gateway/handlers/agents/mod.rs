@@ -1,8 +1,10 @@
 mod crud;
+pub mod dto;
 mod lifecycle;
 mod schema;
 
 pub(crate) use crud::*;
+pub use dto::AgentDetailDto;
 pub use lifecycle::start_agent_from_config;
 #[allow(unused_imports)]
 pub(crate) use schema::{validate_agent_name, agent_config_path};

@@ -5,7 +5,12 @@ TARGET    := aarch64-unknown-linux-gnu
 BIN       := target/$(TARGET)/release/hydeclaw-core
 AUTH      ?= $(shell cat .auth-token 2>/dev/null || echo "MISSING_AUTH_TOKEN")
 
-.PHONY: check test build build-arm64 ui release deploy-binary deploy-ui deploy deploy-docker doctor clean
+.PHONY: check test build build-arm64 ui release gen-types deploy-binary deploy-ui deploy deploy-docker doctor clean
+
+# ── Codegen ──────────────────────────────────────────────────────────────────
+
+gen-types:
+	cargo run --features ts-gen --bin gen_ts_types -p hydeclaw-core
 
 # ── Development ──────────────────────────────────────────────────────────────
 

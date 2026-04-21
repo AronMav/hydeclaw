@@ -163,7 +163,7 @@ vi.mock("@/components/ui/rich-card", () => ({
 
 // ── Import components under test ───────────────────────────────────────────
 
-import { MentionAutocomplete } from "@/app/(authenticated)/chat/ChatThread";
+import { MentionAutocomplete } from "@/app/(authenticated)/chat/composer/MentionAutocomplete";
 import { SlashMenu } from "@/app/(authenticated)/chat/parts/SlashMenu";
 
 // ── INPT-01: @-mention autocomplete ───────────────────────────────────────

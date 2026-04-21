@@ -16,12 +16,14 @@ import { useChatStore } from "./chat-store";
 import type {
   AgentState,
   ChatMessage,
+  ChatState,
   ChatStore,
   ConnectionPhase,
   MessageSource,
 } from "./chat-types";
 import { getLiveMessages } from "./chat-types";
 import { getCachedHistoryMessages } from "./chat-history";
+import { mergeLiveOverlay } from "./chat-overlay-dedup";
 
 // Re-export so consumers don't need a second import site.
 export { useShallow };
@@ -144,4 +146,52 @@ export function useChatActions(): ChatActions {
 /** Read selected branches for a given agent with shallow-equal gating. */
 export function useSelectedBranches(agent: string): Record<string, string> {
   return useChatStore(useShallow(selectSelectedBranches(agent)));
+}
+
+// ── Derived mode selectors ────────────────────────────────────────────────────
+
+/** True when the agent has no active session (new-chat mode). */
+export function selectIsEmpty(state: ChatState, agent: string): boolean {
+  return state.agents[agent]?.messageSource.mode === "new-chat";
+}
+
+/** True when the agent is viewing a history snapshot (not a live stream). */
+export function selectIsReplayingHistory(state: ChatState, agent: string): boolean {
+  return state.agents[agent]?.messageSource.mode === "history";
+}
+
+/** True when the agent has an active or recently-completed SSE stream. */
+export function selectIsLive(state: ChatState, agent: string): boolean {
+  return state.agents[agent]?.messageSource.mode === "live";
+}
+
+/** True when in live mode and there is at least one message in the buffer. */
+export function selectLiveHasContent(state: ChatState, agent: string): boolean {
+  const src = state.agents[agent]?.messageSource;
+  return src?.mode === "live" && src.messages.length > 0;
+}
+
+/**
+ * Returns the array to render for the given agent. Resolves the
+ * three-way `messageSource` tag into a single array:
+ *  - "new-chat"  → []
+ *  - "history"   → cached history messages, resolved against selectedBranches
+ *  - "live"      → history merged with live overlay (optimistic + in-flight)
+ *
+ * Reads `messageSource`, `selectedBranches`, and (for history mode)
+ * the React Query cache via getCachedHistoryMessages from the passed
+ * state — no separate hook subscription needed in consumers.
+ */
+export function selectRenderMessages(state: ChatState, agent: string): ChatMessage[] {
+  const st = state.agents[agent];
+  if (!st) return [];
+  const src = st.messageSource;
+  if (src.mode === "new-chat") return [];
+  if (src.mode === "history") {
+    return getCachedHistoryMessages(src.sessionId, st.selectedBranches);
+  }
+  // live mode
+  const histSessionId = st.activeSessionId;
+  const history = histSessionId ? getCachedHistoryMessages(histSessionId, st.selectedBranches) : [];
+  return mergeLiveOverlay(history, src.messages);
 }

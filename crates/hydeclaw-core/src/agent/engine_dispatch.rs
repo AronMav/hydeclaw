@@ -164,7 +164,16 @@ impl AgentEngine {
                     &self.cfg().agent.name,
                     arguments,
                 ).await),
-                "web_fetch" => Some(psub::handle_web_fetch(self.http_client(), self.ssrf_http_client(), &self.cfg().app_config.gateway.listen, arguments).await),
+                "web_fetch" => {
+                    let toolgate_url = self.cfg().app_config.toolgate_url.clone()
+                        .unwrap_or_else(|| "http://localhost:9011".to_string());
+                    Some(psub::handle_web_fetch(
+                        self.http_client(),
+                        &toolgate_url,
+                        &self.cfg().app_config.gateway.listen,
+                        arguments,
+                    ).await)
+                },
                 "tool_create" => Some(ph::handle_tool_create(&self.cfg().workspace_dir, arguments).await),
                 "tool_list" => Some(ph::handle_tool_list(&self.cfg().workspace_dir, arguments).await),
                 "tool_test" => Some(ph::handle_tool_test(&self.cfg().workspace_dir, self.http_client(), self.ssrf_http_client(), self.secrets(), &self.cfg().agent.name, self.oauth().as_ref(), arguments).await),

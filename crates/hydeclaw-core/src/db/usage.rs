@@ -39,10 +39,9 @@ pub async fn record_usage(
 /// Insert a usage_log row marked as aborted (with or without failover).
 ///
 /// Pure SQL helper — caller supplies the already-decided `status` string
-/// (use [`STATUS_ABORTED`] / [`STATUS_ABORTED_FAILOVER`]). Separated from
-/// `engine_sse::record_aborted_usage` so the DB contract can be
-/// integration-tested without pulling the engine's `LlmCallError`
-/// downcast logic into the lib facade.
+/// (use [`STATUS_ABORTED`] / [`STATUS_ABORTED_FAILOVER`]). Keeping this as a
+/// pure SQL helper means the DB contract can be integration-tested without
+/// pulling the engine's `LlmCallError` downcast logic into the lib facade.
 ///
 /// `input_tokens` is always written as `0` for aborted calls (we don't
 /// know the prompt size until the usage headers arrive, which aborts

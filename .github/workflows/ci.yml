@@ -55,3 +55,24 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  types-drift:
+    name: API types drift check
+    runs-on: ubuntu-latest
+    needs: [rust]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Generate types
+        run: make gen-types
+
+      - name: Check no drift
+        run: |
+          git diff --exit-code ui/src/types/api.generated.ts \
+            || (echo "::error::api.generated.ts is out of date. Run 'make gen-types' locally and commit the result." && exit 1)

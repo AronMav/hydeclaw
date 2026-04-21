@@ -91,6 +91,14 @@ fn build_tools_json(
 /// Append-mode streaming message upsert. Text is APPENDED to existing content (not replaced).
 /// Used for bounded text accumulation -- caller clears `accumulated_text` after success.
 /// Also touches session activity for watchdog heartbeat, mirroring `upsert_streaming_message` behavior.
+///
+/// Invariant (Bug 2 fix, 2026-04-20): on INSERT we anchor `parent_message_id`
+/// to the most-recent `role='user'` row for this session via a correlated
+/// subquery. `bootstrap::run` persists the user row BEFORE the streaming row
+/// is ever written, so the subquery is guaranteed to find a candidate.
+/// `ON CONFLICT DO UPDATE` continues to append (`content || $3`) and refresh
+/// `tool_calls`, but it deliberately does NOT touch `parent_message_id` —
+/// the parent is pinned at first INSERT.
 async fn upsert_streaming_append(
     db: &sqlx::PgPool,
     message_id: uuid::Uuid,
@@ -100,8 +108,14 @@ async fn upsert_streaming_append(
     tool_calls: Option<&serde_json::Value>,
 ) -> anyhow::Result<()> {
     sqlx::query(
-        "INSERT INTO messages (id, session_id, role, content, tool_calls, agent_id, status) \
-         VALUES ($1, $2, 'assistant', $3, $4, $5, 'streaming') \
+        "INSERT INTO messages (id, session_id, role, content, tool_calls, agent_id, status, parent_message_id) \
+         VALUES ( \
+             $1, $2, 'assistant', $3, $4, $5, 'streaming', \
+             (SELECT id FROM messages \
+              WHERE session_id = $2 AND role = 'user' \
+              ORDER BY created_at DESC \
+              LIMIT 1) \
+         ) \
          ON CONFLICT (id) DO UPDATE SET content = messages.content || $3, tool_calls = $4",
     )
     .bind(message_id)
