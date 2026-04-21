@@ -34,7 +34,7 @@ import {
   DropdownMenuCheckboxItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { ChannelRow, RoutingRule } from "@/types/api";
+import type { ChannelRow, Provider, RoutingRule } from "@/types/api";
 import { ChevronDown, Bot, ExternalLink, Link2, Camera, RefreshCw, Settings, Wrench, Zap, Archive, Clock, Radio } from "lucide-react";
 import { RoutingRulesEditor } from "./RoutingRulesEditor";
 import { useProviders, useProviderModels } from "@/lib/queries";
@@ -609,7 +609,7 @@ export function AgentEditDialog({
             {/* ── Channels tab ── */}
             {activeTab === "channels" && (
               <>
-                <RoutingRulesEditor routing={form.routing} secretNames={secretNames} discoveredModels={discoveredModels} fetchModels={fetchModels} onChange={(routing) => upd({ routing })} />
+                <RoutingRulesEditor routing={form.routing} llmProviders={llmProviders} secretNames={secretNames} discoveredModels={discoveredModels} fetchModels={fetchModels} onChange={(routing) => upd({ routing })} />
                 {editName && (
                   <div className="space-y-2 border-t border-border/30 pt-3">
                     <div className="flex items-center justify-between">

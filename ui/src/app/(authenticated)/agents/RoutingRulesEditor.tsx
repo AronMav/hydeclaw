@@ -6,8 +6,8 @@ import type { TranslationKey } from "@/i18n/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import type { RoutingRule } from "@/types/api";
-import { Settings, Plus, ChevronDown, ChevronUp, X } from "lucide-react";
+import type { Provider, RoutingRule } from "@/types/api";
+import { Link2, Settings, Plus, ChevronDown, ChevronUp, X } from "lucide-react";
 
 export const PROVIDERS = [
   { value: "minimax", label: "MiniMax" },
@@ -69,6 +69,7 @@ function Field({
 
 function RoutingRuleRow({
   rule,
+  llmProviders,
   secretNames,
   discoveredModels,
   fetchModels,
@@ -78,9 +79,10 @@ function RoutingRuleRow({
   onMoveDown,
 }: {
   rule: RoutingRule;
+  llmProviders: Provider[];
   secretNames: string[];
   discoveredModels: Record<string, string[]>;
-  fetchModels: (provider: string) => void;
+  fetchModels: (connection: string) => void;
   onChange: (patch: Partial<RoutingRule>) => void;
   onRemove: () => void;
   onMoveUp?: () => void;
@@ -93,14 +95,29 @@ function RoutingRuleRow({
     <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-2">
       <div className="flex flex-col sm:flex-row sm:items-center gap-2">
         <div className="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-2">
-          <Select value={rule.provider} onValueChange={(v) => { onChange({ provider: v, model: "" }); fetchModels(v); }}>
+          <Select
+            value={rule.provider || "__none__"}
+            onValueChange={(v) => {
+              if (v === "__none__") { onChange({ provider: "", model: "" }); return; }
+              const conn = llmProviders.find((p) => p.name === v);
+              onChange({ provider: v, model: conn?.default_model ?? "" });
+              fetchModels(v);
+            }}
+          >
             <SelectTrigger className="w-full bg-background border-border text-xs h-8">
-              <SelectValue />
+              <SelectValue placeholder="Select provider..." />
             </SelectTrigger>
             <SelectContent className="border-border">
-              {PROVIDERS.map((p) => (
-                <SelectItem key={p.value} value={p.value} className="text-xs">
-                  {p.label}
+              <SelectItem value="__none__" className="text-xs text-muted-foreground">
+                <span className="text-muted-foreground">&mdash;</span>
+              </SelectItem>
+              {llmProviders.map((conn) => (
+                <SelectItem key={conn.name} value={conn.name} className="text-xs">
+                  <span className="flex items-center gap-2">
+                    <Link2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    <span>{conn.name}</span>
+                    <span className="text-muted-foreground/60 text-[10px]">{conn.default_model}</span>
+                  </span>
                 </SelectItem>
               ))}
             </SelectContent>
@@ -239,14 +256,16 @@ function RoutingRuleRow({
 
 export interface RoutingRulesEditorProps {
   routing: RoutingRule[];
+  llmProviders: Provider[];
   secretNames: string[];
   discoveredModels: Record<string, string[]>;
-  fetchModels: (provider: string) => void;
+  fetchModels: (connection: string) => void;
   onChange: (routing: RoutingRule[]) => void;
 }
 
 export function RoutingRulesEditor({
   routing,
+  llmProviders,
   secretNames,
   discoveredModels,
   fetchModels,
@@ -272,7 +291,7 @@ export function RoutingRulesEditor({
           onClick={() =>
             onChange([
               ...routing,
-              { provider: "minimax", model: "", condition: "default" },
+              { provider: llmProviders[0]?.name ?? "", model: llmProviders[0]?.default_model ?? "", condition: "default" },
             ])
           }
         >
@@ -289,6 +308,7 @@ export function RoutingRulesEditor({
             <RoutingRuleRow
               key={idx}
               rule={rule}
+              llmProviders={llmProviders}
               secretNames={secretNames}
               discoveredModels={discoveredModels}
               fetchModels={fetchModels}
