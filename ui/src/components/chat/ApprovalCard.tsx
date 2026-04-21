@@ -6,7 +6,7 @@ import type { ApprovalPart } from "@/stores/chat-store";
 import { decideApproval } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Loader2 } from "lucide-react";
 import { ApprovalCountdown } from "./ApprovalCountdown";
 import { ApprovalArgsEditor } from "./ApprovalArgsEditor";
 
@@ -120,7 +120,11 @@ export function ApprovalCard({ part }: ApprovalCardProps) {
             {t("chat.approval_awaiting")}
           </span>
           <CollapsibleTrigger asChild>
-            <button type="button" className="p-0.5 text-muted-foreground/40 hover:text-foreground transition-colors group">
+            <button
+              type="button"
+              className="p-0.5 text-muted-foreground/40 hover:text-foreground transition-colors group"
+              aria-label={t("common.expand")}
+            >
               <ChevronRight className="h-4 w-4 transition-transform duration-300 group-data-[state=open]:rotate-90" />
             </button>
           </CollapsibleTrigger>
@@ -185,7 +189,11 @@ export function ApprovalCard({ part }: ApprovalCardProps) {
               onClick={handleReject}
               disabled={isSubmitting}
             >
-              {t("chat.approval_reject")}
+              {isSubmitting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                t("chat.approval_reject")
+              )}
             </Button>
             <Button
               variant="default"
@@ -194,9 +202,12 @@ export function ApprovalCard({ part }: ApprovalCardProps) {
               aria-label={`${t("chat.approval_approve")} ${part.toolName}`}
               onClick={handleApprove}
               disabled={isSubmitting}
-              tabIndex={0}
             >
-              {t("chat.approval_approve")}
+              {isSubmitting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                t("chat.approval_approve")
+              )}
             </Button>
           </div>
         </div>
