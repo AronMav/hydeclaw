@@ -19,6 +19,9 @@
 
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
+mod support;
+use support::TestHarness;
+
 use hydeclaw_core::db::usage::{
     insert_aborted_row, STATUS_ABORTED, STATUS_ABORTED_FAILOVER,
 };
@@ -43,14 +46,16 @@ async fn seed_agent_and_session(pool: &PgPool, agent: &str, session_id: Uuid) {
     .expect("seed session row");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
-async fn aborted_row_with_plain_status_persists_and_queries(pool: PgPool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn aborted_row_with_plain_status_persists_and_queries() {
+    let harness = TestHarness::new().await.unwrap();
+    let pool = harness.pool();
     let agent = "Arty";
     let session_id = Uuid::new_v4();
-    seed_agent_and_session(&pool, agent, session_id).await;
+    seed_agent_and_session(pool, agent, session_id).await;
 
     insert_aborted_row(
-        &pool,
+        pool,
         agent,
         "ollama-default",
         "minimax-m2.7",
@@ -67,7 +72,7 @@ async fn aborted_row_with_plain_status_persists_and_queries(pool: PgPool) {
     )
     .bind(session_id)
     .bind(STATUS_ABORTED)
-    .fetch_one(&pool)
+    .fetch_one(pool)
     .await
     .unwrap();
     assert_eq!(count, 1, "aborted row not found for session");
@@ -78,21 +83,23 @@ async fn aborted_row_with_plain_status_persists_and_queries(pool: PgPool) {
         "SELECT input_tokens, output_tokens FROM usage_log WHERE session_id = $1",
     )
     .bind(session_id)
-    .fetch_one(&pool)
+    .fetch_one(pool)
     .await
     .unwrap();
     assert_eq!(input, 0);
     assert_eq!(output, 123);
 }
 
-#[sqlx::test(migrations = "../../migrations")]
-async fn aborted_failover_status_persists_and_queries(pool: PgPool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn aborted_failover_status_persists_and_queries() {
+    let harness = TestHarness::new().await.unwrap();
+    let pool = harness.pool();
     let agent = "Arty";
     let session_id = Uuid::new_v4();
-    seed_agent_and_session(&pool, agent, session_id).await;
+    seed_agent_and_session(pool, agent, session_id).await;
 
     insert_aborted_row(
-        &pool,
+        pool,
         agent,
         "ollama-default",
         "minimax-m2.7",
@@ -106,14 +113,16 @@ async fn aborted_failover_status_persists_and_queries(pool: PgPool) {
     let (stored_status,): (String,) =
         sqlx::query_as("SELECT status FROM usage_log WHERE session_id = $1")
             .bind(session_id)
-            .fetch_one(&pool)
+            .fetch_one(pool)
             .await
             .unwrap();
     assert_eq!(stored_status, "aborted_failover");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
-async fn partial_index_covers_both_aborted_values(pool: PgPool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partial_index_covers_both_aborted_values() {
+    let harness = TestHarness::new().await.unwrap();
+    let pool = harness.pool();
     // m025 created `idx_usage_log_status_aborted` with
     // `WHERE status LIKE 'aborted%'` so both `aborted` and
     // `aborted_failover` share one index. Pin this by inserting one row
@@ -121,20 +130,20 @@ async fn partial_index_covers_both_aborted_values(pool: PgPool) {
     let agent = "Arty";
     let session_plain = Uuid::new_v4();
     let session_failover = Uuid::new_v4();
-    seed_agent_and_session(&pool, agent, session_plain).await;
-    seed_agent_and_session(&pool, agent, session_failover).await;
+    seed_agent_and_session(pool, agent, session_plain).await;
+    seed_agent_and_session(pool, agent, session_failover).await;
 
-    insert_aborted_row(&pool, agent, "p", "m", session_plain, 1, STATUS_ABORTED)
+    insert_aborted_row(pool, agent, "p", "m", session_plain, 1, STATUS_ABORTED)
         .await
         .unwrap();
-    insert_aborted_row(&pool, agent, "p", "m", session_failover, 1, STATUS_ABORTED_FAILOVER)
+    insert_aborted_row(pool, agent, "p", "m", session_failover, 1, STATUS_ABORTED_FAILOVER)
         .await
         .unwrap();
 
     // The dashboard SQL in spec §9 filters `WHERE status LIKE 'aborted%'`
     // — confirm both rows match.
     let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM usage_log WHERE status LIKE 'aborted%'")
-        .fetch_one(&pool)
+        .fetch_one(pool)
         .await
         .unwrap();
     assert_eq!(total, 2, "partial index coverage failed");
@@ -143,7 +152,7 @@ async fn partial_index_covers_both_aborted_values(pool: PgPool) {
     let breakdown: Vec<(String, i64)> = sqlx::query_as(
         "SELECT status, COUNT(*) FROM usage_log WHERE status LIKE 'aborted%' GROUP BY status ORDER BY status",
     )
-    .fetch_all(&pool)
+    .fetch_all(pool)
     .await
     .unwrap();
     assert_eq!(
@@ -155,17 +164,19 @@ async fn partial_index_covers_both_aborted_values(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrations = "../../migrations")]
-async fn non_matching_status_not_written_by_insert_aborted_row(pool: PgPool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn non_matching_status_not_written_by_insert_aborted_row() {
+    let harness = TestHarness::new().await.unwrap();
+    let pool = harness.pool();
     // Regression: `insert_aborted_row` does not silently sanitize the
     // status string — whatever the caller passes lands in the column.
     // This is by design (the enum mapping lives in the caller), so the
     // test documents the contract: pass garbage, get garbage.
     let agent = "Arty";
     let session_id = Uuid::new_v4();
-    seed_agent_and_session(&pool, agent, session_id).await;
+    seed_agent_and_session(pool, agent, session_id).await;
 
-    insert_aborted_row(&pool, agent, "p", "m", session_id, 42, "garbage")
+    insert_aborted_row(pool, agent, "p", "m", session_id, 42, "garbage")
         .await
         .unwrap();
 
@@ -173,7 +184,7 @@ async fn non_matching_status_not_written_by_insert_aborted_row(pool: PgPool) {
         "SELECT status FROM usage_log WHERE session_id = $1",
     )
     .bind(session_id)
-    .fetch_one(&pool)
+    .fetch_one(pool)
     .await
     .unwrap();
     assert_eq!(stored, "garbage");
@@ -183,7 +194,7 @@ async fn non_matching_status_not_written_by_insert_aborted_row(pool: PgPool) {
         "SELECT COUNT(*) FROM usage_log WHERE session_id = $1 AND status LIKE 'aborted%'",
     )
     .bind(session_id)
-    .fetch_one(&pool)
+    .fetch_one(pool)
     .await
     .unwrap();
     assert_eq!(aborted_count, 0);

@@ -167,9 +167,10 @@ vi.mock("react-virtuoso", () => {
       const components = props.components as { Header?: () => React.ReactNode; Footer?: () => React.ReactNode } | undefined;
       return React.createElement("div", { "data-testid": "virtuoso-mock", ref: divRef },
         components?.Header ? React.createElement(components.Header) : null,
-        ...(data.map((item: unknown, i: number) =>
-          React.createElement("div", { key: i }, itemContent ? itemContent(i, item) : null)
-        )),
+        ...(data.map((item: unknown, i: number) => {
+          if (data.length > 20 && i >= 10 && i < data.length - 10) return null;
+          return React.createElement("div", { key: i }, itemContent ? itemContent(i, item) : null);
+        })),
         components?.Footer ? React.createElement(components.Footer) : null,
       );
     }),
