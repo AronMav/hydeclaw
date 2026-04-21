@@ -72,7 +72,7 @@ macro_rules! emit_or_interrupted {
     ($sink:expr, $ev:expr, $outcome:expr) => {{
         match $sink.emit(PipelineEvent::Stream($ev)).await {
             Ok(()) => {}
-            Err(SinkError::Closed) => return Ok($outcome),
+            Err(SinkError::Closed) | Err(SinkError::Full) => return Ok($outcome),
             Err(e) => return Err(e.into()),
         }
     }};
