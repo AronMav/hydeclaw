@@ -71,7 +71,6 @@ export function parseSseEvent(raw: string): SseEvent | null {
       return {
         type,
         agentName: typeof e.agentName === "string" ? e.agentName : undefined,
-        continuation: typeof e.continuation === "boolean" ? e.continuation : undefined,
       };
     case "error":
       return { type, errorText: typeof e.errorText === "string" ? e.errorText : "Unknown error" };

@@ -66,10 +66,6 @@ export interface RichCardPart {
   data: Record<string, unknown>;
 }
 
-export interface ContinuationSeparatorPart {
-  type: "continuation-separator";
-}
-
 export interface StepGroupPart {
   type: "step-group";
   stepId: string;
@@ -97,7 +93,6 @@ export type MessagePart =
   | SourceUrlPart
   | ToolPart
   | RichCardPart
-  | ContinuationSeparatorPart
   | StepGroupPart
   | ApprovalPart;
 
