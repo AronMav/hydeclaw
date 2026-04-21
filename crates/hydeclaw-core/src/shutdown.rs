@@ -228,6 +228,17 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn bg_tasks_tracked_through_shutdown() {
+        use tokio_util::task::TaskTracker;
+        let tracker = Arc::new(TaskTracker::new());
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tracker.spawn(async move { let _ = tx.send(()); });
+        tracker.close();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), tracker.wait()).await;
+        assert!(rx.await.is_ok(), "spawned bg task must have completed");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn drain_releases_read_lock_before_wait_drain() {
         // THE v0.18.0 BUG REPRODUCER at the unit level: while drain is

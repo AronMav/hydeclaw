@@ -591,6 +591,7 @@ async fn main() -> Result<()> {
         });
     }
 
+    let shutdown_bg_tasks = state.channels.bg_tasks.clone();
     axum::serve(listener, gateway::router(state)?.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(shutdown_signal())
         .await?;
@@ -606,6 +607,14 @@ async fn main() -> Result<()> {
         agents_map.clone(),
         drain_timeout,
         &sched,
+    ).await;
+
+    // Drain background tasks spawned by finalize (notifications, knowledge extraction).
+    // close() prevents new spawns; timeout prevents hanging on unresponsive DB.
+    shutdown_bg_tasks.close();
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        shutdown_bg_tasks.wait(),
     ).await;
 
     tracing::info!("graceful shutdown: stopping managed processes");
