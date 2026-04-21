@@ -162,7 +162,7 @@ impl AgentEngine {
         &self,
         msg: &IncomingMessage,
         status_tx: Option<tokio::sync::mpsc::UnboundedSender<ProcessingPhase>>,
-        chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+        chunk_tx: Option<tokio::sync::mpsc::Sender<String>>,
     ) -> Result<String> {
         self.cfg().approval_manager.prune_stale().await;
 
@@ -266,7 +266,7 @@ impl AgentEngine {
     pub async fn handle_streaming(
         &self,
         msg: &IncomingMessage,
-        chunk_tx: tokio::sync::mpsc::UnboundedSender<String>,
+        chunk_tx: tokio::sync::mpsc::Sender<String>,
     ) -> Result<String> {
         let mut s = sink::ChunkSink::new(chunk_tx);
 

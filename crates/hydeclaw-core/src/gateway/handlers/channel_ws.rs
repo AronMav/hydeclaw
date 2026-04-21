@@ -414,7 +414,7 @@ async fn channel_ws_loop(
 
                         // Create status + chunk channels
                         let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel::<ProcessingPhase>();
-                        let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                        let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<String>(512);
 
                         // Spawn engine processing with request timeout
                         let timeout_secs = ctx.cfg.config.limits.request_timeout_secs;
@@ -1006,7 +1006,7 @@ async fn handle_ws(socket: WebSocket, agents: AgentCore, bus: ChannelBus, status
                             leaf_message_id: None,
                         };
 
-                        let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel::<String>();
+                        let (chunk_tx, mut chunk_rx) = mpsc::channel::<String>(512);
                         let engine_clone = engine.clone();
                         let handle = tokio::spawn(async move {
                             engine_clone.handle_streaming(&incoming, chunk_tx).await
