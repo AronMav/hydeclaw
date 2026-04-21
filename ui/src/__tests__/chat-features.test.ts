@@ -14,6 +14,7 @@ const mockSession: SessionRow = {
   title: null,
   run_status: null,
   metadata: null,
+  participants: [],
 };
 
 // Minimal ChatMessage mocks matching the real ChatMessage type

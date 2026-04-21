@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 /**
  * Smoke tests for 3 critical chat flows that were recently fixed.
@@ -20,7 +20,6 @@ test.describe.configure({ mode: "serial" });
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type Page = Parameters<Parameters<typeof test>[1]>[0];
 
 // ── Auth & navigation helpers ─────────────────────────────────────────────────
 

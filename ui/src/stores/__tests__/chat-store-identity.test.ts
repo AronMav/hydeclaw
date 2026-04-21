@@ -15,8 +15,10 @@ function makeRow(overrides: Partial<MessageRow> & { id: string }): MessageRow {
     status: "finished",
     feedback: 0,
     edited_at: null,
+    thinking_blocks: null,
     parent_message_id: null,
     branch_from_message_id: null,
+    abort_reason: null,
     ...overrides,
   };
 }

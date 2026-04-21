@@ -39,11 +39,14 @@ function makeRow(overrides: Partial<MessageRow>): MessageRow {
     tool_calls: null,
     tool_call_id: null,
     created_at: "2026-01-01T00:00:00Z",
+    agent_id: null,
     status: "done",
     feedback: 0,
     edited_at: null,
+    thinking_blocks: null,
     parent_message_id: null,
     branch_from_message_id: null,
+    abort_reason: null,
     ...overrides,
   };
 }
