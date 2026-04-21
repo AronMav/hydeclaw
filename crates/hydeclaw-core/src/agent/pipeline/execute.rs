@@ -470,7 +470,6 @@ pub async fn execute<S: EventSink>(
                         thinking_blocks: vec![],
                     });
                     loop_nudge_count += 1;
-                    loop_detector.reset();
                     tracing::warn!(
                         agent = %engine.cfg().agent.name,
                         nudge_count = loop_nudge_count,

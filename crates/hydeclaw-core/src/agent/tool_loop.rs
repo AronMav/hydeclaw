@@ -171,3 +171,46 @@ pub fn is_context_overflow(error: &anyhow::Error) -> bool {
     let msg = error.to_string().to_lowercase();
     msg.contains("context length") || msg.contains("token limit") || msg.contains("too many token") || msg.contains("input too long") || (msg.contains("400") && (msg.contains("too long") || msg.contains("too large")))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(threshold: usize) -> ToolLoopConfig {
+        ToolLoopConfig {
+            max_iterations: 100,
+            compact_on_overflow: false,
+            detect_loops: true,
+            break_threshold: threshold,
+            max_consecutive_failures: 5,
+            max_auto_continues: 3,
+            max_loop_nudges: 2,
+            error_break_threshold: 3,
+        }
+    }
+
+    /// Regression test for F4 (loop_detector.reset() removal).
+    ///
+    /// The loop detector must retain history across nudges. If reset() were
+    /// called between nudges, the same repeating sequence would not trip on the
+    /// next nudge, effectively allowing max_nudges × break_threshold iterations.
+    #[test]
+    fn loop_detector_persists_history_across_nudge() {
+        let cfg = config(2); // trip after 2 identical consecutive calls
+        let mut detector = LoopDetector::new(&cfg);
+        let args = serde_json::json!({});
+
+        // First call: no trip
+        assert!(matches!(detector.check_limits("tool", &args), LoopStatus::Ok));
+        detector.record_execution("tool", &args, true);
+
+        // Second call: trips (consecutive == 2 >= break_threshold)
+        let status = detector.check_limits("tool", &args);
+        assert!(matches!(status, LoopStatus::Break(_)), "should break after {threshold} consecutive identical calls", threshold = cfg.break_threshold);
+
+        // After a nudge (WITHOUT reset), the detector still has history.
+        // A third identical call must still trip immediately.
+        let status2 = detector.check_limits("tool", &args);
+        assert!(matches!(status2, LoopStatus::Break(_)), "detector must retain history after nudge — no reset() allowed");
+    }
+}
