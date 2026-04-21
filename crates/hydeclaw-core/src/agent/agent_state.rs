@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 use crate::agent::channel_actions::ChannelActionRouter;
 use crate::agent::engine::AgentEngine;
@@ -31,6 +32,9 @@ pub struct AgentState {
     pub processing_tracker: Option<ProcessingTracker>,
     pub channel_router: Option<ChannelActionRouter>,
     pub ui_event_tx: Option<tokio::sync::broadcast::Sender<String>>,
+    /// Tracks background tasks spawned by finalize (notifications, knowledge
+    /// extraction) so graceful shutdown can wait for them to complete.
+    pub bg_tasks: Arc<TaskTracker>,
 
     /// Weak self-reference for hot-scheduling cron jobs. Set once after Arc<AgentEngine> creation.
     pub self_ref: OnceLock<Weak<AgentEngine>>,
@@ -46,6 +50,7 @@ impl AgentState {
         processing_tracker: Option<ProcessingTracker>,
         channel_router: Option<ChannelActionRouter>,
         ui_event_tx: Option<tokio::sync::broadcast::Sender<String>>,
+        bg_tasks: Arc<TaskTracker>,
     ) -> Self {
         Self {
             thinking_level: AtomicU8::new(0),
@@ -54,6 +59,7 @@ impl AgentState {
             processing_tracker,
             channel_router,
             ui_event_tx,
+            bg_tasks,
             self_ref: OnceLock::new(),
             active_requests: Mutex::new(Vec::new()),
             next_request_id: AtomicU64::new(0),
@@ -127,6 +133,7 @@ impl AgentState {
             processing_tracker: None,
             channel_router: None,
             ui_event_tx: None,
+            bg_tasks: Arc::new(TaskTracker::new()),
             self_ref: OnceLock::new(),
             active_requests: Mutex::new(Vec::new()),
             next_request_id: AtomicU64::new(0),
@@ -154,6 +161,7 @@ mod tests {
         assert!(state.channel_router.is_none());
         assert!(state.ui_event_tx.is_none());
         assert_eq!(state.active_request_count(), 0);
+        assert!(state.bg_tasks.is_empty());
     }
 
     #[tokio::test]

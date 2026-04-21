@@ -493,6 +493,8 @@ async fn main() -> Result<()> {
     #[cfg(feature = "otel")]
     metrics.install_otel_instruments();
 
+    let bg_tasks = Arc::new(tokio_util::task::TaskTracker::new());
+
     // Shared application state for gateway (built early so start_agent_from_config can use it)
     let state = gateway::AppState {
         agents: gateway::clusters::AgentCore::new(
@@ -522,6 +524,7 @@ async fn main() -> Result<()> {
             log_tx.clone(),
             ui_event_tx.clone(),
             stream_registry.clone(),
+            bg_tasks.clone(),
         ),
         config: gateway::clusters::ConfigServices::new(
             cfg.clone(),
