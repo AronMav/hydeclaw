@@ -11,6 +11,7 @@ use crate::agent::stream_event::StreamEvent;
 use hydeclaw_types::IncomingMessage;
 use sqlx::PgPool;
 use std::sync::Arc;
+use tokio_util::task::TaskTracker;
 use uuid::Uuid;
 
 // ── UI notifications ──────────────────────────────────────────────────────────
@@ -27,12 +28,13 @@ pub(crate) fn notify_agent_error(
     ui_event_tx: Option<&tokio::sync::broadcast::Sender<String>>,
     agent_name: &str,
     reason: &str,
+    tracker: &TaskTracker,
 ) {
     if let Some(ui_tx) = ui_event_tx {
         let tx = ui_tx.clone();
         let agent_name = agent_name.to_string();
         let reason = reason.to_string();
-        tokio::spawn(async move {
+        tracker.spawn(async move {
             let _ = crate::gateway::notify(
                 &db,
                 &tx,
@@ -52,6 +54,7 @@ pub(crate) fn notify_iteration_limit(
     ui_event_tx: Option<&tokio::sync::broadcast::Sender<String>>,
     agent_name: &str,
     max_iterations: usize,
+    tracker: &TaskTracker,
 ) {
     tracing::warn!(
         agent = %agent_name,
@@ -61,7 +64,7 @@ pub(crate) fn notify_iteration_limit(
     if let Some(ui_tx) = ui_event_tx {
         let tx = ui_tx.clone();
         let agent_name = agent_name.to_string();
-        tokio::spawn(async move {
+        tracker.spawn(async move {
             let _ = crate::gateway::notify(
                 &db,
                 &tx,
@@ -86,11 +89,12 @@ pub(crate) fn notify_loop_detected(
     ui_event_tx: Option<&tokio::sync::broadcast::Sender<String>>,
     agent_name: &str,
     session_id: Uuid,
+    tracker: &TaskTracker,
 ) {
     if let Some(ui_tx) = ui_event_tx {
         let tx = ui_tx.clone();
         let agent_name = agent_name.to_string();
-        tokio::spawn(async move {
+        tracker.spawn(async move {
             let _ = crate::gateway::notify(
                 &db,
                 &tx,
@@ -151,6 +155,9 @@ pub struct FinalizeContext<'a> {
     /// Max iterations configured for this agent; used when surfacing an
     /// `iteration_limit` notification to UI.
     pub max_iterations: usize,
+    /// Shared task tracker for fire-and-forget spawns (notifications, knowledge
+    /// extraction). Ensures graceful shutdown waits for them.
+    pub bg_tasks: Arc<TaskTracker>,
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -197,6 +204,7 @@ pub async fn finalize<S: EventSink>(
                 ctx.provider.clone(),
                 ctx.memory_store.clone(),
                 ctx.message_count,
+                &ctx.bg_tasks,
             );
             assistant_text.clone()
         }
@@ -229,6 +237,7 @@ pub async fn finalize<S: EventSink>(
                     ctx.ui_event_tx.as_ref(),
                     &ctx.agent_name,
                     ctx.session_id,
+                    &ctx.bg_tasks,
                 );
             } else if lowered.starts_with("iteration_limit") {
                 notify_iteration_limit(
@@ -236,6 +245,7 @@ pub async fn finalize<S: EventSink>(
                     ctx.ui_event_tx.as_ref(),
                     &ctx.agent_name,
                     ctx.max_iterations,
+                    &ctx.bg_tasks,
                 );
             } else {
                 notify_agent_error(
@@ -243,6 +253,7 @@ pub async fn finalize<S: EventSink>(
                     ctx.ui_event_tx.as_ref(),
                     &ctx.agent_name,
                     reason,
+                    &ctx.bg_tasks,
                 );
             }
             partial.clone()
@@ -293,6 +304,7 @@ pub fn finalize_context_from_engine<'a>(
         user_message_id,
         ui_event_tx: engine.state().ui_event_tx.clone(),
         max_iterations: engine.tool_loop_config().effective_max_iterations(),
+        bg_tasks: engine.state().bg_tasks.clone(),
     }
 }
 
@@ -305,9 +317,10 @@ pub(crate) fn spawn_knowledge_extraction(
     provider: Arc<dyn LlmProvider>,
     memory_store: Arc<dyn MemoryService>,
     message_count: usize,
+    tracker: &TaskTracker,
 ) {
     if message_count >= 5 {
-        tokio::spawn(async move {
+        tracker.spawn(async move {
             crate::agent::knowledge_extractor::extract_and_save(
                 db, session_id, agent_name, provider, memory_store,
             )
@@ -463,6 +476,7 @@ mod tests {
             // No UI in unit tests — notify_* becomes a no-op with ui_event_tx=None.
             ui_event_tx: None,
             max_iterations: 0,
+            bg_tasks: Arc::new(TaskTracker::new()),
         }
     }
 
