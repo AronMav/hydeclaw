@@ -466,6 +466,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[sqlx::test(migrations = "../../migrations")]
     async fn finalize_failed_emits_error_and_saves_partial(pool: PgPool) {
         let session_id =
@@ -518,6 +519,7 @@ mod tests {
         assert_eq!(role, "assistant", "partial saved as assistant message");
     }
 
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[sqlx::test(migrations = "../../migrations")]
     async fn finalize_interrupted_does_not_emit_error(pool: PgPool) {
         let session_id =

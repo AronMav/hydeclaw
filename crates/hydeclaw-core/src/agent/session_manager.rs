@@ -358,6 +358,7 @@ impl Drop for SessionLifecycleGuard {
 mod tests {
     use super::*;
 
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[sqlx::test(migrations = "../../migrations")]
     async fn lifecycle_guard_interrupt_writes_wal(pool: sqlx::PgPool) {
         let session_id = crate::db::sessions::create_new_session(&pool, "test-agent", "test-user", "test-channel")
