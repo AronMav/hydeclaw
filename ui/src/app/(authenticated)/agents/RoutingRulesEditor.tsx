@@ -70,7 +70,6 @@ function Field({
 function RoutingRuleRow({
   rule,
   llmProviders,
-  secretNames,
   discoveredModels,
   fetchModels,
   onChange,
@@ -80,7 +79,6 @@ function RoutingRuleRow({
 }: {
   rule: RoutingRule;
   llmProviders: Provider[];
-  secretNames: string[];
   discoveredModels: Record<string, string[]>;
   fetchModels: (connection: string) => void;
   onChange: (patch: Partial<RoutingRule>) => void;
@@ -124,23 +122,27 @@ function RoutingRuleRow({
           </Select>
           {(() => {
             const rModels = discoveredModels[rule.provider] ?? FALLBACK_MODELS[rule.provider] ?? [];
+            const isCustom = rModels.length > 0 && !rModels.includes(rule.model);
             if (rModels.length > 0) {
               return (
-                <div className="flex gap-1.5">
+                <div className="space-y-1.5">
                   <Select
-                    value={rModels.includes(rule.model) ? rule.model : ""}
-                    onValueChange={(v) => onChange({ model: v })}
+                    value={isCustom ? "__custom__" : (rule.model || "")}
+                    onValueChange={(v) => onChange({ model: v === "__custom__" ? "" : v })}
                   >
                     <SelectTrigger className="bg-background border-border font-mono text-xs h-8">
                       <SelectValue placeholder={t("agents.model_placeholder")} />
                     </SelectTrigger>
                     <SelectContent className="border-border max-h-60">
                       {rModels.map((m) => (<SelectItem key={m} value={m} className="font-mono text-xs">{m}</SelectItem>))}
+                      <SelectItem value="__custom__" className="font-mono text-xs italic text-muted-foreground">{t("agents.model_custom")}</SelectItem>
                     </SelectContent>
                   </Select>
-                  <Input value={rule.model} placeholder={t("agents.model_placeholder")}
-                    className="bg-background border-border font-mono text-xs h-8 max-w-[140px]"
-                    onChange={(e) => onChange({ model: e.target.value })} />
+                  {isCustom && (
+                    <Input value={rule.model} placeholder={t("agents.model_placeholder")}
+                      className="bg-background border-border font-mono text-xs h-8"
+                      onChange={(e) => onChange({ model: e.target.value })} />
+                  )}
                 </div>
               );
             }
@@ -195,30 +197,6 @@ function RoutingRuleRow({
       </div>
       {expanded && (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 animate-in fade-in duration-200">
-          <Field label={t("agents.routing_field_base_url")}>
-            <Input
-              value={rule.base_url || ""}
-              placeholder={t("agents.routing_placeholder_auto")}
-              className="bg-background border-border font-mono text-xs h-8"
-              onChange={(e) => onChange({ base_url: e.target.value || null })}
-            />
-          </Field>
-          <Field label={t("agents.routing_field_api_key_env")}>
-            <Select
-              value={rule.api_key_env || "__auto__"}
-              onValueChange={(v) => onChange({ api_key_env: v === "__auto__" ? null : v })}
-            >
-              <SelectTrigger className="w-full bg-background border-border font-mono text-xs h-8">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="border-border">
-                <SelectItem value="__auto__" className="text-xs">{t("agents.routing_placeholder_auto")}</SelectItem>
-                {secretNames.map((s) => (
-                  <SelectItem key={s} value={s} className="font-mono text-xs">{s}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
           <Field label={t("agents.routing_field_temperature")}>
             <Input
               type="number"
@@ -257,7 +235,6 @@ function RoutingRuleRow({
 export interface RoutingRulesEditorProps {
   routing: RoutingRule[];
   llmProviders: Provider[];
-  secretNames: string[];
   discoveredModels: Record<string, string[]>;
   fetchModels: (connection: string) => void;
   onChange: (routing: RoutingRule[]) => void;
@@ -266,7 +243,6 @@ export interface RoutingRulesEditorProps {
 export function RoutingRulesEditor({
   routing,
   llmProviders,
-  secretNames,
   discoveredModels,
   fetchModels,
   onChange,
@@ -309,7 +285,6 @@ export function RoutingRulesEditor({
               key={idx}
               rule={rule}
               llmProviders={llmProviders}
-              secretNames={secretNames}
               discoveredModels={discoveredModels}
               fetchModels={fetchModels}
               onChange={(patch) => {

@@ -609,7 +609,7 @@ export function AgentEditDialog({
             {/* ── Channels tab ── */}
             {activeTab === "channels" && (
               <>
-                <RoutingRulesEditor routing={form.routing} llmProviders={llmProviders} secretNames={secretNames} discoveredModels={discoveredModels} fetchModels={fetchModels} onChange={(routing) => upd({ routing })} />
+                <RoutingRulesEditor routing={form.routing} llmProviders={llmProviders} discoveredModels={discoveredModels} fetchModels={fetchModels} onChange={(routing) => upd({ routing })} />
                 {editName && (
                   <div className="space-y-2 border-t border-border/30 pt-3">
                     <div className="flex items-center justify-between">
