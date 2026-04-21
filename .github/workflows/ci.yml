@@ -83,6 +83,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: v2
           cache-on-failure: true
 
       - name: Generate types
